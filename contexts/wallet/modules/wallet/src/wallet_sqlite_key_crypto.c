@@ -194,6 +194,14 @@ static bool copy_dek(sqlite3 *db, uint8_t out[WKEY_DEK_LEN])
     return ok;
 }
 
+static bool wkey_begin_output(size_t *out_len)
+{
+    if (!out_len)
+        return false;
+    *out_len = 0;
+    return true;
+}
+
 bool wallet_sqlite_key_encrypt(sqlite3 *db,
                                const uint8_t pubkey_hash[20],
                                const uint8_t *plaintext,
@@ -201,8 +209,9 @@ bool wallet_sqlite_key_encrypt(sqlite3 *db,
                                uint8_t *out, size_t out_cap,
                                size_t *out_len)
 {
-    if (!db || !pubkey_hash || (!plaintext && plaintext_len) || !out ||
-        !out_len || plaintext_len > (size_t)INT_MAX ||
+    if (!wkey_begin_output(out_len) || !db || !pubkey_hash ||
+        (!plaintext && plaintext_len) || !out ||
+        plaintext_len > (size_t)INT_MAX ||
         out_cap < wallet_sqlite_key_envelope_size(plaintext_len))
         return false;
     uint8_t dek[WKEY_DEK_LEN], nonce[WKEY_NONCE_LEN], tag[WKEY_TAG_LEN];
@@ -253,7 +262,8 @@ bool wallet_sqlite_key_decrypt(sqlite3 *db,
                                uint8_t *out, size_t out_cap,
                                size_t *out_len)
 {
-    if (!db || !pubkey_hash || !envelope || !out || !out_len ||
+    if (!wkey_begin_output(out_len) || !db || !pubkey_hash || !envelope ||
+        !out ||
         !wallet_sqlite_key_is_envelope(envelope, envelope_len))
         return false;
     size_t ciphertext_len = envelope_len - WSQL_KEY_ENVELOPE_OVERHEAD;

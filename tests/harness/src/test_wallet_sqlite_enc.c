@@ -956,6 +956,48 @@ static int test_wkd1_batch_and_row_swap_authentication(void)
     return failures;
 }
 
+static int test_wkd1_failure_clears_reported_length(void)
+{
+    int failures = 0;
+    TEST("wallet_sqlite_enc: WKD1 failure clears reported output length") {
+        set_passphrase(NULL);
+        sqlite3 *db = open_mem_db();
+        ASSERT(db);
+        const uint8_t row_id[20] = {0x42};
+        const uint8_t plain[1] = {0x24};
+        uint8_t envelope[WSQL_KEY_ENVELOPE_OVERHEAD + sizeof(plain)] = {
+            'W', 'K', 'D', '1', 0, 0, 0, 1
+        };
+        uint8_t output[sizeof(envelope)];
+        memset(output, 0xa5, sizeof(output));
+        size_t output_len = SIZE_MAX;
+        ASSERT(!wallet_sqlite_key_encrypt(db, row_id, plain, sizeof(plain),
+            output, sizeof(output), &output_len));
+        ASSERT_EQ(output_len, 0);
+        output_len = SIZE_MAX;
+        ASSERT(!wallet_sqlite_key_decrypt(db, row_id, envelope,
+            sizeof(envelope), output, sizeof(output), &output_len));
+        ASSERT_EQ(output_len, 0);
+        for (size_t i = 0; i < sizeof(output); i++)
+            ASSERT_EQ(output[i], 0xa5);
+
+        set_passphrase("failure-atomic-pass");
+        size_t envelope_len = 0;
+        ASSERT(wallet_sqlite_key_encrypt(db, row_id, plain, sizeof(plain),
+            envelope, sizeof(envelope), &envelope_len));
+        const uint8_t wrong_row_id[20] = {0x43};
+        uint8_t opened[sizeof(plain)] = {0xa5};
+        output_len = SIZE_MAX;
+        ASSERT(!wallet_sqlite_key_decrypt(db, wrong_row_id, envelope,
+            envelope_len, opened, sizeof(opened), &output_len));
+        ASSERT_EQ(output_len, 0);
+        ASSERT_EQ(opened[0], 0);
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────────── */
 
 int test_wallet_sqlite_enc(void);
@@ -981,6 +1023,7 @@ int test_wallet_sqlite_enc(void)
     failures += test_scrub_noop_without_passphrase();
     failures += test_legacy_wks1_migrates_and_restarts();
     failures += test_wkd1_batch_and_row_swap_authentication();
+    failures += test_wkd1_failure_clears_reported_length();
 
     /* Cleanup: scrub the test unlock register. */
     set_passphrase(NULL);
