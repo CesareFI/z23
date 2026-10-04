@@ -12,6 +12,7 @@ struct node_db;
 
 #define WALLET_METADATA_PLAINTEXT_MAX 16384
 #define WALLET_METADATA_OVERHEAD 32
+#define WALLET_METADATA_AAD_LEN 32U
 
 bool wallet_metadata_encrypt(struct node_db *ndb,
                              const uint8_t *aad, size_t aad_len,

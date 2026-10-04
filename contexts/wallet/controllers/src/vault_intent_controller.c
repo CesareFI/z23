@@ -438,7 +438,8 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
         (void)snprintf(row.agent_session_id,
                        sizeof(row.agent_session_id), "%s", agent_session);
     vault_intent_digest_payload(plain, plen, &row, row.digest);
-    bool encrypted = wallet_metadata_encrypt(ctx->node_db, row.plan_id, 32,
+    bool encrypted = wallet_metadata_encrypt(ctx->node_db, row.plan_id,
+        WALLET_METADATA_AAD_LEN,
         plain, plen, row.encrypted_payload, sizeof(row.encrypted_payload),
         &row.encrypted_payload_len);
     bool stored = encrypted && vault_intent_reserve_bound(
@@ -487,7 +488,8 @@ bool vault_intent_transparent_shape_matches(
         strcmp(row->application_kind, VI_APP_KIND) != 0)
         return false; // raw-return-ok:predicate
     uint8_t plain[WALLET_METADATA_PLAINTEXT_MAX]; size_t plain_len = 0;
-    if (!wallet_metadata_decrypt(ctx->node_db, row->plan_id, 32,
+    if (!wallet_metadata_decrypt(ctx->node_db, row->plan_id,
+            WALLET_METADATA_AAD_LEN,
             row->encrypted_payload, row->encrypted_payload_len,
             plain, sizeof(plain), &plain_len))
         return false; // raw-return-ok:predicate
@@ -508,7 +510,8 @@ static bool vi_build_prepared(struct wallet_rpc_context *ctx,
                               struct wallet_tx *wtx, struct json_value *result)
 {
     uint8_t plain[WALLET_METADATA_PLAINTEXT_MAX]; size_t plen = 0;
-    if (!wallet_metadata_decrypt(ctx->node_db, row->plan_id, 32,
+    if (!wallet_metadata_decrypt(ctx->node_db, row->plan_id,
+            WALLET_METADATA_AAD_LEN,
             row->encrypted_payload, row->encrypted_payload_len,
             plain, sizeof(plain), &plen)) {
         vi_error(result, "PLAN_DECRYPT_FAILED", "encrypted plan failed authentication");

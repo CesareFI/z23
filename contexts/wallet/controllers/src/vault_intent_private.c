@@ -580,7 +580,8 @@ bool vault_intent_private_plan(const struct json_value *input,
         (void)snprintf(row.agent_session_id,
                        sizeof(row.agent_session_id), "%s", agent_session);
     vault_intent_digest_payload(plain, plain_len, &row, row.digest);
-    bool encrypted = wallet_metadata_encrypt(ctx->node_db, row.plan_id, 32,
+    bool encrypted = wallet_metadata_encrypt(ctx->node_db, row.plan_id,
+        WALLET_METADATA_AAD_LEN,
         plain, plain_len, row.encrypted_payload, sizeof(row.encrypted_payload),
         &row.encrypted_payload_len);
     /* The post-reservation root is a pure transform of the post-proof CURRENT
@@ -627,7 +628,8 @@ bool vault_intent_private_build_prepared(
     struct wallet_tx *wtx, struct json_value *result)
 {
     uint8_t plain[WALLET_METADATA_PLAINTEXT_MAX]; size_t plain_len = 0;
-    if (!wallet_metadata_decrypt(ctx->node_db, row->plan_id, 32,
+    if (!wallet_metadata_decrypt(ctx->node_db, row->plan_id,
+            WALLET_METADATA_AAD_LEN,
             row->encrypted_payload, row->encrypted_payload_len,
             plain, sizeof(plain), &plain_len)) {
         vip_error(result, "PLAN_DECRYPT_FAILED",

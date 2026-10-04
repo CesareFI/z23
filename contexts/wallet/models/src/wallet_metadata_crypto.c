@@ -107,7 +107,10 @@ bool wallet_metadata_encrypt(struct node_db *ndb,
                              const uint8_t *plaintext, size_t plaintext_len,
                              uint8_t *out, size_t out_cap, size_t *out_len)
 {
-    if (!aad || aad_len == 0 || (!plaintext && plaintext_len) || !out ||
+    if (out_len)
+        *out_len = 0;
+    if (!aad || aad_len != WALLET_METADATA_AAD_LEN ||
+        (!plaintext && plaintext_len) || !out ||
         !out_len || plaintext_len > WALLET_METADATA_PLAINTEXT_MAX ||
         out_cap < plaintext_len + WALLET_METADATA_OVERHEAD)
         LOG_FAIL("wallet_metadata", "encrypt: invalid bounds or argument");
@@ -133,7 +136,9 @@ bool wallet_metadata_decrypt(struct node_db *ndb,
                              const uint8_t *envelope, size_t envelope_len,
                              uint8_t *out, size_t out_cap, size_t *out_len)
 {
-    if (!aad || aad_len == 0 || !envelope || envelope_len <
+    if (out_len)
+        *out_len = 0;
+    if (!aad || aad_len != WALLET_METADATA_AAD_LEN || !envelope || envelope_len <
         WALLET_METADATA_OVERHEAD || envelope_len >
         WALLET_METADATA_PLAINTEXT_MAX + WALLET_METADATA_OVERHEAD || !out ||
         !out_len || out_cap < envelope_len - WALLET_METADATA_OVERHEAD ||
