@@ -454,10 +454,37 @@ bool push_version(struct msg_processor *mp, struct p2p_node *node)
     return true;
 }
 
-void push_verack(struct msg_processor *mp, struct p2p_node *node)
+bool push_verack(struct msg_processor *mp, struct p2p_node *node)
 {
-    p2p_node_begin_message(node, "verack", mp->params->pchMessageStart);
-    p2p_node_end_message(node);
+    if (!p2p_node_begin_message(node, "verack",
+                                mp->params->pchMessageStart))
+        return false;
+    return p2p_node_end_message(node);
+}
+
+static void disconnect_unsent_handshake_reply(struct p2p_node *node,
+                                              const char *command)
+{
+    LOG_ERROR("net", "failed to queue handshake %s for %s; "
+              "disconnecting for a clean retry", command, node->addr_name);
+    (void)p2p_node_request_disconnect(
+        node, P2P_DISCONNECT_RESOURCE_LIMIT,
+        P2P_DISCONNECT_SOURCE_RESOURCE_GOVERNOR,
+        node->endpoint_generation);
+}
+
+static bool push_handshake_replies(struct msg_processor *mp,
+                                   struct p2p_node *node)
+{
+    if (node->inbound && !push_version(mp, node)) {
+        disconnect_unsent_handshake_reply(node, "version");
+        return false;
+    }
+    if (!push_verack(mp, node)) {
+        disconnect_unsent_handshake_reply(node, "verack");
+        return false;
+    }
+    return true;
 }
 
 bool process_version(struct msg_processor *mp, struct p2p_node *node,
@@ -563,10 +590,8 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
      * it has processed our advertised service bits; its following version is
      * then treated as a duplicate and the one-shot Noise capability upgrade can
      * never run.  Both messages use the same ordered send queue. */
-    if (node->inbound)
-        push_version(mp, node);
-
-    push_verack(mp, node);
+    if (!push_handshake_replies(mp, node))
+        return true;
 
     /* Publish immutable handshake metadata before the release transition to
      * HANDSHAKE_COMPLETE.  Diagnostic readers use an acquire state load as

@@ -817,6 +817,59 @@ static int test_honest_handshake_completes(void)
     return failures;
 }
 
+static int test_inbound_version_reply_failure_does_not_complete(void)
+{
+    int failures = 0;
+    TEST("handshake: unsent inbound version reply cannot complete session") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+        struct byte_stream payload;
+        hs_build_version_payload(&payload, PROTOCOL_VERSION,
+                                 0x9191919191919191ULL, "/test:0.1/");
+
+        zcl_alloc_fault_fail_next("send_segment");
+        ASSERT(process_version(&f.mp, &f.node, &payload));
+        ASSERT(zcl_alloc_fault_armed_label() == NULL);
+        zcl_alloc_fault_clear();
+        ASSERT(f.node.disconnect);
+        ASSERT(f.node.state == PEER_VERSION_RECEIVED);
+        ASSERT(atomic_load(&f.node.disconnect_reason) ==
+               P2P_DISCONNECT_RESOURCE_LIMIT);
+
+        stream_free(&payload);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_outbound_verack_failure_forces_reconnect(void)
+{
+    int failures = 0;
+    TEST("handshake: unsent outbound verack forces reconnect") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, false));
+        f.node.state = PEER_VERSION_SENT;
+        struct byte_stream payload;
+        hs_build_version_payload(&payload, PROTOCOL_VERSION,
+                                 0x9292929292929292ULL, "/test:0.1/");
+
+        zcl_alloc_fault_fail_next("send_segment");
+        ASSERT(process_version(&f.mp, &f.node, &payload));
+        ASSERT(zcl_alloc_fault_armed_label() == NULL);
+        zcl_alloc_fault_clear();
+        ASSERT(f.node.disconnect);
+        ASSERT(f.node.state == PEER_VERSION_RECEIVED);
+        ASSERT(atomic_load(&f.node.disconnect_reason) ==
+               P2P_DISCONNECT_RESOURCE_LIMIT);
+
+        stream_free(&payload);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Noise XX sends msg1 before the ordinary message loop runs; that raw
  * handshake traffic must not suppress the version message. */
 static int test_outbound_version_after_transport_bytes(void)
@@ -1355,6 +1408,8 @@ int test_net_handshake_adversarial(void)
     failures += test_addr_timestamp_sanitization_rule();
     failures += test_oversized_user_agent_rejected();
     failures += test_honest_handshake_completes();
+    failures += test_inbound_version_reply_failure_does_not_complete();
+    failures += test_outbound_verack_failure_forces_reconnect();
     failures += test_outbound_version_after_transport_bytes();
     failures += test_outbound_version_queue_failure_retries();
     failures += test_mempool_requested_once_for_relay_peer();
