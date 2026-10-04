@@ -88,7 +88,8 @@ struct wallet_restore_report {
  * (including when no pidfile exists at all — a fresh recovery directory is
  * the common case). A non-ok result's .message is the one-line reason,
  * naming the holder pid when it could be read. Read-only: it never creates
- * the pidfile and releases any flock it takes. */
+ * the pidfile and releases any flock it takes. A datadir whose full pidfile
+ * path does not fit the probe buffer is refused before any filesystem call. */
 struct zcl_result wallet_restore_datadir_free(const char *datadir);
 
 /* ── the WRITER's lock, held across check-then-write ──────────────────

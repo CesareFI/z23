@@ -24,6 +24,7 @@
  *
  * And the refusals, each one its own assertion:
  *   - a datadir held by another writer (the pidfile flock)
+ *   - a held pidfile whose valid datadir path exceeds the probe buffer
  *   - a backup path that does not exist
  *   - a file that is not a SQLite database
  *   - a SQLite database holding none of the wallet tables
@@ -281,6 +282,63 @@ static void wr_rmdir_datadir(const char *dir)
     rmdir(dir);
 }
 
+/* A valid datadir can be longer than the lock probe's fixed pathname buffer.
+ * The probe must refuse that input, never truncate it and inspect a different
+ * file while the real pidfile remains locked. */
+static int wr_test_long_datadir_lock(void)
+{
+    int failures = 0;
+    char datadir[1400];
+    char pidfile[1450];
+    size_t root_len;
+    size_t target_len = 1185;
+
+    snprintf(datadir, sizeof(datadir), "%s", wr_dir());
+    root_len = strlen(datadir);
+    if (root_len >= target_len) {
+        WR_CHECK("fixture root leaves room for the long datadir", false);
+        return failures;
+    }
+    if ((target_len - root_len) % 17 == 1)
+        target_len++;
+    while (strlen(datadir) < target_len) {
+        size_t used = strlen(datadir);
+        size_t remaining = target_len - used;
+        size_t component = remaining > 17 ? 16 : remaining - 1;
+        datadir[used++] = '/';
+        memset(datadir + used, 'l', component);
+        datadir[used + component] = '\0';
+        if (mkdir(datadir, 0700) != 0)
+            break;
+    }
+    WR_CHECK("built a valid datadir beyond the lock probe capacity",
+             strlen(datadir) == target_len);
+
+    int n = snprintf(pidfile, sizeof(pidfile), "%s/zclassic23.pid", datadir);
+    WR_CHECK("represented the real long-datadir pidfile exactly",
+             n > 0 && (size_t)n < sizeof(pidfile));
+    int fd = open(pidfile, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    WR_CHECK("opened the real long-datadir pidfile", fd >= 0);
+    if (fd >= 0) {
+        WR_CHECK("held the real long-datadir pidfile",
+                 flock(fd, LOCK_EX | LOCK_NB) == 0);
+        struct zcl_result r = wallet_restore_datadir_free(datadir);
+        WR_CHECK("long datadir never bypasses the held pidfile", !r.ok);
+        (void)flock(fd, LOCK_UN);
+        close(fd);
+    }
+
+    unlink(pidfile);
+    while (strlen(datadir) > root_len) {
+        (void)rmdir(datadir);
+        char *slash = strrchr(datadir, '/');
+        if (!slash || (size_t)(slash - datadir) < root_len)
+            break;
+        *slash = '\0';
+    }
+    return failures;
+}
+
 /* ── rescan honesty ─────────────────────────────────────────── */
 
 /* struct wallet is large; keep it out of the group's stack frame. */
@@ -467,6 +525,8 @@ int test_wallet_restore(void)
 
     req = (struct wallet_restore_request){ .backup_path = backup_path,
                                            .datadir = target, .dry_run = true };
+
+    failures += wr_test_long_datadir_lock();
 
     {   /* a path that does not exist */
         struct wallet_restore_request bad = req;
