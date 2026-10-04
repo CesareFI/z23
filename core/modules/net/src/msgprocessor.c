@@ -936,6 +936,14 @@ static void msg_processor_maybe_send_keepalive(struct msg_processor *mp,
                           now_mono_us, memory_order_relaxed);
 }
 
+static void msg_processor_note_headers_sent(struct p2p_node *node,
+                                            int64_t now_seconds,
+                                            bool sent)
+{
+    if (sent)
+        syncsvc_note_headers_requested(node, now_seconds);
+}
+
 /* ── Tip-stall watchdog observers ──────────────────────────── */
 
 /* feed tip-advance signals into the watchdog. Both
@@ -2797,7 +2805,6 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             }
             if (periodic.should_send) {
                 should_sync = true;
-                syncsvc_note_headers_requested(node, now_send);
             }
         }
 
@@ -2848,10 +2855,12 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
              * band — so existing behavior is a strict regression-safe
              * fallback. Validation and band closure are unchanged; this
              * only changes WHICH peer is asked for WHICH range. */
-            if (!msg_try_range_parallel_getheaders(
-                    mp, node, our_height,
-                    platform_time_monotonic_us() / 1000000))
-                exec_getheaders_action(mp, node, &periodic);
+            bool sent = msg_try_range_parallel_getheaders(
+                mp, node, our_height,
+                platform_time_monotonic_us() / 1000000);
+            if (!sent)
+                sent = exec_getheaders_action(mp, node, &periodic);
+            msg_processor_note_headers_sent(node, now_send, sent);
         }
 
         /* Checkpoint-header-solution cure: when the app-layer repair condition

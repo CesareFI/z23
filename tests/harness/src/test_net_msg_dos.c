@@ -639,6 +639,61 @@ static int dos_inbound_header_fallback_sends(struct msg_processor *mp,
     return failures;
 }
 
+static int dos_getheaders_send_failure_retry(struct msg_processor *mp,
+                                             struct net_manager *nm)
+{
+    int failures = 0;
+    struct download_manager *dm = get_download_mgr();
+    (void)dl_drain_for_backpressure(dm);
+    enum sync_state saved_sync = sync_get_state();
+    sync_set_state(SYNC_IDLE, "getheaders retry test");
+
+    struct uint256 body_request;
+    memset(body_request.data, 0x7c, sizeof(body_request.data));
+    int32_t body_height = 1;
+    DOS_CHECK("getheaders retry: body recovery held inactive",
+              dl_queue_blocks(dm, &body_request, &body_height, 1) == 1);
+
+    struct net_address peer_addr;
+    net_address_init(&peer_addr);
+    unsigned char peer_ip[4] = {203, 0, 113, 89};
+    net_addr_set_ipv4(&peer_addr.svc.addr, peer_ip);
+    peer_addr.svc.port = 8033;
+    struct p2p_node *node = p2p_node_create(
+        nm, ZCL_INVALID_SOCKET, &peer_addr, "getheaders-send-failure", true);
+    DOS_CHECK("getheaders retry: node created", node != NULL);
+    if (node) {
+        node->state = PEER_ACTIVE;
+        node->version = PROTOCOL_VERSION;
+        node->starting_height = 1000;
+
+        zcl_alloc_fault_fail_next("send_segment");
+        bool first_ok = msg_send_messages(mp, node, false);
+        bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+        size_t first_frames = dos_wire_command_frames(node, "getheaders");
+        int64_t first_noted = atomic_load(&node->last_getheaders_time);
+
+        bool retry_ok = msg_send_messages(mp, node, false);
+        size_t final_frames = dos_wire_command_frames(node, "getheaders");
+
+        DOS_CHECK("getheaders retry: failed tick survives", first_ok);
+        DOS_CHECK("getheaders retry: failed request was not queued",
+                  fault_consumed && first_frames == 0);
+        DOS_CHECK("getheaders retry: failed request stays unpublished",
+                  first_noted == 0);
+        DOS_CHECK("getheaders retry: next tick queues request once",
+                  retry_ok && final_frames == 1 &&
+                  atomic_load(&node->last_getheaders_time) > 0);
+
+        p2p_node_free(node);
+    }
+    zcl_alloc_fault_clear();
+    sync_set_state(saved_sync, "getheaders retry test restore");
+    (void)dl_drain_for_backpressure(dm);
+    return failures;
+}
+
 static bool dos_hashes_in_flight(struct download_manager *dm,
                                  const struct uint256 *hashes, size_t count)
 {
@@ -1625,6 +1680,10 @@ int test_net_msg_dos(void)
     /* ── S. With no outbound peer, the admitted inbound fallback must
      * carry the getheaders action it just published as requested. */
     failures += dos_inbound_header_fallback_sends(&mp, &nm);
+
+    /* ── T. A local getheaders queue failure must not consume the
+     * retry interval; publish the request timestamp only after enqueue. */
+    failures += dos_getheaders_send_failure_retry(&mp, &nm);
 
     net_manager_free(&nm);
     sync_set_state(sync0, "net_msg_dos restore");
