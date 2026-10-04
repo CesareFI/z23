@@ -39,29 +39,36 @@ expect_query()
 printf '#!/usr/bin/env bash\nexec cc "$@"\n' > "$scratch/compiler"
 chmod +x "$scratch/compiler"
 
-for tool in jsonq sqlq; do
-    run_make CC=cc "$tool"
+for tool in jsonq sqlq inspect_html; do
+    goal="$tool"
+    [ "$tool" != inspect_html ] || goal=tools/inspect_html
+    run_make CC=cc "$goal"
     test -x "$output/bin/$tool"
-    expect_query "$tool unchanged" 0 CC=cc "$tool"
+    expect_query "$tool unchanged" 0 CC=cc "$goal"
 
-    expect_query "$tool compiler changed" 1 CC="$scratch/compiler" "$tool"
+    expect_query "$tool compiler changed" 1 CC="$scratch/compiler" "$goal"
     if [ "$quick" -eq 1 ]; then
         continue
     fi
-    run_make CC="$scratch/compiler" "$tool"
-    expect_query "$tool compiler unchanged" 0 CC="$scratch/compiler" "$tool"
-    expect_query "$tool compiler restored" 1 CC=cc "$tool"
-    expect_query "$tool flags changed" 1 CC="$scratch/compiler" \
-        ZCL_PLATFORM_CPPFLAGS=-DSTANDALONE_TOOL_KEY_SELFTEST=1 "$tool"
+    run_make CC="$scratch/compiler" "$goal"
+    expect_query "$tool compiler unchanged" 0 CC="$scratch/compiler" "$goal"
+    expect_query "$tool compiler restored" 1 CC=cc "$goal"
+    if [ "$tool" = inspect_html ]; then
+        expect_query "$tool flags changed" 1 CC="$scratch/compiler" \
+            INSPECT_HTML_COMPILE_FLAGS='-std=c23 -O2 -Wall -Wextra -DSTANDALONE_TOOL_KEY_SELFTEST=1 -Iplatform/modules/base/include -Iplatform/modules/util/include' "$goal"
+    else
+        expect_query "$tool flags changed" 1 CC="$scratch/compiler" \
+            ZCL_PLATFORM_CPPFLAGS=-DSTANDALONE_TOOL_KEY_SELFTEST=1 "$goal"
+    fi
 
     mv "$output/bin/$tool.build-key" "$scratch/$tool.saved-key"
-    expect_query "$tool missing key" 1 CC="$scratch/compiler" "$tool"
+    expect_query "$tool missing key" 1 CC="$scratch/compiler" "$goal"
     mv "$scratch/$tool.saved-key" "$output/bin/$tool.build-key"
-    expect_query "$tool restored key" 0 CC="$scratch/compiler" "$tool"
+    expect_query "$tool restored key" 0 CC="$scratch/compiler" "$goal"
 
     cp "$output/bin/$tool.build-key" "$scratch/$tool.saved-key"
     printf 'extra\n' >> "$output/bin/$tool.build-key"
-    expect_query "$tool corrupt key" 1 CC="$scratch/compiler" "$tool"
+    expect_query "$tool corrupt key" 1 CC="$scratch/compiler" "$goal"
     mv "$scratch/$tool.saved-key" "$output/bin/$tool.build-key"
 done
 

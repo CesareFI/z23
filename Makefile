@@ -252,7 +252,8 @@ ZCL_TOR_PROVENANCE_GOALS := build/bin/z23-tor-provenance \
 	tools/tor-provenance z23-tor-provenance
 # Exact standalone/query goals do not consume node epochs, generated views,
 # object depfiles, or Tor. SQLQ still needs the vendored SQLite bootstrap.
-ZCL_STANDALONE_NO_VENDOR_GOALS := t-list jsonq build/bin/jsonq zcl-rpc
+ZCL_STANDALONE_NO_VENDOR_GOALS := t-list jsonq build/bin/jsonq \
+	tools/inspect_html build/bin/inspect_html zcl-rpc
 ZCL_STANDALONE_VENDOR_GOALS := sqlq build/bin/sqlq
 # A mixed invocation keeps the ordinary full parse, even when both goals are
 # individually standalone. This also leaves default and unknown goals alone.
@@ -3388,12 +3389,38 @@ $(TMPL_TOOL): tools/gen_templates.c platform/modules/base/src/safe_alloc.c \
 	$(CC) -std=c23 -O2 -Wall -Wextra -Iplatform/modules/base/include \
 		-Iplatform/modules/util/include -Iplatform/modules/platform/include -o $@ $(filter %.c,$^)
 
+# Standalone tools compile outside object epochs. Bind each binary to the
+# complete compiler/build-system identity and its effective flags; a missing
+# or mismatched sidecar forces a rebuild.
+STANDALONE_TOOL_KEYED := $(if $(or $(strip $(ZCL_EPOCH_PROFILES)),$(filter jsonq build/bin/jsonq sqlq build/bin/sqlq tools/inspect_html build/bin/inspect_html,$(ZCL_STANDALONE_EXACT_GOAL))),1,)
+ifeq ($(STANDALONE_TOOL_KEYED),1)
+STANDALONE_TOOL_COMPILER_ID := $(if $(filter $(ZCL_ZERO_SHA256),$(BUILD_COMPILER_ID)),$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) compiler-id "$(CC)" "$(CXX)" "$(CURDIR)")),$(BUILD_COMPILER_ID))
+STANDALONE_TOOL_SYSTEM_ID := $(if $(filter $(ZCL_ZERO_SHA256),$(BUILD_SYSTEM_ID)),$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) build-system-id)),$(BUILD_SYSTEM_ID))
+ifeq ($(shell printf '%s\n' '$(STANDALONE_TOOL_COMPILER_ID)' '$(STANDALONE_TOOL_SYSTEM_ID)' | awk '/^[0-9a-f]{64}$$/ { n++ } END { print n }'),2)
+else
+$(error standalone tool compiler/build-system fingerprint failed)
+endif
+define standalone_tool_key
+$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) key "$(STANDALONE_TOOL_COMPILER_ID)" "$(1)" "$(strip $($(2)))" "$(strip $($(3)))" "$(STANDALONE_TOOL_SYSTEM_ID)"))
+endef
+endif
+
+INSPECT_HTML_COMPILE_FLAGS = -std=c23 -O2 -Wall -Wextra -Iplatform/modules/base/include -Iplatform/modules/util/include
+INSPECT_HTML_LINK_FLAGS = no-extra-link-flags
+INSPECT_HTML_BUILD_KEY := $(if $(STANDALONE_TOOL_KEYED),$(call standalone_tool_key,standalone-inspect-html-v1,INSPECT_HTML_COMPILE_FLAGS,INSPECT_HTML_LINK_FLAGS),)
+ifeq ($(STANDALONE_TOOL_KEYED),1)
+ifneq ($(shell printf '%s\n' '$(INSPECT_HTML_BUILD_KEY)' | awk '/^[0-9a-f]{64}$$/ { print "yes" }'),yes)
+$(error standalone inspect_html build-key derivation failed)
+endif
+endif
+INSPECT_HTML_CONFIG_MATCH := $(if $(INSPECT_HTML_BUILD_KEY),$(shell printf '%s\n' '$(INSPECT_HTML_BUILD_KEY)' | cmp -s - '$(BIN_DIR)/inspect_html.build-key' && printf yes),)
+INSPECT_HTML_CONFIG_FORCE := $(if $(INSPECT_HTML_CONFIG_MATCH),,FORCE)
 $(BIN_DIR)/inspect_html: tools/inspect_html.c platform/modules/base/src/safe_alloc.c \
 		platform/modules/util/include/util/safe_alloc.h \
-		platform/modules/base/include/base/safe_alloc.h
+		platform/modules/base/include/base/safe_alloc.h $(INSPECT_HTML_CONFIG_FORCE)
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra \
-	    -Iplatform/modules/base/include -Iplatform/modules/util/include -o $@ $(filter %.c,$^)
+	$(CC) $(INSPECT_HTML_COMPILE_FLAGS) -o $@ $(filter %.c,$^)
+	@printf '%s\n' '$(INSPECT_HTML_BUILD_KEY)' > '$@.build-key'
 
 # These two run on EVERY make invocation (they are prerequisites of the
 # -include'd view bootstrap, so they are re-checked before any goal), which
@@ -8444,25 +8471,6 @@ $(P2_INVARIANT_CHECK_BIN): tools/p2_invariant_check.c vendor/include/sqlite3.h v
 # Read-only SQL query CLI over any sqlite db (progress.kv, node.db, fixture
 # datadirs). Python is banned and the host has no sqlite3 CLI; this is the
 # shell-side diagnostic primitive (the native `sql` command covers node.db).
-# These small tools compile outside the object epochs. Bind their build-key
-# sidecars to the same complete compiler identity, effective flags, and build
-# system as the epochs. A compiler switch must invalidate an otherwise newer
-# binary; a missing or interrupted sidecar must fail toward recompilation.
-# Exact standalone goals derive the identity here; other build goals reuse the
-# one already derived for their selected object epoch. A goal with neither
-# authority always recompiles if it reaches either binary rule.
-STANDALONE_TOOL_KEYED := $(if $(or $(strip $(ZCL_EPOCH_PROFILES)),$(filter jsonq build/bin/jsonq sqlq build/bin/sqlq,$(ZCL_STANDALONE_EXACT_GOAL))),1,)
-ifeq ($(STANDALONE_TOOL_KEYED),1)
-STANDALONE_TOOL_COMPILER_ID := $(if $(filter $(ZCL_ZERO_SHA256),$(BUILD_COMPILER_ID)),$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) compiler-id "$(CC)" "$(CXX)" "$(CURDIR)")),$(BUILD_COMPILER_ID))
-STANDALONE_TOOL_SYSTEM_ID := $(if $(filter $(ZCL_ZERO_SHA256),$(BUILD_SYSTEM_ID)),$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) build-system-id)),$(BUILD_SYSTEM_ID))
-ifeq ($(shell printf '%s\n' '$(STANDALONE_TOOL_COMPILER_ID)' '$(STANDALONE_TOOL_SYSTEM_ID)' | awk '/^[0-9a-f]{64}$$/ { n++ } END { print n }'),2)
-else
-$(error standalone tool compiler/build-system fingerprint failed)
-endif
-define standalone_tool_key
-$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) key "$(STANDALONE_TOOL_COMPILER_ID)" "$(1)" "$(strip $($(2)))" "$(strip $($(3)))" "$(STANDALONE_TOOL_SYSTEM_ID)"))
-endef
-endif
 SQLQ_COMPILE_FLAGS = -std=c23 -O2 -Wall -Wextra -Werror -pedantic -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) -Ivendor/include
 SQLQ_LINK_FLAGS = -Lvendor/lib vendor/lib/libsqlite3.a -lpthread -ldl -lm
 SQLQ_BIN = $(BIN_DIR)/sqlq
