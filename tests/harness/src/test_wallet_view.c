@@ -128,8 +128,8 @@ static int wv_check_read_stream_cloexec(void)
     return 0; /* Native Windows handle-inheritance runtime remains separate. */
 #else
     printf("wallet_view: read stream descriptor is close-on-exec... ");
-    char path[] = "/tmp/zcl_wv_read_XXXXXX";
-    int seed = mkstemp(path);
+    char path[PATH_MAX];
+    int seed = test_mkstemp(path, sizeof(path), "zcl_wv_read");
     if (seed >= 0)
         (void)close(seed);
     FILE *stream = seed >= 0 ? platform_file_stream_open_read(path) : NULL;
