@@ -490,6 +490,14 @@ void push_manifest(struct msg_processor *mp, struct p2p_node *node)
     free(hashes);
 }
 
+void push_manifest_if_ready(struct msg_processor *mp,
+                            struct p2p_node *node)
+{
+    if (node->state >= PEER_HANDSHAKE_COMPLETE &&
+        peer_supports_fast_sync(node->services))
+        push_manifest(mp, node);
+}
+
 static void push_block_manifest_copy(struct msg_processor *mp,
                                      struct p2p_node *node,
                                      const struct block_piece_manifest *m,

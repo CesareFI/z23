@@ -44,6 +44,9 @@
 #endif
 #include "util/safe_alloc.h"
 
+/* Internal send-tick seam used only to pin manifest retry scheduling. */
+void mp_snapshot_send_tick(struct msg_processor *mp, struct p2p_node *node);
+
 static int test_onion_peer_discover(const char *datadir,
                                     struct onion_peer *out,
                                     size_t max)
@@ -3317,7 +3320,7 @@ static int test_net_parallel_sync_bad_proof_fails_verification(const char *test_
     return failures;
 }
 
-static bool manifest_send_failure_preserves_retry(void)
+static bool manifest_send_failure_retries_next_tick(void)
 {
     struct net_manager nm;
     struct net_address addr;
@@ -3332,12 +3335,24 @@ static bool manifest_send_failure_preserves_retry(void)
     bool ok = node != NULL;
     mp.params = chain_params_get();
     if (node) {
+        node->state = PEER_HANDSHAKE_COMPLETE;
+        node->services = NODE_ZCL23;
         zcl_alloc_fault_fail_next("send_segment");
         push_manifest(&mp, node);
-        ok = ok && zcl_alloc_fault_armed_label() == NULL;
-        ok = ok && !node->swarm_manifest_sent;
-        ok = ok && node->send_head == NULL;
+        bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+        bool retry_preserved = !node->swarm_manifest_sent &&
+                               node->send_head == NULL;
         zcl_alloc_fault_clear();
+
+        mp_snapshot_send_tick(&mp, node);
+        const struct msg_header *hdr = node->send_head
+            ? (const struct msg_header *)(const void *)node->send_head->data
+            : NULL;
+        bool retried = node->swarm_manifest_sent && hdr &&
+                       strcmp(hdr->pchCommand, MSG_MANIFEST) == 0;
+        printf("[manifest retry: fault=%d preserved=%d retried=%d] ",
+               fault_consumed, retry_preserved, retried);
+        ok = ok && fault_consumed && retry_preserved && retried;
         p2p_node_free(node);
     }
     net_manager_free(&nm);
@@ -3373,7 +3388,7 @@ static int test_net_parallel_sync_manifest_cache_publishes_stable(void)
         ok = ok && header.chunk_size == SYNC_CHUNK_SIZE;
         ok = ok && header.chunk_hashes == NULL;
 
-        ok = ok && manifest_send_failure_preserves_retry();
+        ok = ok && manifest_send_failure_retries_next_tick();
 
         msg_processor_invalidate_manifest();
         ok = ok && !msg_processor_get_manifest_header(&header);

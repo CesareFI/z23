@@ -1864,6 +1864,11 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
             return;
     }
 
+    /* Both manifests may become ready after version negotiation, and a local
+     * enqueue failure deliberately leaves their sent flags clear.  Revisit
+     * both on the ordinary peer tick so that preserved retry eligibility is
+     * actually consumed on this connection. */
+    push_manifest_if_ready(mp, node);
     push_block_manifest_if_ready(mp, node);
     /* ── Swarm parallel chunk sync coordinator ────────────── */
     /* For each connected ZCL23 peer with no inflight chunk, assign one
