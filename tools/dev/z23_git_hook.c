@@ -48,6 +48,24 @@
 #define HOOK_LINE_MAX 1024u
 #define HOOK_OUTPUT_MAX 8192u
 
+static bool hook_utc_timespec(struct timespec *out)
+{
+#if defined(_WIN32)
+    FILETIME file_time;
+    ULARGE_INTEGER ticks;
+    GetSystemTimeAsFileTime(&file_time);
+    ticks.LowPart = file_time.dwLowDateTime;
+    ticks.HighPart = file_time.dwHighDateTime;
+    if (ticks.QuadPart < UINT64_C(116444736000000000)) return false;
+    uint64_t unix_ticks = ticks.QuadPart - UINT64_C(116444736000000000);
+    out->tv_sec = (time_t)(unix_ticks / UINT64_C(10000000));
+    out->tv_nsec = (long)((unix_ticks % UINT64_C(10000000)) * 100u);
+    return true;
+#else
+    return timespec_get(out, TIME_UTC) == TIME_UTC;
+#endif
+}
+
 static void clear_git_local_environment(void)
 {
     static const char *const names[] = {
@@ -565,7 +583,7 @@ static int64_t running_eta(const char *root, const char *local,
             return -1;
     }
     struct timespec now = {0};
-    if (timespec_get(&now, TIME_UTC) != TIME_UTC) return -1;
+    if (!hook_utc_timespec(&now)) return -1;
     int64_t elapsed = (int64_t)now.tv_sec - started;
     int64_t eta = 900000 - (elapsed > 0 ? elapsed * 1000 : 0);
     return eta > 0 ? eta : 0;
@@ -810,7 +828,7 @@ static int compare_u64(const void *a, const void *b)
 static uint64_t sample_clock_ns(void)
 {
     struct timespec now = {0};
-    if (timespec_get(&now, TIME_UTC) != TIME_UTC) return 0;
+    if (!hook_utc_timespec(&now)) return 0;
     return (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
 }
 
