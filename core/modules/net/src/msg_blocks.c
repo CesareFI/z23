@@ -398,6 +398,7 @@ bool msg_block_validation_is_retryable(const struct validation_state *state)
         "p2p-block-intake-stopped",
         "p2p-block-intake-full",
         "p2p-block-clone-failed",
+        "p2p-block-submit-unavailable",
     };
     for (size_t i = 0; i < sizeof(retryable_reasons) /
                            sizeof(retryable_reasons[0]); i++) {
@@ -412,10 +413,22 @@ static bool msg_block_retryable_needs_redownload(
 {
     if (!state)
         return false;
-    return strcmp(state->reject_reason, "p2p-block-intake-unavailable") == 0 ||
-           strcmp(state->reject_reason, "p2p-block-intake-stopped") == 0 ||
-           strcmp(state->reject_reason, "p2p-block-intake-full") == 0 ||
-           strcmp(state->reject_reason, "p2p-block-clone-failed") == 0;
+    static const char *const reasons[] = {
+        "reducer-body-header-missing",
+        "reducer-body-runtime-unwired",
+        "reducer-body-write-failed",
+        "reducer-body-verify-failed",
+        "p2p-block-intake-unavailable",
+        "p2p-block-intake-stopped",
+        "p2p-block-intake-full",
+        "p2p-block-clone-failed",
+        "p2p-block-submit-unavailable",
+    };
+    for (size_t i = 0; i < sizeof(reasons) / sizeof(reasons[0]); i++) {
+        if (strcmp(state->reject_reason, reasons[i]) == 0)
+            return true;
+    }
+    return false;
 }
 
 static uint64_t msg_block_retryable_log_key(
@@ -457,11 +470,13 @@ static void msg_block_log_retryable(const struct uint256 *hash,
              (unsigned long long)suppressed);
 }
 
-static void msg_block_requeue_after_intake_backpressure(
+void msg_block_retry_discarded_body(
         struct msg_processor *mp,
-        const struct uint256 *hash)
+        const struct uint256 *hash,
+        const struct validation_state *state)
 {
-    if (!mp || !mp->main_state || !hash)
+    if (!mp || !mp->main_state || !hash ||
+        !msg_block_retryable_needs_redownload(state))
         return;
     struct block_index *bi = block_map_find(
         &mp->main_state->map_block_index, hash);
@@ -808,8 +823,7 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
          * which will include the valid block at the failed height. */
         msg_processor_request_invalid_block_headers(mp, node);
     } else if (msg_block_validation_is_retryable(&state)) {
-        if (msg_block_retryable_needs_redownload(&state))
-            msg_block_requeue_after_intake_backpressure(mp, &hash);
+        msg_block_retry_discarded_body(mp, &hash, &state);
         msg_block_log_retryable(&hash, &state);
     }
 

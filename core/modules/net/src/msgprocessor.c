@@ -388,6 +388,7 @@ static void msg_block_intake_process_one(struct msg_block_intake *in,
         atomic_fetch_add_explicit(&in->accepted, 1, memory_order_relaxed);
         msg_block_intake_handle_accept(mp, &item->hash, item->peer_id);
     } else if (msg_block_validation_is_retryable(&state)) {
+        msg_block_retry_discarded_body(mp, &item->hash, &state);
         char hex[65];
         uint256_get_hex(&item->hash, hex);
         atomic_fetch_add_explicit(&in->retryable, 1, memory_order_relaxed);
