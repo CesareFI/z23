@@ -179,6 +179,40 @@ static void msg_tx_send_getdata(struct msg_processor *mp,
              "unsent block request(s)", node->addr_name, released);
 }
 
+static bool msg_tx_append_getdata_item(struct byte_stream *items,
+                                       const struct inv_item *inv)
+{
+    size_t before = items->size;
+    if (inv_item_serialize(inv, items))
+        return true;
+    items->size = before;
+    return false;
+}
+
+static void msg_tx_add_block_request(struct p2p_node *node,
+                                     const struct inv_item *inv,
+                                     int32_t height,
+                                     struct byte_stream *items,
+                                     uint64_t *count)
+{
+    struct download_manager *dm = get_download_mgr();
+    if (!dl_mark_requested(dm, &inv->hash, height, (uint32_t)node->id))
+        return;
+    if (msg_tx_append_getdata_item(items, inv)) {
+        (*count)++;
+        return;
+    }
+    (void)dl_requeue_unsent(dm, (uint32_t)node->id, &inv->hash, 1);
+}
+
+static void msg_tx_add_tx_request(const struct inv_item *inv,
+                                  struct byte_stream *items,
+                                  uint64_t *count)
+{
+    if (msg_tx_append_getdata_item(items, inv))
+        (*count)++;
+}
+
 bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                  struct byte_stream *s)
 {
@@ -253,13 +287,9 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                  * peer drop mid-body stalled new-block ingest until the 600s
                  * tip-stale watchdog. dl_mark_requested returns false when the
                  * hash is already in-flight, de-duping concurrent announces. */
-                struct download_manager *dm = get_download_mgr();
                 int32_t req_height = bi ? (int32_t)bi->nHeight : -1;
-                if (dl_mark_requested(dm, &inv.hash, req_height,
-                                      (uint32_t)node->id)) {
-                    inv_item_serialize(&inv, &getdata);
-                    request_count++;
-                }
+                msg_tx_add_block_request(node, &inv, req_height, &getdata,
+                                         &request_count);
             } else if (need_data && in_ibd) {
                 /* Ask for headers instead */
                 push_getheaders_from(mp, node, tip);
@@ -276,10 +306,8 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
 
             if (tx_already_seen(&inv.hash))
                 continue;
-            if (!tx_mempool_exists(mp->mempool, &inv.hash)) {
-                inv_item_serialize(&inv, &getdata);
-                request_count++;
-            }
+            if (!tx_mempool_exists(mp->mempool, &inv.hash))
+                msg_tx_add_tx_request(&inv, &getdata, &request_count);
         }
     }
 

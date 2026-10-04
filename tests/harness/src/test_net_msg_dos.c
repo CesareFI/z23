@@ -345,6 +345,120 @@ static int dos_inv_getdata_send_failure_rollback(struct msg_processor *mp,
     return failures;
 }
 
+static bool dos_getdata_wire_exact(const struct p2p_node *node,
+                                   size_t expected_frames,
+                                   uint64_t expected_items)
+{
+    size_t frames = 0;
+    uint64_t items = 0;
+    bool exact = true;
+    for (const struct send_segment *seg = node->send_head; seg;
+         seg = seg->next) {
+        if (seg->size <= MSG_HEADER_SIZE)
+            continue;
+        const struct msg_header *hdr =
+            (const struct msg_header *)(const void *)seg->data;
+        if (strcmp(hdr->pchCommand, "getdata") != 0)
+            continue;
+        struct byte_stream payload;
+        stream_init_from_data(&payload, seg->data + MSG_HEADER_SIZE,
+                              seg->size - MSG_HEADER_SIZE);
+        uint64_t count = 0;
+        bool read = stream_read_compact_size(&payload, &count);
+        exact = exact && read && stream_remaining(&payload) == count * 36;
+        if (read)
+            items += count;
+        frames++;
+        stream_free(&payload);
+    }
+    return exact && frames == expected_frames && items == expected_items;
+}
+
+static bool dos_hashes_in_flight(struct download_manager *dm,
+                                 const struct uint256 *hashes, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (!dl_is_in_flight(dm, &hashes[i]))
+            return false;
+    }
+    return true;
+}
+
+static int dos_inv_getdata_serialize_failure_rollback(
+        struct msg_processor *mp, struct net_manager *nm)
+{
+    int failures = 0;
+    struct download_manager *dm = get_download_mgr();
+    (void)dl_drain_for_backpressure(dm);
+
+    struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+    uint32_t saved_tip_time = tip ? tip->nTime : 0;
+    if (tip)
+        tip->nTime = (uint32_t)platform_time_wall_time_t();
+
+    struct net_address addr;
+    net_address_init(&addr);
+    unsigned char ip[4] = {203, 0, 113, 83};
+    net_addr_set_ipv4(&addr.svc.addr, ip);
+    addr.svc.port = 8033;
+    struct p2p_node *node = p2p_node_create(
+        nm, ZCL_INVALID_SOCKET, &addr, "inv-getdata-serialize-failure", true);
+    DOS_CHECK("inv serialize rollback: node created", node != NULL);
+    if (node) {
+        node->state = PEER_ACTIVE;
+        node->version = PROTOCOL_VERSION;
+
+        struct uint256 wanted[8];
+        struct byte_stream s;
+        stream_init(&s, 1 + 8 * 36);
+        bool built = stream_write_compact_size(&s, 8);
+        for (size_t i = 0; built && i < 8; i++) {
+            memset(wanted[i].data, (int)(0x70 + i),
+                   sizeof(wanted[i].data));
+            struct inv_item inv;
+            inv_item_init_typed(&inv, MSG_BLOCK, &wanted[i]);
+            built = inv_item_serialize(&inv, &s);
+        }
+        DOS_CHECK("inv serialize rollback: announcements built", built);
+
+        /* Seven 36-byte items fit in the 256-byte collection buffer. The
+         * eighth type fills it exactly; its hash forces this growth. */
+        zcl_alloc_fault_fail_next("stream_grow");
+        bool handled = built && process_inv(mp, node, &s);
+        bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+
+        bool wire_exact = dos_getdata_wire_exact(node, 1, 7);
+        bool first_seven_owned = dos_hashes_in_flight(dm, wanted, 7);
+        bool failed_released = !dl_is_in_flight(dm, &wanted[7]);
+        struct uint256 reassigned;
+        bool immediately_reassignable =
+            dl_assign_to_peer(dm, (uint32_t)node->id + 1,
+                              &reassigned, 1) == 1 &&
+            uint256_eq(&reassigned, &wanted[7]);
+
+        DOS_CHECK("inv serialize rollback: handler survives", handled);
+        DOS_CHECK("inv serialize rollback: injected growth failure consumed",
+                  fault_consumed);
+        DOS_CHECK("inv serialize rollback: valid prefix stays well framed",
+                  wire_exact);
+        DOS_CHECK("inv serialize rollback: valid prefix remains owned",
+                  first_seven_owned);
+        DOS_CHECK("inv serialize rollback: failed item ownership released",
+                  failed_released);
+        DOS_CHECK("inv serialize rollback: failed item immediately reassignable",
+                  immediately_reassignable);
+
+        stream_free(&s);
+        p2p_node_free(node);
+    }
+    zcl_alloc_fault_clear();
+    if (tip)
+        tip->nTime = saved_tip_time;
+    (void)dl_drain_for_backpressure(dm);
+    return failures;
+}
+
 int test_net_msg_dos(void);
 int test_net_msg_dos(void)
 {
@@ -1165,6 +1279,10 @@ int test_net_msg_dos(void)
      * ownership rule as scheduler batches: if getdata never reaches the
      * peer, its in-flight slot must be immediately available elsewhere. */
     failures += dos_inv_getdata_send_failure_rollback(&mp, &nm);
+
+    /* ── N. Batch serialization failure is transactional per item:
+     * keep the valid prefix, release only the item that never serialized. */
+    failures += dos_inv_getdata_serialize_failure_rollback(&mp, &nm);
 
     net_manager_free(&nm);
     sync_set_state(sync0, "net_msg_dos restore");
