@@ -7,15 +7,41 @@
  * writes, shutdown request, and activation-pause visibility/clearing. */
 
 #include "platform/time_compat.h"
+#include "platform/positioned_file.h"
 #include <stdbool.h>
 #include <stdio.h>
-#include <sys/stat.h>
 #include <time.h>
 
 #include "event/event.h"
 #include "storage/utxo_reimport_flag.h"
 
 #include "process_block_internal.h"
+
+static bool reimport_attempt_recent(const char *datadir, time_t now_s,
+                                    long *age_out)
+{
+    char path[512];
+    int n = snprintf(path, sizeof(path), "%s/last_reimport_attempted",
+                     datadir);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return false;
+
+    struct platform_positioned_file file;
+    struct platform_positioned_file_snapshot snapshot;
+    platform_positioned_file_init(&file);
+    bool observed = platform_positioned_file_open(&file, path) &&
+                    platform_positioned_file_snapshot(&file, &snapshot);
+    platform_positioned_file_close(&file);
+    if (!observed || snapshot.modified_seconds > (int64_t)now_s)
+        return false;
+
+    uint64_t age = (uint64_t)now_s - (uint64_t)snapshot.modified_seconds;
+    if (age >= 600)
+        return false;
+    if (age_out)
+        *age_out = (long)age;
+    return true;
+}
 
 void process_block_maybe_write_needs_reimport_flag(int height,
                                                    const char *datadir)
@@ -42,14 +68,10 @@ void process_block_maybe_trigger_hot_loop_exit(int height,
     if (s_utxo_hot_loop_reported_height == height)
         return;
 
-    char marker_path[512];
-    snprintf(marker_path, sizeof(marker_path),
-             "%s/last_reimport_attempted", datadir);
-    struct stat mst;
     time_t now_s = platform_time_wall_time_t();
-    bool reimport_recent =
-        (stat(marker_path, &mst) == 0 &&
-         now_s - mst.st_mtime < 600);
+    long reimport_age = 0;
+    bool reimport_recent = reimport_attempt_recent(datadir, now_s,
+                                                   &reimport_age);
 
     if (reimport_recent) {
         event_emitf(EV_BOOT_ACTIVATE, 0,
@@ -57,7 +79,7 @@ void process_block_maybe_trigger_hot_loop_exit(int height,
             "reimport_age_sec=%ld",
             height,
             s_utxo_fail_count,
-            (long)(now_s - mst.st_mtime));
+            reimport_age);
         fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "CRITICAL: %d UTXO failures at h=%d "
             "but reimport was attempted %lds ago "
@@ -70,7 +92,7 @@ void process_block_maybe_trigger_hot_loop_exit(int height,
             "and resyncing from P2P.\n",
             s_utxo_fail_count,
             height,
-            (long)(now_s - mst.st_mtime));
+            reimport_age);
         fflush(stderr);
         s_utxo_activation_paused_height = height;
     } else {

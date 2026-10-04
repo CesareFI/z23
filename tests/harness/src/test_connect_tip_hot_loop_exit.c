@@ -52,6 +52,39 @@ static void remove_if_exists(const char *path)
         unlink(path);
 }
 
+static int hot_loop_linked_marker_case(const char *datadir,
+                                       const char *marker_path)
+{
+    printf("hot_loop_exit: linked marker cannot suppress restart... ");
+    remove_if_exists(marker_path);
+    char victim_path[512];
+    snprintf(victim_path, sizeof(victim_path), "%s/recent-victim", datadir);
+    FILE *victim = fopen(victim_path, "w");
+    bool ok = victim != NULL;
+    if (victim) {
+        fputs("unrelated\n", victim);
+        fclose(victim);
+    }
+    if (ok)
+        ok = symlink("recent-victim", marker_path) == 0;
+    if (ok) {
+        event_log_init();
+        g_shutdown_requested = 0;
+        process_block_test_set_utxo_fail_state(HOT_LOOP_TEST_HEIGHT, 10);
+        process_block_test_trigger_hot_loop_check(HOT_LOOP_TEST_HEIGHT,
+                                                  datadir);
+        ok = g_shutdown_requested == 1 &&
+             hot_loop_event_count_for_height(
+                 "FATAL_HOT_LOOP", HOT_LOOP_TEST_HEIGHT) == 1 &&
+             hot_loop_event_count_for_height(
+                 "FATAL_HOT_LOOP_STUCK", HOT_LOOP_TEST_HEIGHT) == 0;
+    }
+    unlink(marker_path);
+    unlink(victim_path);
+    printf("%s\n", ok ? "OK" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int test_connect_tip_hot_loop_exit(void)
 {
     int failures = 0;
@@ -147,6 +180,8 @@ int test_connect_tip_hot_loop_exit(void)
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    failures += hot_loop_linked_marker_case(datadir, marker_path);
 
     printf("hot_loop_exit: repeated same-height trigger is idempotent... ");
     {
