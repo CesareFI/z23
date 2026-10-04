@@ -163,16 +163,24 @@ static bool base58_decode_digits(const char **text, unsigned char *bytes,
 bool domain_encoding_base58_decode(const char *psz,
                                    unsigned char *out, size_t out_size, size_t *out_len)
 {
+    /* Bound the whole string before counting its leading zero digits. This
+     * also stops scanning oversized inputs before any counter can overflow. */
+    size_t input_len = 0;
+    while (input_len <= B58_DECODE_MAX_INPUT && psz[input_len])
+        ++input_len;
+    if (input_len > B58_DECODE_MAX_INPUT)
+        return false;
+
     while (*psz && isspace((unsigned char)*psz))
         psz++;
 
-    int zeroes = 0;
+    size_t zeroes = 0;
     while (*psz == '1') {
         zeroes++;
         psz++;
     }
 
-    size_t input_len = strlen(psz);
+    input_len = strlen(psz);
     /* Bound the stack VLA below: no valid base58 address or key string
      * approaches this length, so a longer input is malformed — reject it
      * rather than let an attacker-sized string exhaust the stack (mirrors the

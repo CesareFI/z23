@@ -123,6 +123,57 @@ static bool decode_refusal_preserves_output(const char *text, size_t capacity,
            memcmp(output, original, sizeof(output)) == 0;
 }
 
+static int test_decode_overlimit_leading_ones(void)
+{
+    int failures = 0;
+    char text[1025];
+    unsigned char output[1026], original[1026];
+    for (int mixed = 0; mixed < 2; ++mixed) {
+        memset(text, '1', 1024);
+        if (mixed) text[1023] = '2';
+        text[1024] = '\0';
+        memset(output, 0xa5, sizeof(output));
+        memcpy(original, output, sizeof(output));
+        size_t written = 12345;
+        B58_CHECK("1024 whole-string characters refuse without publication",
+                  !domain_encoding_base58_decode(text, output + 1, 1024, &written) &&
+                  written == 12345 && memcmp(output, original, sizeof(output)) == 0);
+    }
+    return failures;
+}
+
+static int test_decode_leading_ones_bound(void)
+{
+    int failures = 0;
+    char text[1025];
+    unsigned char output[1026], original[1026], zeroes[1023] = {0};
+    memset(text, '1', 1023);
+    text[1023] = '\0';
+    memset(output, 0xa5, sizeof(output));
+    size_t written = 12345;
+    B58_CHECK("1023 leading ones fit exact capacity",
+              domain_encoding_base58_decode(text, output + 1, 1023, &written) &&
+              written == 1023 && memcmp(output + 1, zeroes, 1023) == 0 &&
+              output[0] == 0xa5 && output[1024] == 0xa5 && output[1025] == 0xa5);
+    const size_t capacities[] = {0, 1022};
+    for (size_t i = 0; i < sizeof(capacities)/sizeof(capacities[0]); ++i) {
+        memset(output, 0xa5, sizeof(output));
+        memcpy(original, output, sizeof(output));
+        written = 12345;
+        B58_CHECK("leading ones capacity refusal publishes no bytes",
+                  !domain_encoding_base58_decode(text, output + 1, capacities[i], &written) &&
+                  written == 1023 && memcmp(output, original, sizeof(output)) == 0);
+    }
+    text[1022] = '2';
+    memset(output, 0xa5, sizeof(output));
+    written = 12345;
+    B58_CHECK("1022 ones plus digit fit whole-string bound",
+              domain_encoding_base58_decode(text, output + 1, 1023, &written) &&
+              written == 1023 && memcmp(output + 1, zeroes, 1022) == 0 &&
+              output[1023] == 1 && output[0] == 0xa5 && output[1024] == 0xa5);
+    return failures + test_decode_overlimit_leading_ones();
+}
+
 static int test_decode_active_span(void)
 {
     int failures = 0;
@@ -411,5 +462,6 @@ int test_domain_encoding_base58(void)
         B58_CHECK("decode rejects embedded whitespace tail", !ok);
     }
 
-    return failures + test_decode_active_span() + test_encode_significant_digits();
+    return failures + test_decode_active_span() + test_encode_significant_digits() +
+        test_decode_leading_ones_bound();
 }
