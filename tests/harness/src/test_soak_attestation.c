@@ -800,6 +800,44 @@ static int test_sync_benchmark_private_replacement(void)
     return failures;
 }
 
+static int test_sync_benchmark_stale_staging_collisions(void)
+{
+    int failures = 0;
+    TEST("sync_benchmark: stale sequenced staging files do not block write") {
+        sync_benchmark_reset_for_test();
+        make_tmpdir();
+
+        bool fixtures = true;
+        for (unsigned int sequence = 0; sequence < 64; sequence++) {
+            char stale_path[680];
+            int n = snprintf(stale_path, sizeof(stale_path),
+                             "%s/sync_benchmark.json.tmp.%u",
+                             g_tmpdir, sequence);
+            FILE *stale = n > 0 && (size_t)n < sizeof(stale_path)
+                ? fopen(stale_path, "wb") : NULL;
+            fixtures = fixtures && stale != NULL;
+            if (stale) fclose(stale);
+        }
+
+        sync_benchmark_init(g_tmpdir);
+        bool wrote = fixtures && sync_benchmark_write_receipt(
+            false, "restart_collision_fixture");
+        struct json_value receipt = {0};
+        bool parsed = wrote && sb_read_receipt(&receipt);
+        if (parsed) json_free(&receipt);
+
+        if (parsed) PASS();
+        else {
+            printf("FAIL: fixtures=%d wrote=%d parsed=%d\n",
+                   (int)fixtures, (int)wrote, (int)parsed);
+            failures++;
+        }
+    }
+    sync_benchmark_reset_for_test();
+    cleanup_tmpdir();
+    return failures;
+}
+
 /* ── Test registration ───────────────────────────────────────────── */
 
 int test_soak_attestation(void)
@@ -820,5 +858,6 @@ int test_soak_attestation(void)
     failures += test_sync_benchmark_derived_monotonic();
     failures += test_sync_benchmark_no_datadir_no_write();
     failures += test_sync_benchmark_private_replacement();
+    failures += test_sync_benchmark_stale_staging_collisions();
     return failures;
 }

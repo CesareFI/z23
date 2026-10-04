@@ -35,6 +35,7 @@
 #include <string.h>
 
 #define SB_SUBSYS "sync_benchmark"
+#define SB_STAGING_CREATE_ATTEMPTS 1024u
 
 /* ── Global state ──────────────────────────────────────────────── */
 
@@ -393,7 +394,8 @@ bool sync_benchmark_write_receipt(bool complete, const char *incomplete_reason)
     struct platform_private_file staging;
     platform_private_file_init(&staging);
     bool created = false;
-    for (unsigned int attempt = 0; attempt < 16 && !created; attempt++) {
+    for (unsigned int attempt = 0;
+         attempt < SB_STAGING_CREATE_ATTEMPTS && !created; attempt++) {
         uint64_t sequence = atomic_fetch_add_explicit(
             &tmp_sequence, 1, memory_order_relaxed);
         int tn = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%llu",
