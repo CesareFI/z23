@@ -72,7 +72,6 @@ bool mp_block_payload_submit_all(
 
         struct uint256 hash;
         block_get_hash(&blk, &hash);
-        dl_mark_received(get_download_mgr(), &hash);
         dl_add_bytes_received(get_download_mgr(), refs[i].len);
 
         /* Persisting is idempotent; only BLOCK_HAVE_DATA authorizes a skip. */
@@ -115,6 +114,12 @@ bool mp_block_payload_submit_all(
                 return false;
             }
         }
+
+        /* Swarm delivery supersedes any redundant legacy getdata owner only
+         * once this body is accepted (or already durable/snapshot-owned).
+         * A local submit refusal leaves the swarm piece pending; preserve the
+         * legacy request as its immediate forward-progress fallback. */
+        dl_mark_received(get_download_mgr(), &hash);
 
         block_free(&blk);
         stream_free(&block_stream);

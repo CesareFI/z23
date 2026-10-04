@@ -80,6 +80,14 @@
 void mp_snapshot_send_tick(struct msg_processor *mp, struct p2p_node *node);
 bool mp_block_swarm_is_active(void);
 
+struct block_piece_payload_ref {
+    const unsigned char *data;
+    size_t len;
+};
+bool mp_block_payload_submit_all(
+    struct msg_processor *mp, struct p2p_node *node,
+    const struct block_piece_payload_ref *refs, uint32_t count);
+
 /* Equihash 200,9 solution length — makes each synthetic block ~1.5 KB, so the
  * measured MB/s reflects realistic block bodies, not empty stubs. */
 #define BS_SOLUTION_SIZE 1344
@@ -1409,6 +1417,58 @@ static int test_block_swarm_past_peer_manifest(void)
     return failures;
 }
 
+static bool bs_block_submit_refused(struct block *block,
+                                    struct validation_state *out, void *ctx)
+{
+    (void)block;
+    (void)ctx;
+    return validation_state_error(out, "fixture-local-submit-refused");
+}
+
+static int test_block_swarm_submit_failure_preserves_legacy_owner(void)
+{
+    int failures = 0;
+    TEST("block swarm: local payload refusal preserves legacy request owner") {
+        struct download_manager *dm = get_download_mgr();
+        dl_init(dm);
+
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.header.nTime = 1700000700u;
+        blk.header.nBits = 0x1f00ffffu;
+        blk.header.nNonce.data[0] = 70;
+
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        ASSERT(dl_mark_requested(dm, &hash, 700, 700));
+
+        struct byte_stream payload;
+        stream_init(&payload, 256);
+        ASSERT(block_serialize(&blk, &payload));
+        const struct block_piece_payload_ref ref = {
+            .data = payload.data,
+            .len = payload.size,
+        };
+
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.block_submit = bs_block_submit_refused;
+        struct p2p_node swarm_peer;
+        memset(&swarm_peer, 0, sizeof(swarm_peer));
+        swarm_peer.id = 701;
+
+        ASSERT(!mp_block_payload_submit_all(&mp, &swarm_peer, &ref, 1));
+        ASSERT(dl_is_in_flight(dm, &hash));
+
+        (void)dl_drain_for_backpressure(dm);
+        stream_free(&payload);
+        block_free(&blk);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_block_swarm_loopback(void)
 {
     int failures = 0;
@@ -1426,6 +1486,7 @@ int test_block_swarm_loopback(void)
     failures += test_block_swarm_sovereignty_gate();
     failures += test_block_swarm_manifest_republish();
     failures += test_block_swarm_past_peer_manifest();
+    failures += test_block_swarm_submit_failure_preserves_legacy_owner();
     boot_snapshot_offer_test_set_trust_override(-1);
     return failures;
 }
