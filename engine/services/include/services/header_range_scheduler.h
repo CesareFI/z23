@@ -129,6 +129,11 @@ size_t hrs_note_frontier(struct header_range_scheduler *s, int32_t height);
 size_t hrs_sweep_expired(struct header_range_scheduler *s, int64_t now_us,
                          int32_t *stalled, size_t max);
 
+/* Release every live span owned by a disconnected peer for immediate
+ * reassignment. Completed spans and other peers are untouched. */
+size_t hrs_peer_disconnected(struct header_range_scheduler *s,
+                             int32_t peer_id);
+
 /* Report the live span currently held by peer_id. Returns true and fills
  * out_lo/out_hi iff the peer holds an assigned, not-yet-expired span. */
 bool hrs_peer_span(struct header_range_scheduler *s, int32_t peer_id,
@@ -151,6 +156,7 @@ size_t hrs_free_span_count(struct header_range_scheduler *s);
 /* Process-global scheduler used by the net thread wiring. Lazily
  * initialized on first use with the default span timeout. */
 struct header_range_scheduler *header_range_scheduler_global(void);
+size_t header_range_scheduler_peer_disconnected(int32_t peer_id);
 
 /* Test seam: reset the process-global scheduler to empty. Unit fixtures
  * that exercise the global (or the net wiring) must clear it between

@@ -32,6 +32,29 @@
 #include "test/test_core.h"
 #include "services/header_range_scheduler.h"
 
+static int test_header_range_disconnect_release(void)
+{
+    int failures = 0;
+    TEST("header range disconnect releases only its live span") {
+        struct header_range_scheduler s = {0};
+        hrs_init(&s, 30 * 1000000);
+        int32_t anchors[] = {50000};
+        hrs_plan(&s, 0, 100000, anchors, 1);
+        int64_t now = 1000 * 1000000LL;
+        ASSERT(hrs_assign(&s, 11, now) >= 0);
+        ASSERT(hrs_assign(&s, 22, now) >= 0);
+        ASSERT(hrs_peer_disconnected(&s, 11) == 1);
+        ASSERT(hrs_peer_disconnected(&s, 11) == 0);
+        ASSERT(!hrs_peer_span(&s, 11, now, NULL, NULL));
+        ASSERT(hrs_peer_span(&s, 22, now, NULL, NULL));
+        ASSERT(hrs_free_span_count(&s) == 1);
+        ASSERT(hrs_assign(&s, 33, now) >= 0);
+        hrs_reset(&s);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_header_range_sched(void)
 {
     int failures = 0;
@@ -282,6 +305,8 @@ int test_header_range_sched(void)
         hrs_reset(&s);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
+
+    failures += test_header_range_disconnect_release();
 
     return failures;
 }

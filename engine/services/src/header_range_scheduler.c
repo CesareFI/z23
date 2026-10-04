@@ -255,6 +255,27 @@ size_t hrs_sweep_expired(struct header_range_scheduler *s, int64_t now_us,
     return n;
 }
 
+size_t hrs_peer_disconnected(struct header_range_scheduler *s,
+                             int32_t peer_id)
+{
+    if (!s || !s->inited)
+        return 0;
+    size_t released = 0;
+    zcl_mutex_lock(&s->lock);
+    for (size_t i = 0; i < s->n_spans; i++) {
+        if (!s->spans[i].assigned || s->spans[i].completed ||
+            s->spans[i].peer_id != peer_id)
+            continue;
+        s->spans[i].assigned = false;
+        s->spans[i].peer_id = 0;
+        s->spans[i].deadline_us = 0;
+        s->stat_reassigns++;
+        released++;
+    }
+    zcl_mutex_unlock(&s->lock);
+    return released;
+}
+
 bool hrs_peer_span(struct header_range_scheduler *s, int32_t peer_id,
                    int64_t now_us, int32_t *out_lo, int32_t *out_hi)
 {
@@ -345,6 +366,11 @@ struct header_range_scheduler *header_range_scheduler_global(void)
         hrs_init(&g_hrs, HRS_DEFAULT_SPAN_TIMEOUT_US);
     zcl_mutex_unlock(&g_hrs_init_lock);
     return &g_hrs;
+}
+
+size_t header_range_scheduler_peer_disconnected(int32_t peer_id)
+{
+    return hrs_peer_disconnected(header_range_scheduler_global(), peer_id);
 }
 
 void header_range_scheduler_reset_for_testing(void)

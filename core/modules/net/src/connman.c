@@ -35,6 +35,7 @@
 #include "net/version.h"
 #include "bloom/bloom.h"
 #include "storage/census_read.h"
+#include "services/header_range_scheduler.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1732,6 +1733,7 @@ static void *thread_socket_handler(void *arg)
                                           (uint32_t)node->id);
                     mp_swarm_peer_disconnected((uint32_t)node->id);
                     mp_block_swarm_peer_disconnected((uint32_t)node->id);
+                    header_range_scheduler_peer_disconnected(node->id);
                 }
 
                 /* Force disconnect — bypass transition validator since this
