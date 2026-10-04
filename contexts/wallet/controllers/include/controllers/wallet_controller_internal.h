@@ -64,11 +64,6 @@ void wallet_readiness_append_scan(struct json_value *result);
 
 /* wallet_controller_keys.c — key/address import-export */
 
-/* Copy a mutable secret string into an RPC result, then retire the complete
- * caller-owned span. The result owns its independent copy. */
-void wallet_rpc_set_secret_string(struct json_value *result, char *secret,
-                                  size_t secret_size);
-
 /* Mint a receive address that is PERSISTED before it is returned. The one
  * implementation behind both getnewaddress and wallet_direct_getnewaddress:
  * an address handed out but not persisted loses every coin paid to it on the

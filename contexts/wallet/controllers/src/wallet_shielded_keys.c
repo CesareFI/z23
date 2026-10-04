@@ -43,15 +43,15 @@ bool rpc_z_exportkey(const struct json_value *params, bool help,
 
     const struct chain_params *cp = chain_params_get();
     char encoded[512];
-    if (!sapling_encode_extended_spending_key(&ke->xsk,
+    bool encoded_ok = sapling_encode_extended_spending_key(&ke->xsk,
             cp->bech32HRPs[BECH32_SAPLING_EXTENDED_SPEND_KEY],
-            encoded, sizeof(encoded))) {
+            encoded, sizeof(encoded));
+    if (!wallet_rpc_set_secret_string(result, encoded, sizeof(encoded),
+                                      encoded_ok)) {
         json_set_str(result, "Failed to encode spending key");
         LOG_FAIL("wallet_shielded", "z_exportkey: sapling_encode_extended_spending_key failed");
     }
 
-    json_set_str(result, encoded);
-    memory_cleanse(encoded, sizeof(encoded));
     return true;
 }
 
@@ -179,14 +179,15 @@ bool rpc_z_exportviewingkey(const struct json_value *params, bool help,
 
     const struct chain_params *cp = chain_params_get();
     char encoded[512];
-    if (!sapling_encode_extended_full_viewing_key(&ke->xfvk,
+    bool encoded_ok = sapling_encode_extended_full_viewing_key(&ke->xfvk,
             cp->bech32HRPs[BECH32_SAPLING_FULL_VIEWING_KEY],
-            encoded, sizeof(encoded))) {
+            encoded, sizeof(encoded));
+    if (!wallet_rpc_set_secret_string(result, encoded, sizeof(encoded),
+                                      encoded_ok)) {
         json_set_str(result, "Failed to encode viewing key");
         LOG_FAIL("wallet_shielded", "z_exportviewingkey: sapling_encode_extended_full_viewing_key failed");
     }
 
-    json_set_str(result, encoded);
     return true;
 }
 

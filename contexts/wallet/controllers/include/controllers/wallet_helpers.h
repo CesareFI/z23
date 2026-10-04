@@ -137,6 +137,12 @@ struct zcl_result wallet_persist_commit_before_relay(
 struct zcl_result wallet_rollback_persisted_commit(
     const struct wallet_rpc_context *ctx, const struct wallet_tx *wtx);
 
+/* On successful encoding, copy a mutable secret string into an RPC result.
+ * Always retire the complete caller-owned span, including encoder refusal.
+ * Returns encoded unchanged; a successful result owns its independent copy. */
+bool wallet_rpc_set_secret_string(struct json_value *result, char *secret,
+                                  size_t secret_size, bool encoded);
+
 #define ENSURE_WALLET(result) do {                        \
     if (!wallet_rpc_wallet()) {                           \
         json_set_str((result), "Wallet not available");   \
