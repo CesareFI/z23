@@ -1262,6 +1262,16 @@ bool push_verified_header_announcement(struct msg_processor *mp,
     return true;
 }
 
+static void headers_retire_malformed_body_owner(struct p2p_node *node)
+{
+    if (dl_peer_in_flight(get_download_mgr(), (uint32_t)node->id) == 0)
+        return;
+    (void)p2p_node_request_disconnect(
+        node, P2P_DISCONNECT_MESSAGE_PARSE,
+        P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER,
+        node->endpoint_generation);
+}
+
 bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                      struct byte_stream *s)
 {
@@ -1285,9 +1295,11 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     atomic_store(&g_headers_recv_snapshot_streak, false);
 
     uint64_t count;
-    if (!stream_read_compact_size(s, &count))
+    if (!stream_read_compact_size(s, &count)) {
+        headers_retire_malformed_body_owner(node);
         LOG_FAIL("net", "failed to read headers count from %s",
                  node->addr_name);
+    }
 
     if (msg_count_exceeds("net", "headers", count, 2000, node->addr_name)) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
@@ -1333,6 +1345,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         (unsigned long long)i, node->addr_name);
             peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                                 "malformed header");
+            headers_retire_malformed_body_owner(node);
             LOG_FAIL("net", "malformed header[%llu] from %s",
                      (unsigned long long)i, node->addr_name);
         }
@@ -1341,6 +1354,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         if (!stream_read_compact_size(s, &dummy)) {
             peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                                 "truncated header tx count");
+            headers_retire_malformed_body_owner(node);
             LOG_FAIL("net", "truncated header tx count at header[%llu] from %s",
                      (unsigned long long)i, node->addr_name);
         }

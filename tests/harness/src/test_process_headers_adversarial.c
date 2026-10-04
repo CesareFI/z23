@@ -23,6 +23,7 @@
 #include "platform/time_compat.h"
 
 #include "mining/miner.h"
+#include "net/download.h"
 #include "net/msg_internal.h"
 #include "net/msgprocessor.h"
 #include "net/peer_scoring.h"
@@ -184,8 +185,14 @@ int test_process_headers_adversarial(void)
 
     /* ── 2. truncated mid-header: clean failure, no partial accept ── */
     if (gen) {
-        node.disconnect = false;
-        atomic_store(&node.misbehavior, 0);
+        ph_setup_node(&node);
+        struct download_manager *dm = get_download_mgr();
+        struct uint256 owned1, owned2;
+        memset(owned1.data, 0x51, sizeof(owned1.data));
+        memset(owned2.data, 0x52, sizeof(owned2.data));
+        PH_CHECK("truncated: peer owns two pending block bodies",
+                 dl_mark_requested(dm, &owned1, 51, (uint32_t)node.id) &&
+                 dl_mark_requested(dm, &owned2, 52, (uint32_t)node.id));
         size_t map0 = ms.map_block_index.size;
         struct msg_headers_stats st0, st1;
         msg_headers_get_stats(&st0);
@@ -200,11 +207,19 @@ int test_process_headers_adversarial(void)
         PH_CHECK("truncated: handler returns false", ret == false);
         PH_CHECK("truncated: peer penalized",
                  atomic_load(&node.misbehavior) > 0);
+        PH_CHECK("truncated: body owner flagged for disconnect",
+                 node.disconnect == true);
         PH_CHECK("truncated: no block-tree mutation",
                  ms.map_block_index.size == map0);
         PH_CHECK("truncated: nothing accepted",
                  st1.total_accepted == st0.total_accepted &&
                  st1.batches_received == st0.batches_received);
+        PH_CHECK("truncated: disconnect sweep releases both bodies",
+                 dl_peer_disconnected(dm, (uint32_t)node.id) == 2);
+        struct uint256 reassigned[2];
+        PH_CHECK("truncated: healthy peer takes both bodies immediately",
+                 dl_assign_to_peer(dm, 10, reassigned, 2) == 2);
+        (void)dl_drain_for_backpressure(dm);
         stream_free(&s);
     }
 
