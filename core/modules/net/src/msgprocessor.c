@@ -855,6 +855,48 @@ static bool msg_processor_send_inventory(struct msg_processor *mp,
     return sent;
 }
 
+static bool msg_processor_send_addresses(struct msg_processor *mp,
+                                         struct p2p_node *node,
+                                         const struct net_address *addrs,
+                                         size_t count)
+{
+    struct byte_stream msg;
+    stream_init(&msg, 512);
+    bool sent = stream_write_compact_size(&msg, count);
+    for (size_t i = 0; sent && i < count; i++)
+        sent = net_address_serialize(&addrs[i], &msg, true);
+    sent = sent && p2p_node_begin_message(
+        node, "addr", mp->params->pchMessageStart);
+    if (sent) {
+        p2p_node_write_message_data(node, msg.data, msg.size);
+        sent = p2p_node_end_message(node);
+    }
+    stream_free(&msg);
+    return sent;
+}
+
+static void msg_processor_send_pending_addresses(struct msg_processor *mp,
+                                                 struct p2p_node *node)
+{
+    if (node->addr_to_send_count == 0)
+        return;
+
+    size_t emit = node->addr_to_send_count;
+    if (emit > MAX_ADDR_TO_SEND)
+        emit = MAX_ADDR_TO_SEND;
+    if (msg_processor_send_addresses(mp, node, node->addr_to_send, emit)) {
+        size_t remaining = node->addr_to_send_count - emit;
+        if (remaining > 0)
+            memmove(&node->addr_to_send[0], &node->addr_to_send[emit],
+                    remaining * sizeof(node->addr_to_send[0]));
+        node->addr_to_send_count -= emit;
+        return;
+    }
+
+    LOG_WARN("net", "addr relay send failed for %s: retaining "
+             "%zu address(es)", node->addr_name, emit);
+}
+
 /* ── Tip-stall watchdog observers ──────────────────────────── */
 
 /* feed tip-advance signals into the watchdog. Both
@@ -3056,25 +3098,8 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         zcl_mutex_unlock(&node->cs_inventory);
     }
 
-    /* Send addresses */
-    if (node->addr_to_send_count > 0) {
-        struct byte_stream addr_msg;
-        stream_init(&addr_msg, 512);
-        uint64_t count = node->addr_to_send_count;
-        if (count > MAX_ADDR_TO_SEND)
-            count = MAX_ADDR_TO_SEND;
-        stream_write_compact_size(&addr_msg, count);
-
-        for (size_t i = 0; i < count; i++)
-            net_address_serialize(&node->addr_to_send[i], &addr_msg, true);
-
-        p2p_node_begin_message(node, "addr", mp->params->pchMessageStart);
-        p2p_node_write_message_data(node, addr_msg.data, addr_msg.size);
-        p2p_node_end_message(node);
-        stream_free(&addr_msg);
-
-        node->addr_to_send_count = 0;
-    }
+    /* Send addresses. */
+    msg_processor_send_pending_addresses(mp, node);
 
     return true;
 }

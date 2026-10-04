@@ -451,6 +451,85 @@ static int dos_inv_trickle_send_failure_retry(struct msg_processor *mp,
     return failures;
 }
 
+static size_t dos_addr_wire_items(const struct p2p_node *node,
+                                  size_t *out_frames)
+{
+    size_t frames = 0;
+    size_t items = 0;
+    for (const struct send_segment *seg = node->send_head; seg;
+         seg = seg->next) {
+        if (seg->size <= MSG_HEADER_SIZE)
+            continue;
+        const struct msg_header *hdr =
+            (const struct msg_header *)(const void *)seg->data;
+        if (strcmp(hdr->pchCommand, "addr") != 0)
+            continue;
+        struct byte_stream payload;
+        stream_init_from_data(&payload, seg->data + MSG_HEADER_SIZE,
+                              seg->size - MSG_HEADER_SIZE);
+        uint64_t count = 0;
+        if (stream_read_compact_size(&payload, &count))
+            items += (size_t)count;
+        frames++;
+        stream_free(&payload);
+    }
+    if (out_frames)
+        *out_frames = frames;
+    return items;
+}
+
+static int dos_addr_send_failure_retry(struct msg_processor *mp,
+                                       struct net_manager *nm)
+{
+    int failures = 0;
+    struct net_address peer_addr;
+    net_address_init(&peer_addr);
+    unsigned char peer_ip[4] = {203, 0, 113, 86};
+    net_addr_set_ipv4(&peer_addr.svc.addr, peer_ip);
+    peer_addr.svc.port = 8033;
+    struct p2p_node *node = p2p_node_create(
+        nm, ZCL_INVALID_SOCKET, &peer_addr, "addr-send-failure", true);
+    DOS_CHECK("addr retry: node created", node != NULL);
+    if (node) {
+        node->state = PEER_HANDSHAKE_COMPLETE;
+        node->version = PROTOCOL_VERSION;
+
+        struct net_address announced;
+        net_address_init(&announced);
+        unsigned char announced_ip[4] = {8, 8, 8, 8};
+        net_addr_set_ipv4(&announced.svc.addr, announced_ip);
+        announced.svc.port = 8033;
+        announced.nTime = (uint32_t)platform_time_wall_time_t();
+        p2p_node_push_address(node, &announced);
+        DOS_CHECK("addr retry: announcement queued",
+                  node->addr_to_send_count == 1);
+
+        zcl_alloc_fault_fail_next("send_segment");
+        bool first_ok = msg_send_messages(mp, node, false);
+        bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+        size_t first_frames = 0;
+        size_t first_items = dos_addr_wire_items(node, &first_frames);
+        bool retained = node->addr_to_send_count == 1;
+
+        bool retry_ok = msg_send_messages(mp, node, false);
+        size_t final_frames = 0;
+        size_t final_items = dos_addr_wire_items(node, &final_frames);
+
+        DOS_CHECK("addr retry: send tick survives", first_ok);
+        DOS_CHECK("addr retry: injected queue failure consumed",
+                  fault_consumed && first_frames == 0 && first_items == 0);
+        DOS_CHECK("addr retry: unsent announcement retained", retained);
+        DOS_CHECK("addr retry: next tick sends announcement once",
+                  retry_ok && final_frames == 1 && final_items == 1 &&
+                  node->addr_to_send_count == 0);
+
+        p2p_node_free(node);
+    }
+    zcl_alloc_fault_clear();
+    return failures;
+}
+
 static bool dos_hashes_in_flight(struct download_manager *dm,
                                  const struct uint256 *hashes, size_t count)
 {
@@ -1425,6 +1504,10 @@ int test_net_msg_dos(void)
     /* ── P. A locally failed relay-inventory enqueue retains the exact
      * announcement for the next trickle tick instead of dropping it. */
     failures += dos_inv_trickle_send_failure_retry(&mp, &nm);
+
+    /* ── Q. Address relay has the same local enqueue boundary: a failed
+     * send must retain peer-discovery data for a later tick. */
+    failures += dos_addr_send_failure_retry(&mp, &nm);
 
     net_manager_free(&nm);
     sync_set_state(sync0, "net_msg_dos restore");
