@@ -437,8 +437,9 @@ static bool apply_batch(struct ldb_memtable *m, const struct ldb_slice *rec,
 
         uint8_t *ikey = stack_key;
         uint8_t *heap = NULL;
-        if (key.n + 8 > sizeof(stack_key)) {
-            heap = zcl_malloc(key.n + 8, "ldb_wal_ikey");
+        size_t ikey_cap = ldb_ikey_size(key.n);
+        if (ikey_cap > sizeof(stack_key)) {
+            heap = zcl_malloc(ikey_cap, "ldb_wal_ikey");
             if (!heap) {
                 *err = ldb_strdup("ldb wal: out of memory");
                 return false;
@@ -446,7 +447,7 @@ static bool apply_batch(struct ldb_memtable *m, const struct ldb_slice *rec,
             ikey = heap;
         }
         size_t klen = 0;
-        bool ok = ldb_ikey_build(ikey, key.n + 8, key.p, key.n, seq + i, type,
+        bool ok = ldb_ikey_build(ikey, ikey_cap, key.p, key.n, seq + i, type,
                                  &klen) &&
                   mem_push(m, ikey, klen, value.p, value.n);
         free(heap);

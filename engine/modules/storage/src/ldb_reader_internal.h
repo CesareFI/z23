@@ -87,6 +87,9 @@ int ldb_ukey_cmp(const uint8_t *a, size_t an, const uint8_t *b, size_t bn);
 /* User-key view of an internal key; false when it is shorter than 8. */
 bool ldb_ikey_user(const uint8_t *k, size_t n, struct ldb_slice *user,
                    uint64_t *sequence, uint8_t *type);
+/* Encoded user-key size including its eight-byte trailer, or zero when the
+ * addition is not representable. A valid internal key is never zero bytes. */
+size_t ldb_ikey_size(size_t user_len);
 /* Write user_key || pack(seq,type) into buf (cap must be n + 8). */
 bool ldb_ikey_build(uint8_t *buf, size_t cap, const uint8_t *user, size_t n,
                     uint64_t seq, uint8_t type, size_t *out_len);

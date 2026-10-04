@@ -216,17 +216,35 @@ bool ldb_ikey_user(const uint8_t *k, size_t n, struct ldb_slice *user,
     return true;
 }
 
+size_t ldb_ikey_size(size_t user_len)
+{
+    if (user_len > SIZE_MAX - 8u)
+        return 0;
+    return user_len + 8u;
+}
+
+#ifdef ZCL_TESTING
+bool ldbr_test_internal_key_size(size_t key_len, size_t *out_size)
+{
+    if (!out_size)
+        return false;
+    *out_size = ldb_ikey_size(key_len);
+    return *out_size != 0;
+}
+#endif
+
 bool ldb_ikey_build(uint8_t *buf, size_t cap, const uint8_t *user, size_t n,
                     uint64_t seq, uint8_t type, size_t *out_len)
 {
-    if (cap < n + 8 || seq > LDB_MAX_SEQUENCE)
+    size_t needed = ldb_ikey_size(n);
+    if (needed == 0 || cap < needed || seq > LDB_MAX_SEQUENCE)
         return false;
     if (n)
         memcpy(buf, user, n);
     uint64_t num = (seq << 8) | (uint64_t)type;
     for (int i = 0; i < 8; i++)
         buf[n + i] = (uint8_t)((num >> (8 * i)) & 0xff);
-    *out_len = n + 8;
+    *out_len = needed;
     return true;
 }
 
