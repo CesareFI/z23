@@ -54,6 +54,8 @@ static bool compact_submit_needs_redownload(
     if (!state)
         return false;
     static const char *const reasons[] = {
+        "compact-submit-unavailable",
+        "compact-submit-failed",
         "reducer-body-header-missing",
         "reducer-body-runtime-unwired",
         "reducer-body-write-failed",

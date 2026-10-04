@@ -382,6 +382,8 @@ bool msg_block_validation_is_retryable(const struct validation_state *state)
     if (!state || validation_state_is_valid(state))
         return false;
     static const char *const retryable_reasons[] = {
+        "compact-submit-unavailable",
+        "compact-submit-failed",
         "block-not-finalized-by-reducer",
         "p2p-block-queued-for-reducer",
         "p2p-block-already-queued",
