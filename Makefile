@@ -250,6 +250,9 @@ ZCL_GUI_APP_GOALS := $(foreach a,$(GUI_APPS),$(a) $(a)-selftest $(a)-clean \
 # Its standalone compile must not recurse into the readiness check it serves.
 ZCL_TOR_PROVENANCE_GOALS := build/bin/z23-tor-provenance \
 	tools/tor-provenance z23-tor-provenance
+# sqlq links its declared vendored SQLite archive, so retain vendor bootstrap.
+# It consumes no node epoch, generated view, object depfile, or Tor archive.
+ZCL_SQLQ_GOALS := sqlq build/bin/sqlq
 ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
 	$(ZCL_TOR_PROVENANCE_GOALS) \
 	presentation-lib presentation-demo presentation-relaunch \
@@ -261,10 +264,10 @@ ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap c3-mutex-probe c3-sp
 	$(ZCL_GUI_APP_GOALS)
 ZCL_HOTSWAP_LOOP_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out $(ZCL_HOTSWAP_LOOP_GOALS),$(MAKECMDGOALS))),,1),)
 
-# These exact goals build standalone C23 checker tools. They consume no node
-# objects, vendor archives, generated view headers, or compile epoch. Mixed
-# goals keep the full parse; the inventory lint still runs its complete census.
-ZCL_INVENTORY_LINT_ONLY := $(if $(filter check-capability-inventory-generated docs-proof-tools,$(MAKECMDGOALS)),$(if $(filter-out check-capability-inventory-generated docs-proof-tools,$(MAKECMDGOALS)),,1),)
+# These exact goals build standalone C23 tools. They consume no node objects,
+# generated view headers, or compile epoch. SQLQ retains vendor bootstrap.
+# Mixed goals keep the full parse; inventory lint still runs its full census.
+ZCL_INVENTORY_LINT_ONLY := $(if $(filter check-capability-inventory-generated docs-proof-tools $(ZCL_SQLQ_GOALS),$(MAKECMDGOALS)),$(if $(filter-out check-capability-inventory-generated docs-proof-tools $(ZCL_SQLQ_GOALS),$(MAKECMDGOALS)),,1),)
 
 # The module recipes compile one TU (or declared island) directly with $(CC),
 # never through make's %.o pattern rules. t-hotswap runs an already-linked
@@ -273,7 +276,7 @@ ZCL_INVENTORY_LINT_ONLY := $(if $(filter check-capability-inventory-generated do
 # BUILD_SOURCE_RECORD below), so they deliberately stay out of
 # ZCL_HOTSWAP_LOOP_GOALS above (that set fakes a zero identity). This wider
 # set only gates the depfile-graph import skip.
-ZCL_HOTSWAP_DEPFILE_LEAN_GOALS := $(ZCL_HOTSWAP_LOOP_GOALS) check-capability-inventory-generated docs-proof-tools hotswap-module-so \
+ZCL_HOTSWAP_DEPFILE_LEAN_GOALS := $(ZCL_HOTSWAP_LOOP_GOALS) check-capability-inventory-generated docs-proof-tools $(ZCL_SQLQ_GOALS) hotswap-module-so \
 	t-hotswap hotswap-test-so
 ZCL_HOTSWAP_DEPFILE_LEAN_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out $(ZCL_HOTSWAP_DEPFILE_LEAN_GOALS),$(MAKECMDGOALS))),,1),)
 
@@ -1467,7 +1470,7 @@ ZCL_TOR_SKIP_GOALS := clean distclean clean-% help tor-full tor-ready c3-mutex-p
 	vendor vendor-force vendor-ready vendor-provenance worktree-prime \
 	worktree-prime-selftest install-hooks setup \
 	check-% lint lint-% %-selftest docs docs-% $(ZCL_WINDOWS_LAUNCHER_GOALS) game game-check game-platform-probe \
-	$(ZCL_TOR_PROVENANCE_GOALS) $(ZCL_BUILD_QUERY_GOALS)
+	$(ZCL_TOR_PROVENANCE_GOALS) $(ZCL_SQLQ_GOALS) $(ZCL_BUILD_QUERY_GOALS)
 ZCL_TOR_LINK_REQUESTED := $(if $(strip $(MAKECMDGOALS)),\
 	$(strip $(filter-out $(ZCL_TOR_SKIP_GOALS),$(MAKECMDGOALS))),default-goal)
 
