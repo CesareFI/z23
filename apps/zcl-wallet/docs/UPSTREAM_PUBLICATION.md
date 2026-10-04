@@ -697,3 +697,27 @@ manifest verify. Exact proof copy `/tmp/ww.q4fYTp/repo` passes all 215 lint
 gates and all 38 impacted groups with zero failures, skips, unobserved or
 load-flaky outcomes in 503.951s. Receipt SHA256 is
 `217d26822b5f1a522eeb2771681cfdf35fb85731d8b9ba94b7d4a84ae18fe0fd`.
+
+### Private-key HTTP response-copy retirement qualified
+
+Branch `agent/upstream-wallet-rpc-secret-retirement-20261004`, signed head
+`020f58a96c5cab877a7e6603735e1b8c03261476`, base3a93e60e, retires the
+three native heap copies that carry an authorized `dumpprivkey` result: the
+RPC result string, response-envelope copy and exact serialized HTTP allocation.
+Retirement occurs only after the synchronous send returns and before JSON/free
+cleanup. Ordinary RPC methods retain their prior lifetime and behavior.
+
+Canonical RED fails only the new private-response retirement assertion while
+its ordinary-response control passes. Final focused and ASan/UBSan groups pass
+20/20 with zero skips or unobserved outcomes. All215 lint gates pass in
+197.758s. Strict Clang20 and GCC14 each check2,433 translation units with no
+new diagnostic sites. Complexity cap15, architecture, generated inventory,
+core seals, consensus parity, no-Python and credential gates pass.
+
+The preserved proof-owned copy `/tmp/wr.G71rRn/repo` independently passes the
+exact commit/base proof: all215 lint gates and87/87 impacted groups, zero
+failures or skips; lint203.869s, tests215.070s, total447.402s. Native status
+re-verifies the exact pair. Receipt SHA256 is
+`43663e435c472cd473567a47f7e99a5010c4c0f265964dea628fcb375720b455`.
+Complete signed bundle, patch series, PR body and SHA256 manifest are prepared
+locally. No external publication action or protection bypass was attempted.

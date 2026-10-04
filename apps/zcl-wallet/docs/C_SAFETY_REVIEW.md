@@ -4908,3 +4908,31 @@ RPC transport buffers are outside this slice. Exact proof passes all 215 lint
 gates and all 38 impacted groups with zero failures, skips, unobserved or
 load-flaky outcomes. Receipt SHA256 is
 `217d26822b5f1a522eeb2771681cfdf35fb85731d8b9ba94b7d4a84ae18fe0fd`.
+
+## Upstream private-key HTTP response retirement — 2026-10-04
+
+Signed commit `020f58a96c5cab877a7e6603735e1b8c03261476`, base3a93e60e,
+cleanses every native response copy owned by the synchronous HTTP
+`dumpprivkey` path after transmission: the original JSON result, the deep-copy
+envelope and the serialized `len + 1` allocation. JSON strings and owned object
+keys are wiped before normal `json_free`; the serializer's existing4MiB bound
+and exact allocation establish the serialized span. `strlen` reads only owned,
+NUL-terminated JSON strings before their first wipe.
+
+The recursive walk sees only the fixed controller result and fixed response
+envelope for this exact method, so production depth and child count are bounded;
+no attacker-shaped request tree is traversed. No allocation, retained pointer,
+lock or shared state is added. The send routine writes synchronously and does
+not retain the body. Error construction, ownership and normal free order remain
+unchanged. Ordinary RPC methods return before any cleanse, as covered by an
+explicit control.
+
+Canonical RED fails the private-copy retirement assertion alone. Final focused
+and ASan/UBSan runs pass20/20. All215 lint gates, strict Clang20/GCC14
+2,433-TU passes, cap15 complexity, architecture, inventory, seals and consensus
+gates pass. Exact proof passes all215 lint gates and87/87 impacted groups with
+zero failures or skips; receipt SHA256 is
+`43663e435c472cd473567a47f7e99a5010c4c0f265964dea628fcb375720b455`.
+Authorization, returned WIF bytes, key lookup, monetary/consensus behavior,
+transparent/shielded validity, recovery, storage and TLS are unchanged. Socket
+or kernel copies outside native ownership are not claimed retired.

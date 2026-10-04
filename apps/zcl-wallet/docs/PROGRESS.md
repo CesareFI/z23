@@ -8299,3 +8299,17 @@ outcomes; receipt SHA256 is
 `217d26822b5f1a522eeb2771681cfdf35fb85731d8b9ba94b7d4a84ae18fe0fd`.
 Local publication artifacts verify. Generic RPC transport response-buffer
 retirement remains explicitly outside this slice.
+
+### Private-key HTTP response copies retired
+
+Signed upstream candidate020f58a9 wipes the `dumpprivkey` result tree,
+response-envelope copy and serialized HTTP allocation after synchronous send
+and before free. The method match is exact; an ordinary-RPC control proves its
+buffers remain unchanged. Canonical RED→GREEN, focused ASan/UBSan, all215 lint,
+strict Clang20/GCC14 across2,433 TUs, complexity, architecture, inventory,
+seal and consensus gates pass. The preserved exact proof passes215/215 lint
+gates and87/87 impacted groups with zero failures or skips in447.402s. Receipt
+SHA256 is
+`43663e435c472cd473567a47f7e99a5010c4c0f265964dea628fcb375720b455`.
+Complete local review artifacts verify. Shielded key-export transport methods
+are a separate follow-up hypothesis and are not claimed by this candidate.
