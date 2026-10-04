@@ -30,6 +30,8 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define TUNNEL_TEST_WIRE_MAX 32768u
 /* A pairing window that brackets any clock this test could read. */
@@ -276,6 +278,36 @@ static size_t tunnel_open_payload(uint16_t port, uint8_t out[8])
     return 8u;
 }
 
+static bool tunnel_allow_staging_link_case(const char *dir,
+                                           const char *pairing_id,
+                                           uint16_t port)
+{
+    char path[512], tmp[520], victim[512];
+    snprintf(path, sizeof(path), "%s/%s", dir, MESH_TUNNEL_ALLOW_FILE);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    snprintf(victim, sizeof(victim), "%s/allow-victim", dir);
+
+    FILE *f = fopen(victim, "w");
+    if (!f)
+        return false;
+    bool wrote = fputs("keep-me\n", f) >= 0;
+    bool closed = fclose(f) == 0;
+    if (!wrote || !closed || symlink(victim, tmp) != 0)
+        return false;
+
+    enum mesh_tunnel_refusal status =
+        mesh_tunnel_allow(pairing_id, port, "loopback stand-in");
+    char content[32] = {0};
+    f = fopen(victim, "r");
+    size_t n = f ? fread(content, 1, sizeof(content) - 1, f) : 0;
+    if (f)
+        fclose(f);
+    struct stat st;
+    return status == MESH_TUNNEL_OK && lstat(path, &st) == 0 &&
+           S_ISREG(st.st_mode) && n == strlen("keep-me\n") &&
+           memcmp(content, "keep-me\n", n) == 0;
+}
+
 int test_mesh_tunnel(void)
 {
     int failures = 0;
@@ -414,9 +446,8 @@ int test_mesh_tunnel(void)
          "loopback sockets, is listed while it lives, and closes both ends") {
         ASSERT(tunnel_pair_responder(&f, peer_b));
         /* This node's whole authority: one peer, one port, one reason. */
-        ASSERT_EQ(mesh_tunnel_allow(f.term_peer.pairing.pairing_id,
-                                    target_port, "loopback stand-in"),
-                  MESH_TUNNEL_OK);
+        ASSERT(tunnel_allow_staging_link_case(
+            dir, f.term_peer.pairing.pairing_id, target_port));
 
         uint64_t tunnel_id = 0;
         uint16_t local_port = 0;

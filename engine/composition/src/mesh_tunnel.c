@@ -294,7 +294,10 @@ static bool tunnel_allow_persist_locked(void)
     if (!tunnel_allow_path(path, sizeof(path)) ||
         snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
         return false;
-    FILE *f = fopen(tmp, "w");
+    /* A crashed writer may leave this staging leaf behind. Remove only that
+     * leaf, then create it exclusively so a link can never be followed. */
+    (void)remove(tmp);
+    FILE *f = fopen(tmp, "wx");
     if (!f)
         return false;
     bool ok = fprintf(f, "# <pairing id> <port> <why> — nothing is allowed "
