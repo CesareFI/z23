@@ -221,14 +221,21 @@ static int test_dl_mark_received(void)
         ASSERT(dl_is_in_flight(&dm, &h1));
         ASSERT(dl_is_in_flight(&dm, &h3));
 
+        /* A stale completion must not settle a request reassigned to a
+         * different peer while synchronous processing was in progress. */
+        ASSERT(dl_mark_received_from_peer(&dm, &h3, 1) == UINT32_MAX);
+        ASSERT(dl_is_in_flight(&dm, &h3));
+        ASSERT(dl_mark_received_from_peer(&dm, &h3, 2) == 2);
+        ASSERT(!dl_is_in_flight(&dm, &h3));
+
         /* Receive unknown hash */
         struct uint256 h4 = make_hash(4);
         ASSERT(dl_mark_received(&dm, &h4) == UINT32_MAX);
 
         uint64_t req, recv, tout, inflight, queued;
         dl_get_stats(&dm, &req, &recv, &tout, &inflight, &queued);
-        ASSERT(recv == 1);
-        ASSERT(inflight == 2);
+        ASSERT(recv == 2);
+        ASSERT(inflight == 1);
 
         dl_free(&dm);
         PASS();

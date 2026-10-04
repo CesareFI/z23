@@ -121,6 +121,50 @@ static bool ph_auth_get_hash(uint8_t out[32])
     return true;
 }
 
+static int ph_test_truncated_header(struct msg_processor *mp,
+                                    struct p2p_node *node,
+                                    struct main_state *ms)
+{
+    int failures = 0;
+    ph_setup_node(node);
+    struct download_manager *dm = get_download_mgr();
+    struct uint256 owned1, owned2;
+    memset(owned1.data, 0x51, sizeof(owned1.data));
+    memset(owned2.data, 0x52, sizeof(owned2.data));
+    PH_CHECK("truncated: peer owns two pending block bodies",
+             dl_mark_requested(dm, &owned1, 51, (uint32_t)node->id) &&
+             dl_mark_requested(dm, &owned2, 52, (uint32_t)node->id));
+    size_t map0 = ms->map_block_index.size;
+    struct msg_headers_stats st0, st1;
+    msg_headers_get_stats(&st0);
+    struct byte_stream s;
+    stream_init(&s, 64);
+    stream_write_compact_size(&s, 2);
+    unsigned char garbage[20];
+    memset(garbage, 0xab, sizeof(garbage));
+    stream_write_bytes(&s, garbage, sizeof(garbage));
+    bool ret = process_headers(mp, node, &s);
+    msg_headers_get_stats(&st1);
+    PH_CHECK("truncated: handler returns false", ret == false);
+    PH_CHECK("truncated: peer penalized",
+             atomic_load(&node->misbehavior) > 0);
+    PH_CHECK("truncated: body owner flagged for disconnect",
+             node->disconnect == true);
+    PH_CHECK("truncated: no block-tree mutation",
+             ms->map_block_index.size == map0);
+    PH_CHECK("truncated: nothing accepted",
+             st1.total_accepted == st0.total_accepted &&
+             st1.batches_received == st0.batches_received);
+    PH_CHECK("truncated: disconnect sweep releases both bodies",
+             dl_peer_disconnected(dm, (uint32_t)node->id) == 2);
+    struct uint256 reassigned[2];
+    PH_CHECK("truncated: healthy peer takes both bodies immediately",
+             dl_assign_to_peer(dm, 10, reassigned, 2) == 2);
+    (void)dl_drain_for_backpressure(dm);
+    stream_free(&s);
+    return failures;
+}
+
 int test_process_headers_adversarial(void);
 int test_process_headers_adversarial(void)
 {
@@ -184,44 +228,8 @@ int test_process_headers_adversarial(void)
     }
 
     /* ── 2. truncated mid-header: clean failure, no partial accept ── */
-    if (gen) {
-        ph_setup_node(&node);
-        struct download_manager *dm = get_download_mgr();
-        struct uint256 owned1, owned2;
-        memset(owned1.data, 0x51, sizeof(owned1.data));
-        memset(owned2.data, 0x52, sizeof(owned2.data));
-        PH_CHECK("truncated: peer owns two pending block bodies",
-                 dl_mark_requested(dm, &owned1, 51, (uint32_t)node.id) &&
-                 dl_mark_requested(dm, &owned2, 52, (uint32_t)node.id));
-        size_t map0 = ms.map_block_index.size;
-        struct msg_headers_stats st0, st1;
-        msg_headers_get_stats(&st0);
-        struct byte_stream s;
-        stream_init(&s, 64);
-        stream_write_compact_size(&s, 2); /* promises 2 headers... */
-        unsigned char garbage[20];
-        memset(garbage, 0xab, sizeof(garbage));
-        stream_write_bytes(&s, garbage, sizeof(garbage)); /* ...delivers 20B */
-        bool ret = process_headers(&mp, &node, &s);
-        msg_headers_get_stats(&st1);
-        PH_CHECK("truncated: handler returns false", ret == false);
-        PH_CHECK("truncated: peer penalized",
-                 atomic_load(&node.misbehavior) > 0);
-        PH_CHECK("truncated: body owner flagged for disconnect",
-                 node.disconnect == true);
-        PH_CHECK("truncated: no block-tree mutation",
-                 ms.map_block_index.size == map0);
-        PH_CHECK("truncated: nothing accepted",
-                 st1.total_accepted == st0.total_accepted &&
-                 st1.batches_received == st0.batches_received);
-        PH_CHECK("truncated: disconnect sweep releases both bodies",
-                 dl_peer_disconnected(dm, (uint32_t)node.id) == 2);
-        struct uint256 reassigned[2];
-        PH_CHECK("truncated: healthy peer takes both bodies immediately",
-                 dl_assign_to_peer(dm, 10, reassigned, 2) == 2);
-        (void)dl_drain_for_backpressure(dm);
-        stream_free(&s);
-    }
+    if (gen)
+        failures += ph_test_truncated_header(&mp, &node, &ms);
 
     /* ── 3. valid 2-header batch + trailing garbage ── */
     struct block_header h1, h2;

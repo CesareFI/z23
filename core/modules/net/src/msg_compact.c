@@ -48,6 +48,40 @@ static void compact_pending_retry_full_body(struct p2p_node *node)
     compact_pending_clear(node);
 }
 
+static bool compact_submit_needs_redownload(
+        const struct validation_state *state)
+{
+    if (!state)
+        return false;
+    static const char *const reasons[] = {
+        "reducer-body-header-missing",
+        "reducer-body-runtime-unwired",
+        "reducer-body-write-failed",
+        "reducer-body-verify-failed",
+    };
+    for (size_t i = 0; i < sizeof(reasons) / sizeof(reasons[0]); i++) {
+        if (strcmp(state->reject_reason, reasons[i]) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void compact_settle_submit(struct p2p_node *node,
+                                  const struct uint256 *hash,
+                                  const struct validation_state *state,
+                                  bool retryable)
+{
+    if (retryable && compact_submit_needs_redownload(state)) {
+        (void)dl_mark_notfound(get_download_mgr(), (uint32_t)node->id, hash);
+        return;
+    }
+    /* Reducer submission is synchronous, so this hash may have timed out and
+     * been reassigned while it ran. A stale completion must not cancel the
+     * newer owner's live request. */
+    (void)dl_mark_received_from_peer(get_download_mgr(), hash,
+                                     (uint32_t)node->id);
+}
+
 /* ── Helper: feed a completed block into normal validation ─────── */
 
 static void compact_submit_block(struct msg_processor *mp,
@@ -57,13 +91,9 @@ static void compact_submit_block(struct msg_processor *mp,
     struct uint256 hash;
     block_header_get_hash(&blk->header, &hash);
 
-    /* Clear any download-manager in-flight slot created when this block was
-     * first announced via inv at tip (msg_tx.c at-tip getdata path), so a
-     * compact-reconstructed block does not leave a slot to time out into a
-     * spurious re-fetch. No-op (returns UINT32_MAX) when no slot exists. */
-    (void)dl_mark_received(get_download_mgr(), &hash);
-
     if (block_already_seen(&hash)) {
+        (void)dl_mark_received_from_peer(get_download_mgr(), &hash,
+                                         (uint32_t)node->id);
         char hex[65];
         uint256_get_hex(&hash, hex);
         LOG_INFO("compact", "peer %s: compact block %s already seen, skipping",
@@ -82,8 +112,11 @@ static void compact_submit_block(struct msg_processor *mp,
             validation_state_error(&state, "compact-submit-failed");
     }
 
-    if (!validation_state_is_valid(&state) &&
-        msg_block_validation_is_retryable(&state)) {
+    bool retryable = !validation_state_is_valid(&state) &&
+                     msg_block_validation_is_retryable(&state);
+    compact_settle_submit(node, &hash, &state, retryable);
+
+    if (retryable) {
         char hex[65];
         uint256_get_hex(&hash, hex);
         LOG_INFO("compact",
@@ -111,6 +144,49 @@ static void compact_submit_block(struct msg_processor *mp,
         node->last_block_time = (int64_t)platform_time_wall_time_t();
         node->blocks_received++;
     }
+}
+
+static void compact_request_missing(struct msg_processor *mp,
+                                    struct p2p_node *node,
+                                    const struct uint256 *block_hash,
+                                    struct block *out_block,
+                                    uint64_t **missing_indices,
+                                    size_t num_missing)
+{
+    node->compact_pending_block = zcl_malloc(sizeof(struct block),
+                                              "compact_pending_block");
+    if (!node->compact_pending_block) {
+        (void)dl_mark_notfound(get_download_mgr(), (uint32_t)node->id,
+                               block_hash);
+        block_free(out_block);
+        return;
+    }
+
+    *node->compact_pending_block = *out_block;
+    node->compact_pending_hash = *block_hash;
+    node->compact_missing_indices = *missing_indices;
+    node->compact_num_missing = num_missing;
+    node->compact_request_time = (int64_t)platform_time_wall_time_t();
+    *missing_indices = NULL;
+
+    struct block_txn_request req;
+    block_txn_request_init(&req);
+    req.block_hash = *block_hash;
+    req.indices = node->compact_missing_indices;
+    req.num_indices = num_missing;
+
+    struct byte_stream rs;
+    stream_init(&rs, 256);
+    bool request_sent = false;
+    if (block_txn_request_serialize(&req, &rs) &&
+        p2p_node_begin_message(node, "getblocktxn",
+                               mp->params->pchMessageStart)) {
+        p2p_node_write_message_data(node, rs.data, rs.size);
+        request_sent = p2p_node_end_message(node);
+    }
+    stream_free(&rs);
+    if (!request_sent)
+        compact_pending_retry_full_body(node);
 }
 
 bool process_sendcmpct(struct msg_processor *mp, struct p2p_node *node,
@@ -224,53 +300,12 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
     } else if (num_missing > 0) {
         LOG_INFO("compact", "peer %s: compact block missing %zu txs, sending getblocktxn",
                  node->addr_name, num_missing);
-
-        /* Stash the partial block in per-peer state for blocktxn completion */
-        node->compact_pending_block = zcl_malloc(sizeof(struct block),
-                                                  "compact_pending_block");
-        if (node->compact_pending_block) {
-            *node->compact_pending_block = out_block; /* move ownership */
-            node->compact_pending_hash = block_hash;
-            node->compact_missing_indices = missing_indices;
-            node->compact_num_missing = num_missing;
-            node->compact_request_time = (int64_t)platform_time_wall_time_t();
-            missing_indices = NULL; /* ownership transferred */
-        } else {
-            /* Without storage for the partial block there is nothing a
-             * blocktxn response could complete. Retry the full body and do
-             * not serialize a request whose index array has no owner. */
-            (void)dl_mark_notfound(get_download_mgr(), (uint32_t)node->id,
-                                   &block_hash);
-            block_free(&out_block);
-            goto compact_cleanup;
-        }
-
-        /* Send getblocktxn for missing transactions */
-        struct block_txn_request req;
-        block_txn_request_init(&req);
-        req.block_hash = block_hash;
-        req.indices = node->compact_missing_indices;
-        req.num_indices = num_missing;
-
-        struct byte_stream rs;
-        stream_init(&rs, 256);
-        bool request_sent = false;
-        if (block_txn_request_serialize(&req, &rs) &&
-            p2p_node_begin_message(node, "getblocktxn",
-                                   mp->params->pchMessageStart)) {
-            p2p_node_write_message_data(node, rs.data, rs.size);
-            request_sent = p2p_node_end_message(node);
-        }
-        stream_free(&rs);
-        if (!request_sent)
-            compact_pending_retry_full_body(node);
-        /* Don't free req: node owns the indices on success; the retry helper
-         * has already freed them on failure. */
+        compact_request_missing(mp, node, &block_hash, &out_block,
+                                &missing_indices, num_missing);
     } else {
         block_free(&out_block);
     }
 
-compact_cleanup:
     free(missing_indices);
 
     /* Clean up mempool tx copies */

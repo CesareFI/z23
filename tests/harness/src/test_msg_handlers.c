@@ -997,6 +997,64 @@ static int test_process_cmpctblock_request_serialize_failure_retries_body(void)
     return failures;
 }
 
+static bool submit_compact_runtime_unwired(struct block *block,
+                                           struct validation_state *out,
+                                           void *ctx)
+{
+    (void)block;
+    int *calls = ctx;
+    (*calls)++;
+    return validation_state_error(out, "reducer-body-runtime-unwired");
+}
+
+static int test_process_blocktxn_retryable_submit_requeues_body(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: retryable compact submit requeues full body") {
+        struct download_manager *dm = get_download_mgr();
+        (void)dl_drain_for_backpressure(dm);
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 519);
+        node.compact_pending_block = calloc(1, sizeof(struct block));
+        ASSERT(node.compact_pending_block != NULL);
+        block_init(node.compact_pending_block);
+        node.compact_pending_block->header.nVersion = 4;
+        node.compact_pending_block->header.nTime = 1700000519u;
+        struct uint256 hash;
+        block_header_get_hash(&node.compact_pending_block->header, &hash);
+        node.compact_pending_hash = hash;
+        node.compact_request_time = (int64_t)time(NULL);
+        ASSERT(dl_mark_requested(dm, &hash, 77, (uint32_t)node.id));
+
+        int submit_calls = 0;
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.net_mgr = &nm;
+        mp.compact_block_submit = submit_compact_runtime_unwired;
+        mp.compact_block_submit_ctx = &submit_calls;
+
+        struct byte_stream s;
+        stream_init(&s, 64);
+        ASSERT(stream_write_bytes(&s, hash.data, sizeof(hash.data)));
+        ASSERT(stream_write_compact_size(&s, 0));
+        ASSERT(process_blocktxn(&mp, &node, &s));
+        ASSERT(submit_calls == 1);
+        ASSERT(node.compact_pending_block == NULL);
+
+        struct uint256 reassigned_hash;
+        ASSERT(dl_assign_to_peer(dm, 520, &reassigned_hash, 1) == 1);
+        ASSERT(uint256_eq(&reassigned_hash, &hash));
+
+        (void)dl_drain_for_backpressure(dm);
+        stream_free(&s);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_process_block_msg_no_score_when_requested_from_peer_zero(void)
 {
     int failures = 0;
@@ -1620,6 +1678,7 @@ int test_msg_handlers(void)
     failures += test_process_cmpctblock_replacement_retries_old_body();
     failures += test_process_cmpctblock_pending_alloc_failure_retries_body();
     failures += test_process_cmpctblock_request_serialize_failure_retries_body();
+    failures += test_process_blocktxn_retryable_submit_requeues_body();
     failures += test_process_block_msg_no_score_when_requested_from_peer_zero();
     failures += test_process_block_msg_no_score_within_settle_grace();
     failures += test_process_block_msg_no_score_during_shutdown();

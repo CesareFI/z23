@@ -340,6 +340,13 @@ bool dl_mark_requested(struct download_manager *dm,
 uint32_t dl_mark_received(struct download_manager *dm,
                           const struct uint256 *hash);
 
+/* Peer-matched variant for handlers that defer settlement until after
+ * synchronous processing. Returns UINT32_MAX and leaves the slot untouched
+ * if the hash has since been reassigned to another peer. */
+uint32_t dl_mark_received_from_peer(struct download_manager *dm,
+                                   const struct uint256 *hash,
+                                   uint32_t peer_id);
+
 /* Check for timed-out requests. Returns number of blocks reassigned.
  * Timed-out blocks are moved back to the download queue.
  * Call periodically from send_messages. */

@@ -591,13 +591,15 @@ bool dl_mark_requested(struct download_manager *dm,
     return true;
 }
 
-uint32_t dl_mark_received(struct download_manager *dm,
-                          const struct uint256 *hash)
+static uint32_t dl_mark_received_internal(struct download_manager *dm,
+                                          const struct uint256 *hash,
+                                          bool match_peer,
+                                          uint32_t expected_peer_id)
 {
     zcl_mutex_lock(&dm->cs);
 
     struct dl_in_flight *s = find_slot(dm, hash, false);
-    if (!s || !s->active) {
+    if (!s || !s->active || (match_peer && s->peer_id != expected_peer_id)) {
         zcl_mutex_unlock(&dm->cs);
         return UINT32_MAX;
     }
@@ -641,6 +643,19 @@ uint32_t dl_mark_received(struct download_manager *dm,
 
     zcl_mutex_unlock(&dm->cs);
     return peer_id;
+}
+
+uint32_t dl_mark_received(struct download_manager *dm,
+                          const struct uint256 *hash)
+{
+    return dl_mark_received_internal(dm, hash, false, 0);
+}
+
+uint32_t dl_mark_received_from_peer(struct download_manager *dm,
+                                   const struct uint256 *hash,
+                                   uint32_t peer_id)
+{
+    return dl_mark_received_internal(dm, hash, true, peer_id);
 }
 
 size_t dl_check_timeouts(struct download_manager *dm, int64_t now)
