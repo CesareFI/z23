@@ -27,6 +27,11 @@ static uint32_t get_u32_be(const uint8_t *in)
            ((uint32_t)in[2] << 8)  | ((uint32_t)in[3]);
 }
 
+static bool header_version_supported(const uint8_t *in)
+{
+    return get_u32_be(in + 4) == 1 && get_u32_be(in + 12) == 0;
+}
+
 uint32_t wks_default_iterations(void)
 {
     const char *e = getenv("ZCL_WALLET_KDF_ITERS");
@@ -156,8 +161,7 @@ bool wks_decrypt(const uint8_t *envelope, size_t env_len,
     if (!out || !out_len) return false;
 
     if (memcmp(envelope, WKS_MAGIC, WKS_MAGIC_LEN) != 0) return false;
-    uint32_t version = get_u32_be(envelope + 4);
-    if (version != 1) return false;
+    if (!header_version_supported(envelope)) return false;
     uint32_t iters = get_u32_be(envelope + 8);
     if (iters < WKS_MIN_ITERS || iters > WKS_MAX_ITERS) return false;
 
@@ -221,7 +225,6 @@ uint32_t wks_envelope_iterations(const uint8_t *envelope, size_t env_len)
 {
     if (!envelope || env_len < WKS_HEADER_LEN) return 0;
     if (memcmp(envelope, WKS_MAGIC, WKS_MAGIC_LEN) != 0) return 0;
-    uint32_t version = get_u32_be(envelope + 4);
-    if (version != 1) return 0;
+    if (!header_version_supported(envelope)) return 0;
     return get_u32_be(envelope + 8);
 }
