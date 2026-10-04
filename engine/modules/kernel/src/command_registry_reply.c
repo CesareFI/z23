@@ -255,6 +255,8 @@ size_t command_registry_serialize_reply(
     size_t result = ok ? command_registry_write_bounded_json(&root, out,
                                                              out_size, contract)
                        : 0;
+    if ((spec->traits & ZCL_COMMAND_TRAIT_SECRET_OUTPUT) != 0)
+        json_cleanse_strings(&root);
     json_free(&root);
     return result;
 }

@@ -897,6 +897,13 @@ static bool g_wallet_raw_reject;
 static char g_wallet_z_sendmany_params[4096];
 static char g_wallet_sapling_address[128];
 
+static char *wallet_stub_default(const char *method)
+{
+    if (method && strcmp(method, "dumpprivkey") == 0)
+        return strdup("\"synthetic-private-result\"");
+    return strdup("null");
+}
+
 static char *wallet_stub_rpc(const char *method, const char *params_json)
 {
     if (method && strcmp(method, "rescanwitnesses") == 0)
@@ -951,7 +958,7 @@ static char *wallet_stub_rpc(const char *method, const char *params_json)
             "\"redeemScript\":\"512102aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa51ae\"}");
     }
-    return strdup("null");
+    return wallet_stub_default(method);
 }
 
 static int test_wallet_mutating_native_e2e(void)
@@ -1420,6 +1427,7 @@ static int test_wallet_mutating_native_e2e(void)
             find_spec(reg, "core.wallet.address.export-key");
         ASSERT(xk_spec != NULL);
         ASSERT(xk_spec->availability == ZCL_COMMAND_READY);
+        ASSERT((xk_spec->traits & ZCL_COMMAND_TRAIT_SECRET_OUTPUT) != 0);
         struct json_value xk_in;
         json_init(&xk_in);
         json_set_object(&xk_in);
@@ -1434,6 +1442,27 @@ static int test_wallet_mutating_native_e2e(void)
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
         ASSERT(json_get(&reply.data, "privkey") == NULL);
         zcl_command_reply_free(&reply);
+
+        /* The confirmed path returns the exact key through the native
+         * registry. Its internal copies are secret-output owners and the
+         * caller remains responsible for retiring its final output span. */
+        (void)json_push_kv_bool(&xk_in, "confirm", true);
+        {
+            char rendered[8192];
+            enum zcl_command_exit rc = ZCL_COMMAND_EXIT_INTERNAL;
+            struct zcl_command_context sctx = {
+                .registry = reg,
+                .granted_capabilities = ~(uint64_t)0,
+                .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+            };
+            size_t n = zcl_command_registry_execute_json(
+                reg, xk_spec, &sctx, &xk_in, false, xk_spec->path,
+                "normal", 0, 0, NULL, rendered, sizeof(rendered), &rc);
+            ASSERT(n > 0);
+            ASSERT_EQ(rc, ZCL_COMMAND_EXIT_OK);
+            ASSERT(strstr(rendered, "synthetic-private-result") != NULL);
+            memory_cleanse(rendered, sizeof(rendered));
+        }
         json_free(&xk_in);
 
         /* 7. a missing required key fails closed with a typed error body. */

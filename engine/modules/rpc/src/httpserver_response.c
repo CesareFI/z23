@@ -20,18 +20,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void rpc_http_cleanse_json_strings(struct json_value *value)
-{
-    if (!value) return;
-    if (value->type == JSON_STR && value->val.s)
-        memory_cleanse(value->val.s, strlen(value->val.s) + 1);
-    for (size_t i = 0; i < value->num_children; i++) {
-        rpc_http_cleanse_json_strings(&value->children[i]);
-        if (value->keys && value->keys[i])
-            memory_cleanse(value->keys[i], strlen(value->keys[i]) + 1);
-    }
-}
-
 static bool rpc_http_method_returns_key_material(const char *method)
 {
     if (!method) return false;
@@ -151,8 +139,8 @@ void rpc_http_retire_response_copies(const char *method,
 {
     if (!rpc_http_method_returns_key_material(method))
         return;
-    rpc_http_cleanse_json_strings(rpc_result);
-    rpc_http_cleanse_json_strings(response);
+    json_cleanse_strings(rpc_result);
+    json_cleanse_strings(response);
     if (serialized && serialized_size > 0)
         memory_cleanse(serialized, serialized_size);
 }

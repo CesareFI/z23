@@ -14116,6 +14116,7 @@ $(API_REFERENCE_TOOL): tools/gen_api_reference.c \
                        $(wildcard engine/composition/commands/*/*.def)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Iengine/modules/kernel/include -Iplatform/modules/json/include \
+	    -Iplatform/modules/base/include \
 	    -o $@ tools/gen_api_reference.c
 
 .PHONY: tools/gen_api_reference docs-api-reference
