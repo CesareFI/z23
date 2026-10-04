@@ -4477,6 +4477,17 @@ $(SEM_REPLAY_BIN): $(SEM_REPLAY_SRCS) tools/dev/sem_replay.h \
 		tools/dev/sem_replay_build.h tools/dev/sem_replay_change.h \
 		tools/dev/sem_replay_plan.h tools/dev/sem_replay_step.h \
 		tools/dev/sem_replay_classify.h \
+		platform/modules/base/include/base/hex.h \
+		platform/modules/base/include/base/format_attribute.h \
+		platform/modules/base/include/base/log_level.h \
+		platform/modules/base/include/base/log_macros.h \
+		platform/modules/base/include/base/safe_alloc.h \
+		platform/modules/base/include/base/serialize_le.h \
+		platform/modules/platform/include/platform/clock.h \
+		platform/modules/sha3/include/sha3/sha3.h \
+		platform/modules/util/include/util/log_macros.h \
+		contexts/commons/packages/zjsonp/include/zjsonp/zjsonp.h \
+		contexts/commons/packages/zutf8/include/zutf8/zutf8.h \
 		contexts/commons/packages/zjsonp/src/zjsonp.c \
 		contexts/commons/packages/zutf8/src/zutf8.c \
 		platform/modules/sha3/src/sha3.c \
