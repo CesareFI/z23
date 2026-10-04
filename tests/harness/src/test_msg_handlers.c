@@ -637,6 +637,59 @@ static int test_process_blocktxn_malformed_retries_full_body(void)
     return failures;
 }
 
+static int test_process_blocktxn_bad_fill_retries_full_body(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: unusable blocktxn completion requeues the full body") {
+        struct download_manager *dm = get_download_mgr();
+        (void)dl_drain_for_backpressure(dm);
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 509);
+        struct uint256 hash = make_test_hash(0x72);
+        ASSERT(dl_mark_requested(dm, &hash, 72, (uint32_t)node.id));
+
+        node.compact_pending_block = calloc(1, sizeof(struct block));
+        ASSERT(node.compact_pending_block != NULL);
+        block_init(node.compact_pending_block);
+        node.compact_pending_block->num_vtx = 1;
+        node.compact_pending_block->vtx =
+            calloc(1, sizeof(struct transaction));
+        ASSERT(node.compact_pending_block->vtx != NULL);
+        transaction_init(&node.compact_pending_block->vtx[0]);
+        node.compact_pending_hash = hash;
+        node.compact_missing_indices = calloc(1, sizeof(uint64_t));
+        ASSERT(node.compact_missing_indices != NULL);
+        node.compact_num_missing = 1;
+        node.compact_request_time = (int64_t)time(NULL);
+
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.net_mgr = &nm;
+
+        /* Valid blocktxn envelope for the pending hash, but zero txs cannot
+         * fill the one missing slot. */
+        struct byte_stream s;
+        stream_init(&s, 64);
+        ASSERT(stream_write_bytes(&s, hash.data, sizeof(hash.data)));
+        ASSERT(stream_write_compact_size(&s, 0));
+        ASSERT(process_blocktxn(&mp, &node, &s));
+        ASSERT(node.compact_pending_block == NULL);
+        ASSERT(!dl_is_in_flight(dm, &hash));
+
+        struct uint256 reassigned;
+        ASSERT(dl_assign_to_peer(dm, 510, &reassigned, 1) == 1);
+        ASSERT(uint256_eq(&reassigned, &hash));
+
+        (void)dl_drain_for_backpressure(dm);
+        stream_free(&s);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_process_block_msg_no_score_when_requested_from_peer_zero(void)
 {
     int failures = 0;
@@ -1255,6 +1308,7 @@ int test_msg_handlers(void)
     failures += test_process_block_msg_no_score_when_requested();
     failures += test_process_block_msg_malformed_releases_owned_requests();
     failures += test_process_blocktxn_malformed_retries_full_body();
+    failures += test_process_blocktxn_bad_fill_retries_full_body();
     failures += test_process_block_msg_no_score_when_requested_from_peer_zero();
     failures += test_process_block_msg_no_score_within_settle_grace();
     failures += test_process_block_msg_no_score_during_shutdown();

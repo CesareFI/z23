@@ -390,7 +390,7 @@ bool process_blocktxn(struct msg_processor *mp, struct p2p_node *node,
         LOG_WARN("compact", "peer %s: blocktxn %s — fill_missing failed",
                  node->addr_name, hex);
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_MESSAGE, "bad blocktxn response");
-        compact_pending_clear(node);
+        compact_pending_retry_full_body(node);
         block_txn_response_free(&resp);
         return true;
     }
