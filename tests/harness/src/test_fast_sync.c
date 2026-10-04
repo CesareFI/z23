@@ -763,6 +763,41 @@ static int test_block_swarm_rarest_first(void)
     return failures;
 }
 
+static int test_block_swarm_request_time_is_monotonic(void)
+{
+    int failures = 0;
+    TEST("block_swarm piece ownership uses monotonic time") {
+        uint8_t hash[1][32] = {{0}};
+        struct block_piece_manifest manifest;
+        memset(&manifest, 0, sizeof(manifest));
+        manifest.start_height = 1;
+        manifest.end_height = 1;
+        manifest.num_pieces = 1;
+        manifest.piece_hashes = hash;
+
+        struct block_swarm bs;
+        ASSERT(block_swarm_init(&bs, &manifest, NULL));
+        int64_t before = platform_time_monotonic_us() / 1000000;
+        ASSERT(block_swarm_assign_piece(&bs, 7, NULL, 0) == 0);
+        int64_t after = platform_time_monotonic_us() / 1000000;
+
+        ASSERT(bs.piece_request_time[0] >= before);
+        ASSERT(bs.piece_request_time[0] <= after);
+        block_swarm_handle_timeouts(&bs, 30);
+        ASSERT(bs.piece_states[0] == CHUNK_INFLIGHT);
+        ASSERT(bs.pieces_inflight == 1);
+
+        bs.piece_request_time[0] = before - 31;
+        block_swarm_handle_timeouts(&bs, 30);
+        ASSERT(bs.piece_states[0] == CHUNK_NEEDED);
+        ASSERT(bs.pieces_inflight == 0);
+
+        block_swarm_free(&bs);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_block_swarm_endgame(void)
 {
     int failures = 0;
@@ -1935,6 +1970,7 @@ int test_fast_sync(void)
 
     /* Block swarm */
     failures += test_block_swarm_rarest_first();
+    failures += test_block_swarm_request_time_is_monotonic();
     failures += test_block_swarm_endgame();
     failures += test_block_swarm_bitmap();
     failures += test_block_piece_hash_deterministic();

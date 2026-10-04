@@ -427,7 +427,7 @@ struct block_swarm {
     struct block_piece_manifest manifest;
     enum chunk_state *piece_states;     /* array[num_pieces] */
     int *piece_peer;                    /* which peer has each piece */
-    int64_t *piece_request_time;        /* when each piece was requested */
+    int64_t *piece_request_time;        /* monotonic seconds at request */
     uint32_t *piece_availability;       /* how many peers have each piece */
     uint32_t pieces_complete;
     uint32_t pieces_inflight;
