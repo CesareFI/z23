@@ -1156,3 +1156,42 @@ Local artifacts `key-envelope-failure-atomic.bundle`,
 `pr-key-envelope-failure-atomic.md` and
 `key-envelope-failure-atomic-final.sha256` verify in the candidate worktree's
 ignored evidence directory. No external publication action was attempted.
+
+### Wallet intent monetary bounds qualified
+
+Branch `agent/upstream-wallet-intent-money-range-20261004`, signed head
+`438cfb15e7e987453fcc1b43f73b7f6f02e24b16`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, applies ZClassic's existing
+`MoneyRange` and `MAX_MONEY` contract to transparent, private and fanout
+planning, the pure decision core and the durable reservation model. Zero and
+exactly `MAX_MONEY` remain valid when their sum is valid. Negative values,
+either field above `MAX_MONEY`, and target plus fee above `MAX_MONEY` fail
+before addition. The review is seven files, +62/-12, including the generated
+capability inventory; consensus and the sealed core are unchanged.
+
+Canonical RED shows the old decision core returning `ALLOW` for target
+`MAX_MONEY` plus fee 1. Reversing only the new sum cap reproduces that RED;
+reversing the durable model predicate makes direct row validation accept the
+same oversized reservation and reproduces model RED. The final registered
+test explicitly covers zero, `MAX_MONEY`, `MAX_MONEY + 1`, negative values,
+`INT64_MIN` and `INT64_MAX`, and passes under the focused and ASan/UBSan
+profiles. Uncached GCC 14.2.0 and Clang 20.1.2 each check all 2,433 translation
+units with no new diagnostic sites. Architecture, generated inventory,
+documentation, file-size, core-seal, consensus-parity and cap-15 complexity
+gates pass without a baseline increase.
+
+The unprivileged private-tmpfs proof passes the exact head/base pair: all 215
+lint gates and all 58 selected impacted groups complete with zero failures,
+skips or reused results. Lint took 211.223s, tests 307.237s, the receipt records
+513.236s total and the foreground step returned after 516.535s. Native status
+independently reports `passed`; receipt SHA256 is
+`9c8ca349c6ee1a60e507dec4c239ca02963f0eaedf03dc17aa9c089db6b18fb5`.
+
+Local artifacts `intent-money-range.bundle`, `intent-money-range.mbox`,
+`intent-money-range.receipt`, `intent-money-range-exact-status.log`,
+`pr-intent-money-range.md` and `intent-money-range-final.sha256` verify in the
+candidate worktree's ignored evidence directory. The direct proof-account
+producer build was refused because that shell lacked its user-manager bus;
+the unchanged qualified private-tmpfs/user-manager wrapper then rebuilt and
+proved the exact candidate. No permission, gate or host policy changed. No
+external publication action was attempted.
