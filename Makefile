@@ -6949,7 +6949,7 @@ $(ZCLASSIC_CLI_BIN): $(BUILD_IDENTITY_STAMP) engine/entry/cli.c $(CLI_SRCS) plat
 # checkpoint.
 .PHONY: tools/wal_checkpoint
 tools/wal_checkpoint: $(WAL_CHECKPOINT_BIN)
-$(WAL_CHECKPOINT_BIN): tools/wal_checkpoint.c
+$(WAL_CHECKPOINT_BIN): tools/wal_checkpoint.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< \
 	    -Lvendor/lib vendor/lib/libsqlite3.a -lpthread -ldl -lm
