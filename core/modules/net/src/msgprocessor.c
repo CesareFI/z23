@@ -2377,6 +2377,15 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 
 /* ── msg_send_messages: per-peer trickle ─────────────────────── */
 
+static void msg_send_outbound_version(struct msg_processor *mp,
+                                      struct p2p_node *node)
+{
+    if (!push_version(mp, node))
+        return;
+    peer_set_state_checked((uint32_t)node->id, &node->state,
+                           PEER_VERSION_SENT, "outbound version sent");
+}
+
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
@@ -2389,11 +2398,8 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
          * message loop sees the node, so send_bytes is not a handshake-state
          * predicate.  PEER_CONNECTING is: advance it exactly once after the
          * version has been queued (or buffered by the transport). */
-        if (!node->inbound && node->state == PEER_CONNECTING) {
-            push_version(mp, node);
-            peer_set_state_checked((uint32_t)node->id, &node->state,
-                                   PEER_VERSION_SENT, "outbound version sent");
-        }
+        if (!node->inbound && node->state == PEER_CONNECTING)
+            msg_send_outbound_version(mp, node);
         return true;
     }
 

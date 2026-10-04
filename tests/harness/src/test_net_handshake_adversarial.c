@@ -840,6 +840,32 @@ static int test_outbound_version_after_transport_bytes(void)
     return failures;
 }
 
+static int test_outbound_version_queue_failure_retries(void)
+{
+    int failures = 0;
+    TEST("handshake: outbound version queue failure remains retryable") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, false));
+
+        zcl_alloc_fault_fail_next("send_segment");
+        ASSERT(msg_send_messages(&f.mp, &f.node, false));
+        ASSERT(zcl_alloc_fault_armed_label() == NULL);
+        ASSERT(f.node.state == PEER_CONNECTING);
+        ASSERT(f.node.send_head == NULL);
+        zcl_alloc_fault_clear();
+
+        ASSERT(msg_send_messages(&f.mp, &f.node, false));
+        ASSERT(f.node.state == PEER_VERSION_SENT);
+        struct hs_capture cap;
+        hs_capture_sent(f.peer_fd, &cap);
+        ASSERT(hs_captured_has_command(&cap, "version"));
+
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 10-12. Mempool sync-on-connect (msg_tx.c::msg_tx_maybe_request_mempool,
  * wired into process_verack() in msg_version.c): ONE outbound "mempool"
  * message right after the verack round-trip confirms the handshake, gated on
@@ -1330,6 +1356,7 @@ int test_net_handshake_adversarial(void)
     failures += test_oversized_user_agent_rejected();
     failures += test_honest_handshake_completes();
     failures += test_outbound_version_after_transport_bytes();
+    failures += test_outbound_version_queue_failure_retries();
     failures += test_mempool_requested_once_for_relay_peer();
     failures += test_mempool_not_requested_for_non_relay_peer();
     failures += test_mempool_not_requested_during_ibd();

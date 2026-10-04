@@ -424,7 +424,7 @@ void msg_version_build(struct version_message *ver,
     ver->relay = true;
 }
 
-void push_version(struct msg_processor *mp, struct p2p_node *node)
+bool push_version(struct msg_processor *mp, struct p2p_node *node)
 {
     struct version_message ver;
     /* Advertise the PROVABLE tip (H*), not the sync-window/lookahead tip:
@@ -438,15 +438,20 @@ void push_version(struct msg_processor *mp, struct p2p_node *node)
 
     struct byte_stream s;
     stream_init(&s, 256);
-    version_message_serialize(&ver, &s);
-
-    p2p_node_begin_message(node, "version", mp->params->pchMessageStart);
-    p2p_node_write_message_data(node, s.data, s.size);
-    p2p_node_end_message(node);
+    bool sent = false;
+    if (version_message_serialize(&ver, &s) &&
+        p2p_node_begin_message(node, "version",
+                               mp->params->pchMessageStart)) {
+        p2p_node_write_message_data(node, s.data, s.size);
+        sent = p2p_node_end_message(node);
+    }
 
     stream_free(&s);
+    if (!sent)
+        return false;
     peer_lifecycle_note_version_sent(node, ver.services, ver.start_height,
                                      ver.sub_version);
+    return true;
 }
 
 void push_verack(struct msg_processor *mp, struct p2p_node *node)
