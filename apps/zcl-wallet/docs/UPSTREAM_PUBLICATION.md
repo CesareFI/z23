@@ -1840,3 +1840,88 @@ Local artifacts `node-recovery-lock.bundle`, `node-recovery-lock.mbox`,
 worktree's ignored evidence directory. Manifest SHA256 is
 `2e93d85faac2ef031ed3952d7753abbfaa6b62e96f633a827ca66253105a1c8d`.
 No external publication or reviewer-request action was attempted.
+
+### Whole-file descriptor candidate exact qualification complete
+
+Branch `agent/upstream-file-io-cloexec-20261004`, signed head
+`18b366fbb00c1f111359ec3ff05944741f67f504`, extends the independently
+qualified sensitive-reader descriptor work through the shared whole-file
+binary and text readers. Both acquire their streams through the portable
+no-inherit owner; successful bytes and caller ownership remain unchanged.
+
+The first exact proof passed all 215 lint gates but its runtime environment was
+invalid in two independently reproduced ways: a stale root-owned long-path
+fixture blocked the zcode package test, and `TMPDIR` was incorrectly placed
+inside the proof user's HOME, which the development-land test correctly
+refused. The stale fixture was moved intact to quarantine. With
+`TMPDIR=/dev/shm/worldstreamproof-z23`, the two unchanged focused controls pass;
+their log SHA256 values are respectively
+`84926c52dcf7992f9df2f46cc1988220ce1d778b33729ead1e22291ca8872730`
+and `52b5b6e4e115d91294583e33d98e313c53764f9b929b6173622f27eb0a17300e`.
+No test, assertion or proof policy changed.
+
+The documented retry then produced a fresh exact PASS against upstream
+`3a93e60ebf922af3d119b9facc1d95803f42844b`: all 215 lint gates pass
+(199.701s native lint step) and all 1,236 selected runtime groups pass
+(551.087s body), with zero failures, skips, unobserved or load-flaky outcomes.
+The foreground step returned after 756.383s. Native status independently
+re-verifies the exact pair. Receipt SHA256 is
+`bb9cd6741e6fe6523164ce8b21613b12a7da6af97fb1e3b84ee5607c9795f29a`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-wallet-file-io-cloexec-proof-20261004`.
+
+Local review artifacts `file-io-cloexec-18b366f.bundle`,
+`file-io-cloexec-18b366f.mbox`, `file-io-cloexec-18b366f.receipt`, exact
+evidence, `pr-file-io-cloexec.md`, `file-io-cloexec-qualification.txt` and
+`file-io-cloexec-18b366f-final.sha256` verify in the candidate's ignored
+evidence directory. No external publication action was attempted.
+
+### Whole-file short-read retirement exact qualification complete
+
+Branch `agent/upstream-file-io-short-read-retirement-20261004`, signed head
+`1f8deed4ee759e04ef9c96007e2d2d8ed0a67e98`, follows the descriptor
+candidate with a separate lowest-owner fix. A short `fread` previously freed a
+partially initialized binary or text allocation without retiring its bytes;
+the binary reader is used for wallet-backup plaintext. The fix wipes the
+complete owned allocation (`n` or the already-checked `n + 1`) immediately
+before the existing free. Output initialization, close order, logging,
+successful reads and caller ownership are unchanged. Three files change,
+109 additions and 22 deletions, including the deterministic actual-source
+observer and regenerated inventory.
+
+Canonical RED fails the two injected 3-of-4-byte cleanup assertions. Final
+focused and ASan/UBSan/LSan runs pass with zero skips; removing both wipes makes
+exactly the new retirement assertion fail. Strict GCC 14 and Clang 20 each
+accept all 2,434 translation units with no new diagnostics. The MinGW lane
+cross-compiles all 2,400 Windows-visible translation units and links 74 strict
+C23 programs; native Windows runtime remains unobserved. Architecture,
+documentation-count/claim, generated-inventory and cap-15 complexity gates
+pass; the complexity scan covers 68,764 functions.
+
+A root-identity full-lint attempt is retained as a non-PASS environment record:
+permission-negative selftests cannot prove unreadability under UID 0, and that
+submitting checkout carries pre-existing hard-linked build outputs and stale
+Tor archives. No gate was weakened or reclassified as product evidence. The
+authoritative unprivileged exact proof required the three documented
+generated-doc checker targets before any lint or runtime test began. After
+building only those named prerequisites and using the required explicit
+retry-to-step route, the cold proof passes all 215 lint gates (199.971s) and all
+1,236 selected runtime groups (561.788s), with zero failures, skips, cached
+groups, unobserved or load-flaky outcomes. The foreground step returns after
+736.929s and independently queried native status reports PASS with
+`receipt_reused=false`. Receipt SHA256 is
+`af3fbbe12ac3d2bb4ee12112d3f7e9b28ac34497397a5970e0b135ef6099bd6c`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-wallet-file-io-short-read-proof-20261004`.
+
+Local review artifacts `file-io-short-read-retirement-1f8deed.bundle`,
+`file-io-short-read-retirement-1f8deed.mbox`,
+`file-io-short-read-retirement-1f8deed.receipt`, exact phase/lint/test/status
+evidence, the C safety review, `pr-file-io-short-read-retirement.md`,
+`file-io-short-read-retirement-qualification.txt` and the 21-entry
+`file-io-short-read-retirement-1f8deed-final.sha256` manifest verify in the
+candidate's ignored evidence directory. Manifest SHA256 is
+`a0e967125cfa5c512f291815f7d5c08cc0291fbc43ca05710d4fa43f21513d50`.
+This candidate is stacked on descriptor candidate `18b366f...` and is prepared
+for retargeting to `z23c/z23:main` after that prerequisite is present. No
+external publication action was attempted.
