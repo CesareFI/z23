@@ -890,9 +890,23 @@ int test_transaction_intent(void)
         ASSERT_EQ(got.state, VAULT_INTENT_PROVING);
 
         const uint8_t raw[] = {1, 2, 3, 4, 5};
-        uint8_t loaded[16]; size_t loaded_len = 0;
+        uint8_t loaded[16], untouched[16];
+        memset(loaded, 0xa5, sizeof(loaded));
+        memset(untouched, 0xa5, sizeof(untouched));
+        size_t loaded_len = SIZE_MAX;
         ASSERT(vault_intent_store_raw(&ndb, row.plan_id, raw, sizeof(raw)));
         ASSERT(vault_intent_has_raw(&ndb, row.plan_id));
+        ASSERT(!vault_intent_load_raw(&ndb, row.plan_id, loaded,
+                                      sizeof(raw) - 1, &loaded_len));
+        ASSERT_EQ(loaded_len, 0);
+        ASSERT(memcmp(loaded, untouched, sizeof(loaded)) == 0);
+        uint8_t absent_plan[32];
+        memset(absent_plan, 0xee, sizeof(absent_plan));
+        loaded_len = SIZE_MAX;
+        ASSERT(!vault_intent_load_raw(&ndb, absent_plan, loaded,
+                                      sizeof(loaded), &loaded_len));
+        ASSERT_EQ(loaded_len, 0);
+        ASSERT(memcmp(loaded, untouched, sizeof(loaded)) == 0);
         ASSERT(vault_intent_load_raw(&ndb, row.plan_id, loaded,
                                      sizeof(loaded), &loaded_len));
         ASSERT_EQ(loaded_len, sizeof(raw));
