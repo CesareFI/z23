@@ -44,6 +44,7 @@
 #include "net/zmsg.h"
 #include "core/hash.h"
 #include "core/uint256.h"
+#include "platform/time_compat.h"
 #include "primitives/block.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"  /* accept_block_header */
@@ -267,6 +268,79 @@ static int dos_getdata_oom_rollback(struct msg_processor *mp,
         p2p_node_free(node);
     }
     zcl_alloc_fault_clear();
+    (void)dl_drain_for_backpressure(dm);
+    return failures;
+}
+
+static int dos_inv_getdata_send_failure_rollback(struct msg_processor *mp,
+                                                  struct net_manager *nm)
+{
+    int failures = 0;
+    struct download_manager *dm = get_download_mgr();
+    (void)dl_drain_for_backpressure(dm);
+
+    struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+    uint32_t saved_tip_time = tip ? tip->nTime : 0;
+    if (tip)
+        tip->nTime = (uint32_t)platform_time_wall_time_t();
+
+    struct net_address addr;
+    net_address_init(&addr);
+    unsigned char ip[4] = {203, 0, 113, 82};
+    net_addr_set_ipv4(&addr.svc.addr, ip);
+    addr.svc.port = 8033;
+    struct p2p_node *node = p2p_node_create(
+        nm, ZCL_INVALID_SOCKET, &addr, "inv-getdata-send-failure", true);
+    DOS_CHECK("inv getdata rollback: node created", node != NULL);
+    if (node) {
+        node->state = PEER_ACTIVE;
+        node->version = PROTOCOL_VERSION;
+
+        struct inv_item inv;
+        struct uint256 wanted;
+        memset(wanted.data, 0x6d, sizeof(wanted.data));
+        inv_item_init_typed(&inv, MSG_BLOCK, &wanted);
+        struct byte_stream s;
+        stream_init(&s, 64);
+        bool built = stream_write_compact_size(&s, 1) &&
+                     inv_item_serialize(&inv, &s);
+        DOS_CHECK("inv getdata rollback: announcement built", built);
+
+        /* getheaders is queued first; fail the following getdata segment. */
+        zcl_alloc_fault_fail_nth("send_segment", 2);
+        bool handled = built && process_inv(mp, node, &s);
+        bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+        size_t getdata_frames = 0;
+        for (struct send_segment *seg = node->send_head; seg;
+             seg = seg->next) {
+            if (seg->size < MSG_HEADER_SIZE)
+                continue;
+            const struct msg_header *hdr =
+                (const struct msg_header *)(const void *)seg->data;
+            if (strcmp(hdr->pchCommand, "getdata") == 0)
+                getdata_frames++;
+        }
+        bool released = !dl_is_in_flight(dm, &wanted);
+        struct uint256 reassigned;
+        bool immediately_reassignable =
+            dl_assign_to_peer(dm, (uint32_t)node->id + 1,
+                              &reassigned, 1) == 1 &&
+            uint256_eq(&reassigned, &wanted);
+
+        DOS_CHECK("inv getdata rollback: handler survives", handled);
+        DOS_CHECK("inv getdata rollback: injected queue failure consumed",
+                  fault_consumed && getdata_frames == 0);
+        DOS_CHECK("inv getdata rollback: unsent ownership released", released);
+        DOS_CHECK("inv getdata rollback: block immediately reassignable",
+                  immediately_reassignable);
+
+        stream_free(&s);
+        p2p_node_free(node);
+    }
+    zcl_alloc_fault_clear();
+    if (tip)
+        tip->nTime = saved_tip_time;
     (void)dl_drain_for_backpressure(dm);
     return failures;
 }
@@ -1086,6 +1160,11 @@ int test_net_msg_dos(void)
      * batch back immediately; no request reached the peer, so waiting for the
      * normal timeout would strand forward progress for the whole interval. */
     failures += dos_getdata_oom_rollback(&mp, &nm);
+
+    /* ── M. Direct at-tip inv requests use the same transactional
+     * ownership rule as scheduler batches: if getdata never reaches the
+     * peer, its in-flight slot must be immediately available elsewhere. */
+    failures += dos_inv_getdata_send_failure_rollback(&mp, &nm);
 
     net_manager_free(&nm);
     sync_set_state(sync0, "net_msg_dos restore");

@@ -134,6 +134,51 @@ enum tx_accept_result msg_tx_accept(struct msg_processor *mp,
     return ar;
 }
 
+static size_t msg_tx_requeue_unsent_blocks(struct p2p_node *node,
+                                           const struct byte_stream *items)
+{
+    struct byte_stream view;
+    stream_init_from_data(&view, items->data, items->size);
+    size_t released = 0;
+    while (stream_remaining(&view) > 0) {
+        struct inv_item inv;
+        if (!inv_item_deserialize(&inv, &view))
+            break;
+        if (inv.type == MSG_BLOCK)
+            released += dl_requeue_unsent(
+                get_download_mgr(), (uint32_t)node->id, &inv.hash, 1);
+    }
+    stream_free(&view);
+    return released;
+}
+
+static void msg_tx_send_getdata(struct msg_processor *mp,
+                                struct p2p_node *node,
+                                const struct byte_stream *items,
+                                uint64_t count)
+{
+    if (count == 0)
+        return;
+
+    struct byte_stream msg;
+    stream_init(&msg, items->size + 8);
+    bool sent = stream_write_compact_size(&msg, count) &&
+                stream_write(&msg, items->data, items->size) &&
+                p2p_node_begin_message(node, "getdata",
+                                       mp->params->pchMessageStart);
+    if (sent) {
+        p2p_node_write_message_data(node, msg.data, msg.size);
+        sent = p2p_node_end_message(node);
+    }
+    stream_free(&msg);
+    if (sent)
+        return;
+
+    size_t released = msg_tx_requeue_unsent_blocks(node, items);
+    LOG_WARN("net", "inv getdata send failed for %s: released=%zu "
+             "unsent block request(s)", node->addr_name, released);
+}
+
 bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                  struct byte_stream *s)
 {
@@ -238,17 +283,7 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
         }
     }
 
-    if (request_count > 0) {
-        struct byte_stream msg;
-        stream_init(&msg, getdata.size + 8);
-        stream_write_compact_size(&msg, request_count);
-        stream_write(&msg, getdata.data, getdata.size);
-
-        p2p_node_begin_message(node, "getdata", mp->params->pchMessageStart);
-        p2p_node_write_message_data(node, msg.data, msg.size);
-        p2p_node_end_message(node);
-        stream_free(&msg);
-    }
+    msg_tx_send_getdata(mp, node, &getdata, request_count);
     stream_free(&getdata);
     return true;
 }
