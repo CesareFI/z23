@@ -134,7 +134,12 @@ bool authority_receipt_write_atomic(const char *datadir, const char *name,
     if (tn <= 0 || (size_t)tn >= sizeof(tmp_path))
         LOG_FAIL(AR_SUBSYS, "receipt tmp path too long");
 
-    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    /* Retire only this process's crash orphan, then create the staging leaf
+     * exclusively so a link can never redirect the privileged write. */
+    (void)unlink(tmp_path);
+    int fd = open(tmp_path,
+                  O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                  0600);
     if (fd < 0)
         LOG_FAIL(AR_SUBSYS, "receipt tmp open failed: %s", strerror(errno));
 

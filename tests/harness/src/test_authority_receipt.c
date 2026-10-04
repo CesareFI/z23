@@ -53,6 +53,45 @@ static bool ar_flip_byte(const char *dir, const char *name, off_t off)
     return ok;
 }
 
+static bool ar_file_equals(const char *path, const uint8_t *want, size_t len)
+{
+    uint8_t got[16];
+    if (len > sizeof(got))
+        return false;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    ssize_t n = read(fd, got, sizeof(got));
+    bool ok = close(fd) == 0;
+    return ok && n == (ssize_t)len && memcmp(got, want, len) == 0;
+}
+
+static bool ar_staging_link_preserves_target(const char *dir,
+                                             const uint8_t *payload,
+                                             size_t payload_len)
+{
+    char victim[PATH_MAX], staging[PATH_MAX], final[PATH_MAX];
+    if (snprintf(victim, sizeof(victim), "%s/staging-victim", dir) <= 0 ||
+        snprintf(staging, sizeof(staging), "%s/linked.bin.tmp.%ld", dir,
+                 (long)getpid()) <= 0 ||
+        snprintf(final, sizeof(final), "%s/linked.bin", dir) <= 0)
+        return false;
+
+    static const uint8_t keep[] = "keep-me\n";
+    int fd = open(victim, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    bool ok = fd >= 0 && write(fd, keep, sizeof(keep) - 1) ==
+                              (ssize_t)(sizeof(keep) - 1);
+    if (fd >= 0)
+        ok = close(fd) == 0 && ok;
+    ok = ok && symlink(victim, staging) == 0;
+    ok = ok && authority_receipt_write_atomic(
+                   dir, "linked.bin", payload, payload_len, NULL, 0);
+
+    struct stat st;
+    return ok && ar_file_equals(victim, keep, sizeof(keep) - 1) &&
+           lstat(final, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 int test_authority_receipt(void)
 {
     int failures = 0;
@@ -69,6 +108,8 @@ int test_authority_receipt(void)
     AR_CHECK("write_atomic persists a keyed payload",
              authority_receipt_write_atomic(dir, "rt.bin", payload,
                                             sizeof(payload), NULL, 0));
+    AR_CHECK("write_atomic preserves a linked staging target",
+             ar_staging_link_preserves_target(dir, payload, sizeof(payload)));
     uint8_t got[97];
     memset(got, 0, sizeof(got));
     AR_CHECK("read_fixed returns the same bytes",
