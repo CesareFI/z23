@@ -182,6 +182,31 @@ static void gsf_free_outbound_peer(struct p2p_node *node)
     zcl_mutex_destroy(&node->cs_send);
 }
 
+static int gsf_repair_send_failure_retry(struct msg_processor *mp,
+                                         int32_t peer_height)
+{
+    int failures = 0;
+    struct p2p_node failed_peer;
+    gsf_setup_outbound_peer(&failed_peer, peer_height);
+    zcl_alloc_fault_fail_next("send_segment");
+    header_serve_repair_maybe_send(mp, &failed_peer, 1);
+    bool send_fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    GSF_CHECK("failed repair enqueue reaches no peer",
+              send_fault_consumed && failed_peer.send_size == 0);
+
+    struct p2p_node retry_peer;
+    gsf_setup_outbound_peer(&retry_peer, peer_height);
+    header_serve_repair_maybe_send(mp, &retry_peer, 1);
+    GSF_CHECK("failed repair enqueue leaves immediate retry eligible",
+              retry_peer.send_size > 0 &&
+              header_serve_repair_test_expected_count() == 3);
+
+    gsf_free_outbound_peer(&failed_peer);
+    gsf_free_outbound_peer(&retry_peer);
+    return failures;
+}
+
 int test_getheaders_serve_fallback(void);
 int test_getheaders_serve_fallback(void)
 {
@@ -291,12 +316,7 @@ int test_getheaders_serve_fallback(void)
                   !ok && header_serve_repair_test_armed() &&
                   header_serve_repair_wants(bi_a));
 
-        struct p2p_node peer;
-        gsf_setup_outbound_peer(&peer, bi_d->nHeight);
-        header_serve_repair_maybe_send(&mp, &peer, 1);
-        GSF_CHECK("first peer publishes one exact bounded repair span",
-                  peer.send_size > 0 &&
-                  header_serve_repair_test_expected_count() == 3);
+        failures += gsf_repair_send_failure_retry(&mp, bi_d->nHeight);
         GSF_CHECK("verified span member records partial progress",
                   getheaders_cache_repair_candidate(&mp, bi_b, &hb) &&
                   header_serve_repair_test_cached_count() == 1 &&
@@ -308,7 +328,6 @@ int test_getheaders_serve_fallback(void)
                   retry_peer.send_size > 0 &&
                   header_serve_repair_test_expected_count() == 3 &&
                   header_serve_repair_test_cached_count() == 1);
-        gsf_free_outbound_peer(&peer);
         gsf_free_outbound_peer(&retry_peer);
     }
 

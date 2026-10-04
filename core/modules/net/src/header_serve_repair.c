@@ -150,6 +150,28 @@ static bool hsr_peer_usable(const struct p2p_node *node, int32_t height)
     return node->starting_height >= height;
 }
 
+static void hsr_send_claimed_span(struct msg_processor *mp,
+                                  struct p2p_node *node,
+                                  const struct uint256 *parent_hash,
+                                  const struct uint256 *stop_hash,
+                                  int32_t target_height, size_t count,
+                                  int64_t previous_send_us,
+                                  int64_t claimed_send_us)
+{
+    if (!push_getheaders_span(mp, node, parent_hash, stop_hash)) {
+        int64_t expected = claimed_send_us;
+        (void)atomic_compare_exchange_strong(&g_hsr_last_send_us, &expected,
+                                             previous_send_us);
+        return;
+    }
+
+    LOG_INFO(HSR_SUBSYS,
+             "getheaders: requested header-only repair h=%d..%d count=%zu "
+             "from %s",
+             target_height, target_height + (int32_t)count - 1, count,
+             node->addr_name);
+}
+
 void header_serve_repair_maybe_send(struct msg_processor *mp,
                                     struct p2p_node *node,
                                     int64_t now_seconds)
@@ -231,12 +253,8 @@ void header_serve_repair_maybe_send(struct msg_processor *mp,
         return; // raw-return-ok:another-peer-claimed-repair-send
 
     struct uint256 parent_hash = *target->pprev->phashBlock;
-    push_getheaders_span(mp, node, &parent_hash, &stop_hash);
-    LOG_INFO(HSR_SUBSYS,
-             "getheaders: requested header-only repair h=%d..%d count=%zu "
-             "from %s",
-             target_height, target_height + (int32_t)count - 1, count,
-             node->addr_name);
+    hsr_send_claimed_span(mp, node, &parent_hash, &stop_hash, target_height,
+                          count, last, now_us);
 }
 
 #ifdef ZCL_TESTING

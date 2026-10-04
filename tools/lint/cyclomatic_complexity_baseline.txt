@@ -2822,7 +2822,7 @@ tests/harness/src/test_fr_accel.c:test_fr_accel:16
 tests/harness/src/test_game.c:test_game:58
 tests/harness/src/test_gap_fill_frontier_window.c:test_gap_fill_frontier_window:18
 tests/harness/src/test_generatetoaddress.c:test_generatetoaddress:34
-tests/harness/src/test_getheaders_serve_fallback.c:test_getheaders_serve_fallback:63
+tests/harness/src/test_getheaders_serve_fallback.c:test_getheaders_serve_fallback:62
 tests/harness/src/test_getheaders_serve_pow_dedup.c:test_getheaders_serve_pow_dedup:47
 tests/harness/src/test_getheaders_serve_receipt.c:test_getheaders_serve_receipt:41
 tests/harness/src/test_groth16_msm_parity.c:test_groth16_msm_parity:25
