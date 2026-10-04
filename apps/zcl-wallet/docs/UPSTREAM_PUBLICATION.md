@@ -1652,3 +1652,46 @@ Local artifacts `wallet-backup-password-retirement.bundle`,
 `wallet-backup-password-retirement-qualification.txt` verify in the candidate
 worktree's ignored evidence directory. No external publication action was
 attempted.
+
+### Wallet-restore target-path admission qualified
+
+Branch `agent/upstream-wallet-restore-path-bounds-20261004`, signed head
+`36f90858696e8532777d7f352804078dfbc7fd0c`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, refuses a restore target unless
+`<datadir>/node.db` fits the fixed report field exactly. The report path is also
+the pathname consumed by the restore, so the old unchecked `snprintf` could
+create or modify a different truncated file before the operation eventually
+failed. The new preflight runs before every filesystem action and clears the
+target field on refusal. Representable paths, backup bytes, encryption, merge
+and keep-existing behavior, wallet formats, consensus and sealed-core code are
+unchanged. The review is five files, +91/-15; helper extraction reduces
+`wallet_restore_run()` complexity from 26 to 22.
+
+Canonical RED on the prior production source fails the no-touch assertion
+after observing the truncated target file. Changing only the final capacity
+guard from `>=` to `==` makes both exact-refusal and no-touch assertions fail.
+The restored focused and ASan/UBSan/LSan lanes pass 1/1 with zero skips and
+leak detection enabled. Uncached GCC 14.2.0 and Clang 20.1.2 each check all
+2,433 translation units with no new diagnostics. MinGW considers 2,399
+translation units and cross-links all 74 strict C23 acceptance programs;
+native Windows runtime remains unobserved. Architecture, documentation-count,
+generated-inventory, file-size, core-seal, consensus-parity, PR-security and
+cap-15 complexity gates pass.
+
+The first exact request refused before lint or tests because its retained
+`z23-dev` producer belonged to the preceding candidate. Building `dev-bin`
+from the exact source and using the prescribed retry path repaired only that
+prerequisite. The fresh policy-5 proof then passes all 215 lint gates and all
+66 impact-selected groups cold, with zero failures, skips, reused, unobserved
+or load-flaky outcomes. Lint takes 194.800s, tests 262.342s and the receipt
+records 511.536s total. The private-RAM generation retires normally; receipt
+SHA256 is
+`95a79ce29f79bbb82ae4ad3d50a430f12b898a373fdda1ef239351dc3aa405d6`.
+The optional coverage manifest is absent, so no coverage claim is made.
+
+Local artifacts `wallet-restore-path-bounds.bundle`,
+`wallet-restore-path-bounds.mbox`, `wallet-restore-path-bounds.receipt`,
+`pr-wallet-restore-path-bounds.md`, exact phase/lint/test evidence,
+`wallet-restore-path-bounds-qualification.txt` and
+`wallet-restore-path-bounds-final.sha256` verify in the candidate worktree's
+ignored evidence directory. No external publication action was attempted.
