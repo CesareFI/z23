@@ -1195,3 +1195,44 @@ producer build was refused because that shell lacked its user-manager bus;
 the unchanged qualified private-tmpfs/user-manager wrapper then rebuilt and
 proved the exact candidate. No permission, gate or host policy changed. No
 external publication action was attempted.
+
+### Raw intent load failure atomicity qualified
+
+Branch `agent/upstream-wallet-raw-load-failure-atomic-20261004`, signed head
+`2c23eba90f94d56b9d67bb5dd6372436e0aeb8cc`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, clears the reported raw
+transaction length before every load failure where the caller supplied the
+length pointer. Successful loads still copy and report the exact stored bytes;
+missing-row and undersized-buffer refusals leave the output buffer unchanged.
+The review is three files, +21/-4, including the generated inventory. Raw
+transaction storage, parsing, signing, reconciliation and consensus are
+unchanged.
+
+Canonical RED observes an undersized-buffer refusal leaving `out_len` at
+`SIZE_MAX`. The final regression proves zero length and unchanged output on
+both undersized-buffer and missing-row refusals, followed by an exact successful
+load. Removing only the new zero assignment reproduces RED and restoration
+returns the complete diff to the same hash. The focused and ASan/UBSan
+`transaction_intent` groups pass. Uncached GCC 14.2.0 and Clang 20.1.2 each
+check all 2,433 translation units with no new diagnostic sites. Architecture,
+generated inventory, documentation, file-size, core-seal, consensus-parity and
+cap-15 complexity gates pass without a baseline increase.
+
+The unprivileged private-tmpfs proof passes the exact head/base pair: all 215
+lint gates and all 45 selected impacted groups complete with zero failures,
+skips or reused results. Lint took 237.866s, tests 303.324s, the receipt records
+512.316s total and the foreground step returned after 514.996s. Native status
+independently reports `passed`; receipt SHA256 is
+`5336d82a279424ef069f50ecc9adf41aabdfa8d5bfa6a97149cdccff6324396f`.
+
+Local artifacts `raw-load-failure-atomic.bundle`,
+`raw-load-failure-atomic.mbox`, `raw-load-failure-atomic.receipt`,
+`raw-load-failure-exact-status.log`, `pr-raw-load-failure-atomic.md` and
+`raw-load-failure-atomic-final.sha256` verify in the candidate worktree's
+ignored evidence directory. No external publication action was attempted.
+
+The follow-up WKS1 output-length hypothesis is NO-DEFECT. The qualified
+combined decrypt-safety branch explicitly documents and tests that a failed
+decrypt leaves `*out_len` unchanged while authentication failures wipe the
+tentative plaintext span. Changing that contract would conflict with existing
+review-ready evidence, so no source change or repeated qualification was made.
