@@ -7985,7 +7985,34 @@ $(BIN_DIR)/fs_handshake_probe: tools/fs_handshake_probe.c \
 		platform/modules/platform/src/rng.c platform/modules/platform/src/clock.c \
 		platform/modules/sha3/src/sha3.c core/modules/crypto/src/keccak_x4.c \
 		core/modules/crypto/src/simd_dispatch.c \
-		platform/modules/base/src/cleanse.c platform/modules/base/src/log_level.c
+		platform/modules/base/src/cleanse.c platform/modules/base/src/log_level.c \
+		core/math/include/core/uint256.h \
+		core/modules/core/include/core/random.h \
+		core/modules/crypto/include/crypto/curve25519.h \
+		core/modules/crypto/include/crypto/hkdf_sha3.h \
+		core/modules/crypto/include/crypto/hmac_sha3.h \
+		core/modules/crypto/include/crypto/random_secret.h \
+		core/modules/crypto/include/crypto/sha3.h \
+		core/modules/crypto/include/crypto/simd_dispatch.h \
+		core/modules/crypto/include/crypto/x25519_safe.h \
+		core/modules/crypto/src/keccak_x4_internal.h \
+		core/modules/net/include/net/fast_sync.h \
+		core/modules/net/include/net/file_service.h \
+		core/modules/net/include/net/puzzle.h \
+		platform/modules/base/include/base/cleanse.h \
+		platform/modules/base/include/base/format_attribute.h \
+		platform/modules/base/include/base/log_level.h \
+		platform/modules/base/include/base/log_macros.h \
+		platform/modules/base/include/base/serialize_le.h \
+		platform/modules/base/include/base/stdio_lock.h \
+		platform/modules/base/include/base/utc_tm.h \
+		platform/modules/platform/include/platform/clock.h \
+		platform/modules/platform/include/platform/rng.h \
+		platform/modules/platform/include/platform/socket_compat.h \
+		platform/modules/platform/include/platform/time_compat.h \
+		platform/modules/sha3/include/sha3/sha3.h \
+		platform/modules/support/include/support/cleanse.h \
+		platform/modules/util/include/util/log_macros.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
@@ -7995,7 +8022,7 @@ $(BIN_DIR)/fs_handshake_probe: tools/fs_handshake_probe.c \
 	    -Iplatform/modules/base/include -Iplatform/modules/util/include \
 	    -Iplatform/modules/support/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
-	    -o $@ $^ -lpthread -lm
+	    -o $@ $(filter %.c,$^) -lpthread -lm
 
 # rom-bundle-replicate: copy a verified consensus-state bundle + its replay
 # receipt + a producing-binary hash record to a second directory, verified
