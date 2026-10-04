@@ -8,6 +8,7 @@
 #include "sync/sync_state.h"
 #include "core/uint256.h"
 #include "util/supervisor.h"
+#include "util/safe_alloc.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <stdio.h>
@@ -2006,6 +2007,71 @@ static int test_dl_batch_compaction_deep_queue(void)
     return failures;
 }
 
+static bool dl_slot_growth_failure_case(bool scalar_path)
+{
+    struct download_manager dm;
+    dl_init(&dm);
+
+    /* A tiny, deliberately full table reaches the same boundary as a
+     * production table whose growth allocation fails under pressure. */
+    free(dm.slots);
+    dm.num_slots = 2;
+    dm.slots = calloc(dm.num_slots, sizeof(*dm.slots));
+    if (!dm.slots) {
+        dl_free(&dm);
+        return false;
+    }
+    dm.num_active = dm.num_slots;
+    for (size_t i = 0; i < dm.num_slots; i++) {
+        dm.slots[i].hash = make_hash16((uint16_t)(9500 + i));
+        dm.slots[i].peer_id = 70;
+        dm.slots[i].active = true;
+    }
+
+    if (scalar_path) {
+        /* Make peer 71 demonstrably slower than peer 72. The one-entry queue
+         * then takes the shallow tip-bias scalar path, not batched compaction. */
+        dm.num_peers = 2;
+        dm.peers[0].peer_id = 71;
+        dm.peers[0].bandwidth_score = 10;
+        dm.peers[0].active = true;
+        dm.peers[1].peer_id = 72;
+        dm.peers[1].bandwidth_score = 100;
+        dm.peers[1].active = true;
+    }
+
+    struct uint256 wanted = make_hash16(9600);
+    int32_t height = 9600;
+    bool queued = dl_queue_blocks(&dm, &wanted, &height, 1) == 1;
+
+    zcl_alloc_fault_fail_next("dl_slots");
+    struct uint256 out;
+    size_t first = dl_assign_to_peer(&dm, 71, &out, 1);
+    bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+    uint64_t queued_after_failure = 0;
+    dl_get_stats(&dm, NULL, NULL, NULL, NULL, &queued_after_failure);
+
+    /* The fault is one-shot. A retry can now grow the table and must receive
+     * the same queued hash without an external rediscovery pass. */
+    size_t retried = dl_assign_to_peer(&dm, 71, &out, 1);
+    bool same_hash = retried == 1 && uint256_eq(&out, &wanted);
+    zcl_alloc_fault_clear();
+    dl_free(&dm);
+    return queued && first == 0 && fault_consumed &&
+           queued_after_failure == 1 && same_hash;
+}
+
+static int test_dl_assign_slot_growth_failure_keeps_queue(void)
+{
+    int failures = 0;
+    TEST("batched and scalar slot-growth OOM keep blocks queued") {
+        ASSERT(dl_slot_growth_failure_case(false));
+        ASSERT(dl_slot_growth_failure_case(true));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_download(void)
 {
     int failures = 0;
@@ -2052,6 +2118,7 @@ int test_download(void)
     failures += test_dl_tip_bias_prefers_fast_peer();
     failures += test_dl_tip_bias_no_starvation_shallow_queue();
     failures += test_dl_batch_compaction_deep_queue();
+    failures += test_dl_assign_slot_growth_failure_keeps_queue();
     failures += test_gap_fill_registers_supervisor_contract();
     return failures;
 }

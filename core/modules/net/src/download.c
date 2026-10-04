@@ -1407,11 +1407,14 @@ size_t dl_assign_to_peer(struct download_manager *dm,
                 int32_t height = dm->queue_heights[picks[p]];
                 enum dl_work_class work_class =
                     dm->queue_classes[picks[p]];
-                dl_qset_remove(dm, &hash);
                 maybe_grow(dm);
                 struct dl_in_flight *slot = find_slot(dm, &hash, true);
                 if (!slot)
                     continue;
+                /* Consume queue ownership only after an in-flight slot is
+                 * secured. A failed table growth must leave the block
+                 * discoverable for the next assignment attempt. */
+                dl_qset_remove(dm, &hash);
                 slot->hash = hash;
                 slot->height = height;
                 slot->peer_id = peer_id;
@@ -1423,6 +1426,7 @@ size_t dl_assign_to_peer(struct download_manager *dm,
                 dm->num_active++;
                 dm->total_requested++;
                 out_hashes[assigned++] = hash;
+                picks[assigned - 1] = picks[p];
                 if (work_class == DL_WORK_HISTORY)
                     history_assigned++;
             }
@@ -1432,10 +1436,10 @@ size_t dl_assign_to_peer(struct download_manager *dm,
              * index, so fallback-run ++ primary-run is globally sorted. */
             size_t spick[DL_MAX_IN_FLIGHT_PER_LOOPBACK];
             size_t ns = 0;
-            for (size_t p = 0; p < npick; p++)
+            for (size_t p = 0; p < assigned; p++)
                 if (picks[p] < clamp)
                     spick[ns++] = picks[p];   /* fallback run (ascending) */
-            for (size_t p = 0; p < npick; p++)
+            for (size_t p = 0; p < assigned; p++)
                 if (picks[p] >= clamp)
                     spick[ns++] = picks[p];   /* primary run (ascending) */
             dl_queue_remove_sorted(dm, spick, ns);
@@ -1463,13 +1467,16 @@ size_t dl_assign_to_peer(struct download_manager *dm,
             if (work_class == DL_WORK_HISTORY &&
                 history_assigned >= history_available)
                 break;
-            dl_qset_remove(dm, &hash);
-            dl_queue_remove_at(dm, pick);
-
             maybe_grow(dm);
             attempted_slot = true;
             struct dl_in_flight *slot = find_slot(dm, &hash, true);
-            if (!slot) continue;
+            if (!slot)
+                break;
+
+            /* As in the batched path, retain the queued hash when capacity
+             * growth fails instead of turning transient OOM into lost work. */
+            dl_qset_remove(dm, &hash);
+            dl_queue_remove_at(dm, pick);
 
             slot->hash = hash;
             slot->height = height;
