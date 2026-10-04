@@ -1637,8 +1637,33 @@ cj_stall_facts() {
         while IFS= read -r line; do cj_note "$label log: $line"; done || true
 }
 
+cj_peer_connected_in_doc() {
+    local doc="$1" target="$2" count i
+    [ "$(cj_field ok "$doc" False)" = True ] || return 1
+    count="$(cj_field data.count "$doc" '')"
+    [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -le 64 ] || return 1
+    for ((i = 0; i < count; i++)); do
+        [ "$(cj_field "data.peers.$i.node_id" "$doc" '')" = "$target" ] || continue
+        [ "$(cj_field "data.peers.$i.connected" "$doc" False)" = True ] || return 1
+        [ "$(cj_field "data.peers.$i.cold" "$doc" True)" = False ] || return 1
+        return 0
+    done
+    return 1
+}
+
+cj_capture_overlay_state() {
+    cj_a zcode network status > "$DHT_WORK/overlay-lookup-a-status.json"
+    cj_b zcode network status > "$DHT_WORK/overlay-lookup-b-status.json"
+    cj_a zcode network peers --input='{"limit":64}' > "$DHT_WORK/overlay-lookup-a-peers.json"
+    cj_b zcode network peers --input='{"limit":64}' > "$DHT_WORK/overlay-lookup-b-peers.json"
+    local a b
+    a="$(cat "$DHT_WORK/overlay-lookup-a-status.json")"
+    b="$(cat "$DHT_WORK/overlay-lookup-b-status.json")"
+    cj_note "overlay state: A enabled=$(cj_field data.enabled "$a" '?') authenticated=$(cj_field data.connected_authenticated "$a" '?') queued=$(cj_field data.queued_lookups "$a" '?'); B enabled=$(cj_field data.enabled "$b" '?') authenticated=$(cj_field data.connected_authenticated "$b" '?') queued=$(cj_field data.queued_lookups "$b" '?')"
+}
+
 cj_connect_authenticated() {
-    local deadline find lookup owner rearmed=0 auth_a auth_b started
+    local deadline find lookup owner rearmed=0 auth_a auth_b started peers_a peers_b
     local lookup_node=a lookup_target="$CJ_NODE_B"
     # Both directions. Software travels the same links the chain does, and a
     # node that only ever accepts inbound connections is not a participant in
@@ -1656,6 +1681,9 @@ cj_connect_authenticated() {
     fi
     cj_wait_dht_enabled || cj_die "the two nodes' DHTs never both enabled"
     find="$("cj_$lookup_node" zcode network find begin --input="{\"node_id\":\"$lookup_target\"}")"
+    if [ "$(cj_field ok "$find" False)" != True ]; then
+        cj_capture_overlay_state
+    fi
     cj_require_ok "node $lookup_node peer lookup" "$find"
     lookup="$(cj_field data.lookup_id "$find")"
     owner="$(cj_field data.owner_token "$find")"
@@ -1668,6 +1696,13 @@ cj_connect_authenticated() {
             "$(dht_status "$DHT_DD_B" "$B_RPC")" 0)"
         if [ "${auth_a:-0}" -ge 1 ] 2>/dev/null &&
            [ "${auth_b:-0}" -ge 1 ] 2>/dev/null; then
+            peers_a="$(cj_a zcode network peers --input='{"limit":64}')"
+            peers_b="$(cj_b zcode network peers --input='{"limit":64}')"
+            if ! cj_peer_connected_in_doc "$peers_a" "$CJ_NODE_B" ||
+               ! cj_peer_connected_in_doc "$peers_b" "$CJ_NODE_A"; then
+                sleep 0.5
+                continue
+            fi
             "cj_$lookup_node" zcode network find cancel \
                 --input="{\"lookup_id\":\"$lookup\",\"owner_token\":\"$owner\"}" \
                 >/dev/null || true
@@ -1683,6 +1718,7 @@ cj_connect_authenticated() {
         fi
         sleep 0.5
     done
+    cj_capture_overlay_state
     cj_die "the two nodes never formed an authenticated overlay session"
 }
 
@@ -3097,7 +3133,7 @@ cj_journey_publisher_disappears() {
 
 cj_journey_publisher_returns() {
     cj_step "13/13  the publisher returns and re-proves its own history"
-    local dial_a="$CJ_PEER_ADDR_B" started ibd tip hist bal
+    local dial_a="$CJ_PEER_ADDR_B" started ibd tip hist bal peers_a deadline
     [ "$CJ_MULTIHOST" = 1 ] || dial_a="127.0.0.1"
     # A new process boots from the datadir the kill left behind — the same
     # wallet, the same identity, the same holed chain state a real crash
@@ -3148,7 +3184,26 @@ cj_journey_publisher_returns() {
         cj_die "node A returned with balance '$bal' instead of the '$CJ_PREKILL_BALANCE' it died with"
     [ -n "$CJ_PREKILL_TIP" ] && [ "$tip" = "$CJ_PREKILL_TIP" ] ||
         cj_die "the survivors moved the tip to $tip while the publisher died at $CJ_PREKILL_TIP"
-    cj_note "node A returned: provable tip $tip, body history complete, balance $bal unchanged"
+    if [ "$CJ_MULTIHOST" = 1 ]; then
+        # Distinct physical IPs must re-establish both authenticated views.
+        cj_connect_authenticated
+        cj_note "node A returned: provable tip $tip, body history complete, balance $bal unchanged, authenticated A/B overlay restored"
+    else
+        # In the local and two-host fixtures C shares A's IP. B may retain C
+        # as its one live contact for that IP, leaving A cold on B even while
+        # restarted A has authenticated B. Assert exactly that local route.
+        deadline=$(( $(date +%s) + DHT_WAIT ))
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+            peers_a="$(cj_a zcode network peers --input='{"limit":64}')"
+            cj_peer_connected_in_doc "$peers_a" "$CJ_NODE_B" && break
+            sleep 0.5
+        done
+        if ! cj_peer_connected_in_doc "$peers_a" "$CJ_NODE_B"; then
+            cj_capture_overlay_state
+            cj_die "returned node A did not reauthenticate B within the bounded wait"
+        fi
+        cj_note "node A returned: provable tip $tip, body history complete, balance $bal unchanged, A reauthenticated B"
+    fi
     CJ_PUBLISHER_RETURNED=1
 }
 

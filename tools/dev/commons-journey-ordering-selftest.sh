@@ -110,6 +110,58 @@ grep -qF 'intervention=latecomer-restart-toward-survivor-after-requester-exit' <
 grep -qF '[ "$CJ_TWOHOST" = 1 ] || cj_stop_publisher' <<<"$survival" ||
     fail "other topologies lost their publisher-stop operation"
 
+# Returning to the same chain tip does not show that the software overlay
+# reconnected. The real journey must observe a fresh authenticated A/B session
+# after A boots from its killed datadir, before step 13 can pass.
+returned="$(awk '/^cj_journey_publisher_returns\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$JOURNEY")"
+[ -n "$returned" ] || { fail "publisher-return journey step missing"; exit 2; }
+return_line() { printf '%s\n' "$returned" | grep -nF -- "$1" | head -1 | cut -d: -f1 || true; }
+return_spawn="$(return_line 'dht_spawn DHT_PGID_A')"
+return_rpc="$(return_line 'cj_wait_rpc_or_die')"
+return_physical="$(return_line 'if [ "$CJ_MULTIHOST" = 1 ]; then')"
+return_auth="$(return_line '    cj_connect_authenticated')"
+return_local="$(return_line 'peers_a="$(cj_a zcode network peers')"
+return_local_exact="$(return_line 'cj_peer_connected_in_doc "$peers_a" "$CJ_NODE_B" && break')"
+return_pass="$(return_line 'CJ_PUBLISHER_RETURNED=1')"
+if [ -z "$return_spawn" ] || [ -z "$return_rpc" ] ||
+   [ -z "$return_physical" ] || [ -z "$return_auth" ] ||
+   [ -z "$return_local" ] || [ -z "$return_local_exact" ] ||
+   [ -z "$return_pass" ] ||
+   [ "$return_spawn" -ge "$return_rpc" ] ||
+   [ "$return_rpc" -ge "$return_physical" ] ||
+   [ "$return_physical" -ge "$return_auth" ] ||
+   [ "$return_auth" -ge "$return_local" ] ||
+   [ "$return_local" -ge "$return_local_exact" ] ||
+   [ "$return_local_exact" -ge "$return_pass" ]; then
+    fail "publisher return can pass without topology-specific authenticated reconnection"
+else
+    pass "publisher return checks bilateral physical or exact local authenticated reconnection"
+fi
+connect_body="$(awk '/^cj_connect_authenticated\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$JOURNEY")"
+grep -qF 'cj_peer_connected_in_doc "$peers_a" "$CJ_NODE_B"' <<<"$connect_body" ||
+    fail "overlay check does not bind A's connected peer to B's node ID"
+grep -qF 'cj_peer_connected_in_doc "$peers_b" "$CJ_NODE_A"' <<<"$connect_body" ||
+    fail "overlay check does not bind B's connected peer to A's node ID"
+
+peer_guard="$(awk '/^cj_peer_connected_in_doc\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$JOURNEY")"
+[ -n "$peer_guard" ] || { fail "exact connected-peer check missing"; exit 2; }
+eval "$peer_guard"
+DHT_ACCEPTANCE_C23="$SELF_DIR/../../build/bin/arena_product_journey_c23"
+[ -x "$DHT_ACCEPTANCE_C23" ] || { fail "C23 JSON fixture helper missing"; exit 2; }
+cj_jget() { "$DHT_ACCEPTANCE_C23" json-get "$@"; }
+cj_field() { printf '%s' "$2" | cj_jget "$1" "${3:-}"; }
+peer_id_a=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+peer_id_b=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+peer_doc="{\"ok\":true,\"data\":{\"count\":2,\"peers\":[{\"node_id\":\"$peer_id_a\",\"connected\":true,\"cold\":false},{\"node_id\":\"$peer_id_b\",\"connected\":true,\"cold\":false}]}}"
+cold_doc="{\"ok\":true,\"data\":{\"count\":1,\"peers\":[{\"node_id\":\"$peer_id_b\",\"connected\":false,\"cold\":true}]}}"
+if cj_peer_connected_in_doc "$peer_doc" "$peer_id_b" &&
+   ! cj_peer_connected_in_doc "$peer_doc" cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc &&
+   ! cj_peer_connected_in_doc "$cold_doc" "$peer_id_b"; then
+    pass "connected-peer check requires the exact live node, not another session or cold contact"
+else
+    fail "connected-peer check accepted the wrong, absent or cold peer"
+fi
+
 # A Linux executable cannot run on an arm64 Mac. The physical-host journey
 # must reject that topology before allocating remote scratch or copying bytes.
 setup="$(awk '/^cj_multihost_setup\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$JOURNEY")"
