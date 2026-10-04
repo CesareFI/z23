@@ -254,13 +254,18 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
 
         struct byte_stream rs;
         stream_init(&rs, 256);
-        if (block_txn_request_serialize(&req, &rs)) {
-            p2p_node_begin_message(node, "getblocktxn", mp->params->pchMessageStart);
+        bool request_sent = false;
+        if (block_txn_request_serialize(&req, &rs) &&
+            p2p_node_begin_message(node, "getblocktxn",
+                                   mp->params->pchMessageStart)) {
             p2p_node_write_message_data(node, rs.data, rs.size);
-            p2p_node_end_message(node);
+            request_sent = p2p_node_end_message(node);
         }
         stream_free(&rs);
-        /* Don't free req — indices are owned by node->compact_missing_indices */
+        if (!request_sent)
+            compact_pending_retry_full_body(node);
+        /* Don't free req: node owns the indices on success; the retry helper
+         * has already freed them on failure. */
     } else {
         block_free(&out_block);
     }
