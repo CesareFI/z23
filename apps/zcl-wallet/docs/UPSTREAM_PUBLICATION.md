@@ -1121,3 +1121,38 @@ Local artifacts `metadata-aad-bound.bundle`, `metadata-aad-bound.mbox`,
 `pr-metadata-aad-bound.md` and `metadata-aad-bound-final.sha256` verify in the
 candidate worktree's ignored evidence directory. No external publication
 action was attempted.
+
+### WKD1 failure output-length atomicity qualified
+
+Branch `agent/upstream-wallet-key-envelope-failure-atomic-20261004`, signed
+head `23a5b38e60463da2d2e9eb0f87515b1f45dbe691`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, makes both WKD1 encrypt and
+decrypt clear the caller's reported output length before every failure. The
+existing authenticated-decrypt cleanup still wipes tentative plaintext. A
+small shared helper avoids raising the established complexity scores. The
+review is three files, +58/-5; the envelope format, algorithms, key bytes and
+successful outputs are unchanged.
+
+Canonical RED preserves the old behavior and observes `SIZE_MAX` after a
+locked-key failure. Removing the shared reset reproduces encrypt RED; bypassing
+it only in decrypt reproduces decrypt RED. The final focused group passes all
+15 cases, including row-swap authentication failure, and ASan/UBSan passes the
+same cases. Uncached GCC 14.2.0 and Clang 20.1.2 each check all 2,433
+translation units with no new diagnostic sites. Architecture, documentation,
+generated inventory, file-size, sealed-core, consensus-parity and cap-15
+complexity gates pass without a baseline increase.
+
+The unprivileged private-tmpfs proof passes the exact head/base pair: all 215
+lint gates and all 62 selected impacted groups complete with zero failures,
+skips or reused results. Lint took 202.834s, tests 240.633s, the receipt records
+442.861s total and the foreground step returned after 445.574s. Native status
+independently reports `passed`; receipt SHA256 is
+`c873e4bebfe5ab5b01c2655d6d458bf4cded73b68748c955a45759bbd86078dd`.
+
+Local artifacts `key-envelope-failure-atomic.bundle`,
+`key-envelope-failure-atomic.mbox`,
+`key-envelope-failure-atomic-exact-proof.receipt`,
+`key-envelope-failure-atomic-exact-status.log`,
+`pr-key-envelope-failure-atomic.md` and
+`key-envelope-failure-atomic-final.sha256` verify in the candidate worktree's
+ignored evidence directory. No external publication action was attempted.
