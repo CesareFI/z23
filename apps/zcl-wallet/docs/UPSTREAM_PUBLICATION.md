@@ -901,3 +901,37 @@ corresponding folder in `z23-wallet-publication-20261003`. PR73/74 remain the
 already-published storage/Base58 submissions recorded above. The two secret-
 retirement candidates remain locally prepared under the current no-external-
 action boundary.
+
+### Additional qualified review artifacts sealed
+
+Five more already-qualified wallet C proposals now have manifests covering the
+review bundle, patch series, exact-proof receipt and final PR body. Existing
+bundles and proof evidence were preserved; only missing artifact copies and
+manifests were added. Every included commit signature, bundle prerequisite and
+receipt hash was re-verified. No source changed and no completed proof or test
+was repeated.
+
+- Xprv scratch retirement head `57f7df67d3ed18aa5bcb6a7d8eae1611b83af7b5`:
+  `xprv-qualified-final.sha256`; receipt SHA256
+  `8e5f7dff2eb1e7be359c284be9180d97d61ac6d88bf0e635e9855d50e44f41f9`.
+- Keystore failed-auth retirement head
+  `e5a1d446c6b29da8d5544acecdabb88f38f17d99`:
+  `keystore-wipe-final.sha256`; receipt SHA256
+  `561c0e246e402fdfdd7c9e458454a7f96e8f4749f8041b676c8e14fec8e13fe7`.
+- Keystore encryption length admission head
+  `03bfa7e51773b2a0284845563d4e391d03167f1a`:
+  `keystore-range-final.sha256`; receipt SHA256
+  `3e244e02a8da87e35d9b6511fde257ad8fce525fb0680a11bdb98fb132b2eaf2`.
+- Combined keystore decrypt safety head
+  `c78e1483e74061b6208063aec76e9ecde2e1782d`:
+  `artifacts/keystore-decrypt-safety-final.sha256`; receipt SHA256
+  `f8ea7015fb63d2c9d761f9ce7a5b808166f1801bab2f3f0544f38bb148ed918f`.
+- Combined extended-key failure/refusal retirement head
+  `d796d73ae29f04cd06ecc16b7d500d5900e2aade`:
+  `extkey-refusal-retirement-final.sha256`; receipt SHA256
+  `2e30a6b682e51ea47b80904cad00cb6b1fb6dda0861dad935404aeb4532fa092`.
+
+The xprv artifacts reside in `z23-wallet-reuse-publication-20261003`; the
+keystore and extended-key artifacts reside in
+`z23-wallet-publication-20261003`. All remain local under the current
+no-external-action boundary.
