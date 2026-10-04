@@ -220,7 +220,7 @@ for goal in windows-headless-run windows-headless-run-selftest \
     probe_bootstrap skip "$goal"
     probe_bootstrap require "$goal" z23
 done
-for goal in print-node-c23-srcs doctor doctor-build \
+for goal in print-node-c23-srcs doctor \
     print-CFLAGS print-DEV-CFLAGS print-LDFLAGS print-DEV-LDFLAGS print-build-flags; do
     probe_bootstrap query "$goal"
     probe_bootstrap require "$goal" z23
@@ -232,6 +232,8 @@ probe_bootstrap skip timings
 probe_bootstrap require timings z23
 probe_bootstrap skip agent-dev-status
 probe_bootstrap require agent-dev-status z23
+probe_bootstrap skip doctor-build
+probe_bootstrap require doctor-build z23
 probe_bootstrap skip windows-headless-run windows-headless-run-selftest
 probe_bootstrap require z23
 probe_bootstrap require
@@ -271,6 +273,27 @@ if env "${status_env[@]}" make -s --no-print-directory -C "$ROOT" \
         > "$SANDBOX/status-mixed.out" 2> "$SANDBOX/status-mixed.err" ||
    ! grep -Fq 'C23 toolchain check failed' "$SANDBOX/status-mixed.err"; then
     fail 'mixed agent-dev-status build skipped compiler preflight'
+fi
+
+# The accelerator doctor must still explain a missing compiler. Its exact
+# report should match the direct script; a mixed node build must not skip preflight.
+if ! env ZCL_BIN_DIR="$SANDBOX/doctor-cache" ZCL_BOOTSTRAP_CC=/nonexistent \
+        ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$ROOT" \
+        ZCL_USE_CCACHE=1 CC=/nonexistent ZCL_VENDOR_LIB="$SANDBOX/doctor-vendor" \
+        doctor-build > "$SANDBOX/doctor-make.out" 2> "$SANDBOX/doctor-make.err"; then
+    cat "$SANDBOX/doctor-make.err" >&2
+    fail 'exact doctor-build required a compiler'
+fi
+"$ROOT/tools/dev/doctor-build.sh" > "$SANDBOX/doctor-direct.out"
+cmp -s "$SANDBOX/doctor-make.out" "$SANDBOX/doctor-direct.out" ||
+    fail 'exact doctor-build changed the report'
+[ ! -e "$SANDBOX/doctor-cache" ] && [ ! -e "$SANDBOX/doctor-vendor" ] ||
+    fail 'exact doctor-build built cache or vendor inputs'
+if env ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$ROOT" \
+        ZCL_USE_CCACHE=0 CC=/nonexistent doctor-build z23 \
+        > "$SANDBOX/doctor-mixed.out" 2> "$SANDBOX/doctor-mixed.err" ||
+   ! grep -Fq 'C23 toolchain check failed' "$SANDBOX/doctor-mixed.err"; then
+    fail 'mixed doctor-build skipped compiler preflight'
 fi
 
 printf '%s\n' \
