@@ -4,6 +4,7 @@
 /* ZCL_REFLEX_BENCH: 00000000 */
 #include "services/vault_intent_decision_service.h"
 
+#include "core/amount.h"
 #include "hotswap/hotswap_service.h"
 
 #include <limits.h>
@@ -16,8 +17,9 @@ bool vault_intent_plan_decide(
     if (!snapshot || !decision)
         return false;
     memset(decision, 0, sizeof(*decision));
-    if (snapshot->target_zat < 0 || snapshot->fee_zat < 0 ||
-        snapshot->target_zat > INT64_MAX - snapshot->fee_zat) {
+    if (!MoneyRange(snapshot->target_zat) ||
+        !MoneyRange(snapshot->fee_zat) ||
+        snapshot->target_zat > MAX_MONEY - snapshot->fee_zat) {
         decision->code = VAULT_INTENT_DECISION_FEE_INVALID;
         return true;
     }

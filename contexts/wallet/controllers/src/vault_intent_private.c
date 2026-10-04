@@ -443,7 +443,7 @@ bool vault_intent_private_plan(const struct json_value *input,
     int64_t target = 0;
     if (!vip_parse(input, &p, &target, result)) return true;
     p.fee = wallet_default_fee(ctx->wallet);
-    if (p.fee < 0 || target > INT64_MAX - p.fee) {
+    if (!MoneyRange(p.fee) || target > MAX_MONEY - p.fee) {
         vip_error(result, "FEE_INVALID", "wallet maximum fee is invalid");
         memory_cleanse(&p, sizeof(p));
         return true;

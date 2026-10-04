@@ -9,6 +9,7 @@
 #include "controllers/vault_intent_private.h"
 #include "controllers/vault_intent_publish.h"
 #include "coins/coins_view.h"
+#include "core/amount.h"
 #include "core/serialize.h"
 #include "json/json.h"
 #include "models/database.h"
@@ -1368,6 +1369,19 @@ int test_transaction_intent(void)
         ASSERT(vault_intent_reserve(&ndb, &over, 30000000));
         ASSERT_EQ(vault_intent_reserved_total(
                       &ndb, "dev", identity.wallet_instance_id), 2000001);
+        struct ar_errors money_errors;
+        ti_bound_row(&over, 0x41, &identity, MAX_MONEY);
+        ASSERT(vault_intent_validate(&over, &money_errors));
+        over.max_fee_zat = 1;
+        over.reserved_zat = MAX_MONEY + 1;
+        ASSERT(!vault_intent_validate(&over, &money_errors));
+        ti_bound_row(&over, 0x42, &identity, MAX_MONEY + 1);
+        ASSERT(!vault_intent_validate(&over, &money_errors));
+        ti_bound_row(&over, 0x43, &identity, 1);
+        over.max_fee_zat = MAX_MONEY + 1;
+        over.reserved_zat = MAX_MONEY + 2;
+        ASSERT(!vault_intent_validate(&over, &money_errors));
+        ASSERT(!vault_intent_reserve(&ndb, &over, INT64_MAX));
         node_db_close(&ndb);
         test_rm_rf(dir);
         PASS();
@@ -1511,6 +1525,39 @@ int test_transaction_intent(void)
         snapshot.development_scope = false;
         snapshot.target_zat = INT64_MAX;
         snapshot.fee_zat = 1;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_FEE_INVALID);
+        snapshot.target_zat = MAX_MONEY;
+        snapshot.fee_zat = 0;
+        snapshot.confirmed_zat = MAX_MONEY;
+        snapshot.already_reserved_zat = 0;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_ALLOW);
+        snapshot.fee_zat = 1;
+        snapshot.confirmed_zat = INT64_MAX;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_FEE_INVALID);
+        snapshot.target_zat = 0;
+        snapshot.fee_zat = MAX_MONEY + 1;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_FEE_INVALID);
+        snapshot.target_zat = MAX_MONEY + 1;
+        snapshot.fee_zat = 0;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_FEE_INVALID);
+        snapshot.target_zat = 0;
+        snapshot.fee_zat = -1;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_FEE_INVALID);
+        snapshot.target_zat = -1;
+        snapshot.fee_zat = 0;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_FEE_INVALID);
+        snapshot.target_zat = 0;
+        snapshot.fee_zat = INT64_MAX;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_FEE_INVALID);
+        snapshot.fee_zat = INT64_MIN;
         ASSERT(vault_intent_plan_decide(&snapshot, &decision));
         ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_FEE_INVALID);
         ASSERT(!vault_intent_plan_decide(NULL, &decision));

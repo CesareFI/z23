@@ -306,7 +306,7 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
     int64_t target = 0;
     for (size_t i = 0; i < p.effects_len; i++) target += p.effects[i].amount;
     p.fee = wallet_default_fee(ctx->wallet);
-    if (p.fee < 0 || target > INT64_MAX - p.fee) {
+    if (!MoneyRange(p.fee) || target > MAX_MONEY - p.fee) {
         vi_error(result, "FEE_INVALID", "wallet fee is invalid"); return true;
     }
     const char *agent_session =
