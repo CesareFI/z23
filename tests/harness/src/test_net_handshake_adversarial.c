@@ -349,6 +349,44 @@ static int test_version_too_old_rejected(void)
     return failures;
 }
 
+/* Regression: the wire timestamp is arbitrary int64; pre-fix
+ * msg_version.c computed `ver.timestamp - now` directly, which is C23 UB
+ * for INT64_MIN/MAX-adjacent values (the -fsanitize=undefined lane flags
+ * the subtraction at process time). The handler must accept the message
+ * and record no time evidence for an unclamped clock. */
+
+static int test_version_extreme_timestamp_no_ub(void)
+{
+    int failures = 0;
+    TEST("handshake: INT64_MIN wire timestamp accepted without UB") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+
+        struct version_message ver;
+        version_message_init(&ver);
+        ver.protocol_version = MIN_PEER_PROTO_VERSION;
+        ver.services = NODE_NETWORK;
+        ver.timestamp = INT64_MIN;
+        ver.nonce = 0xAAAAAAAAAAAAAAAAULL;
+        snprintf(ver.sub_version, sizeof(ver.sub_version), "%s",
+                 "/test:0.1/");
+        ver.start_height = 100;
+        ver.relay = true;
+        struct byte_stream payload;
+        stream_init(&payload, 128);
+        version_message_serialize(&ver, &payload);
+
+        bool ok = process_version(&f.mp, &f.node, &payload);
+        ASSERT(ok);
+        ASSERT(f.node.time_offset == 0);
+
+        stream_free(&payload);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 2. any message before version -> rejected without crash, peer state
  * intact. Rides on msgprocessor.c's dispatch loop
  * (`e->requires_handshake && node->version == 0`); process_ping is never
@@ -1328,6 +1366,7 @@ int test_net_handshake_adversarial(void)
     failures += test_addr_message_records_topology_edge();
     failures += test_addr_timestamp_sanitization_rule();
     failures += test_oversized_user_agent_rejected();
+    failures += test_version_extreme_timestamp_no_ub();
     failures += test_honest_handshake_completes();
     failures += test_outbound_version_after_transport_bytes();
     failures += test_mempool_requested_once_for_relay_peer();
