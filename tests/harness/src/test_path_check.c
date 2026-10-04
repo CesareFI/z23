@@ -94,6 +94,8 @@ static ssize_t pc_send(int fd, const void *buf, size_t len, int flags)
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
+int file_io_stream_retirement_cases(void);
+
 static bool write_small_file(const char *path, const char *body)
 {
     FILE *f = fopen(path, "wb");
@@ -163,7 +165,7 @@ static bool https_queue_push_fd(struct https_frontdoor_queue *queue, int fd,
 int test_path_check(void)
 {
     printf("\n=== path_check tests ===\n");
-    int failures = 0;
+    int failures = file_io_stream_retirement_cases();
 
     /* ── fs_arg: rejects NULL / empty / over-length ──────────── */
     PC_CHECK("fs_arg(NULL) rejected",
