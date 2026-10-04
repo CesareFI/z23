@@ -3378,10 +3378,12 @@ $(TMPL_TOOL): tools/gen_templates.c platform/modules/base/src/safe_alloc.c \
 	$(CC) -std=c23 -O2 -Wall -Wextra -Iplatform/modules/base/include \
 		-Iplatform/modules/util/include -Iplatform/modules/platform/include -o $@ $^
 
-$(BIN_DIR)/inspect_html: tools/inspect_html.c platform/modules/base/src/safe_alloc.c
+$(BIN_DIR)/inspect_html: tools/inspect_html.c platform/modules/base/src/safe_alloc.c \
+	platform/modules/util/include/util/safe_alloc.h \
+	platform/modules/base/include/base/safe_alloc.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra \
-	    -Iplatform/modules/base/include -Iplatform/modules/util/include -o $@ $^
+	    -Iplatform/modules/base/include -Iplatform/modules/util/include -o $@ $(filter %.c,$^)
 
 # These two run on EVERY make invocation (they are prerequisites of the
 # -include'd view bootstrap, so they are re-checked before any goal), which
