@@ -3373,15 +3373,20 @@ INSTALL_SH_SRC = platform/packaging/install/install_from_source.sh
 VIEW_GEN_HEADERS = $(VIEW_GEN_HEADERS_EARLY)
 
 $(TMPL_TOOL): tools/gen_templates.c platform/modules/base/src/safe_alloc.c \
-		platform/modules/platform/src/path_replace.c
+		platform/modules/platform/src/path_replace.c \
+		platform/modules/util/include/util/safe_alloc.h \
+		platform/modules/base/include/base/safe_alloc.h \
+		platform/modules/platform/include/platform/path_replace.h
 	@mkdir -p $(dir $@) build/identity
 	$(CC) -std=c23 -O2 -Wall -Wextra -Iplatform/modules/base/include \
-		-Iplatform/modules/util/include -Iplatform/modules/platform/include -o $@ $^
+		-Iplatform/modules/util/include -Iplatform/modules/platform/include -o $@ $(filter %.c,$^)
 
-$(BIN_DIR)/inspect_html: tools/inspect_html.c platform/modules/base/src/safe_alloc.c
+$(BIN_DIR)/inspect_html: tools/inspect_html.c platform/modules/base/src/safe_alloc.c \
+		platform/modules/util/include/util/safe_alloc.h \
+		platform/modules/base/include/base/safe_alloc.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra \
-	    -Iplatform/modules/base/include -Iplatform/modules/util/include -o $@ $^
+	    -Iplatform/modules/base/include -Iplatform/modules/util/include -o $@ $(filter %.c,$^)
 
 # These two run on EVERY make invocation (they are prerequisites of the
 # -include'd view bootstrap, so they are re-checked before any goal), which
