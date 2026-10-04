@@ -53,6 +53,7 @@
 #include "mining/miner.h"
 #include "models/block.h"
 #include "models/database.h"
+#include "net/checkpoint_header_fetch.h"
 #include "net/header_serve_repair.h"
 #include "net/net.h"
 #include "net/msg_internal.h"
@@ -207,6 +208,34 @@ static int gsf_repair_send_failure_retry(struct msg_processor *mp,
     return failures;
 }
 
+static int gsf_checkpoint_fetch_send_failure_retry(
+        struct msg_processor *mp, const struct block_index *target)
+{
+    int failures = 0;
+    checkpoint_header_fetch_test_reset();
+    checkpoint_header_fetch_arm(target->nHeight, target->phashBlock);
+
+    struct p2p_node failed_peer;
+    gsf_setup_outbound_peer(&failed_peer, target->nHeight);
+    zcl_alloc_fault_fail_next("send_segment");
+    checkpoint_header_fetch_maybe_send(mp, &failed_peer, 1);
+    bool send_fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    GSF_CHECK("failed checkpoint fetch reaches no peer",
+              send_fault_consumed && failed_peer.send_size == 0);
+
+    struct p2p_node retry_peer;
+    gsf_setup_outbound_peer(&retry_peer, target->nHeight);
+    checkpoint_header_fetch_maybe_send(mp, &retry_peer, 1);
+    GSF_CHECK("failed checkpoint fetch leaves immediate retry eligible",
+              retry_peer.send_size > 0);
+
+    gsf_free_outbound_peer(&failed_peer);
+    gsf_free_outbound_peer(&retry_peer);
+    checkpoint_header_fetch_test_reset();
+    return failures;
+}
+
 int test_getheaders_serve_fallback(void);
 int test_getheaders_serve_fallback(void)
 {
@@ -342,6 +371,10 @@ int test_getheaders_serve_fallback(void)
                   next == bi_b && bi_a->nStatus == BLOCK_VALID_TREE);
     }
     header_serve_repair_test_reset();
+
+    /* 3b. A local checkpoint-header enqueue failure must not consume the
+     * global fetch interval; another eligible peer can carry it immediately. */
+    failures += gsf_checkpoint_fetch_send_failure_retry(&mp, bi_a);
 
     /* 4. Snapshot reducers retain complete hash-bound headers in
      *    header_solution_repair even when the body and node.db row are absent.
