@@ -170,8 +170,10 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
         LOG_FAIL("compact", "cmpctblock from %s failed pow gate", node->addr_name);
     }
 
-    /* Discard any prior pending compact block for this peer */
-    compact_pending_clear(node);
+    /* A peer has only one compact reconstruction slot. If a newer compact
+     * block replaces it, immediately make the abandoned body available to a
+     * different peer instead of leaving its request owned until timeout. */
+    compact_pending_retry_full_body(node);
 
     /* Collect mempool transactions for reconstruction */
     struct uint256 *mp_hashes = NULL;

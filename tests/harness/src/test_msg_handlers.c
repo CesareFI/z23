@@ -15,10 +15,13 @@
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "core/hash.h"
+#include "mining/miner.h"
+#include "net/compact_blocks.h"
 #include "net/msgprocessor.h"
 #include "net/msg_internal.h"
 #include "net/download.h"
 #include "net/peer_scoring.h"
+#include "platform/socket_compat.h"
 #include "consensus/validation.h"
 #include "core/uint256.h"
 #include "primitives/block.h"
@@ -27,6 +30,7 @@
 #include "util/blocker.h"
 #include "util/thread_registry.h"
 #include "validation/main_state.h"
+#include "validation/txmempool.h"
 
 #include <stdio.h>
 #include <stdatomic.h>
@@ -733,6 +737,117 @@ static int test_process_blocktxn_stale_retries_full_body(void)
     return failures;
 }
 
+static bool make_missing_compact_test_block(struct compact_block_msg *cb,
+                                            const struct chain_params *cp)
+{
+    struct block blk;
+    block_init(&blk);
+    blk.header.nVersion = 4;
+    blk.header.nTime = 1700000513u;
+    struct arith_uint256 pow_limit;
+    uint256_to_arith(&pow_limit, &cp->consensus.powLimit);
+    blk.header.nBits = arith_uint256_get_compact(&pow_limit, false);
+    blk.num_vtx = 2;
+    blk.vtx = calloc(blk.num_vtx, sizeof(*blk.vtx));
+    if (!blk.vtx)
+        return false;
+
+    for (size_t i = 0; i < blk.num_vtx; i++) {
+        transaction_init(&blk.vtx[i]);
+        blk.vtx[i].version = 4;
+        blk.vtx[i].overwintered = true;
+        blk.vtx[i].version_group_id = SAPLING_VERSION_GROUP_ID;
+        memset(blk.vtx[i].hash.data, (int)(0x80 + i),
+               sizeof(blk.vtx[i].hash.data));
+    }
+    blk.vtx[0].num_vin = 1;
+    blk.vtx[0].vin = calloc(1, sizeof(*blk.vtx[0].vin));
+    if (!blk.vtx[0].vin) {
+        block_free(&blk);
+        return false;
+    }
+    tx_in_init(&blk.vtx[0].vin[0]);
+
+    bool ok = mine_block_pow(&blk, 1, cp, 0) &&
+              compact_block_from_block(cb, &blk, 513);
+    block_free(&blk);
+    return ok;
+}
+
+static int test_process_cmpctblock_replacement_retries_old_body(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: newer cmpctblock requeues replaced partial body") {
+        struct download_manager *dm = get_download_mgr();
+        (void)dl_drain_for_backpressure(dm);
+        chain_params_select(CHAIN_REGTEST);
+        const struct chain_params *cp = chain_params_get();
+
+        struct compact_block_msg cb;
+        compact_block_msg_init(&cb);
+        bool setup_ok = make_missing_compact_test_block(&cb, cp);
+        struct byte_stream s;
+        stream_init(&s, 4096);
+        setup_ok = setup_ok && compact_block_msg_serialize(&cb, &s);
+
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 0);
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.params = cp;
+        mp.mempool = &pool;
+        mp.net_mgr = &nm;
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 513);
+        node.socket = PLATFORM_SOCKET_INVALID;
+        zcl_mutex_init(&node.cs_send);
+        struct uint256 old_hash = make_test_hash(0x74);
+        setup_ok = setup_ok &&
+                   dl_mark_requested(dm, &old_hash, 74, (uint32_t)node.id);
+        node.compact_pending_block = calloc(1, sizeof(struct block));
+        setup_ok = setup_ok && node.compact_pending_block != NULL;
+        if (node.compact_pending_block) {
+            block_init(node.compact_pending_block);
+            node.compact_pending_hash = old_hash;
+            node.compact_request_time = (int64_t)time(NULL);
+        }
+
+        bool handled = setup_ok && process_cmpctblock(&mp, &node, &s);
+        bool old_released = !dl_is_in_flight(dm, &old_hash);
+        struct uint256 reassigned_hash;
+        bool reassigned =
+            dl_assign_to_peer(dm, 514, &reassigned_hash, 1) == 1 &&
+            uint256_eq(&reassigned_hash, &old_hash);
+
+        if (node.compact_pending_block) {
+            block_free(node.compact_pending_block);
+            free(node.compact_pending_block);
+        }
+        free(node.compact_missing_indices);
+        while (node.send_head) {
+            struct send_segment *seg = node.send_head;
+            node.send_head = seg->next;
+            send_segment_free(seg);
+        }
+        zcl_mutex_destroy(&node.cs_send);
+        tx_mempool_free(&pool);
+        stream_free(&s);
+        compact_block_msg_free(&cb);
+        (void)dl_drain_for_backpressure(dm);
+        chain_params_select(CHAIN_MAIN);
+
+        ASSERT(setup_ok);
+        ASSERT(handled);
+        ASSERT(old_released);
+        ASSERT(reassigned);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_process_block_msg_no_score_when_requested_from_peer_zero(void)
 {
     int failures = 0;
@@ -1353,6 +1468,7 @@ int test_msg_handlers(void)
     failures += test_process_blocktxn_malformed_retries_full_body();
     failures += test_process_blocktxn_bad_fill_retries_full_body();
     failures += test_process_blocktxn_stale_retries_full_body();
+    failures += test_process_cmpctblock_replacement_retries_old_body();
     failures += test_process_block_msg_no_score_when_requested_from_peer_zero();
     failures += test_process_block_msg_no_score_within_settle_grace();
     failures += test_process_block_msg_no_score_during_shutdown();
