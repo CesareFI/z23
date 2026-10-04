@@ -1685,8 +1685,8 @@ void msg_processor_init(struct msg_processor *mp,
     mp->utxo_sha3_compute = NULL;
     mp->utxo_sha3_compute_ctx = NULL;
     mp->block_intake = NULL;
-    mp->beta6_armed = NULL;
-    mp->beta6_message = NULL;
+    atomic_store_explicit(&mp->beta6_armed, NULL, memory_order_relaxed);
+    atomic_store_explicit(&mp->beta6_message, NULL, memory_order_relaxed);
     mp->zcode_swarm_frame = NULL;
     mp->zcode_swarm_tick = NULL;
     mp->zcode_swarm_ctx = NULL;

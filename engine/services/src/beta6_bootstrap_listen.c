@@ -519,10 +519,14 @@ static void *accept_thread(void *opaque)
 
 static struct zcl_result encode_cached_manifest(void)
 {
-    const struct beta6_bs_manifest *manifest = beta6_bs_manifest();
+    struct beta6_bs_manifest manifest;
+    struct zcl_result copied = beta6_bs_manifest_copy(&manifest);
+    if (!copied.ok)
+        return copied;
     struct byte_stream out;
     stream_init(&out, 65536);
-    struct zcl_result encoded = beta6_bs_manifest_encode(manifest, &out);
+    struct zcl_result encoded = beta6_bs_manifest_encode(&manifest, &out);
+    beta6_bs_manifest_free(&manifest);
     if (!encoded.ok) {
         stream_free(&out);
         return encoded;
@@ -624,15 +628,9 @@ static struct zcl_result listen_start_locked(const char *bind_ip, uint16_t port,
     }
 
     register_liveness();
-    LOCK(g_session_lock);
-    g_listener.running = true;
-    UNLOCK(g_session_lock);
     // supervised:beta6-bs-accept (g_accept_liveness, registered just above)
     if (thread_registry_spawn("beta6-bs-accept", accept_thread, NULL,
                               &g_listener.thread) != 0) {
-        LOCK(g_session_lock);
-        g_listener.running = false;
-        UNLOCK(g_session_lock);
         platform_socket_close(g_listener.socket);
         free(g_listener.manifest_bytes);
         g_listener.manifest_bytes = NULL;
@@ -641,8 +639,13 @@ static struct zcl_result listen_start_locked(const char *bind_ip, uint16_t port,
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                        "could not start the beta6 bootstrap accept thread");
     }
+    LOCK(g_session_lock);
+    g_listener.running = true;
+    UNLOCK(g_session_lock);
+    struct beta6_bs_observation observed;
+    beta6_bs_observe(&observed);
     LOG_INFO("beta6boot", "serving beta6 bootstrap snapshots on %s:%u from %s", bind_ip,
-             (unsigned)port, beta6_bs_source_dir());
+             (unsigned)port, observed.source_dir);
     return ZCL_OK;
 }
 

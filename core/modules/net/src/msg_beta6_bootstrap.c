@@ -20,6 +20,7 @@
 #include "net/protocol.h"
 #include "base/safe_alloc.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 
 void msg_processor_set_beta6_bootstrap(
@@ -29,8 +30,13 @@ void msg_processor_set_beta6_bootstrap(
 {
     if (!mp)
         return;
-    mp->beta6_armed = armed;
-    mp->beta6_message = message;
+    if (armed && message) {
+        atomic_store_explicit(&mp->beta6_message, message, memory_order_release);
+        atomic_store_explicit(&mp->beta6_armed, armed, memory_order_release);
+    } else {
+        atomic_store_explicit(&mp->beta6_armed, NULL, memory_order_release);
+        atomic_store_explicit(&mp->beta6_message, NULL, memory_order_release);
+    }
 }
 
 static bool mp_beta6_bootstrap(struct msg_processor *mp, struct p2p_node *node,
@@ -38,7 +44,9 @@ static bool mp_beta6_bootstrap(struct msg_processor *mp, struct p2p_node *node,
 {
     if (!mp || !node || !s)
         return true;
-    if (!mp->beta6_message)
+    msg_beta6_bootstrap_message_fn message =
+        atomic_load_explicit(&mp->beta6_message, memory_order_acquire);
+    if (!message)
         return true;   /* server not wired on this node: ignore, as before */
     size_t len = stream_remaining(s);
     /* The largest beta6 request is a chunk request (a few dozen bytes); the
@@ -55,7 +63,7 @@ static bool mp_beta6_bootstrap(struct msg_processor *mp, struct p2p_node *node,
             return true;
         }
     }
-    bool ok = mp->beta6_message(mp, node, command, buf, len);
+    bool ok = message(mp, node, command, buf, len);
     free(buf);
     return ok;
 }

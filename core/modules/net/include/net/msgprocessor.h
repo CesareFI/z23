@@ -316,8 +316,8 @@ struct msg_processor {
 
     /* beta6 fast-bootstrap seam (see the typedefs above). NULL = this node
      * neither advertises NODE_BOOTSTRAP nor answers the eight commands. */
-    msg_beta6_bootstrap_armed_fn beta6_armed;
-    msg_beta6_bootstrap_message_fn beta6_message;
+    _Atomic(msg_beta6_bootstrap_armed_fn) beta6_armed;
+    _Atomic(msg_beta6_bootstrap_message_fn) beta6_message;
 };
 
 /* ── P2P message dispatch table ──────────────────────────────────

@@ -417,21 +417,22 @@ static const char *beta6_current_blocker(bool serving, const char *posture_block
  * from "configured and empty" without a second call. */
 static void network_push_beta6_source(struct json_value *beta6)
 {
-    const struct beta6_bs_manifest *manifest = beta6_bs_manifest();
-    json_push_kv_str(beta6, "source_dir", beta6_bs_source_dir());
+    struct beta6_bs_observation observed;
+    beta6_bs_observe(&observed);
+    json_push_kv_str(beta6, "source_dir", observed.source_dir);
     /* Which wire is actually answering. `in_band` is the production path (the
      * node's own P2P port); `listen_port` is the optional side socket, 0 when
      * none was configured. */
     json_push_kv_bool(beta6, "in_band", beta6_bs_inband_status().ok);
     json_push_kv_int(beta6, "listen_port", (int64_t)beta6_bs_listen_port());
     json_push_kv_int(beta6, "manifest_version",
-                     manifest ? (int64_t)manifest->version : 0);
+                     (int64_t)observed.manifest_version);
     json_push_kv_int(beta6, "manifest_height",
-                     manifest ? (int64_t)manifest->height : -1);
+                     (int64_t)observed.manifest_height);
     json_push_kv_int(beta6, "manifest_files",
-                     manifest ? (int64_t)manifest->file_count : 0);
+                     (int64_t)observed.manifest_files);
     json_push_kv_int(beta6, "manifest_bytes",
-                     manifest ? (int64_t)manifest->snapshot_bytes : 0);
+                     (int64_t)observed.manifest_bytes);
 }
 
 /* The top-level readiness `blockers[]` array: every named fact currently

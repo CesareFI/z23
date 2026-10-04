@@ -115,10 +115,14 @@ void zcl_native_handle_dev_beta6_verify(
         return;
     }
 
-    const struct beta6_bs_manifest *manifest = beta6_bs_manifest();
+    struct beta6_bs_observation observed;
+    beta6_bs_observe(&observed);
+    struct beta6_bs_manifest manifest;
+    struct zcl_result copied = beta6_bs_manifest_copy(&manifest);
     struct byte_stream encoded;
     stream_init(&encoded, 4096);
-    struct zcl_result wire = beta6_bs_manifest_encode(manifest, &encoded);
+    struct zcl_result wire =
+        copied.ok ? beta6_bs_manifest_encode(&manifest, &encoded) : copied;
     size_t encoded_bytes = wire.ok ? encoded.size : 0;
     stream_free(&encoded);
 
@@ -126,16 +130,17 @@ void zcl_native_handle_dev_beta6_verify(
     (void)json_push_kv_str(&reply->data, "source_dir", source_dir);
     (void)json_push_kv_str(&reply->data, "network", network);
     (void)json_push_kv_int(&reply->data, "manifest_version",
-                           (int64_t)manifest->version);
+                           (int64_t)observed.manifest_version);
     (void)json_push_kv_str(&reply->data, "sidecar_used",
-                           dev_beta6_verify_sidecar_used(manifest->version));
-    (void)json_push_kv_int(&reply->data, "height", (int64_t)manifest->height);
+                           dev_beta6_verify_sidecar_used(observed.manifest_version));
+    (void)json_push_kv_int(&reply->data, "height",
+                           (int64_t)observed.manifest_height);
     (void)json_push_kv_int(&reply->data, "block_tip_height",
-                           (int64_t)manifest->block_tip_height);
+                           copied.ok ? (int64_t)manifest.block_tip_height : -1);
     (void)json_push_kv_int(&reply->data, "file_count",
-                           (int64_t)manifest->file_count);
+                           (int64_t)observed.manifest_files);
     (void)json_push_kv_int(&reply->data, "snapshot_bytes",
-                           (int64_t)manifest->snapshot_bytes);
+                           (int64_t)observed.manifest_bytes);
     (void)json_push_kv_bool(&reply->data, "manifest_encoded", wire.ok);
     (void)json_push_kv_int(&reply->data, "encoded_bytes",
                            (int64_t)encoded_bytes);
@@ -149,5 +154,7 @@ void zcl_native_handle_dev_beta6_verify(
         "armed and disarmed in this standalone process only; a running "
         "node's own armed state, a separate process, is untouched");
 
+    if (copied.ok)
+        beta6_bs_manifest_free(&manifest);
     beta6_bs_disarm();
 }

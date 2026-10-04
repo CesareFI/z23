@@ -39,6 +39,7 @@
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 #include "platform/clock.h"
+#include "util/sync.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +60,18 @@ static char s_params_dir[4096];
 static unsigned char *s_manifest_bytes;
 static size_t s_manifest_len;
 static bool s_ready;
+static zcl_mutex_t s_inband_lock;
+static zcl_once_t s_inband_lock_once = ZCL_ONCE_INIT;
+
+static void inband_lock_init(void)
+{
+    zcl_mutex_init(&s_inband_lock);
+}
+
+static void inband_lock_init_once(void)
+{
+    (void)zcl_once_call(&s_inband_lock_once, inband_lock_init);
+}
 
 /* ── framing ─────────────────────────────────────────────────────────── */
 
@@ -237,15 +250,21 @@ struct zcl_result beta6_bs_inband_serve(struct msg_processor *mp, struct p2p_nod
 {
     if (!mp || !mp->params || !node || !command)
         return ZCL_OK;
-    struct zcl_result serving = beta6_bs_inband_status();
-    if (!serving.ok) {
-        if (!send_reject(mp, node, command, "beta6 bootstrap serving is not armed"))
+    inband_lock_init_once();
+    LOCK(s_inband_lock);
+    if (!s_ready || !beta6_bs_status().ok) {
+        if (!send_reject(mp, node, command, "beta6 bootstrap serving is not armed")) {
+            UNLOCK(s_inband_lock);
             return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                            "could not tell peer %s that beta6 serving is not armed",
                            node->addr_name);
+        }
+        UNLOCK(s_inband_lock);
         return ZCL_OK;
     }
-    if (!inband_dispatch(mp, node, command, payload, payload_len))
+    bool sent = inband_dispatch(mp, node, command, payload, payload_len);
+    UNLOCK(s_inband_lock);
+    if (!sent)
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                        "could not enqueue the beta6 %s reply to peer %s", command,
                        node->addr_name);
@@ -254,18 +273,29 @@ struct zcl_result beta6_bs_inband_serve(struct msg_processor *mp, struct p2p_nod
 
 struct zcl_result beta6_bs_inband_status(void)
 {
-    if (!s_ready)
+    inband_lock_init_once();
+    LOCK(s_inband_lock);
+    if (!s_ready) {
+        UNLOCK(s_inband_lock);
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                        "the beta6 in-band bootstrap manifest is not cached");
-    return beta6_bs_status();
+    }
+    struct zcl_result status = beta6_bs_status();
+    UNLOCK(s_inband_lock);
+    return status;
 }
 
 struct zcl_result beta6_bs_inband_params_status(void)
 {
-    if (!s_ready)
+    inband_lock_init_once();
+    LOCK(s_inband_lock);
+    bool ready = s_ready;
+    bool has_params = s_params_dir[0] != '\0';
+    UNLOCK(s_inband_lock);
+    if (!ready)
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                        "beta6 in-band seam is not armed");
-    if (s_params_dir[0] == '\0')
+    if (!has_params)
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                        "armed without -paramsdir: getbspman is answered "
                        "with a reject");
@@ -274,20 +304,38 @@ struct zcl_result beta6_bs_inband_params_status(void)
 
 struct zcl_result beta6_bs_inband_arm(const char *network, const char *params_dir)
 {
+    inband_lock_init_once();
+    LOCK(s_inband_lock);
     struct zcl_result armed = beta6_bs_status();
-    if (!armed.ok)
+    if (!armed.ok) {
+        UNLOCK(s_inband_lock);
         return armed;
-    beta6_bs_inband_disarm();
+    }
+    s_ready = false;
+    free(s_manifest_bytes);
+    s_manifest_bytes = NULL;
+    s_manifest_len = 0;
+    s_network[0] = '\0';
+    s_params_dir[0] = '\0';
 
+    struct beta6_bs_manifest manifest;
+    struct zcl_result copied = beta6_bs_manifest_copy(&manifest);
+    if (!copied.ok) {
+        UNLOCK(s_inband_lock);
+        return copied;
+    }
     struct byte_stream out;
     stream_init(&out, 65536);
-    struct zcl_result encoded = beta6_bs_manifest_encode(beta6_bs_manifest(), &out);
+    struct zcl_result encoded = beta6_bs_manifest_encode(&manifest, &out);
+    beta6_bs_manifest_free(&manifest);
     if (!encoded.ok) {
         stream_free(&out);
+        UNLOCK(s_inband_lock);
         return encoded;
     }
     if (out.size > BETA6_BS_MAX_MESSAGE_LEN) {
         stream_free(&out);
+        UNLOCK(s_inband_lock);
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                        "the beta6 bootstrap manifest is %zu bytes and does not fit in "
                        "one P2P message",
@@ -296,6 +344,7 @@ struct zcl_result beta6_bs_inband_arm(const char *network, const char *params_di
     s_manifest_bytes = zcl_malloc(out.size, "beta6 inband manifest");
     if (!s_manifest_bytes) {
         stream_free(&out);
+        UNLOCK(s_inband_lock);
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                        "out of memory encoding the beta6 bootstrap manifest");
     }
@@ -306,15 +355,19 @@ struct zcl_result beta6_bs_inband_arm(const char *network, const char *params_di
     snprintf(s_network, sizeof(s_network), "%s", network ? network : "");
     snprintf(s_params_dir, sizeof(s_params_dir), "%s", params_dir ? params_dir : "");
     s_ready = true;
+    UNLOCK(s_inband_lock);
     return ZCL_OK;
 }
 
 void beta6_bs_inband_disarm(void)
 {
+    inband_lock_init_once();
+    LOCK(s_inband_lock);
     s_ready = false;
     free(s_manifest_bytes);
     s_manifest_bytes = NULL;
     s_manifest_len = 0;
     s_network[0] = '\0';
     s_params_dir[0] = '\0';
+    UNLOCK(s_inband_lock);
 }

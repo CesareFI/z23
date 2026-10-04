@@ -29,6 +29,7 @@
 #include "jobs/reducer_frontier.h"  // lib-layer-ok:provable-tip-served-to-peers
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -401,7 +402,9 @@ void msg_version_build(struct version_message *ver,
      * on the ORDINARY P2P port. Advertised only while the engine's beta6
      * snapshot server says it is armed and can actually answer the eight
      * commands — never as a standing claim. */
-    if (mp->beta6_armed && mp->beta6_armed())
+    msg_beta6_bootstrap_armed_fn beta6_armed =
+        atomic_load_explicit(&mp->beta6_armed, memory_order_acquire);
+    if (beta6_armed && beta6_armed())
         ver->services |= NODE_BOOTSTRAP;
     ver->timestamp = (int64_t)platform_time_wall_time_t();
     ver->addr_recv = node->addr;

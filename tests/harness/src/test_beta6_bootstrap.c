@@ -380,8 +380,12 @@ int test_beta6_bootstrap(void)
         struct beta6_bs_chunk_request request = { .file_index = 0, .offset = 0,
                                                   .length = 16 };
         ASSERT(!beta6_bs_status().ok);
-        ASSERT(beta6_bs_manifest() == NULL);
-        ASSERT_STR_EQ(beta6_bs_source_dir(), "");
+        struct beta6_bs_manifest absent;
+        ASSERT(!beta6_bs_manifest_copy(&absent).ok);
+        struct beta6_bs_observation dormant;
+        beta6_bs_observe(&dormant);
+        ASSERT(!dormant.armed);
+        ASSERT_STR_EQ(dormant.source_dir, "");
         struct zcl_result chunk =
             beta6_bs_read_chunk(&request, scratch, sizeof(scratch));
         ASSERT(!chunk.ok);
@@ -438,17 +442,17 @@ int test_beta6_bootstrap(void)
         ASSERT(fixture_build(dir));
 
         ASSERT(beta6_bs_arm(dir, "main").ok);
-        const struct beta6_bs_manifest *manifest = beta6_bs_manifest();
-        ASSERT(manifest != NULL);
+        struct beta6_bs_manifest manifest;
+        ASSERT(beta6_bs_manifest_copy(&manifest).ok);
         /* No .blocktip sidecar, so this is a plain v1 anchor manifest. */
-        ASSERT_EQ(manifest->version, 1);
-        ASSERT_EQ(manifest->height, 3126937);
-        ASSERT_EQ((int)manifest->file_count, 3);
-        ASSERT_STR_EQ(manifest->files[0].path, "chainstate/000007.ldb");
-        ASSERT_STR_EQ(manifest->files[1].path, "blocks/blk00000.dat");
-        ASSERT_STR_EQ(manifest->files[2].path, "blocks/index/000005.ldb");
-        ASSERT_EQ((int)manifest->snapshot_bytes, 70);
-        ASSERT_EQ((int)manifest->chunk_size, (int)BETA6_BS_CHUNK_SIZE);
+        ASSERT_EQ(manifest.version, 1);
+        ASSERT_EQ(manifest.height, 3126937);
+        ASSERT_EQ((int)manifest.file_count, 3);
+        ASSERT_STR_EQ(manifest.files[0].path, "chainstate/000007.ldb");
+        ASSERT_STR_EQ(manifest.files[1].path, "blocks/blk00000.dat");
+        ASSERT_STR_EQ(manifest.files[2].path, "blocks/index/000005.ldb");
+        ASSERT_EQ((int)manifest.snapshot_bytes, 70);
+        ASSERT_EQ((int)manifest.chunk_size, (int)BETA6_BS_CHUNK_SIZE);
 
         /* A chunk of a known file comes back with exactly the fixture bytes. */
         unsigned char data[20];
@@ -472,7 +476,14 @@ int test_beta6_bootstrap(void)
         ASSERT(!unaligned.ok);
         ASSERT(strstr(unaligned.message, "not aligned") != NULL);
 
-        beta6_bs_disarm();
+        struct zcl_result failed_rearm = beta6_bs_arm("relative/dir", "main");
+        ASSERT(!failed_rearm.ok);
+        ASSERT(!beta6_bs_status().ok);
+        /* The observation is caller-owned: teardown cannot invalidate it. */
+        ASSERT_EQ(manifest.height, 3126937);
+        ASSERT_EQ((int)manifest.file_count, 3);
+        ASSERT_STR_EQ(manifest.files[0].path, "chainstate/000007.ldb");
+        beta6_bs_manifest_free(&manifest);
         test_rm_rf(dir);
         PASS();
     }

@@ -15,6 +15,7 @@
  */
 #include "services/beta6_bootstrap.h"
 
+#include "base/safe_alloc.h"
 #include "platform/positioned_file.h"
 #include "util/sync.h"
 
@@ -22,17 +23,21 @@
 #include <string.h>
 
 static zcl_mutex_t g_serve_lock;
-static bool g_serve_lock_ready;
+static zcl_mutex_t g_serve_lifecycle_lock;
+static zcl_once_t g_serve_lock_once = ZCL_ONCE_INIT;
 static bool g_armed;
 static char g_source_dir[4096];
 static struct beta6_bs_manifest g_manifest;
 
+static void serve_locks_init(void)
+{
+    zcl_mutex_init(&g_serve_lifecycle_lock);
+    zcl_mutex_init(&g_serve_lock);
+}
+
 static void serve_lock_init_once(void)
 {
-    if (!g_serve_lock_ready) {
-        zcl_mutex_init(&g_serve_lock);
-        g_serve_lock_ready = true;
-    }
+    (void)zcl_once_call(&g_serve_lock_once, serve_locks_init);
 }
 
 /* Decide which manifest version this serve directory publishes, and fill the
@@ -175,7 +180,7 @@ static struct zcl_result build_manifest(const char *source_dir, const char *netw
     return flown;
 }
 
-struct zcl_result beta6_bs_arm(const char *source_dir, const char *network)
+static struct zcl_result arm_locked(const char *source_dir, const char *network)
 {
     if (!source_dir || source_dir[0] == '\0')
         return ZCL_ERR(BETA6_BS_ERR_REFUSED, "beta6 bootstrap source directory is empty");
@@ -199,7 +204,6 @@ struct zcl_result beta6_bs_arm(const char *source_dir, const char *network)
     if (!made.ok)
         return made;
 
-    serve_lock_init_once();
     LOCK(g_serve_lock);
     beta6_bs_manifest_free(&g_manifest);
     g_manifest = built;
@@ -209,9 +213,8 @@ struct zcl_result beta6_bs_arm(const char *source_dir, const char *network)
     return ZCL_OK;
 }
 
-void beta6_bs_disarm(void)
+static void disarm_locked(void)
 {
-    serve_lock_init_once();
     LOCK(g_serve_lock);
     beta6_bs_manifest_free(&g_manifest);
     beta6_bs_manifest_init(&g_manifest);
@@ -220,23 +223,88 @@ void beta6_bs_disarm(void)
     UNLOCK(g_serve_lock);
 }
 
+struct zcl_result beta6_bs_arm(const char *source_dir, const char *network)
+{
+    serve_lock_init_once();
+    LOCK(g_serve_lifecycle_lock);
+    struct zcl_result armed = arm_locked(source_dir, network);
+    if (!armed.ok)
+        disarm_locked();
+    UNLOCK(g_serve_lifecycle_lock);
+    return armed;
+}
+
+void beta6_bs_disarm(void)
+{
+    serve_lock_init_once();
+    LOCK(g_serve_lifecycle_lock);
+    disarm_locked();
+    UNLOCK(g_serve_lifecycle_lock);
+}
+
 struct zcl_result beta6_bs_status(void)
 {
-    if (!g_armed)
+    serve_lock_init_once();
+    LOCK(g_serve_lock);
+    bool armed = g_armed;
+    UNLOCK(g_serve_lock);
+    if (!armed)
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
                        "the beta6 bootstrap snapshot service is not armed; set "
                        "-beta6-bootstrap-source");
     return ZCL_OK;
 }
 
-const char *beta6_bs_source_dir(void)
+void beta6_bs_observe(struct beta6_bs_observation *out)
 {
-    return g_armed ? g_source_dir : "";
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    serve_lock_init_once();
+    LOCK(g_serve_lock);
+    out->armed = g_armed;
+    if (g_armed) {
+        snprintf(out->source_dir, sizeof(out->source_dir), "%s", g_source_dir);
+        out->manifest_version = g_manifest.version;
+        out->manifest_height = g_manifest.height;
+        out->manifest_files = g_manifest.file_count;
+        out->manifest_bytes = g_manifest.snapshot_bytes;
+    } else {
+        out->manifest_height = -1;
+    }
+    UNLOCK(g_serve_lock);
 }
 
-const struct beta6_bs_manifest *beta6_bs_manifest(void)
+struct zcl_result beta6_bs_manifest_copy(struct beta6_bs_manifest *out)
 {
-    return g_armed ? &g_manifest : NULL;
+    if (!out)
+        return ZCL_ERR(BETA6_BS_ERR_REFUSED,
+                       "beta6 bootstrap manifest copy needs an output");
+    beta6_bs_manifest_init(out);
+    serve_lock_init_once();
+    LOCK(g_serve_lock);
+    if (!g_armed) {
+        UNLOCK(g_serve_lock);
+        return ZCL_ERR(BETA6_BS_ERR_REFUSED,
+                       "the beta6 bootstrap snapshot service is not armed; set "
+                       "-beta6-bootstrap-source");
+    }
+    *out = g_manifest;
+    out->files = NULL;
+    if (g_manifest.file_count > 0) {
+        out->files = zcl_malloc(g_manifest.file_count * sizeof(*out->files),
+                                "beta6 bootstrap manifest copy");
+        if (!out->files) {
+            beta6_bs_manifest_init(out);
+            UNLOCK(g_serve_lock);
+            return ZCL_ERR(BETA6_BS_ERR_REFUSED,
+                           "out of memory copying the beta6 bootstrap manifest");
+        }
+        memcpy(out->files, g_manifest.files,
+               g_manifest.file_count * sizeof(*out->files));
+    }
+    UNLOCK(g_serve_lock);
+    return ZCL_OK;
 }
 
 struct zcl_result beta6_bs_validate_chunk_range(uint64_t offset, uint64_t length,
@@ -315,15 +383,13 @@ struct zcl_result beta6_bs_read_file_chunk(const char *root,
     return ZCL_OK;
 }
 
-struct zcl_result beta6_bs_read_chunk(const struct beta6_bs_chunk_request *request,
-                                      unsigned char *out, size_t out_capacity)
+static struct zcl_result read_chunk_locked(const struct beta6_bs_chunk_request *request,
+                                           unsigned char *out, size_t out_capacity)
 {
-    if (!request || !out)
+    if (!g_armed)
         return ZCL_ERR(BETA6_BS_ERR_REFUSED,
-                       "beta6 bootstrap chunk read needs a request and a buffer");
-    struct zcl_result armed = beta6_bs_status();
-    if (!armed.ok)
-        return armed;
+                       "the beta6 bootstrap snapshot service is not armed; set "
+                       "-beta6-bootstrap-source");
     if (request->length == 0 || request->length > BETA6_BS_CHUNK_SIZE)
         return ZCL_ERR(BETA6_BS_ERR_REFUSED, "invalid beta6 bootstrap chunk length %u",
                        (unsigned)request->length);
@@ -337,4 +403,17 @@ struct zcl_result beta6_bs_read_chunk(const struct beta6_bs_chunk_request *reque
         return safe;
     return beta6_bs_read_file_chunk(g_source_dir, &g_manifest.files[request->file_index],
                                     request, "bootstrap", out, out_capacity);
+}
+
+struct zcl_result beta6_bs_read_chunk(const struct beta6_bs_chunk_request *request,
+                                      unsigned char *out, size_t out_capacity)
+{
+    if (!request || !out)
+        return ZCL_ERR(BETA6_BS_ERR_REFUSED,
+                       "beta6 bootstrap chunk read needs a request and a buffer");
+    serve_lock_init_once();
+    LOCK(g_serve_lock);
+    struct zcl_result read = read_chunk_locked(request, out, out_capacity);
+    UNLOCK(g_serve_lock);
+    return read;
 }

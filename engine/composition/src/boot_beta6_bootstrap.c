@@ -157,11 +157,13 @@ static bool boot_beta6_bootstrap_start(void *ctx)
         LOG_WARN("beta6boot", "beta6 bootstrap serve NOT armed: %s", armed.message);
         return true;
     }
-    const struct beta6_bs_manifest *manifest = beta6_bs_manifest();
+    struct beta6_bs_observation observed;
+    beta6_bs_observe(&observed);
     LOG_INFO("beta6boot",
              "armed from %s: manifest v%d height=%d files=%zu bytes=%llu", source,
-             (int)manifest->version, (int)manifest->height, manifest->file_count,
-             (unsigned long long)manifest->snapshot_bytes);
+             (int)observed.manifest_version, (int)observed.manifest_height,
+             observed.manifest_files,
+             (unsigned long long)observed.manifest_bytes);
 
     install_inband_seam(svc);
     start_side_listener(svc);

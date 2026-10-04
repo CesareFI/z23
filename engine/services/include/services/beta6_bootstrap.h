@@ -96,6 +96,17 @@ struct beta6_bs_manifest {
     struct uint256 hash_block_tip;  /* v3 */
 };
 
+/* Lock-safe scalar view of the currently armed serve state. The structure
+ * owns no pointers, so callers may retain it across disarm/re-arm. */
+struct beta6_bs_observation {
+    bool armed;
+    char source_dir[4096];
+    int32_t manifest_version;
+    int32_t manifest_height;
+    size_t manifest_files;
+    uint64_t manifest_bytes;
+};
+
 /* CBootstrapSnapshotChunkRequest (protocol.h:292-318). */
 struct beta6_bs_chunk_request {
     uint32_t file_index;
@@ -169,10 +180,11 @@ struct zcl_result beta6_bs_arm(const char *source_dir, const char *network);
 void beta6_bs_disarm(void);
 /* ok while a snapshot is armed; otherwise a named refusal. */
 struct zcl_result beta6_bs_status(void);
-/* The armed source directory, or "" when disarmed. */
-const char *beta6_bs_source_dir(void);
-/* The cached manifest, or NULL when disarmed. Immutable while armed. */
-const struct beta6_bs_manifest *beta6_bs_manifest(void);
+/* Copy a lock-safe scalar observation of the current serve state. */
+void beta6_bs_observe(struct beta6_bs_observation *out);
+/* Copy the current manifest into caller-owned storage. Free a successful copy
+ * with beta6_bs_manifest_free(). */
+struct zcl_result beta6_bs_manifest_copy(struct beta6_bs_manifest *out);
 
 /* ── Chunk reads ─────────────────────────────────────────────────────── */
 
