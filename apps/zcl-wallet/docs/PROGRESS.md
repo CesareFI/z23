@@ -8325,3 +8325,17 @@ inventory gates pass. The preserved combined proof passes215/215 lint and
 `12ae9da0a8cdf6f36486443f079faf3422fd2e4b5855963fd9e9d6caae6a00a8`.
 Combined local review artifacts verify. The earlier transparent-only branch and
 receipt remain preserved.
+
+### Transparent and Sapling encoder scratch retired
+
+Signed combined candidate07655a15 extends the WIF last-use helper so an
+encoder refusal is copied nowhere but still wipes the full caller span. Sapling
+spending-key refusal and viewing-key success/refusal now use the same boundary.
+Canonical RED becomes focused and ASan/UBSan GREEN with all four transparent
+and shielded retirement assertions; strict GCC14/Clang20 cover2,433 TUs, all215
+lint gates pass and complexity/architecture/inventory gates remain green.
+The preserved unprivileged exact proof passes215/215 lint gates and114/114
+impacted groups with zero failures, skips, unobserved or load-flaky outcomes in
+533.211s. Receipt SHA256 is
+`00c1ae9ac34857e1975a86e967497f1fb86b1213776230c0700e4da5b4ea3803`.
+Signed bundle, patch series, receipt, PR draft and manifest verify locally.

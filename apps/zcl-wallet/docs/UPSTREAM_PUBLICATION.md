@@ -742,3 +742,42 @@ The two-commit combined review is five files,+125/-6 and supersedes the
 unpublished transparent-only PR draft without deleting its branch, receipt or
 artifacts. Complete bundle, patch series, updated PR body and SHA256 manifest
 verify locally. No external publication action was attempted.
+
+### Transparent and Sapling encoder-scratch retirement qualified
+
+Branch `agent/upstream-wallet-shielded-export-scratch-20261004`, signed head
+`07655a15e585efbf2d2782d0ec15924a72346ac9`, combines the qualified WIF
+retirement parent with one focused Sapling follow-up. The shared controller
+helper now copies only a successful encoding and always wipes the complete
+caller-owned buffer. This retires transparent WIF scratch after success,
+Sapling spending-key scratch after encoder refusal, and Sapling viewing-key
+scratch after success or refusal. Returned bytes, encodings and refusal behavior
+are unchanged. Combined review against base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`: five files,+193/-14.
+
+Canonical Sapling RED fails the viewing-key success and refusal retirement
+assertions while the real wallet and backup cases remain green. Final focused
+and ASan/UBSan runs observe WIF success, viewing-key success/refusal and
+spending-key refusal retirement; the registered group passes with zero skips,
+unobserved results or load flakiness. Strict GCC14 and Clang20 each accept all
+2,433 translation units with no new diagnostic sites. All215 focused lint
+gates pass in99.166s; cap15 complexity scans68,763 functions and architecture
+and generated-inventory checks pass.
+
+The preserved unprivileged proof copy `/tmp/wx.zOnj60/repo` independently
+passes the exact head/base proof: all215 lint gates in183.050s and114/114
+impacted groups in260.879s, with zero failures, skips, unobserved results or
+load flakiness. Total proof time is533.211s. Native status verifies the exact
+pair. Receipt SHA256 is
+`00c1ae9ac34857e1975a86e967497f1fb86b1213776230c0700e4da5b4ea3803`.
+The first two proof attempts refused absent local ignored prerequisites
+(`vendor/sqlite3.c` and `build/bin/gen_capability_inventory`); both were
+restored from or built inside the local proof checkout, then the documented
+retry path ran the complete proof. No gate, hook or policy was bypassed.
+
+Local review artifacts `key-export-scratch.bundle`,
+`key-export-scratch.mbox`, `key-export-scratch.receipt`,
+`pr-key-export-scratch.md` and `key-export-scratch-final.sha256` verify. The
+combined candidate supersedes the unpublished WIF-only draft for review while
+preserving its branch, proof and artifacts. No external publication action was
+attempted in this slice.

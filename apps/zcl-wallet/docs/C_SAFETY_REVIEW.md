@@ -4962,3 +4962,34 @@ impacted groups with zero failures or skips; receipt SHA256 is
 Authorization, encodings, wallet state, consensus, monetary policy, PoW,
 upgrades, transparent/shielded validity, recovery, storage and TLS remain
 unchanged. Client-side native-command copies are outside this transport slice.
+
+## Upstream key-export encoder scratch retirement — 2026-10-04
+
+Signed head `07655a15e585efbf2d2782d0ec15924a72346ac9`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, makes one existing wallet
+controller helper own the last-use boundary for mutable encoded-key scratch.
+It copies into the independently owned JSON result only when encoding succeeds,
+then wipes the full caller-provided span regardless of success. Transparent WIF
+success, Sapling spending-key refusal and Sapling viewing-key success/refusal
+all follow that rule.
+
+The helper holds no pointer after return and introduces no allocation, shared
+state or lock. The JSON copy completes before the wipe. Encoder refusal cannot
+copy an uninitialized or partial buffer into the result, and the full 128-byte
+or512-byte span is cleansed. Successful results remain byte-identical; key
+lookup, authorization, WIF/Base58 and Bech32 HRPs, errors and return ownership
+are unchanged. The tests use fixed synthetic values and actual production
+controller sources under deterministic encoder/retirement observers.
+
+Canonical RED detects the prior viewing-key success and refusal lifetimes.
+Final focused and ASan/UBSan runs additionally cover WIF success and
+spending-key refusal, with zero skips or unobserved cases. Strict GCC14 and
+Clang20 accept2,433 translation units; all215 lint gates, cap15 complexity,
+architecture and generated inventory pass. Exact proof passes all215 lint gates
+and114/114 impacted groups with zero failures, skips, unobserved or load-flaky
+outcomes. Receipt SHA256 is
+`00c1ae9ac34857e1975a86e967497f1fb86b1213776230c0700e4da5b4ea3803`.
+
+Consensus, monetary policy, PoW, upgrades, transparent/shielded validity,
+recovery, persistence and TLS are unchanged. HTTP and native-command transport
+copies are separate owners and are not claimed retired by this candidate.
