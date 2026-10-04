@@ -897,6 +897,45 @@ static void msg_processor_send_pending_addresses(struct msg_processor *mp,
              "%zu address(es)", node->addr_name, emit);
 }
 
+static void msg_processor_maybe_send_keepalive(struct msg_processor *mp,
+                                               struct p2p_node *node,
+                                               int64_t now_mono_us)
+{
+    struct peer_liveness_sample liveness = {
+        .connected_us = atomic_load_explicit(
+            &node->connected_monotonic_us, memory_order_relaxed),
+        .last_activity_us = atomic_load_explicit(
+            &node->last_activity_monotonic_us, memory_order_relaxed),
+        .ping_sent_us = atomic_load_explicit(
+            &node->keepalive_ping_sent_monotonic_us, memory_order_relaxed),
+    };
+    if (peer_liveness_decide(&liveness, now_mono_us) !=
+        PEER_LIVENESS_SEND_PING)
+        return;
+
+    uint64_t nonce = GetRand(UINT64_MAX);
+    struct byte_stream ping;
+    stream_init(&ping, 8);
+    bool sent = stream_write_u64_le(&ping, nonce) &&
+                p2p_node_begin_message(node, "ping",
+                                       mp->params->pchMessageStart);
+    if (sent) {
+        p2p_node_write_message_data(node, ping.data, ping.size);
+        sent = p2p_node_end_message(node);
+    }
+    stream_free(&ping);
+    if (!sent) {
+        LOG_WARN("net", "keepalive ping send failed for %s: leaving "
+                 "liveness state retryable", node->addr_name);
+        return;
+    }
+
+    node->ping_nonce_sent = nonce;
+    node->ping_usec_start = now_mono_us;
+    atomic_store_explicit(&node->keepalive_ping_sent_monotonic_us,
+                          now_mono_us, memory_order_relaxed);
+}
+
 /* ── Tip-stall watchdog observers ──────────────────────────── */
 
 /* feed tip-advance signals into the watchdog. Both
@@ -3020,31 +3059,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     /* Send a keepalive ping after 60 seconds without incoming traffic.  The
      * socket thread owns deadlines against these same monotonic stamps. */
     int64_t now_mono_us = platform_time_monotonic_us();
-    struct peer_liveness_sample liveness = {
-        .connected_us = atomic_load_explicit(
-            &node->connected_monotonic_us, memory_order_relaxed),
-        .last_activity_us = atomic_load_explicit(
-            &node->last_activity_monotonic_us, memory_order_relaxed),
-        .ping_sent_us = atomic_load_explicit(
-            &node->keepalive_ping_sent_monotonic_us, memory_order_relaxed),
-    };
-    if (peer_liveness_decide(&liveness, now_mono_us) ==
-        PEER_LIVENESS_SEND_PING) {
-        uint64_t nonce = GetRand(UINT64_MAX);
-        node->ping_nonce_sent = nonce;
-        node->ping_usec_start = now_mono_us;
-        atomic_store_explicit(&node->keepalive_ping_sent_monotonic_us,
-                              now_mono_us, memory_order_relaxed);
-
-        struct byte_stream ping;
-        stream_init(&ping, 8);
-        stream_write_u64_le(&ping, nonce);
-
-        p2p_node_begin_message(node, "ping", mp->params->pchMessageStart);
-        p2p_node_write_message_data(node, ping.data, ping.size);
-        p2p_node_end_message(node);
-        stream_free(&ping);
-    }
+    msg_processor_maybe_send_keepalive(mp, node, now_mono_us);
 
     /* Snapshot serving + swarm + block-swarm coordinators. */
     mp_snapshot_send_tick(mp, node);

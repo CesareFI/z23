@@ -39,6 +39,7 @@
 #include "net/msg_internal.h"
 #include "net/msgprocessor.h"
 #include "net/peer_scoring.h"
+#include "net/peer_liveness.h"
 #include "net/protocol.h"
 #include "net/version.h"
 #include "net/zmsg.h"
@@ -523,6 +524,70 @@ static int dos_addr_send_failure_retry(struct msg_processor *mp,
         DOS_CHECK("addr retry: next tick sends announcement once",
                   retry_ok && final_frames == 1 && final_items == 1 &&
                   node->addr_to_send_count == 0);
+
+        p2p_node_free(node);
+    }
+    zcl_alloc_fault_clear();
+    return failures;
+}
+
+static size_t dos_wire_command_frames(const struct p2p_node *node,
+                                      const char *command)
+{
+    size_t frames = 0;
+    for (const struct send_segment *seg = node->send_head; seg;
+         seg = seg->next) {
+        if (seg->size < MSG_HEADER_SIZE)
+            continue;
+        const struct msg_header *hdr =
+            (const struct msg_header *)(const void *)seg->data;
+        if (strcmp(hdr->pchCommand, command) == 0)
+            frames++;
+    }
+    return frames;
+}
+
+static int dos_keepalive_send_failure_retry(struct msg_processor *mp,
+                                            struct net_manager *nm)
+{
+    int failures = 0;
+    struct net_address peer_addr;
+    net_address_init(&peer_addr);
+    unsigned char peer_ip[4] = {203, 0, 113, 87};
+    net_addr_set_ipv4(&peer_addr.svc.addr, peer_ip);
+    peer_addr.svc.port = 8033;
+    struct p2p_node *node = p2p_node_create(
+        nm, ZCL_INVALID_SOCKET, &peer_addr, "keepalive-send-failure", true);
+    DOS_CHECK("keepalive retry: node created", node != NULL);
+    if (node) {
+        node->state = PEER_HANDSHAKE_COMPLETE;
+        node->version = PROTOCOL_VERSION;
+        int64_t now_us = platform_time_monotonic_us();
+        int64_t idle_us = now_us - PEER_LIVENESS_PING_IDLE_US;
+        atomic_store(&node->connected_monotonic_us, idle_us);
+        atomic_store(&node->last_activity_monotonic_us, idle_us);
+
+        zcl_alloc_fault_fail_next("send_segment");
+        bool first_ok = msg_send_messages(mp, node, false);
+        bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+        bool retryable =
+            node->ping_nonce_sent == 0 && node->ping_usec_start == 0 &&
+            atomic_load(&node->keepalive_ping_sent_monotonic_us) == 0;
+        size_t first_frames = dos_wire_command_frames(node, "ping");
+
+        bool retry_ok = msg_send_messages(mp, node, false);
+
+        DOS_CHECK("keepalive retry: send tick survives", first_ok);
+        DOS_CHECK("keepalive retry: failed ping was not queued",
+                  fault_consumed && first_frames == 0);
+        DOS_CHECK("keepalive retry: failed ping state stays unpublished",
+                  retryable);
+        DOS_CHECK("keepalive retry: next tick queues one live ping",
+                  retry_ok && dos_wire_command_frames(node, "ping") == 1 &&
+                  node->ping_nonce_sent != 0 &&
+                  node->ping_usec_start > 0 &&
+                  atomic_load(&node->keepalive_ping_sent_monotonic_us) > 0);
 
         p2p_node_free(node);
     }
@@ -1508,6 +1573,10 @@ int test_net_msg_dos(void)
     /* ── Q. Address relay has the same local enqueue boundary: a failed
      * send must retain peer-discovery data for a later tick. */
     failures += dos_addr_send_failure_retry(&mp, &nm);
+
+    /* ── R. Publish keepalive timeout state only after the ping is
+     * queued; otherwise a local failure can fabricate a pong timeout. */
+    failures += dos_keepalive_send_failure_retry(&mp, &nm);
 
     net_manager_free(&nm);
     sync_set_state(sync0, "net_msg_dos restore");
