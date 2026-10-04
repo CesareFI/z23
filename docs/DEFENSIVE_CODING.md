@@ -1417,6 +1417,7 @@ add/remove a gate.
 - `check-live-datadir-isolation`
 - `check-installed-acceptance-tools`
 - `check-standalone-tools-link`
+- `check-rom-bundle-sha3-output`
 - `check-arena-view-stub`
 - `check-hotfork-stories`
 - `check-app-bundle-reproducible`
@@ -1435,6 +1436,10 @@ add/remove a gate.
 - `check-determinism-ratchet`
 - `check-sqlite-cursor-lifetime`
 <!-- LINT-GATES-END -->
+
+`check-rom-bundle-sha3-output` verifies the standalone digest's known-answer
+output and refuses a failed stdout write (`/dev/full` where available). A
+digest is not successful until its complete result has been emitted.
 
 (`check-consensus-parity` [E13, the parity mechanism — see
 `docs/CONSENSUS_PARITY_DOCTRINE.md`], `check-no-new-repair-rung`, and

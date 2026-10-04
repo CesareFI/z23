@@ -57,7 +57,11 @@ static int hash_one(const char *path)
     char hex[65];
     for (int i = 0; i < 32; i++)
         snprintf(hex + 2 * i, 3, "%02x", digest[i]);
-    printf("%s  %s\n", hex, path);
+    if (printf("%s  %s\n", hex, path) < 0 || fflush(stdout) == EOF) {
+        fprintf(stderr, "rom_bundle_sha3: write '%s' failed: %s\n", path,
+                strerror(errno));
+        return -1;
+    }
     return 0;
 }
 

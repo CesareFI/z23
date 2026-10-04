@@ -7963,6 +7963,10 @@ $(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
 	    -o $@ $^ -lm
 
+.PHONY: check-rom-bundle-sha3-output
+check-rom-bundle-sha3-output: $(BIN_DIR)/rom_bundle_sha3
+	@tools/scripts/rom_bundle_sha3_selftest.sh $(BIN_DIR)/rom_bundle_sha3
+
 # fs_handshake_probe: the C3 stopwatch's PRE-FLIGHT fixture-compatibility
 # probe (tools/scripts/cold_start_to_tip_stopwatch.sh). Performs the CLIENT
 # half of the exact authenticated X25519/HKDF file-service handshake the
@@ -14826,6 +14830,7 @@ LINT_GATES := \
     check-live-datadir-isolation \
     check-installed-acceptance-tools \
     check-standalone-tools-link \
+    check-rom-bundle-sha3-output \
     check-arena-view-stub \
     check-hotfork-stories \
     check-app-bundle-reproducible \
@@ -14863,6 +14868,7 @@ LINT_BUILT_PREREQS = tools/core_seal tools/check_observability_pairing \
 	$(FILE_SIZE_POLICY_BIN) $(Z23_BOOTSTRAP_BIN) $(EQUIHASH_FACT_TOOL) \
 	$(BIN_DIR)/z23_bounded_run $(BIN_DIR)/agent_sha3 $(RETRIEVAL_EVAL_BIN) \
 	$(BIN_DIR)/z23-fleet-observe \
+	$(BIN_DIR)/rom_bundle_sha3 \
 	$(TOR_PROVENANCE_BIN) $(GIT_HOOK_BIN) $(HOTSWAP_ACTION_PLAN) \
 	$(PROCESS_GROUP_EXEC_BIN) $(BIN_DIR)/arena_product_journey_c23
 # tor-provenance-ready runs BEFORE the lint driver ever forks a gate script:
