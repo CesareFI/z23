@@ -1236,3 +1236,39 @@ combined decrypt-safety branch explicitly documents and tests that a failed
 decrypt leaves `*out_len` unchanged while authentication failures wipe the
 tentative plaintext span. Changing that contract would conflict with existing
 review-ready evidence, so no source change or repeated qualification was made.
+
+### Wallet block-scan descriptor inheritance qualified
+
+Branch `agent/upstream-wallet-scan-cloexec-20261004`, signed head
+`12344c4c24bf92e798926cbd0ec99a5426d28803`, base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`, routes transparent scan pass 1,
+transparent scan pass 2 and Sapling witness replay through one read-only block
+file opener. The opener requests `O_CLOEXEC` on POSIX and `_O_NOINHERIT` on
+Windows. Scan ranges, file offsets, parsing and wallet state are unchanged.
+The review is six files, +55/-17, including the generated inventory.
+
+Canonical RED observes the descriptor without `FD_CLOEXEC`. The final Linux
+runtime regression inspects the admitted descriptor with `F_GETFD` and passes.
+Removing only the `O_CLOEXEC` flag reproduces RED; restoration returns the
+complete diff to SHA256
+`cb2e8295235bbd43a4c0ad6092394e4c78957e03f5dfaaca123c8f6630e59719`.
+The focused and ASan/UBSan `block_scan` groups pass. Uncached GCC 14.2.0 and
+Clang 20.1.2 each check all 2,433 translation units with no new diagnostic
+sites. The Linux-hosted MinGW lane passes its strict C23 seam compile, all
+2,399 Windows cross-syntax translation units and 74 acceptance cross-links;
+native Windows runtime remains unobserved. Architecture, generated inventory,
+documentation, file-size, core-seal, consensus-parity and cap-15 complexity
+gates pass without a baseline increase.
+
+The unprivileged private-tmpfs proof passes the exact head/base pair: all 215
+lint gates and all 26 selected impacted groups complete with zero failures,
+skips, cached results or reused receipt. Lint took 189.367s, tests 203.592s,
+the receipt records 507.127s total and the foreground step returned after
+509.958s. Native status independently reports `passed`; receipt SHA256 is
+`ad1320441d2871bdc381bb459bcac848ead553b44f0d5efc35f911cfa35b0bd1`.
+
+Local artifacts `wallet-scan-cloexec.bundle`, `wallet-scan-cloexec.mbox`,
+`wallet-scan-cloexec.receipt`, `wallet-scan-cloexec-exact-status.log`,
+`pr-wallet-scan-cloexec.md` and `wallet-scan-cloexec-final.sha256` verify in
+the candidate worktree's ignored evidence directory. No external publication
+action was attempted.
