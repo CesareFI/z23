@@ -220,14 +220,16 @@ for goal in windows-headless-run windows-headless-run-selftest \
     probe_bootstrap skip "$goal"
     probe_bootstrap require "$goal" z23
 done
-for goal in print-node-c23-srcs doctor doctor-build timings agent-dev-status \
+for goal in print-node-c23-srcs doctor doctor-build agent-dev-status \
     print-CFLAGS print-DEV-CFLAGS print-LDFLAGS print-DEV-LDFLAGS print-build-flags; do
     probe_bootstrap query "$goal"
     probe_bootstrap require "$goal" z23
 done
-# Help reads only this Makefile; a mixed node build retains authoritative parse.
+# These reports need no node parse; mixed builds retain authoritative bootstrap.
 probe_bootstrap skip help
 probe_bootstrap require help z23
+probe_bootstrap skip timings
+probe_bootstrap require timings z23
 probe_bootstrap skip windows-headless-run windows-headless-run-selftest
 probe_bootstrap require z23
 probe_bootstrap require

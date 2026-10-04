@@ -306,6 +306,30 @@ run_selftest() {
     grep -q 'LOCAL path' <<<"$out" ||
         { echo "timings selftest: FAIL — local clone must be labelled: $out" >&2; exit 1; }
 
+    # (6) The report only reads local artifacts. Its exact Make goal must
+    # work without a compiler or cache; a mixed node build still needs both.
+    out="$(env ZCL_TIMINGS_CACHE="$tmp/empty" ZCL_BIN_DIR="$tmp/ccache-bin" \
+        ZCL_BOOTSTRAP_CC=/nonexistent ZCL_VENDOR_OFFLINE=1 \
+        make -s --no-print-directory -C "$ROOT" ZCL_USE_CCACHE=1 \
+        CC=/nonexistent ZCL_VENDOR_LIB="$tmp/no-vendor" timings \
+        2> "$tmp/query.err")" || {
+        echo 'timings selftest: FAIL — exact query required a compiler' >&2
+        cat "$tmp/query.err" >&2
+        exit 1
+    }
+    [ "$out" = "$(ZCL_TIMINGS_CACHE="$tmp/empty" bash "$self")" ] &&
+        [ ! -e "$tmp/ccache-bin" ] && [ ! -e "$tmp/no-vendor" ] || {
+        echo 'timings selftest: FAIL — exact query changed output or built inputs' >&2
+        exit 1
+    }
+    if env ZCL_VENDOR_OFFLINE=1 make -s --no-print-directory -C "$ROOT" \
+        ZCL_USE_CCACHE=0 CC=/nonexistent timings z23 \
+        > "$tmp/mixed.out" 2> "$tmp/mixed.err" ||
+       ! grep -Fq 'C23 toolchain check failed' "$tmp/mixed.err"; then
+        echo 'timings selftest: FAIL — mixed build skipped compiler preflight' >&2
+        exit 1
+    fi
+
     echo "timings selftest: PASS"
 }
 
