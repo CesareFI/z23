@@ -466,7 +466,7 @@ static void msg_block_requeue_after_intake_backpressure(
     struct block_index *bi = block_map_find(
         &mp->main_state->map_block_index, hash);
     int32_t height = bi ? bi->nHeight : -1;
-    dl_queue_priority(get_download_mgr(), hash, height);
+    dl_requeue_discarded_body(get_download_mgr(), hash, height);
 }
 
 /* ── Self-suspicion gate for the block-reject ban path ──────────────────

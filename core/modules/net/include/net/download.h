@@ -460,6 +460,12 @@ size_t dl_queue_blocks_class(struct download_manager *dm,
 void dl_queue_priority(struct download_manager *dm,
                        const struct uint256 *hash, int32_t height);
 
+/* Requeue a body that was already settled as received but could not be
+ * retained by local intake. Bypasses only the received-pending tombstone;
+ * a newer active owner remains untouched. */
+void dl_requeue_discarded_body(struct download_manager *dm,
+                               const struct uint256 *hash, int32_t height);
+
 /* Assign queued blocks to a peer. Returns number assigned.
  * Respects dl_get_max_in_flight_per_peer() (or DL_MAX_IN_FLIGHT_PER_LOOPBACK
  * for peers flagged via dl_set_peer_loopback) and dl_get_max_in_flight_total().

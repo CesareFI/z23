@@ -380,6 +380,71 @@ static bool submit_reducer_pending_block(struct block *block,
     return false;
 }
 
+static void unreq_setup_node(struct p2p_node *node, uint32_t id);
+
+static bool submit_intake_full_block(struct block *block,
+                                     struct validation_state *out,
+                                     void *ctx)
+{
+    (void)block;
+    int *calls = ctx;
+    (*calls)++;
+    return validation_state_error(out, "p2p-block-intake-full");
+}
+
+static int test_process_block_msg_intake_full_requeues_body(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: intake-full block requeues its received body") {
+        struct download_manager *dm = get_download_mgr();
+        (void)dl_drain_for_backpressure(dm);
+
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.header.nTime = 1700000525u;
+        blk.header.nBits = 0x1f00ffffu;
+        blk.header.nNonce.data[0] = 25;
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        block_clear_seen(&hash);
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 525);
+        ASSERT(dl_mark_requested(dm, &hash, 80, (uint32_t)node.id));
+
+        int submit_calls = 0;
+        struct main_state ms;
+        main_state_init(&ms);
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.main_state = &ms;
+        mp.net_mgr = &nm;
+        mp.block_submit = submit_intake_full_block;
+        mp.block_submit_ctx = &submit_calls;
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        ASSERT(block_serialize(&blk, &s));
+        ASSERT(process_block_msg(&mp, &node, &s));
+        ASSERT(submit_calls == 1);
+        ASSERT(!block_already_seen(&hash));
+
+        struct uint256 reassigned_hash;
+        ASSERT(dl_assign_to_peer(dm, 526, &reassigned_hash, 1) == 1);
+        ASSERT(uint256_eq(&reassigned_hash, &hash));
+
+        (void)dl_drain_for_backpressure(dm);
+        stream_free(&s);
+        block_free(&blk);
+        main_state_free(&ms);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_process_block_msg_reducer_pending_stays_retryable(void)
 {
     int failures = 0;
@@ -1771,6 +1836,7 @@ int test_msg_handlers(void)
     failures += test_should_announce_getblocks();
     failures += test_source_header_echo_policy();
     failures += test_block_validation_retryable_classifier();
+    failures += test_process_block_msg_intake_full_requeues_body();
     failures += test_process_block_msg_reducer_pending_stays_retryable();
     failures += test_process_block_msg_scores_unrequested();
     failures += test_process_block_msg_no_score_when_requested();

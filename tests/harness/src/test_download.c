@@ -228,13 +228,20 @@ static int test_dl_mark_received(void)
         ASSERT(dl_mark_received_from_peer(&dm, &h3, 2) == 2);
         ASSERT(!dl_is_in_flight(&dm, &h3));
 
+        dl_requeue_discarded_body(&dm, &h3, 102);
+        struct uint256 retried;
+        ASSERT(dl_assign_to_peer(&dm, 4, &retried, 1) == 1);
+        ASSERT(uint256_eq(&retried, &h3));
+        dl_requeue_discarded_body(&dm, &h3, 102);
+        ASSERT(dl_mark_received_from_peer(&dm, &h3, 4) == 4);
+
         /* Receive unknown hash */
         struct uint256 h4 = make_hash(4);
         ASSERT(dl_mark_received(&dm, &h4) == UINT32_MAX);
 
         uint64_t req, recv, tout, inflight, queued;
         dl_get_stats(&dm, &req, &recv, &tout, &inflight, &queued);
-        ASSERT(recv == 2);
+        ASSERT(recv == 3);
         ASSERT(inflight == 1);
 
         dl_free(&dm);

@@ -1104,6 +1104,20 @@ void dl_queue_priority(struct download_manager *dm,
     zcl_mutex_unlock(&dm->cs);
 }
 
+void dl_requeue_discarded_body(struct download_manager *dm,
+                               const struct uint256 *hash, int32_t height)
+{
+    zcl_mutex_lock(&dm->cs);
+    struct dl_in_flight *s = find_slot(dm, hash, false);
+    if (s && !s->active)
+        s->received_time = 0;
+    zcl_mutex_unlock(&dm->cs);
+
+    /* If a timeout or another producer installed a newer active owner after
+     * the unlock, dl_queue_priority observes it and leaves it untouched. */
+    dl_queue_priority(dm, hash, height);
+}
+
 static bool dl_assignment_peer_is_parked(const struct download_manager *dm,
                                          const struct dl_peer_stats *ps,
                                          int64_t now)
