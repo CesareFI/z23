@@ -82,16 +82,20 @@ int test_storage_reclaim(void)
     mkdir("./test-tmp", 0755);
     mkdir(SR_DIR, 0755);
     unlink(SR_DIR "/stale.tmp");
+    unlink(SR_DIR "/stale.tmp.42");
     unlink(SR_DIR "/fresh.tmp");
     unlink(SR_DIR "/keep.dat");
 
     /* ── 1. Reclaim sweeps STALE *.tmp, leaves fresh + non-tmp ── */
     {
         sr_write_file(SR_DIR "/stale.tmp", "orphaned-mid-write-payload");
+        sr_write_file(SR_DIR "/stale.tmp.42", "sequenced-atomic-orphan");
         sr_write_file(SR_DIR "/fresh.tmp", "in-flight-atomic-write");
         sr_write_file(SR_DIR "/keep.dat",  "real-data-never-touch");
         /* Make the orphan provably older than the min-age guard. */
         sr_age_file(SR_DIR "/stale.tmp",
+                    STORAGE_RECLAIM_TMP_MIN_AGE_SECS + 120);
+        sr_age_file(SR_DIR "/stale.tmp.42",
                     STORAGE_RECLAIM_TMP_MIN_AGE_SECS + 120);
 
         int64_t runs_before = storage_reclaim_run_count();
@@ -99,6 +103,9 @@ int test_storage_reclaim(void)
 
         SR_CHECK("sr: reclaim removed the stale .tmp orphan",
                  r.tmp_files_removed >= 1 && !sr_exists(SR_DIR "/stale.tmp"));
+        SR_CHECK("sr: reclaim removed the sequenced .tmp orphan",
+                 r.tmp_files_removed >= 2 &&
+                     !sr_exists(SR_DIR "/stale.tmp.42"));
         SR_CHECK("sr: reclaim freed a positive byte count",
                  r.tmp_bytes_removed > 0);
         SR_CHECK("sr: reclaim LEFT the fresh .tmp (possible in-flight write)",

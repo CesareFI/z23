@@ -35,12 +35,23 @@ int64_t storage_reclaim_run_count(void)
     return atomic_load(&g_reclaim_runs);
 }
 
-/* Unlink "<x>.tmp" crash orphans older than the min-age guard. An atomic
- * write-then-rename creates "<path>.tmp" and renames it within well under a
- * second, so a .tmp older than the guard cannot be an in-flight write — it is
- * a leftover from a process that died mid-write. Top level only (the datadir
- * root), regular files only, never a symlink or directory. Returns the count
- * removed and accumulates freed bytes into *bytes_out. */
+static bool stale_tmp_name(const char *name)
+{
+    if (!name)
+        return false;
+    size_t n = strlen(name);
+    if (n >= 4 && strcmp(name + n - 4, ".tmp") == 0)
+        return true;
+    const char *marker = strstr(name, ".tmp.");
+    return marker && marker != name && marker[5] != '\0';
+}
+
+/* Unlink atomic-writer crash orphans ("<x>.tmp" and "<x>.tmp.<suffix>")
+ * older than the min-age guard. Writers rename staging files within well
+ * under a second, so an eligible temp older than the guard cannot be an
+ * in-flight write. Top level only (the datadir root), regular files only,
+ * never a symlink or directory. Returns the count removed and accumulates
+ * freed bytes into *bytes_out. */
 static int sweep_stale_tmp(const char *datadir, int64_t *bytes_out)
 {
     if (!datadir || !*datadir)
@@ -55,8 +66,7 @@ static int sweep_stale_tmp(const char *datadir, int64_t *bytes_out)
     time_t now = platform_time_wall_time_t();
     for (size_t i = 0; i < entries.count; i++) {
         const char *name = entries.entries[i].name;
-        size_t n = strlen(name);
-        if (n < 4 || strcmp(name + n - 4, ".tmp") != 0)
+        if (!stale_tmp_name(name))
             continue;
         char path[2048];
         int pn = snprintf(path, sizeof(path), "%s/%s", datadir, name);
