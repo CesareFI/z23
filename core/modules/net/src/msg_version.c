@@ -487,6 +487,19 @@ static bool push_handshake_replies(struct msg_processor *mp,
     return true;
 }
 
+void msg_version_request_addr_if_needed(struct msg_processor *mp,
+                                        struct p2p_node *node)
+{
+    if (node->inbound || node->get_addr)
+        return;
+    bool sent = false;
+    if (p2p_node_begin_message(node, "getaddr",
+                               mp->params->pchMessageStart))
+        sent = p2p_node_end_message(node);
+    if (sent)
+        node->get_addr = true;
+}
+
 bool process_version(struct msg_processor *mp, struct p2p_node *node,
                      struct byte_stream *s)
 {
@@ -625,11 +638,7 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
     }
 
     /* Ask outbound peers for their address list */
-    if (!node->inbound && !node->get_addr) {
-        p2p_node_begin_message(node, "getaddr", mp->params->pchMessageStart);
-        p2p_node_end_message(node);
-        node->get_addr = true;
-    }
+    msg_version_request_addr_if_needed(mp, node);
 
     /* Send sendheaders — tells peer we prefer headers announcements
      * over inv. Critical for headers-first sync with legacy zclassicd. */

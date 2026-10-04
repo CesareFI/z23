@@ -2410,6 +2410,8 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         peer_lifecycle_note_active(node);
     }
 
+    msg_version_request_addr_if_needed(mp, node);
+
     /* Answer the one getheaders this peer's serve window deferred, if its
      * window has rolled — a legacy client has no retry timer and would
      * otherwise sit silent until an unrelated inv woke it. No-op otherwise. */

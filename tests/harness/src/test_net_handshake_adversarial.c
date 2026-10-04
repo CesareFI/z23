@@ -870,6 +870,41 @@ static int test_outbound_verack_failure_forces_reconnect(void)
     return failures;
 }
 
+static int test_outbound_getaddr_queue_failure_retries(void)
+{
+    int failures = 0;
+    TEST("handshake: unsent getaddr remains retryable after completion") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, false));
+        f.node.state = PEER_VERSION_SENT;
+        struct byte_stream payload;
+        hs_build_version_payload(&payload, PROTOCOL_VERSION,
+                                 0x9393939393939393ULL, "/test:0.1/");
+
+        zcl_alloc_fault_fail_nth("send_segment", 2);
+        ASSERT(process_version(&f.mp, &f.node, &payload));
+        ASSERT(zcl_alloc_fault_armed_label() == NULL);
+        zcl_alloc_fault_clear();
+        ASSERT(!f.node.disconnect);
+        ASSERT(!f.node.get_addr);
+        struct hs_capture first;
+        hs_capture_sent(f.peer_fd, &first);
+        ASSERT(!hs_captured_has_command(&first, "getaddr"));
+
+        ASSERT(process_verack(&f.mp, &f.node));
+        msg_version_request_addr_if_needed(&f.mp, &f.node);
+        ASSERT(f.node.get_addr);
+        struct hs_capture retry;
+        hs_capture_sent(f.peer_fd, &retry);
+        ASSERT(hs_captured_has_command(&retry, "getaddr"));
+
+        stream_free(&payload);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Noise XX sends msg1 before the ordinary message loop runs; that raw
  * handshake traffic must not suppress the version message. */
 static int test_outbound_version_after_transport_bytes(void)
@@ -1410,6 +1445,7 @@ int test_net_handshake_adversarial(void)
     failures += test_honest_handshake_completes();
     failures += test_inbound_version_reply_failure_does_not_complete();
     failures += test_outbound_verack_failure_forces_reconnect();
+    failures += test_outbound_getaddr_queue_failure_retries();
     failures += test_outbound_version_after_transport_bytes();
     failures += test_outbound_version_queue_failure_retries();
     failures += test_mempool_requested_once_for_relay_peer();
