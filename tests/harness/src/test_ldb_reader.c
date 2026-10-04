@@ -451,10 +451,59 @@ static int lr_test_extreme_key_length_refusals(const char *dir)
     return ok ? 0 : 1;
 }
 
+static bool lr_test_log_span_bounds(void)
+{
+    size_t end = SIZE_MAX;
+    bool ok = ldbr_test_log_span_end(0, 0, 0, &end) && end == 0;
+    ok = ok && ldbr_test_log_span_end(SIZE_MAX, SIZE_MAX - 7, 7, &end) &&
+         end == SIZE_MAX;
+    end = SIZE_MAX;
+    ok = ok && !ldbr_test_log_span_end(SIZE_MAX, SIZE_MAX, 1, &end) && end == 0;
+    end = SIZE_MAX;
+    ok = ok && !ldbr_test_log_span_end(SIZE_MAX - 1, SIZE_MAX, 0, &end) && end == 0;
+    return ok && !ldbr_test_log_span_end(0, 0, 0, NULL);
+}
+
+static bool lr_test_log_scratch_growth_bounds(void)
+{
+    size_t len = SIZE_MAX, cap = SIZE_MAX;
+    if (!ldbr_test_log_scratch_plan(0, 0, 0, &len, &cap) || len != 0 || cap != 0)
+        return false;
+    if (!ldbr_test_log_scratch_plan(0, 1, 0, &len, &cap) || len != 1 || cap != 4096)
+        return false;
+    return ldbr_test_log_scratch_plan(4096, 1, 4096, &len, &cap) &&
+           len == 4097 && cap == 8192;
+}
+
+static bool lr_test_log_scratch_refusal_bounds(void)
+{
+    size_t len = 0, cap = 0;
+    if (!ldbr_test_log_scratch_plan(SIZE_MAX - 1, 1, SIZE_MAX - 1, &len, &cap) ||
+        len != SIZE_MAX || cap != SIZE_MAX)
+        return false;
+    len = cap = SIZE_MAX;
+    if (ldbr_test_log_scratch_plan(SIZE_MAX, 1, SIZE_MAX, &len, &cap) || len != 0 || cap != 0)
+        return false;
+    if (ldbr_test_log_scratch_plan(2, 0, 1, &len, &cap) || len != 0 || cap != 0)
+        return false;
+    return !ldbr_test_log_scratch_plan(0, 0, 0, NULL, &cap) &&
+           !ldbr_test_log_scratch_plan(0, 0, 0, &len, NULL);
+}
+
+static int lr_test_log_arithmetic_bounds(void)
+{
+    printf("ldb_reader: log arithmetic bounds... ");
+    bool ok = lr_test_log_span_bounds() && lr_test_log_scratch_growth_bounds() &&
+              lr_test_log_scratch_refusal_bounds();
+    printf(ok ? "OK\n" : "FAIL\n");
+    return ok ? 0 : 1;
+}
+
 int test_ldb_reader(void)
 {
     int failures = lr_test_empty_log_fragment();
     failures += lr_test_internal_key_size_bounds();
+    failures += lr_test_log_arithmetic_bounds();
     char src[512], cxx[512], c23[512], dmg[512];
 
     mkdir("test-tmp", 0755);

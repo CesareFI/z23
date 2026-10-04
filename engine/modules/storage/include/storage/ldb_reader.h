@@ -179,6 +179,11 @@ bool ldbr_test_log_scratch_append(const uint8_t *data, size_t len,
                                   size_t *out_len, size_t *out_cap,
                                   bool *out_allocated);
 bool ldbr_test_internal_key_size(size_t key_len, size_t *out_size);
+bool ldbr_test_log_span_end(size_t size, size_t offset, size_t length,
+                            size_t *out_end);
+bool ldbr_test_log_scratch_plan(size_t current_len, size_t append_len,
+                                size_t current_cap, size_t *out_len,
+                                size_t *out_cap);
 #endif
 
 #ifdef __cplusplus
