@@ -536,7 +536,9 @@ static bool read_document(size_t *len)
     }
 #endif
     *len = fread(g_input, 1, sizeof g_input, stdin);
-    if (ferror(stdin) || !feof(stdin)) {
+    /* A full read does not set EOF until one more byte is requested. */
+    if (ferror(stdin) ||
+        (*len == sizeof g_input && fgetc(stdin) != EOF) || !feof(stdin)) {
         fprintf(stderr, "jsonq: read error or input over %d bytes\n", MAX_INPUT);
         return false;
     }

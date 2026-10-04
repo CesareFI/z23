@@ -112,6 +112,56 @@ static int test_jsonq_unwrap(void)
     return failures;
 }
 
+#if !defined(_WIN32)
+static int jsonq_run_at_length(size_t length, char *out, size_t out_size)
+{
+    static const char prefix[] = "{\"v\":1}";
+    if (length < sizeof prefix - 1) return -1;
+    char dir[4096], input[4608];
+    if (!test_mkdtemp(dir, sizeof dir, "jsonq_limit")) return -1;
+    int result = -1;
+    int n = snprintf(input, sizeof input, "%s/input.json", dir);
+    if (n <= 0 || (size_t)n >= sizeof input) goto cleanup;
+    FILE *file = fopen(input, "wb");
+    if (!file) goto cleanup;
+    char spaces[4096];
+    memset(spaces, ' ', sizeof spaces);
+    bool written = fwrite(prefix, 1, sizeof prefix - 1, file) ==
+                   sizeof prefix - 1;
+    size_t remaining = length - (sizeof prefix - 1);
+    while (written && remaining > 0) {
+        size_t chunk = remaining < sizeof spaces ? remaining : sizeof spaces;
+        written = fwrite(spaces, 1, chunk, file) == chunk;
+        remaining -= chunk;
+    }
+    if (fclose(file) != 0) written = false;
+    if (!written) goto cleanup;
+    const char *const argv[] = {
+        "sh", "-c", "input=$1; exec \"$2\" get v < \"$input\"",
+        "jsonq-limit", input, JSONQ_FIXTURE_BIN, NULL};
+    result = zcl_spawn_capture(argv, out, out_size, 20000);
+cleanup:
+    if (test_rm_rf_recursive(dir) != 0) result = -1;
+    return result;
+}
+
+static int test_jsonq_exact_input_limit(void)
+{
+    enum { INPUT_LIMIT = 16 << 20 };
+    int failures = 0;
+    char out[64] = {0};
+    TEST("jsonq: exact input limit accepts, one byte beyond refuses") {
+        ASSERT(jsonq_run_at_length(INPUT_LIMIT - 1, out, sizeof out) == 0);
+        ASSERT(strcmp(out, "1" JSONQ_FIXTURE_EOL) == 0);
+        ASSERT(jsonq_run_at_length(INPUT_LIMIT, out, sizeof out) == 0);
+        ASSERT(strcmp(out, "1" JSONQ_FIXTURE_EOL) == 0);
+        ASSERT(jsonq_run_at_length(INPUT_LIMIT + 1, out, sizeof out) == 2);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
+
 int test_jsonq(void)
 {
     int failures = 0;
@@ -129,5 +179,8 @@ int test_jsonq(void)
     failures += test_jsonq_count_and_keys();
     failures += test_jsonq_scalar_paths();
     failures += test_jsonq_unwrap();
+#if !defined(_WIN32)
+    failures += test_jsonq_exact_input_limit();
+#endif
     return failures;
 }
