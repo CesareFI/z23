@@ -101,6 +101,39 @@ static bool hwb_write_file(const char *path, const char *contents)
     return ok;
 }
 
+static bool hwb_file_equals(const char *path, const char *want)
+{
+    char got[32] = {0};
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return false;
+    size_t n = fread(got, 1, sizeof(got), f);
+    bool ok = fclose(f) == 0;
+    return ok && n == strlen(want) && memcmp(got, want, n) == 0;
+}
+
+static bool hwb_cache_staging_link_preserved(void)
+{
+    char tmpl[PATH_MAX];
+    char *root = test_mkdtemp(tmpl, sizeof(tmpl), "zcl_hwb_stage");
+    if (!root)
+        return false;
+    char victim[PATH_MAX], staging[PATH_MAX], cache[PATH_MAX];
+    snprintf(victim, sizeof(victim), "%s/staging-victim", root);
+    snprintf(staging, sizeof(staging), "%s/hw_bench.kv.tmp", root);
+    snprintf(cache, sizeof(cache), "%s/hw_bench.kv", root);
+    bool ok = hwb_write_file(victim, "keep-me\n") &&
+              hwb_plant_sample_file(root) && symlink(victim, staging) == 0;
+    hw_bench_reset_for_testing();
+    ok = ok && hw_bench_init(root);
+    struct stat st;
+    ok = ok && hwb_file_equals(victim, "keep-me\n") &&
+         lstat(cache, &st) == 0 && S_ISREG(st.st_mode);
+    hw_bench_reset_for_testing();
+    test_rm_rf_recursive(root);
+    return ok;
+}
+
 /* Plants root/devices/fakehdd/block/sdfake/queue/rotational=1 (HDD-shaped),
  * then symlinks root/dev/block/<maj>:<min> at it. */
 static void hwb_plant_hdd_wholedisk(const char *root, unsigned maj,
@@ -119,6 +152,9 @@ static void hwb_plant_hdd_wholedisk(const char *root, unsigned maj,
 int test_hw_bench(void)
 {
     int failures = 0;
+
+    HWB_CHECK("cache publication preserves a linked staging target",
+              hwb_cache_staging_link_preserved());
 
     /* ── derived-tunable formulas (deterministic, via the test setter) ── */
     {

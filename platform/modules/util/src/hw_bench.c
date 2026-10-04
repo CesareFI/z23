@@ -183,7 +183,10 @@ static bool save_cache(const char *path, const struct hw_bench_state *st)
     int n = snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     if (n <= 0 || (size_t)n >= sizeof(tmp)) return false;
 
-    FILE *f = fopen(tmp, "w");
+    /* A prior boot may leave this disposable staging leaf behind. Retire it,
+     * then recreate it exclusively so a link is never followed. */
+    (void)unlink(tmp);
+    FILE *f = fopen(tmp, "wx");
     if (!f) return false;
     fprintf(f, "fingerprint=%s\nmeasured_at=%lld\nfsync_us=%lld\npread_us=%lld\n",
             st->fingerprint, (long long)st->measured_at_unix,
