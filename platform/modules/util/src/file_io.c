@@ -6,6 +6,7 @@
 
 #include "util/file_io.h"
 
+#include "base/cleanse.h"
 #include "platform/file_stream.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -63,6 +64,7 @@ bool zcl_read_whole_file(const char *path, size_t max_len,
         }
         size_t got = fread(buf, 1, n, f);
         if (got != n) {
+            memory_cleanse(buf, n);
             free(buf);
             fclose(f);
             LOG_FAIL(log_ctx ? log_ctx : "file_io",
@@ -132,6 +134,7 @@ bool zcl_read_whole_file_text(const char *path, size_t max_len,
     if (n > 0) {
         size_t got = fread(buf, 1, n, f);
         if (got != n) {
+            memory_cleanse(buf, n + 1);
             free(buf);
             fclose(f);
             LOG_FAIL(log_ctx ? log_ctx : "file_io",
