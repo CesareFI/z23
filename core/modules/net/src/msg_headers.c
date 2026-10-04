@@ -2107,12 +2107,12 @@ void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
         push_getheaders_from(mp, node, NULL);
 }
 
-void push_getheaders_span(struct msg_processor *mp, struct p2p_node *node,
+bool push_getheaders_span(struct msg_processor *mp, struct p2p_node *node,
                           const struct uint256 *start_hash,
                           const struct uint256 *stop_hash)
 {
     if (!mp || !node || !start_hash)
-        return;
+        return false;
     if (msg_processor_snapshot_active(mp)) {
         uint64_t n = atomic_fetch_add(
             &g_push_getheaders_span_suppressed_snapshot, 1) + 1;
@@ -2122,7 +2122,7 @@ void push_getheaders_span(struct msg_processor *mp, struct p2p_node *node,
                      "push_getheaders_span: span request to %s SUPPRESSED "
                      "by active snapshot sync (suppressed=%llu)",
                      node->addr_name, (unsigned long long)n);
-        return;
+        return false;
     }
     atomic_store(&g_push_getheaders_span_snapshot_streak, false);
 
@@ -2139,7 +2139,7 @@ void push_getheaders_span(struct msg_processor *mp, struct p2p_node *node,
                   "push_getheaders_span: locator alloc failed for %s — "
                   "span header request dropped",
                   node->addr_name);
-        return;
+        return false;
     }
     loc.vhave[0] = *start_hash;
     loc.vhave[1] = mp->params->consensus.hashGenesisBlock;
@@ -2147,13 +2147,16 @@ void push_getheaders_span(struct msg_processor *mp, struct p2p_node *node,
 
     struct byte_stream s;
     stream_init(&s, 512);
-    if (getheaders_serialize(&s, &loc, stop_hash)) {
-        p2p_node_begin_message(node, "getheaders", mp->params->pchMessageStart);
+    bool sent = false;
+    if (getheaders_serialize(&s, &loc, stop_hash) &&
+        p2p_node_begin_message(node, "getheaders",
+                               mp->params->pchMessageStart)) {
         p2p_node_write_message_data(node, s.data, s.size);
-        p2p_node_end_message(node);
+        sent = p2p_node_end_message(node);
     }
     stream_free(&s);
     block_locator_free(&loc);
+    return sent;
 }
 
 /* Resolve a span-boundary height to a locally-known block hash: a compiled
@@ -2176,6 +2179,26 @@ static bool hrs_resolve_anchor_hash(struct msg_processor *mp, int32_t height,
             return true;
         }
     }
+    return false;
+}
+
+static bool hrs_send_assigned_span(struct msg_processor *mp,
+                                   struct p2p_node *node,
+                                   struct header_range_scheduler *sched,
+                                   int32_t lo, int32_t hi, int our_height)
+{
+    struct uint256 start_hash, stop_hash;
+    if (!hrs_resolve_anchor_hash(mp, lo, our_height, &start_hash)) {
+        (void)hrs_peer_disconnected(sched, node->id);
+        return false;
+    }
+
+    bool have_stop = hrs_resolve_anchor_hash(mp, hi, our_height, &stop_hash);
+    if (push_getheaders_span(mp, node, &start_hash,
+                             have_stop ? &stop_hash : NULL))
+        return true;
+
+    (void)hrs_peer_disconnected(sched, node->id);
     return false;
 }
 
@@ -2303,12 +2326,8 @@ bool msg_try_range_parallel_getheaders(struct msg_processor *mp,
             return false;
     }
 
-    struct uint256 start_hash, stop_hash;
-    if (!hrs_resolve_anchor_hash(mp, lo, our_height, &start_hash))
-        return false;       /* cannot anchor — fall back */
-    bool have_stop = hrs_resolve_anchor_hash(mp, hi, our_height, &stop_hash);
-
-    push_getheaders_span(mp, node, &start_hash, have_stop ? &stop_hash : NULL);
+    if (!hrs_send_assigned_span(mp, node, sched, lo, hi, our_height))
+        return false;
     LOG_INFO("headers",
              "range-parallel: peer=%d span=[%d,%d] fast_peers=%d gap=%d",
              node->id, lo, hi, fast_peers, gap);

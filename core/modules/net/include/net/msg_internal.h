@@ -296,7 +296,8 @@ void exec_getheaders_action(struct msg_processor *mp,
  *
  * push_getheaders_span: issue a getheaders whose locator forks at
  * `start_hash` and whose hash_stop is `stop_hash` (NULL = unbounded
- * forward). Used to bound a peer to its assigned span.
+ * forward). Used to bound a peer to its assigned span. Returns true only
+ * when the framed request reaches the peer's send queue.
  *
  * msg_try_range_parallel_getheaders: when >=2 fast-sync-capable peers are
  * connected and the missing-header gap exceeds one wire batch, partition
@@ -307,7 +308,7 @@ void exec_getheaders_action(struct msg_processor *mp,
  * behaves exactly as before. Never fires while a header-band hole is open
  * (the band backfill owns the anchor then). `now_monotonic_seconds` must be
  * from the process monotonic clock; span deadlines are elapsed-time state. */
-void push_getheaders_span(struct msg_processor *mp, struct p2p_node *node,
+bool push_getheaders_span(struct msg_processor *mp, struct p2p_node *node,
                           const struct uint256 *start_hash,
                           const struct uint256 *stop_hash);
 bool msg_try_range_parallel_getheaders(struct msg_processor *mp,

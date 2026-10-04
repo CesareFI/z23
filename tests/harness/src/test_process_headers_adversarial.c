@@ -19,6 +19,7 @@
  * mine_block_pow, so accept_block_header's PoW gate runs for real. */
 
 #include "test/test_core.h"
+#include "base/safe_alloc.h"
 #include "util/util.h"
 #include "platform/time_compat.h"
 
@@ -501,6 +502,22 @@ int test_process_headers_adversarial(void)
             PH_CHECK("push_getheaders_span: snapshot-active drop counted",
                      b.push_getheaders_span_suppressed_snapshot ==
                          a.push_getheaders_span_suppressed_snapshot + 1);
+        }
+
+        /* (c2) A locally failed span send must be observable so its caller
+         * can release scheduler ownership immediately instead of waiting for
+         * the timeout. */
+        {
+            struct msg_headers_stats a, b;
+            msg_headers_get_stats(&a);
+            zcl_alloc_fault_fail_next("hrs_span_locator");
+            bool sent = push_getheaders_span(&mp3, &node, &gh, NULL);
+            msg_headers_get_stats(&b);
+            PH_CHECK("push_getheaders_span: allocation failure is returned",
+                     !sent);
+            PH_CHECK("push_getheaders_span: allocation failure is counted",
+                     b.push_getheaders_span_alloc_fail ==
+                         a.push_getheaders_span_alloc_fail + 1);
         }
 
         /* (d) process_getheaders: request deferred while we are serving a
