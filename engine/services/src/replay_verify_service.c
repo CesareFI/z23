@@ -237,8 +237,9 @@ struct zcl_result replay_verify_run_port(struct block_log_port *port,
     if (max_blocks == 0) {
         out->end_height = tip;
     } else {
-        uint64_t end = (uint64_t)start_height + max_blocks - 1;
-        out->end_height = (end > tip) ? tip : (uint32_t)end;
+        uint64_t available = (uint64_t)tip - start_height + 1;
+        uint64_t bounded = max_blocks < available ? max_blocks : available;
+        out->end_height = start_height + (uint32_t)(bounded - 1);
     }
 
     struct sweep_state st = {

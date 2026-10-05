@@ -252,6 +252,15 @@ static int rv_ci_fixture_teeth(void)
         RV_CHECK("ci: first_fail recorded (pow)",
                  rep.first_fail_height == 0 &&
                  rep.first_fail_reason != NULL);
+
+        struct replay_verify_report wide_rep;
+        struct zcl_result wide = replay_verify_run_port(
+                &port, 2, UINT64_MAX, &wide_rep);
+        RV_CHECK("ci: huge resumed bound does not wrap", wide.ok);
+        RV_CHECK("ci: huge resumed bound checks remaining block",
+                 wide_rep.blocks_checked == 1);
+        RV_CHECK("ci: huge resumed bound ends at tip",
+                 wide_rep.end_height == 2);
     }
     block_log_file_close(h);
     h = NULL;
