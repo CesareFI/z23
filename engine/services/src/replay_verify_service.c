@@ -158,6 +158,50 @@ static bool sweep_cb(uint32_t height,
     return true;
 }
 
+static struct zcl_result seed_predecessor_hash(
+        struct block_log_port *port,
+        uint32_t start_height,
+        struct sweep_state *state)
+{
+    if (start_height == 0)
+        return ZCL_OK;
+    if (!port->read_at_height)
+        return ZCL_ERR(-9,
+                       "replay_verify_run_port: resumed sweep requires "
+                       "read_at_height");
+
+    const uint8_t *bytes = NULL;
+    size_t len = 0;
+    struct zcl_result read = port->read_at_height(
+            port->self, start_height - 1, &bytes, &len);
+    if (!read.ok)
+        return ZCL_ERR(-9,
+                       "replay_verify_run_port: predecessor height %u "
+                       "read failed: code=%d %s",
+                       start_height - 1, read.code, read.message);
+
+    struct block predecessor;
+    block_init(&predecessor);
+    struct byte_stream stream;
+    stream_init_from_data(&stream, bytes, len);
+    bool parsed = block_deserialize(&predecessor, &stream);
+    stream_free(&stream);
+    if (!parsed) {
+        block_free(&predecessor);
+        return ZCL_ERR(-7,
+                       "replay_verify_run_port: predecessor deserialize "
+                       "failed at height %u",
+                       start_height - 1);
+    }
+
+    struct uint256 hash;
+    block_get_hash(&predecessor, &hash);
+    memcpy(state->prev_hash.bytes, hash.data, sizeof hash.data);
+    state->have_prev = true;
+    block_free(&predecessor);
+    return ZCL_OK;
+}
+
 struct zcl_result replay_verify_run_port(struct block_log_port *port,
                                          uint32_t start_height,
                                          uint64_t max_blocks,
@@ -205,6 +249,11 @@ struct zcl_result replay_verify_run_port(struct block_log_port *port,
         .deser_failed = false,
         .deser_height = 0,
     };
+
+    struct zcl_result seeded = seed_predecessor_hash(
+            port, start_height, &st);
+    if (!seeded.ok)
+        return seeded;
 
     struct zcl_result ri = port->iter_from(port->self, start_height,
                                            sweep_cb, &st);

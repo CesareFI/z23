@@ -300,6 +300,13 @@ static int rv_ci_fixture_teeth(void)
                 RV_CHECK("ci: corrupted hashPrevBlock CAUGHT "
                          "(linkage_failures >= 1)",
                          rep.linkage_failures >= 1);
+
+                struct replay_verify_report resumed_rep;
+                struct zcl_result resumed = replay_verify_run_port(
+                        &port2, 1, 1, &resumed_rep);
+                RV_CHECK("ci: resumed bad-linkage sweep -> OK", resumed.ok);
+                RV_CHECK("ci: resumed sweep checks predecessor linkage",
+                         resumed_rep.linkage_failures == 1);
                 (void)prev;
                 block_log_file_close(h2);
             }

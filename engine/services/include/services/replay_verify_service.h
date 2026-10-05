@@ -83,11 +83,13 @@ struct zcl_result replay_verify_run(const char *datadir,
  * reimplemented crypto (the per-block verdict is still the canonical
  * check_block).
  *
- * `port` must have iter_from and tip_height populated. Returns ZCL_OK
- * when the sweep ran to completion (inspect the report counts for any
- * per-block verification failures), and a non-OK result only on
- * operational failure (NULL/incomplete port, empty log, start beyond
- * tip, iteration error, or a block that could not be deserialized).
+ * `port` must have iter_from and tip_height populated. A nonzero
+ * start_height also requires read_at_height so the predecessor hash can
+ * seed linkage verification at the resumed boundary. Returns ZCL_OK when
+ * the sweep ran to completion (inspect the report counts for any per-block
+ * verification failures), and a non-OK result only on operational failure
+ * (NULL/incomplete port, empty log, start beyond tip, predecessor/iteration
+ * error, or a block that could not be deserialized).
  * The port is NOT closed here — the caller owns its lifecycle. */
 struct zcl_result replay_verify_run_port(struct block_log_port *port,
                                          uint32_t start_height,
