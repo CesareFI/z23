@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define main zmath_cli_main
+#include "../app/main.c"
+#undef main
+
 #define CHECK(cond) do { \
     if (!(cond)) { \
         fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
@@ -210,8 +214,24 @@ static void test_fuzz_vs_wide(void)
     }
 }
 
+static void test_cli_rejects_invalid_unsigned(void)
+{
+    const char *rows[] = {"", "-1", "18446744073709551616",
+                          "18446744073709551616000000000"};
+    unsigned failures = 0;
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        uint64_t value = 73;
+        bool rejected = !parse_u64(rows[i], &value) && value == 73;
+        fprintf(stderr, "cli_unsigned_row=%zu input='%s' result=%s\n",
+                i, rows[i], rejected ? "PASS" : "FAIL");
+        if (!rejected) failures++;
+    }
+    CHECK(failures == 0);
+}
+
 int main(void)
 {
+    test_cli_rejects_invalid_unsigned();
     test_checked_u64();
     test_checked_i64();
     test_saturating();

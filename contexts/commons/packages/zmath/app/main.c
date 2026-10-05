@@ -8,6 +8,7 @@
  */
 #include "zmath/zmath.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,9 +22,16 @@ static int usage(void)
 
 static int parse_u64(const char *s, uint64_t *out)
 {
+    if (!s || !out || !*s) return 0;
+    for (const char *p = s; *p; p++)
+        if (*p < '0' || *p > '9') return 0;
     char *end = NULL;
-    *out = strtoull(s, &end, 10);
-    return end && *end == '\0';
+    errno = 0;
+    unsigned long long value = strtoull(s, &end, 10);
+    if (errno == ERANGE || !end || *end != '\0' || value > UINT64_MAX)
+        return 0;
+    *out = (uint64_t)value;
+    return 1;
 }
 
 int main(int argc, char **argv)
