@@ -5,6 +5,16 @@
 #include <stdio.h>
 #include <string.h>
 
+static int cli_flush_failure(FILE *stream) {
+  (void)stream;
+  return EOF;
+}
+#define fflush cli_flush_failure
+#define main zhash_cli_main
+#include "../app/main.c"
+#undef main
+#undef fflush
+
 static int g_fail = 0;
 #define CHECK(cond)                                                     \
   do {                                                                  \
@@ -126,6 +136,13 @@ static void test_fuzz(void) {
 }
 
 int main(void) {
+  (void)cli_flush_failure;
+  char *algorithms[] = {"fnv1a64", "fnv1a32", "crc32", "djb2", "sdbm"};
+  for (size_t i = 0; i < sizeof algorithms / sizeof algorithms[0]; i++) {
+    char *args[] = {"zhash", algorithms[i], "abc", NULL};
+    CHECK(zhash_cli_main(3, args) == 1);
+    if (i < 3) CHECK(zhash_cli_main(2, args) == 1);
+  }
   test_kat();
   test_stream();
   test_mix();

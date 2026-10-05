@@ -8,6 +8,14 @@
 #include <stdio.h>
 #include <string.h>
 
+static int finish_output(void) {
+  if (fflush(stdout) == EOF || ferror(stdout)) {
+    fprintf(stderr, "zhash: error writing stdout\n");
+    return 1;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
   const char *which = argc > 1 ? argv[1] : "fnv1a64";
   int i;
@@ -30,7 +38,7 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    return 0;
+    return finish_output();
   }
   /* stdin, streamed in chunks (djb2/sdbm have no streaming form). */
   {
@@ -60,5 +68,5 @@ int main(int argc, char **argv) {
       return 2;
     }
   }
-  return 0;
+  return finish_output();
 }
