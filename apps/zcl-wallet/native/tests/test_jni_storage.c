@@ -26,9 +26,10 @@ static const change_storage_data *expected;
 static void *secret_pointer;
 static size_t vm_calls, fail_call, core_calls, zero_calls;
 static bool pending, fail_core, mutate_record;
+static bool malformed_record_case;
 static bool live_entropy_at_storage;
 static bool live_entropy_after_core, fail_random;
-static unsigned storage_calls;
+static unsigned storage_calls, entropy_reads, record_admission_clears;
 /* Native spans are observed while live; only numeric identities survive a VM
  * call. Bits: path=1, record=2, entropy=4, publication packet=8. */
 static uintptr_t identities[4];
@@ -94,7 +95,10 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
     const size_t slot = array == &path_array ? 0 : array == &record_array ? 1 : 2;
     REQUIRE(identities[slot] == 0);
     identities[slot] = (uintptr_t)output;
-    if (array == &entropy_array) secret_pointer = output;
+    if (array == &entropy_array) {
+        secret_pointer = output;
+        ++entropy_reads;
+    }
     if (vm_fault()) {
         if (length > 0) output[0] = 42; /* Partial VM read before exception. */
         return;
@@ -109,6 +113,13 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
 void zcl_jni_storage_test_zero(void *pointer, size_t length)
 {
     REQUIRE(pointer != NULL);
+    if (length == sizeof(zcl_wallet_record)) {
+        zcl_secure_zero(pointer, length);
+        const uint8_t *bytes = pointer;
+        for (size_t i = 0; i < length; ++i) REQUIRE(bytes[i] == 0);
+        ++record_admission_clears;
+        return;
+    }
     const size_t slot = length == 1024 ? 0 : length == 140 ? 1 : length == 32 ? 2 : 3;
     REQUIRE(slot != 3 || length == 142);
     const unsigned bit = 1U << slot;
@@ -159,7 +170,9 @@ zcl_status zcl_jni_storage_test_create(const uint8_t *path, size_t path_len,
     REQUIRE(!pending && core_calls == 0);
     ++core_calls;
     REQUIRE(path != path_array.bytes && record != record_array.bytes && entropy != entropy_array.bytes);
-    REQUIRE(record_len == expected->wallet_len && memcmp(record, expected->wallet, record_len) == 0);
+    REQUIRE(record_len == expected->wallet_len);
+    REQUIRE(malformed_record_case ? memcmp(record, expected->wallet, record_len) != 0 :
+        memcmp(record, expected->wallet, record_len) == 0);
     REQUIRE(entropy_len == (size_t)entropy_array.length && entropy == secret_pointer);
     REQUIRE(capacity == 32);
     if (fail_core) return ZCL_CRYPTO_FAILURE;
@@ -195,10 +208,10 @@ static void reset(const storage_fixture *fixture, const change_storage_data *dat
     entropy_array = (fake_array){entropy_bytes, sizeof(entropy_bytes), 16};
     expected = data;
     vm_calls = fail_call = core_calls = zero_calls = 0;
-    pending = fail_core = mutate_record = false;
+    pending = fail_core = mutate_record = malformed_record_case = false;
     live_entropy_at_storage = false;
     live_entropy_after_core = fail_random = false;
-    storage_calls = 0;
+    storage_calls = entropy_reads = record_admission_clears = 0;
 }
 
 static int no_files(const storage_fixture *fixture)
@@ -424,6 +437,21 @@ static int core_outcomes(const change_storage_data *data)
     return fixture_close(&fixture);
 }
 
+static int malformed_record_precedes_entropy(const change_storage_data *data)
+{
+    storage_fixture fixture;
+    CHECK(fixture_open(&fixture) == 0);
+    reset(&fixture, data);
+    mutable_record[0] ^= 1;
+    malformed_record_case = true;
+    CHECK(create(&fake_env, (jbyteArray)&path_array, (jbyteArray)&record_array,
+        (jbyteArray)&entropy_array) == ZCL_UNSUPPORTED);
+    CHECK(vm_calls == 4 && entropy_reads == 0 && core_calls == 0 &&
+        record_admission_clears == 1);
+    CHECK(no_files(&fixture) == 0);
+    return fixture_close(&fixture);
+}
+
 static int full_entropy_data(change_storage_data *data, const uint8_t *entropy, size_t entropy_len)
 {
     CHECK(data != NULL && entropy != NULL && entropy_len == 32);
@@ -520,6 +548,7 @@ int main(void)
     CHECK(owned_span_refusals(&data) == 0);
     CHECK(vm_failures(&data) == 0 && null_arguments(&data) == 0);
     CHECK(length_arguments(&data) == 0 && core_outcomes(&data) == 0);
+    CHECK(malformed_record_precedes_entropy(&data) == 0);
     CHECK(full_entropy_cleared() == 0);
     CHECK(write_failures(&data, false) == 0 && write_failures(&data, true) == 0);
     CHECK(write_outcomes(&data, false) == 0 && write_outcomes(&data, true) == 0);

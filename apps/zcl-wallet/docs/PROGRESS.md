@@ -8461,3 +8461,28 @@ M=10; 1,856 test functions have none above M=15. Fee/amount limits,
 transaction validity, signing authority, secrets, storage, synchronization,
 network behavior and TLS remain unchanged. This fake-VM evidence makes no ART,
 emulator or physical-device claim.
+
+## Production continuation: malformed records refused before entropy copy — 2026-10-06
+
+Fresh-wallet JNI creation now parses its bounded wallet-record copy before
+reading the managed entropy array. A malformed public record previously caused
+the entropy region to be copied into the 32-byte native secret scratch before
+the lower custody owner rejected the record. It now refuses after the path and
+record length/region calls, with zero entropy reads, zero custody-core calls and
+no filesystem effects. The parser scratch is fully wiped, and accepted records
+remain subject to the unchanged authoritative lower-owner validation.
+
+Canonical RED observes the unnecessary entropy read and core call. GREEN
+observes exactly four JNI calls and neither secret action; moving the preflight
+after the entropy read restores RED. The storage JNI regression and its fuzz
+regression pass under Clang 20 and GCC 14 ASan/UBSan/LSan. The first broad run
+correctly rejected the fuzz observer's unknown new cleanup span; extending that
+observer to verify the parsed-record wipe restored the focused fuzz lane.
+
+The final exact-tree TLS-OFF safety gate passes both static analyzers, all 145
+Clang and 140 GCC tests, vendor/reference hashes and frame warnings. Production
+covers 603 functions with none above M=10; 1,857 test functions have none above
+M=15. Valid wallet creation, record/profile validation, entropy derivation,
+12-word recovery, storage durability, no-overwrite behavior, consensus and
+monetary rules remain unchanged. No Android runtime or physical-device claim
+is made.

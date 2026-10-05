@@ -46,6 +46,14 @@ static jint write_record(JNIEnv *env, jbyteArray path_input, jbyteArray record_i
     return (jint)status;
 }
 
+static zcl_status admit_wallet_record(const uint8_t *record, size_t length)
+{
+    zcl_wallet_record parsed = {0};
+    const zcl_status status = zcl_wallet_record_parse(record, length, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
+    return status;
+}
+
 JNIEXPORT jint JNICALL
 Java_org_zclassic_wallet_core_NativeCore_createWalletStorage(JNIEnv *env, jclass type,
                                                             jbyteArray path, jbyteArray record)
@@ -64,6 +72,8 @@ Java_org_zclassic_wallet_core_NativeCore_createFreshWalletStorage(JNIEnv *env, j
     zcl_status status = zcl_jni_read_bytes(env, path_input, path, sizeof(path), &path_len);
     if (status == ZCL_OK)
         status = zcl_jni_read_bytes(env, record_input, record, sizeof(record), &record_len);
+    if (status == ZCL_OK)
+        status = admit_wallet_record(record, record_len);
     if (status == ZCL_OK)
         status = zcl_jni_read_bytes(env, entropy_input, entropy, sizeof(entropy), &entropy_len);
     if (status == ZCL_OK)

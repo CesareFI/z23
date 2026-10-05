@@ -5118,3 +5118,27 @@ late-admission mutation restores failure. Focused Clang 20 and GCC 14
 ASan/UBSan/LSan lanes pass, as do both static analyzers and the complete
 145/140 CTest matrix. TLS remains quarantined. This fake-VM evidence makes no
 ART, emulator, hardware or physical-device claim.
+
+## Fresh-wallet record admission before entropy copy — 2026-10-06
+
+`createFreshWalletStorage` now parses and retires its bounded wallet-record
+copy before reading entropy from the managed array. This preflight protects the
+JNI secret-lifetime boundary; `zcl_wallet_change_create_owned` still performs
+the authoritative record/profile validation before derivation and storage.
+
+| Hazard | Review |
+| --- | --- |
+| Secret lifetime | A malformed public header/ciphertext record now causes zero entropy-array reads and zero custody-core calls. Valid requests still copy at most 32 entropy bytes and clear the complete 32-byte scratch on every exit. |
+| Record bounds and validation | The record remains bounded by the existing 140-byte JNI copy. Preflight uses the existing wallet-record parser and wipes its complete parsed scratch immediately. The lower owner re-parses the accepted bytes. |
+| JNI exceptions | Path and record length/region exceptions keep their existing cleanup. Entropy length/region exceptions remain covered for records that pass preflight. No JNI operation follows an observed pending exception. |
+| Failure atomicity | Preflight has no filesystem side effect and cannot create a wallet, journal or lock. Its refusal returns the same parser status before entering the custody/storage owner. |
+| Output and ownership | This status-returning entry publishes no Java allocation. Path, record and entropy copies retain their single final cleanup; no Java reference or native pointer escapes. |
+| Stack and complexity | One bounded parsed-record scratch is added and wiped. Production remains M<=10 across 603 functions; tests remain M<=15 across 1,857 functions without suppression. |
+| Custody and transaction semantics | Valid record, entropy and path bytes reach the same lower owner. Encryption, 12-word recovery, key derivation, storage durability, monetary rules and transaction validity are unchanged. |
+
+Canonical RED observes the entropy region read and lower-owner call for a
+malformed record. GREEN stops after four path/record JNI calls; moving preflight
+after the entropy read restores RED. Focused JNI and fuzz-regression lanes pass
+under Clang 20 and GCC 14 ASan/UBSan/LSan. The complete TLS-OFF gate passes both
+analyzers and all 145/140 tests after the full gate correctly exposed and the
+test owner learned the added parsed-scratch wipe. TLS remains quarantined.

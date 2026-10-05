@@ -34,6 +34,12 @@ void zcl_jni_storage_fuzz_zero(void *pointer, size_t length);
 void zcl_jni_storage_fuzz_zero(void *pointer, size_t length)
 {
     require(pointer != NULL);
+    if (length == sizeof(zcl_wallet_record)) {
+        zcl_secure_zero(pointer, length);
+        const uint8_t *bytes = pointer;
+        for (size_t i = 0; i < length; ++i) require(bytes[i] == 0);
+        return;
+    }
     const size_t slot = length == 1024 ? 0 : length == 140 ? 1 : 2;
     require(slot != 2 || length == 32);
     const unsigned bit = 1U << slot;
