@@ -306,13 +306,15 @@ int test_sync_watchdog_conditions(void)
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
 
         condition_engine_tick();
-        fake_clock_set(&clock, 1301);
+        /* Header-stall recovery is elapsed process time, even if wall time
+         * moves backward while the best header stays unchanged. */
+        fake_clock_set_split(&clock, 1301, 500);
         condition_engine_tick();
         ok = ok && header_stall_at_height_test_remedy_calls() == 1;
         ok = ok && peer.last_getheaders_time == 0;
         ok = ok && peer.getheaders_stale_count == 0;
         header.nHeight = 2001;
-        fake_clock_set(&clock, 1302);
+        fake_clock_set_split(&clock, 1302, 501);
         condition_engine_tick();
         ok = ok && condition_engine_get_active_count() == 0;
         SYNC_WATCHDOG_CHECK("header stall kicks header fetch", ok);

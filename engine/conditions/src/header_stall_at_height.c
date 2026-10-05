@@ -39,7 +39,7 @@ static bool detect_header_stall_at_height(void)
 
     int header_h = ms->pindex_best_header ? ms->pindex_best_header->nHeight : -1;
     int peer_max = connman_max_peer_height(cm);
-    int64_t now = platform_time_wall_unix();
+    int64_t now = platform_time_monotonic_us() / INT64_C(1000000);
     int prev = atomic_load(&g_last_header_height);
     if (header_h < 0 || peer_max <= header_h) {
         atomic_store(&g_unchanged_since, 0);
