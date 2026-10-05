@@ -7,6 +7,7 @@
 #include <math.h>
 #include <inttypes.h>
 #include "base/safe_alloc.h"
+#include "base/hex.h"
 
 void json_init(struct json_value *v)
 {
@@ -410,13 +411,9 @@ static bool str_hex4(const char **pp, const char *end, uint32_t *unit)
     if ((size_t)(end - p) < 4) return false;
     uint32_t value = 0;
     for (size_t i = 0; i < 4; i++) {
-        unsigned char c = (unsigned char)p[i];
-        uint32_t digit;
-        if (c >= '0' && c <= '9') digit = c - '0';
-        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
-        else return false;
-        value = (value << 4) | digit;
+        int digit = zcl_hex_nibble(p[i], true);
+        if (digit < 0) return false;
+        value = (value << 4) | (uint32_t)digit;
     }
     *unit = value;
     *pp = p + 4;
