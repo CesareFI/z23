@@ -52,8 +52,8 @@ cells tells you which one is right. You never fix it by editing the cell.
    finality boundary: at or below it, state pinned by checkpointed SHA3 UTXO
    commitments, recomputable from genesis and continuously re-proven; above it,
    a working window of cursors, stage logs, and coin deltas that is explicitly
-   disposable. The compiled checkpoint h=3,056,758 (sha3 `5817f0ec…`) is the
-   degenerate seal today; the rolling seal ring above it is roadmap work.
+   disposable. The compiled checkpoint is h=3,056,758 (sha3 `5817f0ec…`);
+   `seal_kv` also implements a four-slot seal ring.
 
 4. **One recovery verb: rebuild the window, never repair it.** Any window
    anomaly — coin tear, height splice, stale verdict, integrity mismatch — gets
@@ -63,8 +63,9 @@ cells tells you which one is right. You never fix it by editing the cell.
    auto-reindex, cold-import); every one that fails is a repair — an
    anti-rewind floor refusing a consistent rollback target compounds into a
    crash-loop, and depth-3 poison-rewinds oscillate instead of converging.
-   `window_rebuild` is the verb that makes each ladder deletion safe;
-   auto-reindex-from-anchor is its landed degenerate form.
+   `stage_rederive_range()` schedules body-dependent verdict re-derivation
+   through cursor and log rewinds for the normal forward fold. It refuses
+   when applied coins lack the inverse deltas needed for a consistent rewind.
 
 5. **Recompute fixes bugs — fix the code, re-derive the state.** When a wrong
    formula has written wrong cells, the fix is the formula plus a recompute of
@@ -96,7 +97,7 @@ forward path realigns them).
 
 **I2 — Derive views, never install state.** Everything that is not the source is
 a projection, recomputed from the source, never written independently. H* is the
-model: pure-derived, read-only (`engine/reducer/jobs/include/jobs/reducer_frontier.h:73-76`).
+model: pure-derived, read-only (`engine/reducer/jobs/include/jobs/reducer_frontier.h:3-12`).
 Invariant B applied this to the coin-tear — derived from utxo_apply's OWN
 co-committed log, not the lagging frontier (`c8018a388`).
 
@@ -131,9 +132,7 @@ chain content — see the G1–G5 gate program in [`tenacity-roadmap.md`](work/t
 
 ## The divergence surface (summary)
 
-~3 facts, ~16 named encodings across 6+ separate stores (4 SQLite WAL databases
-— consensus.db, node.db, utxo_projection.db, block_index_projection.db — plus
-LevelDB and the block_index.bin flat file), no atomic cross-commit between
+Separate WAL databases have no atomic cross-commit between
 stores. Per-encoding authority verdicts (which is CANONICAL, which is a demote /
 delete target) live in the audit table in
 `docs/work/canonical-frontier-derived-state-plan.md` Phase 1/2 and
@@ -195,10 +194,9 @@ canary, G2 chain-derived golden extremals, G3 crash-boot soak, G4 recipe smokes,
 G5 push-time execution) and its land status are in
 [`tenacity-roadmap.md`](work/tenacity-roadmap.md).
 
-**What exists today (honest):** the `make lint` gates (source-text greps —
+**What exists today (honest):** the `make lint` gates (the lint umbrella —
 count derived from `LINT_GATES` in the Makefile, not restated here), the
-hermetic test_parallel groups (synthetic regtest 48,5 fixtures — count derived
-by `make test-parallel`, likewise not restated), `make ci`
-(policy-forbidden from starting a node), test-crash (guaranteed-SKIP —
-`ZCL_CRASH_DATADIR` unset). All valuable as a regression floor; none sample the
-live failure distribution. That is the gap G1–G5 close.
+registered test_parallel groups (count derived by `make test-parallel`,
+likewise not restated), `make ci`
+(policy-forbidden from starting a node), `make test-crash` (SKIPs when its
+selected datadir is absent). These checks remain a regression floor.
