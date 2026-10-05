@@ -131,7 +131,6 @@ static int parse_field(parser *ps, int lo, int hi, unsigned bit_base,
         perr(ps, fname);
         return 0;
       }
-      if (fold_7_to_0 && a == 7) a = 0;
       b = a;
     }
     if (!star && ps->p < ps->end && *ps->p == '-') {
@@ -141,7 +140,6 @@ static int parse_field(parser *ps, int lo, int hi, unsigned bit_base,
         perr(ps, "bad range end");
         return 0;
       }
-      if (fold_7_to_0 && b == 7) b = 0;
     }
     if (ps->p < ps->end && *ps->p == '/') {
       ps->p++;

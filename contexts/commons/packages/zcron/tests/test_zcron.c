@@ -278,8 +278,26 @@ static void test_format_preserves_day_semantics(void) {
   }
 }
 
+static void test_sunday_range_alias(void) {
+  const char *exprs[] = {"0 0 * * 5-7", "0 0 * * 5-7/2", "0 0 * * 6-7", "0 0 * * 0-7"};
+  const unsigned masks[] = {(1u << 5) | (1u << 6) | 1u, (1u << 5) | 1u, (1u << 6) | 1u, 127u};
+  for (size_t i = 0; i < sizeof exprs / sizeof exprs[0]; ++i) {
+    int before_failures = failures;
+    zcron c = {0};
+    int ok = zcron_parse(exprs[i], strlen(exprs[i]), &c, NULL, 0);
+    CHECK(ok);
+    if (ok) CHECK(c.dow == masks[i]);
+    if (ok && i == 0) CHECK(zcron_next(&c, 1786752000LL) == 1786838400LL);
+    fprintf(stderr, "cron_range_row=%zu result=%s\n", i,
+            failures == before_failures ? "PASS" : "FAIL");
+  }
+  expect_parse_bad("0 0 * * 7-5");
+  expect_parse_bad("0 0 * * 7-0");
+}
+
 int main(void) {
   expect_next("* * * * *", LLONG_MAX, -1);
+    test_sunday_range_alias();
   test_format_preserves_day_semantics();
   test_parse_ok();
   test_parse_bad();
