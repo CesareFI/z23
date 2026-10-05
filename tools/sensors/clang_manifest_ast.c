@@ -1065,6 +1065,13 @@ static enum CXChildVisitResult cm_typedef_pass(CXCursor c, CXCursor parent,
     t = &st->tagnames[st->ntagnames++];
     t->decl = decl;
     t->name = cm_take_string(clang_getCursorSpelling(c));
+    if (t->name == NULL) {
+        /* A NULL name poisons every later cm_tag_name lookup (NULL[0] /
+         * strlen(NULL)); keep the table free of it. */
+        st->ntagnames--;
+        (void)cm_fail(&st->core, "out of memory");
+        return CXChildVisit_Break;
+    }
     return CXChildVisit_Continue;
 }
 
