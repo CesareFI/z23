@@ -132,7 +132,7 @@ bool zrange_parse_n(const char *str, size_t len, zrange *out) {
 }
 
 bool zrange_parse(const char *str, zrange *out) {
-  return str && zrange_parse_n(str, strlen(str), out);
+  return zrange_parse_n(str, str ? strlen(str) : 0, out);
 }
 
 static bool comp_pass(const zrange_comparator *c, const zsemver *v) {

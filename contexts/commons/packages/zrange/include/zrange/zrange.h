@@ -66,7 +66,8 @@ typedef struct {
  * or bound overflow; *out is zeroed in that case. */
 bool zrange_parse_n(const char *str, size_t len, zrange *out);
 
-/* NUL-terminated convenience wrapper. */
+/* NUL-terminated convenience wrapper; failure zeroes non-NULL out,
+ * including when str is NULL. */
 bool zrange_parse(const char *str, zrange *out);
 
 /* True when version satisfies the range (any set fully satisfied, with

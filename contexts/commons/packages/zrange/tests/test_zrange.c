@@ -180,7 +180,15 @@ static void test_satisfies_edge_args(void) {
   CHECK(rr.set_count == 1 && rr.comp_count == 2);
 }
 
+static void test_null_wrapper_state(void) {
+  zrange parsed;
+  const unsigned char zero[sizeof(zrange)] = {0};
+  memset(&parsed, 0xA5, sizeof parsed);
+  CHECK(!zrange_parse(NULL, &parsed) && memcmp(&parsed, zero, sizeof parsed) == 0);
+}
+
 int main(void) {
+  test_null_wrapper_state();
   test_explicit_operators();
   test_caret_expansions();
   test_tilde_expansions();
