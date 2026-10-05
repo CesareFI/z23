@@ -105,12 +105,12 @@ uint32_t getheaders_serve_request_allowance(uint64_t services)
  * to end. */
 void getheaders_park_deferred(struct p2p_node *node,
                               const struct byte_stream *s,
-                              int64_t now_unix)
+                              int64_t now_monotonic)
 {
     size_t len = s->size > s->read_pos ? s->size - s->read_pos : 0;
     if (len == 0 || len > GETHEADERS_DEFERRED_REQ_MAX_BYTES) {
         if (node->getheaders_deferred_len == 0)
-            node->getheaders_deferred_replay_after = now_unix;
+            node->getheaders_deferred_replay_after = now_monotonic;
         return; // raw-return-ok:payload-does-not-fit-the-parking-slot
     }
     memcpy(node->getheaders_deferred_req, s->data + s->read_pos, len);
@@ -118,7 +118,7 @@ void getheaders_park_deferred(struct p2p_node *node,
     int64_t rolls_at =
         node->getheaders_rate_window_start + GETHEADERS_SERVE_WINDOW_SECS;
     node->getheaders_deferred_replay_after =
-        rolls_at > now_unix ? rolls_at : now_unix + 1;
+        rolls_at > now_monotonic ? rolls_at : now_monotonic + 1;
 }
 
 /* See net/msg_internal.h. */
@@ -129,7 +129,8 @@ bool getheaders_replay_deferred(struct msg_processor *mp,
         return false; // raw-return-ok:nothing-parked-for-this-peer
     if (atomic_load(&node->disconnect))
         return false; // raw-return-ok:peer-is-going-away
-    if (platform_time_wall_unix() < node->getheaders_deferred_replay_after)
+    if (platform_time_monotonic_us() / INT64_C(1000000) <
+        node->getheaders_deferred_replay_after)
         return false; // raw-return-ok:serve-window-has-not-rolled-yet
 
     /* DISARM FIRST, then serve. The replay runs the unmodified

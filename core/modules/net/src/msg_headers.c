@@ -1085,11 +1085,11 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
 
     /* Per-peer serve window: roll, count, defer past the allowance. The
      * rationale sits with the allowance in msg_getheaders_defer.c. */
-    int64_t now_unix = platform_time_wall_unix();
+    int64_t now_monotonic = platform_time_monotonic_us() / INT64_C(1000000);
     if (node->getheaders_rate_window_start == 0 ||
-        now_unix - node->getheaders_rate_window_start >=
+        now_monotonic - node->getheaders_rate_window_start >=
             GETHEADERS_SERVE_WINDOW_SECS) {
-        node->getheaders_rate_window_start = now_unix;
+        node->getheaders_rate_window_start = now_monotonic;
         node->getheaders_rate_window_count = 0;
     }
     uint32_t allowance = getheaders_serve_request_allowance(node->services);
@@ -1097,7 +1097,7 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
         /* Park the request rather than dropping it: the send tick replays it
          * once this window rolls, so a legacy peer with no retry timer is not
          * left silent (getheaders_park_deferred, msg_getheaders_defer.c). */
-        getheaders_park_deferred(node, s, now_unix);
+        getheaders_park_deferred(node, s, now_monotonic);
         uint64_t n =
             atomic_fetch_add(&g_getheaders_deferred_rate_window, 1) + 1;
         if (getheaders_suppress_rising_edge(&g_getheaders_rate_streak))
@@ -1109,7 +1109,7 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
                      node->addr_name, (unsigned long long)n, allowance,
                      (unsigned)node->getheaders_deferred_len,
                      (long long)(node->getheaders_deferred_replay_after -
-                                 now_unix));
+                                 now_monotonic));
         return true;
     }
     atomic_store(&g_getheaders_rate_streak, false);

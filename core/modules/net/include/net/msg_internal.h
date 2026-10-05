@@ -249,7 +249,7 @@ uint64_t getheaders_replayed_deferred(void);
  * rationale is with it there. Single message-handler thread only. */
 void getheaders_park_deferred(struct p2p_node *node,
                               const struct byte_stream *s,
-                              int64_t now_unix);
+                              int64_t now_monotonic);
 
 /* Serve-path verification receipts — the bound on how often a peer can make
  * this node REDO an Equihash verification it has already done.

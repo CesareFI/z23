@@ -332,6 +332,11 @@ static bool pd_zcl23_window_closes_at_own_allowance(
 
 /* Fill this peer's window, then ask once more so the last request is deferred;
  * report whether that defer parked it. */
+static int64_t pd_now_monotonic_s(void)
+{
+    return platform_time_monotonic_us() / INT64_C(1000000);
+}
+
 static bool pd_park_deferred_request(struct msg_processor *mp,
                                      struct byte_stream *req,
                                      struct p2p_node *node)
@@ -340,14 +345,18 @@ static bool pd_park_deferred_request(struct msg_processor *mp,
         (int)getheaders_serve_request_allowance(node->services);
     for (int i = 0; i < allowance + 1; i++) {
         /* Hold the window open by injection (as D3 rolls it). */
-        node->getheaders_rate_window_start = platform_time_wall_time_t();
+        node->getheaders_rate_window_start = pd_now_monotonic_s();
         req->read_pos = 0;   /* re-send the identical request */
         (void)process_getheaders(mp, node, req);
         pd_drain_send_queue(node);
         pd_clear_fixture_disconnect(node);
     }
+    int64_t now_monotonic = pd_now_monotonic_s();
     return node->getheaders_deferred_len > 0 &&
-           node->getheaders_rate_window_count == (uint32_t)allowance;
+           node->getheaders_rate_window_count == (uint32_t)allowance &&
+           node->getheaders_deferred_replay_after > now_monotonic &&
+           node->getheaders_deferred_replay_after <=
+               now_monotonic + GETHEADERS_SERVE_WINDOW_SECS + 1;
 }
 
 /* While the window is open the send tick does nothing: no reply, no replay
@@ -374,8 +383,8 @@ static bool pd_replay_once_after_roll(struct msg_processor *mp,
     uint64_t replays_before = getheaders_replayed_deferred();
     uint64_t defers_before = getheaders_deferred_rate_window();
     node->getheaders_rate_window_start =
-        platform_time_wall_time_t() - GETHEADERS_SERVE_WINDOW_SECS - 1;
-    node->getheaders_deferred_replay_after = platform_time_wall_time_t() - 1;
+        pd_now_monotonic_s() - GETHEADERS_SERVE_WINDOW_SECS - 1;
+    node->getheaders_deferred_replay_after = pd_now_monotonic_s() - 1;
 
     bool replayed = getheaders_replay_deferred(mp, node);
     int64_t wire = pd_queued_headers_count(node);
@@ -426,8 +435,8 @@ static bool pd_served_ask_supersedes_parked(struct msg_processor *mp,
         return false;
     uint64_t replays_before = getheaders_replayed_deferred();
     node.getheaders_rate_window_start =
-        platform_time_wall_time_t() - GETHEADERS_SERVE_WINDOW_SECS - 1;
-    node.getheaders_deferred_replay_after = platform_time_wall_time_t() - 1;
+        pd_now_monotonic_s() - GETHEADERS_SERVE_WINDOW_SECS - 1;
+    node.getheaders_deferred_replay_after = pd_now_monotonic_s() - 1;
     req->read_pos = 0;
     (void)process_getheaders(mp, &node, req);
     bool served = pd_queued_headers_count(&node) == 1 &&
@@ -482,8 +491,8 @@ static bool pd_malformed_ask_after_roll_keeps_park(struct msg_processor *mp,
         return false;
     uint64_t replays_before = getheaders_replayed_deferred();
     node.getheaders_rate_window_start =
-        platform_time_wall_time_t() - GETHEADERS_SERVE_WINDOW_SECS - 1;
-    node.getheaders_deferred_replay_after = platform_time_wall_time_t() - 1;
+        pd_now_monotonic_s() - GETHEADERS_SERVE_WINDOW_SECS - 1;
+    node.getheaders_deferred_replay_after = pd_now_monotonic_s() - 1;
     static const uint8_t version_only[4] = {1, 0, 0, 0};
     struct byte_stream bad;   /* nVersion only: no locator, no hash_stop */
     stream_init(&bad, 8);
@@ -1000,7 +1009,7 @@ int test_getheaders_serve_pow_dedup(void)
             msg_headers_get_stats(&st_before);
             uint64_t defer_stable = getheaders_deferred_rate_window();
             flooder.getheaders_rate_window_start =
-                platform_time_wall_time_t() -
+                pd_now_monotonic_s() -
                 GETHEADERS_SERVE_WINDOW_SECS - 1;
             flooder.getheaders_rate_window_count = (uint32_t)allowance;
             req_d.read_pos = 0;

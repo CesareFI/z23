@@ -386,7 +386,8 @@ struct p2p_node {
      * window resets once GETHEADERS_SERVE_WINDOW_SECS have elapsed. Beyond
      * the allowance the request is DEFERRED — no reply, no disconnect, no
      * offence: an honest peer never reaches the gate, so a punishment there
-     * could only hurt a peer we mis-measured. Zero-initialised by
+     * could only hurt a peer we mis-measured. The window timestamp is in
+     * process-monotonic seconds. Zero-initialised by
      * p2p_node_create (calloc), so window_start==0 reads as "no window yet";
      * and because the state dies with the connection, a reconnecting peer
      * starts from a fresh window exactly like any other per-peer slot here. */
@@ -423,7 +424,8 @@ struct p2p_node {
      * dies with the connection.
      *
      * Written and read only on the single message-handler thread (the
-     * dispatcher and the send tick both run there), so no lock. */
+     * dispatcher and the send tick both run there), so no lock. The replay
+     * deadline is process-monotonic seconds, like the serve window above. */
     uint8_t getheaders_deferred_req[GETHEADERS_DEFERRED_REQ_MAX_BYTES];
     uint16_t getheaders_deferred_len;
     int64_t getheaders_deferred_replay_after;
