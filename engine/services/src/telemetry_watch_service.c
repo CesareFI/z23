@@ -66,8 +66,16 @@ struct twx_source {
 
 /* The one provider that exists. A shim rather than a cast in the table so the
  * typed signature is checked by the compiler. */
+#ifdef ZCL_TESTING
+static bool (*g_test_provider)(void *);
+void telemetry_watch_service_test_provider(bool (*fill)(void *))
+{ g_test_provider = fill; }
+#endif
 static bool twx_fill_sync(void *snapshot)
 {
+#ifdef ZCL_TESTING
+    if (g_test_provider) return g_test_provider(snapshot);
+#endif
     return sync_dump_state_fill((struct sync_snapshot *)snapshot);
 }
 
@@ -110,6 +118,22 @@ static struct twx_source g_sources[] = {
 };
 
 #define TWX_SOURCE_COUNT (sizeof(g_sources) / sizeof(g_sources[0]))
+
+static atomic_flag g_sample_owned = ATOMIC_FLAG_INIT;
+static _Atomic bool g_reset_requested = false;
+
+/* One attempt; SC orders a busy reset's failed try before the next owner. */
+static bool twx_try_own(void)
+{
+    if (atomic_flag_test_and_set_explicit(&g_sample_owned, memory_order_seq_cst))
+        return false;
+    if (atomic_exchange(&g_reset_requested, false)) {
+        for (size_t i = 0; i < TWX_SOURCE_COUNT; i++)
+            if (g_sources[i].prev)
+                memset(g_sources[i].prev, 0, g_sources[i].snapshot_size);
+    }
+    return true;
+}
 
 static _Atomic uint64_t g_records_published = 0;
 static _Atomic uint64_t g_ticks = 0;
@@ -169,10 +193,12 @@ static bool twx_sample_source(struct twx_source *src, size_t *published)
 
 size_t telemetry_watch_service_sample_once(void)
 {
+    if (!twx_try_own()) return 0;
     telemetry_watch_init();
     size_t published = 0;
     for (size_t i = 0; i < TWX_SOURCE_COUNT; i++)
         (void)twx_sample_source(&g_sources[i], &published);
+    atomic_flag_clear_explicit(&g_sample_owned, memory_order_seq_cst);
     return published;
 }
 
@@ -204,10 +230,9 @@ bool telemetry_watch_service_source_at(size_t index, const char **domain,
 
 void telemetry_watch_service_reset_baseline(void)
 {
-    for (size_t i = 0; i < TWX_SOURCE_COUNT; i++) {
-        if (g_sources[i].prev)
-            memset(g_sources[i].prev, 0, g_sources[i].snapshot_size);
-    }
+    atomic_store(&g_reset_requested, true);
+    if (twx_try_own())
+        atomic_flag_clear_explicit(&g_sample_owned, memory_order_seq_cst);
 }
 
 /* ── supervision ─────────────────────────────────────────────────────── */
@@ -228,6 +253,7 @@ static void twx_tick(struct liveness_contract *c)
     supervisor_child_id id = atomic_load(&g_watch_id);
     atomic_fetch_add(&g_ticks, 1);
 
+    if (!twx_try_own()) { supervisor_tick(id); return; }
     telemetry_watch_init();
     size_t published = 0;
     bool all_filled = true;
@@ -235,6 +261,7 @@ static void twx_tick(struct liveness_contract *c)
         if (!twx_sample_source(&g_sources[i], &published))
             all_filled = false;
     }
+    atomic_flag_clear_explicit(&g_sample_owned, memory_order_seq_cst);
 
     if (published > 0) {
         /* A published record is the RESULT this service exists to produce. */
@@ -253,6 +280,10 @@ static void twx_tick(struct liveness_contract *c)
 
     supervisor_tick(id);
 }
+
+#ifdef ZCL_TESTING
+void telemetry_watch_service_test_tick(void) { twx_tick(NULL); }
+#endif
 
 void telemetry_watch_service_register(void)
 {

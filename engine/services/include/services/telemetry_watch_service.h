@@ -60,7 +60,8 @@ bool telemetry_watch_service_is_armed(void);
 
 /* Take one sample of every sampled domain and publish a record per domain that
  * changed. Returns the number of records published (0 is the normal quiet
- * answer). Safe to call from any thread; safe to call before boot. */
+ * answer). Safe to call from any thread; safe to call before boot. A busy
+ * sampler returns 0 without sampling; a busy supervised tick defers its pass. */
 size_t telemetry_watch_service_sample_once(void);
 
 /* Records this sampler has published since the process started. This is the
@@ -79,8 +80,16 @@ bool telemetry_watch_service_source_at(size_t index, const char **domain,
                                        const char **skip_reason);
 
 /* Drop every remembered previous sample so the next one is a fresh baseline.
+ * A busy reset is applied no later than the next completed sample. The current
+ * owner may consume it if it has not yet checked for a pending request.
  * Used by the tests around telemetry_watch_restart(); production never calls
  * it — a restart of the process does the same thing for free. */
 void telemetry_watch_service_reset_baseline(void);
+
+#ifdef ZCL_TESTING
+/* Install only while the test's sampling threads are quiescent. */
+void telemetry_watch_service_test_provider(bool (*fill)(void *));
+void telemetry_watch_service_test_tick(void);
+#endif
 
 #endif /* ZCL_SERVICES_TELEMETRY_WATCH_SERVICE_H */

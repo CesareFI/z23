@@ -42,6 +42,10 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
+#include <time.h>
 
 /* One label-free assertion per line, same reason as test_telemetry_sync:
  * these checks are numerous and independent, and are more useful reported one
@@ -446,6 +450,147 @@ static int check_coverage_is_declared(void)
     return failures;
 }
 
+static pthread_mutex_t tw_sample_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t tw_sample_cv = PTHREAD_COND_INITIALIZER;
+static unsigned tw_provider_calls;
+static bool tw_provider_entered, tw_provider_release;
+static _Atomic bool tw_reset_done;
+struct tw_sample_call { bool tick, done, follow_reset; size_t published, fresh; };
+
+static bool tw_blocked_provider(void *snapshot)
+{
+    pthread_mutex_lock(&tw_sample_mu);
+    if (++tw_provider_calls == 1) {
+        tw_provider_entered = true;
+        pthread_cond_broadcast(&tw_sample_cv);
+        while (!tw_provider_release) pthread_cond_wait(&tw_sample_cv, &tw_sample_mu);
+    }
+    pthread_mutex_unlock(&tw_sample_mu);
+    struct sync_snapshot *s = snapshot;
+    TELEMETRY_SET_I64(s, hstar, 501, TELEMETRY_SRC_CACHED_PUBLICATION);
+    TELEMETRY_SET_I64(s, body_fetch_cursor, 500, TELEMETRY_SRC_CACHED_PUBLICATION);
+    return true;
+}
+
+static void *tw_sample_call(void *arg)
+{
+    struct tw_sample_call *call = arg;
+    if (call->tick) telemetry_watch_service_test_tick();
+    else call->published = telemetry_watch_service_sample_once();
+    if (call->follow_reset) {
+        while (!atomic_load_explicit(&tw_reset_done, memory_order_relaxed)) sched_yield();
+        call->fresh = telemetry_watch_service_sample_once();
+    }
+    pthread_mutex_lock(&tw_sample_mu);
+    call->done = true;
+    pthread_cond_broadcast(&tw_sample_cv);
+    pthread_mutex_unlock(&tw_sample_mu);
+    return NULL;
+}
+
+static bool tw_complete_diff(const struct telemetry_watch_batch *b)
+{
+    return b->count == 1 && b->records[0].changed_count == 2 &&
+           b->records[0].changed_total == 2 &&
+           strcmp(b->records[0].changed_fields[0], "hstar") == 0 &&
+           strcmp(b->records[0].changed_fields[1], "body_fetch_cursor") == 0;
+}
+
+static int check_sampling_ownership(unsigned mode)
+{
+    int failures = 0;
+    telemetry_watch_restart();
+    telemetry_watch_service_reset_baseline();
+    tw_provider_calls = 0;
+    tw_provider_entered = tw_provider_release = false;
+    telemetry_watch_service_test_provider(tw_blocked_provider);
+    struct tw_sample_call first = {.tick = mode == 2}, second = {.tick = mode == 1};
+    pthread_t a, b;
+    int started = pthread_create(&a, NULL, tw_sample_call, &first);
+    TW_CHECK("[watch] owner thread starts", started == 0);
+    if (started != 0) { telemetry_watch_service_test_provider(NULL); return failures; }
+    pthread_mutex_lock(&tw_sample_mu);
+    while (!tw_provider_entered) pthread_cond_wait(&tw_sample_cv, &tw_sample_mu);
+    pthread_mutex_unlock(&tw_sample_mu);
+    if (mode == 3) telemetry_watch_service_reset_baseline();
+    started = pthread_create(&b, NULL, tw_sample_call, &second);
+    TW_CHECK("[watch] competing thread starts", started == 0);
+    struct timespec deadline = {0};
+    TW_CHECK("[watch] watchdog clock is available", timespec_get(&deadline, TIME_UTC) == TIME_UTC);
+    deadline.tv_sec += 5; /* watchdog only; completion BEFORE release is the oracle */
+    pthread_mutex_lock(&tw_sample_mu);
+    while (started == 0 && !second.done) {
+        if (pthread_cond_timedwait(&tw_sample_cv, &tw_sample_mu, &deadline) != 0) break;
+    }
+    bool prompt = second.done;
+    unsigned calls = tw_provider_calls;
+    uint64_t sequence = telemetry_watch_last_sequence();
+    tw_provider_release = true;
+    pthread_cond_broadcast(&tw_sample_cv);
+    pthread_mutex_unlock(&tw_sample_mu);
+    TW_CHECK("[watch] owner thread joins", pthread_join(a, NULL) == 0);
+    if (started == 0) TW_CHECK("[watch] competing thread joins", pthread_join(b, NULL) == 0);
+    TW_CHECK("[watch] busy sampler returns before provider release", prompt);
+    TW_CHECK("[watch] busy sampler never invokes provider or publishes", calls == 1 && sequence == 0);
+    TW_CHECK("[watch] owner publishes its diff", first.tick || first.published == 1);
+    struct telemetry_watch_batch batch = {0};
+    (void)telemetry_watch_read(0, 0, TELEMETRY_WATCH_BATCH_MAX, &batch);
+    TW_CHECK("[watch] one complete diff is published", tw_complete_diff(&batch));
+    if (mode == 3) TW_CHECK("[watch] busy reset defers a fresh baseline",
+                            telemetry_watch_service_sample_once() == 1);
+    TW_CHECK("[watch] unchanged sample is silent", telemetry_watch_service_sample_once() == 0);
+    uint64_t cursor = telemetry_watch_last_sequence();
+    telemetry_watch_service_reset_baseline();
+    TW_CHECK("[watch] reset publishes a fresh baseline", telemetry_watch_service_sample_once() == 1);
+    (void)telemetry_watch_read(cursor, 0, TELEMETRY_WATCH_BATCH_MAX, &batch);
+    TW_CHECK("[watch] reset publishes both baseline fields", tw_complete_diff(&batch));
+    telemetry_watch_service_test_provider(NULL);
+    return failures;
+}
+
+static void *tw_reset_call(void *unused)
+{
+    (void)unused;
+    telemetry_watch_service_reset_baseline();
+    atomic_store_explicit(&tw_reset_done, true, memory_order_relaxed);
+    return NULL;
+}
+
+static int check_cross_thread_reset(void)
+{
+    int failures = 0;
+    telemetry_watch_restart();
+    telemetry_watch_service_reset_baseline();
+    tw_provider_calls = 0;
+    tw_provider_entered = tw_provider_release = false;
+    atomic_store_explicit(&tw_reset_done, false, memory_order_relaxed);
+    telemetry_watch_service_test_provider(tw_blocked_provider);
+    struct tw_sample_call call = {.follow_reset = true};
+    pthread_t sampler, resetter;
+    int started = pthread_create(&sampler, NULL, tw_sample_call, &call);
+    TW_CHECK("[watch] cross-thread sampler starts", started == 0);
+    if (started != 0) { telemetry_watch_service_test_provider(NULL); return failures; }
+    pthread_mutex_lock(&tw_sample_mu);
+    while (!tw_provider_entered) pthread_cond_wait(&tw_sample_cv, &tw_sample_mu);
+    pthread_mutex_unlock(&tw_sample_mu);
+    started = pthread_create(&resetter, NULL, tw_reset_call, NULL);
+    TW_CHECK("[watch] separate reset thread starts", started == 0);
+    if (started != 0) atomic_store_explicit(&tw_reset_done, true, memory_order_relaxed);
+    while (!atomic_load_explicit(&tw_reset_done, memory_order_relaxed)) sched_yield();
+    pthread_mutex_lock(&tw_sample_mu);
+    tw_provider_release = true;
+    pthread_cond_broadcast(&tw_sample_cv);
+    pthread_mutex_unlock(&tw_sample_mu);
+    TW_CHECK("[watch] cross-thread sampler joins", pthread_join(sampler, NULL) == 0);
+    if (started == 0) TW_CHECK("[watch] reset thread joins after sampling", pthread_join(resetter, NULL) == 0);
+    TW_CHECK("[watch] next completed sample applies cross-thread reset", call.published == 1 && call.fresh == 1);
+    struct telemetry_watch_batch batch = {0};
+    (void)telemetry_watch_read(1, 0, TELEMETRY_WATCH_BATCH_MAX, &batch);
+    TW_CHECK("[watch] cross-thread reset publishes a complete baseline", tw_complete_diff(&batch));
+    telemetry_watch_service_test_provider(NULL);
+    return failures;
+}
+
 int test_telemetry_watch(void)
 {
     printf("\n=== telemetry watch (change feed) tests ===\n");
@@ -466,6 +611,8 @@ int test_telemetry_watch(void)
     failures += check_diff_ignores_the_sample_clock();
     failures += check_reply_fits_its_budget();
     failures += check_coverage_is_declared();
+    for (unsigned mode = 0; mode < 4; mode++) failures += check_sampling_ownership(mode);
+    failures += check_cross_thread_reset();
 
     test_cleanup_tmpdir(datadir);
     printf("=== telemetry_watch: %d failures ===\n", failures);
