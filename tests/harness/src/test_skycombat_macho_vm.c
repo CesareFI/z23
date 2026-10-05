@@ -11,6 +11,7 @@ enum { PROT_NONE=0,PROT_READ=1,PROT_WRITE=2,PROT_EXEC=4,
 static unsigned vm_failures,vm_wx,vm_maps,vm_changes,vm_flushes,vm_releases;
 static unsigned vm_deny_change;
 static bool vm_deny_map,vm_deny_release;
+static bool vm_deny_image,vm_deny_snapshot,vm_unaligned,vm_high_address;
 static void *vm_arena,*vm_allocation;
 static int vm_rights[2];
 #define VM_CHECK(x) do {if(!(x)){fprintf(stderr,"FAIL VM %u: %s\n",(unsigned)__LINE__,#x);vm_failures++;}} while(0)
@@ -20,13 +21,14 @@ static void *vm_map(void *addr,size_t n,int prot,int flags,int fd,int64_t off)
  VM_CHECK(prot==PROT_NONE);VM_CHECK(!(flags&MAP_JIT));
  if((prot&(PROT_WRITE|PROT_EXEC))==(PROT_WRITE|PROT_EXEC)){vm_wx++;return MAP_FAILED;}
  if(vm_deny_map)return MAP_FAILED;
+ if(vm_high_address){vm_arena=(void *)(uintptr_t)UINT64_C(0x8000000000000000);return vm_arena;}
  const size_t padding=16383;
  if(n>SIZE_MAX-padding)return MAP_FAILED;
  vm_allocation=malloc(n+padding);
  if(!vm_allocation)return MAP_FAILED;
  uintptr_t at=(uintptr_t)vm_allocation;
  if(at>UINTPTR_MAX-padding){free(vm_allocation);vm_allocation=NULL;return MAP_FAILED;}
- vm_arena=(void *)((at+padding)&~(uintptr_t)padding);
+ vm_arena=(void *)(((at+padding)&~(uintptr_t)padding)+(vm_unaligned?1u:0u));
  vm_rights[0]=prot;vm_rights[1]=prot;return vm_arena;
 }
 static int vm_protect(void *addr,size_t n,int prot)
@@ -48,8 +50,7 @@ static int vm_release(void *addr,size_t n)
 }
 static void vm_flush(void *addr,size_t n)
 {
- vm_flushes++;
- VM_CHECK(n==1024u*1024u);
+ (void)n;vm_flushes++;
  size_t slot=((uint8_t *)addr-(uint8_t *)vm_arena)/(1024u*1024u);
  VM_CHECK(slot<2);if(slot<2)VM_CHECK(vm_rights[slot]==(PROT_READ|PROT_EXEC));
 }
@@ -67,7 +68,17 @@ static void *vm_clear(void *addr,int value,size_t n)
  }
  return memset(addr,value,n);
 }
+static void *vm_image_allocate(size_t count,size_t size)
+{
+ return vm_deny_image?NULL:calloc(count,size);
+}
+static void *vm_snapshot_allocate(size_t size)
+{
+ return vm_deny_snapshot?NULL:malloc(size);
+}
 #define SKY_MACHO_VM_TEST 1
+#define calloc vm_image_allocate
+#define malloc vm_snapshot_allocate
 #define memset vm_clear
 #define mmap vm_map
 #define mprotect vm_protect
@@ -86,6 +97,35 @@ static void *vm_clear(void *addr,int value,size_t n)
 #undef mmap
 #undef mprotect
 #undef munmap
+#undef calloc
+#undef malloc
+static void vm_argument_cases(const uint8_t *b,size_t n,const uint8_t d[32])
+{
+ struct sky_part_host h={0};unsigned before=vm_maps;
+ VM_CHECK(vm_load(NULL,b,n,d)==SKY_LOAD_ARGUMENT);
+ VM_CHECK(vm_load(&h,NULL,n,d)==SKY_LOAD_ARGUMENT);
+ VM_CHECK(vm_load(&h,b,n,NULL)==SKY_LOAD_ARGUMENT);
+ VM_CHECK(vm_load(&h,b,0,d)==SKY_LOAD_ARGUMENT);
+ VM_CHECK(vm_load(&h,b,16u*1024u*1024u+1u,d)==SKY_LOAD_ARGUMENT);
+ VM_CHECK(vm_maps==before);
+ VM_CHECK(vm_call_begin(NULL)==NULL);VM_CHECK(vm_call_begin(&h)==NULL);
+ VM_CHECK(!vm_call_end(NULL));VM_CHECK(!vm_call_end(&h));VM_CHECK(!vm_dispose(NULL));
+ h.slot=2;VM_CHECK(vm_load(&h,b,n,d)==SKY_LOAD_ARGUMENT);h.slot=0;
+ h.current.id=1;VM_CHECK(vm_load(&h,b,n,d)==SKY_LOAD_ARGUMENT);
+ h.current.id=0;h.last_id=UINT64_MAX;
+ VM_CHECK(vm_load(&h,b,n,d)==SKY_LOAD_ID_EXHAUSTED);h.last_id=0;
+ uint8_t wrong[32];memcpy(wrong,d,32);wrong[17]^=1;
+ VM_CHECK(vm_load(&h,b,n,wrong)==SKY_LOAD_ADMISSION);
+ VM_CHECK(vm_maps==before);
+ vm_deny_image=true;VM_CHECK(vm_load(&h,b,n,d)==SKY_LOAD_MEMORY);vm_deny_image=false;
+ vm_deny_snapshot=true;VM_CHECK(vm_load(&h,b,n,d)==SKY_LOAD_MEMORY);vm_deny_snapshot=false;
+ VM_CHECK(vm_maps==before);
+ vm_unaligned=true;VM_CHECK(vm_load(&h,b,n,d)==SKY_LOAD_RELOCATION);vm_unaligned=false;
+ VM_CHECK(!h.arena && vm_arena==NULL && h.current.id==0);
+ vm_high_address=true;VM_CHECK(vm_load(&h,b,n,d)==SKY_LOAD_RELOCATION);vm_high_address=false;
+ VM_CHECK(!h.arena && vm_arena==NULL && h.current.id==0);
+ printf("direct loader argument/allocation/digest/base refusals complete\n");
+}
 static void vm_preserved(const struct sky_part_host *h,const struct sky_part_host *old,
  const uint8_t hash[32])
 {
@@ -107,6 +147,10 @@ static void vm_replacement_failures(struct sky_part_host *h,const uint8_t *bytes
  VM_CHECK(vm_load(h,bytes,n,digest)==SKY_LOAD_OK);
  VM_CHECK(h->current.id==2 && h->slot==1);
  VM_CHECK(vm_call_begin(h)!=NULL);
+ VM_CHECK(vm_call_begin(h)==NULL);
+ uint64_t saved=h->last_id;h->last_id=0;h->in_call=false;
+ VM_CHECK(vm_load(h,bytes,n,digest)==SKY_LOAD_ARGUMENT);
+ h->last_id=saved;h->in_call=true;
  unsigned before=vm_changes;
  VM_CHECK(vm_load(h,bytes,n,digest)==SKY_LOAD_BUSY);
  VM_CHECK(vm_changes==before);VM_CHECK(!vm_dispose(h));VM_CHECK(vm_call_end(h));
@@ -152,6 +196,7 @@ int macho_vm_cases(void)
  vm_deny_release=false;
  VM_CHECK(vm_dispose(&h));VM_CHECK(vm_arena==NULL);
  vm_initial_failures(bytes,sizeof(bytes),hash);
+ vm_argument_cases(bytes,sizeof(bytes),hash);
  VM_CHECK(vm_wx==0);
  /* The observer never maps executable memory or invokes candidate functions. */
  printf("G1 VM observer: %u failures, %u RWX requests\n",vm_failures,vm_wx);
