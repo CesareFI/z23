@@ -47,8 +47,6 @@ selftest() (
     printf 'old\n' > "$tmp/docs/CAPABILITY_INVENTORY.jsonl"
     printf 'untouched\n' > "$tmp/unrelated"
     printf 'old\n' > "$tmp/docs/transitive-generated.h"
-    git -C "$tmp" add engine docs unrelated
-    printf 'already dirty\n' > "$tmp/unrelated"
     printf '/order\n/output\n/fail-*\n/build/\n' > "$tmp/.gitignore"
     cat > "$tmp/tools/scripts/zcode_registry_rederive.sh" <<'FIXTURE'
 set -eu
@@ -75,8 +73,38 @@ check-doc-counts:
 	@echo counts >> order
 	@test ! -f fail-counts
 FIXTURE
-    local out="$tmp/output" rc path
+    git -C "$tmp" add .
+    git -C "$tmp" -c user.name=Fixture -c user.email=fixture@invalid -c commit.gpgSign=false commit -qm baseline
+    local out="$tmp/output" rc path before after scenario mode
     local cli=(bash "$tmp/tools/scripts/stack_tip_refresh.sh")
+    # B1: each dirty input refuses before generators, preserving bytes/index/refs.
+    for scenario in staged unstaged deleted untracked ignored-manifest; do
+        case "$scenario" in
+            staged) printf 'dirty\n' > "$tmp/unrelated"; git -C "$tmp" add unrelated ;;
+            unstaged) printf 'dirty\n' > "$tmp/unrelated" ;;
+            deleted) rm "$tmp/unrelated" ;;
+            untracked) printf 'dirty\n' > "$tmp/new-source" ;;
+            ignored-manifest) printf 'contexts/commons/packages/*/zcode-package.json\n' >> "$tmp/.git/info/exclude"; printf 'ignored\n' > "$tmp/contexts/commons/packages/fixture/zcode-package.json" ;;
+        esac
+        before="$(git -C "$tmp" status --porcelain=v1; git -C "$tmp" ls-files --stage; git -C "$tmp" show-ref; find "$tmp" \( -path "$tmp/.git" -o -path "$tmp/build" \) -prune -o -type f ! -name output ! -name order -exec sha256sum {} +)"
+        for mode in refresh check; do
+            : > "$tmp/order"
+            rc=0
+            if [ "$mode" = check ]; then "${cli[@]}" --check >"$out" 2>&1 || rc=$?; else "${cli[@]}" >"$out" 2>&1 || rc=$?; fi
+            [ "$rc" -eq 2 ] && [ ! -s "$tmp/order" ] || { echo "B1 RED: $scenario $mode"; return 1; }
+            after="$(git -C "$tmp" status --porcelain=v1; git -C "$tmp" ls-files --stage; git -C "$tmp" show-ref; find "$tmp" \( -path "$tmp/.git" -o -path "$tmp/build" \) -prune -o -type f ! -name output ! -name order -exec sha256sum {} +)"
+            [ "$before" = "$after" ] || return 1
+        done
+        git -C "$tmp" restore --source=HEAD --staged --worktree -- unrelated
+        rm -f "$tmp/new-source" "$tmp/contexts/commons/packages/fixture/zcode-package.json"
+    done
+    : > "$tmp/.git/info/exclude"
+    echo 'B1 PASS: dirty inputs refuse without effects'
+    # B2/B3: assertions bind the real operator documentation, not fake Make.
+    grep -Fq 'devbuild --wait bash tools/scripts/stack_tip_refresh.sh`' "$ROOT/docs/DEVELOPING.md" || { echo 'B2 RED: nonexistent documented entry'; return 1; }
+    echo 'B2 PASS: existing script entry documented'
+    grep -Fq 'Helper builds may regenerate tracked view headers before checking' "$ROOT/docs/DEVELOPING.md" || { echo 'B3 RED: source-preserving promise'; return 1; }
+    echo 'B3 PASS: prerequisite-write limitation documented'
     # Stale registry refuses before touching inventory; check never rewrites.
     if "${cli[@]}" --check >"$out" 2>&1; then return 1; fi
     grep -qx old "$tmp/engine/composition/fixture.def"
@@ -91,11 +119,15 @@ FIXTURE
         grep -Fxq "  $path" "$out" || { echo "SELFTEST FAIL: omitted changed file $path" >&2; return 1; }
     done
     if grep -q '  unrelated' "$out"; then return 1; fi
+    git -C "$tmp" add .
+    git -C "$tmp" -c user.name=Fixture -c user.email=fixture@invalid -c commit.gpgSign=false commit -qm generated
     "${cli[@]}" >"$out" 2>&1
     grep -Fxq 'stack-tip-refresh: changed files: none' "$out"
     "${cli[@]}" --check >"$out" 2>&1
     # Inventory drift alone refuses without rewriting it or running counts.
     printf 'stale\n' > "$tmp/docs/CAPABILITY_INVENTORY.jsonl"
+    git -C "$tmp" add docs
+    git -C "$tmp" -c user.name=Fixture -c user.email=fixture@invalid -c commit.gpgSign=false commit -qm stale
     : > "$tmp/order"
     if "${cli[@]}" --check >"$out" 2>&1; then return 1; fi
     [ "$(cat "$tmp/order")" = $'registry\ninventory' ]
@@ -103,11 +135,15 @@ FIXTURE
     # Each failed step stops the sequence; partial changes remain reported.
     touch "$tmp/fail-inventory"
     printf 'dirty\n' > "$tmp/engine/composition/fixture.def"
+    git -C "$tmp" add engine
+    git -C "$tmp" -c user.name=Fixture -c user.email=fixture@invalid -c commit.gpgSign=false commit -qm drift
     : > "$tmp/order"
     if "${cli[@]}" >"$out" 2>&1; then return 1; fi
     [ "$(cat "$tmp/order")" = $'registry\ninventory' ]
     grep -Fxq '  engine/composition/fixture.def' "$out"
     rm "$tmp/fail-inventory"
+    git -C "$tmp" add .
+    git -C "$tmp" -c user.name=Fixture -c user.email=fixture@invalid -c commit.gpgSign=false commit -qm partial
     touch "$tmp/fail-registry"
     : > "$tmp/order"
     rc=0
@@ -119,6 +155,8 @@ FIXTURE
     : > "$tmp/order"
     if "${cli[@]}" >"$out" 2>&1; then return 1; fi
     [ "$(cat "$tmp/order")" = $'registry\ninventory\ncounts' ]
+    git -C "$tmp" add .
+    git -C "$tmp" -c user.name=Fixture -c user.email=fixture@invalid -c commit.gpgSign=false commit -qm complete
     if "${cli[@]}" --check >"$out" 2>&1; then return 1; fi
     echo 'stack-tip-refresh: SELFTEST PASS (order, drift, failure, changes, idempotence)'
 )
@@ -129,6 +167,22 @@ if [ "${ZCL_CHECKOUT_LOCK_HELD:-0}" != 1 ]; then
     exec bash tools/dev/checkout-lock.sh foreground build/.checkout.lock -- \
         bash "$ROOT/tools/scripts/stack_tip_refresh.sh" "$@"
 fi
+
+if ! dirty_state="$(git status --porcelain=v1 --untracked-files=all)"; then
+    echo 'stack-tip-refresh: could not inspect checkout cleanliness' >&2
+    exit 2
+fi
+if [ -n "$dirty_state" ]; then
+    echo 'stack-tip-refresh: refusing dirty checkout; preserve and resolve owned work first' >&2
+    exit 2
+fi
+for manifest in contexts/commons/packages/*/zcode-package.json; do
+    [ -f "$manifest" ] || continue
+    if ! git ls-files --error-unmatch -- "$manifest" >/dev/null 2>&1; then
+        printf 'stack-tip-refresh: refusing untracked package manifest: %s\n' "$manifest" >&2
+        exit 2
+    fi
+done
 
 if [ "$MODE" = check ]; then
     bash tools/scripts/zcode_registry_rederive.sh --check

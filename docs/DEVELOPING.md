@@ -1178,14 +1178,20 @@ or establish general code safety.
 
 Authors leave generated package roots, dependency pins, registry projections,
 and `docs/CAPABILITY_INVENTORY.jsonl` out of their commits. The integrator runs
-`devbuild --wait make stack-tip-refresh` once at the assembled stack tip.
+`devbuild --wait bash tools/scripts/stack_tip_refresh.sh` once at the assembled stack tip.
 It rederives the registry and dependent pins, regenerates the capability
 inventory, then checks documented counts, in that order. It prints the files
 it changed and fails if any step fails. Commit the generated changes once at
 the tip. Source-owned count updates still belong to the author commit.
 
-Run `devbuild --wait make check-stack-tip-refresh` to check freshness without
-rewriting source files. Stale registry, inventory, or count evidence fails.
+Both modes refuse a dirty checkout before invoking generators, including
+ignored untracked package manifests discovered by the registry.
+Run `devbuild --wait bash tools/scripts/stack_tip_refresh.sh --check` to compare
+registry, inventory, and documented-count freshness. Stale evidence fails.
+Helper builds may regenerate tracked view headers before checking; inspect
+`git status` and `git diff` afterwards, including after a refusal. Check mode
+does not report these prerequisite changes. The refresh display compares
+content only; it is not a staging allowlist or a report of mode/link changes.
 The script also provides `bash tools/scripts/stack_tip_refresh.sh --selftest`.
 
 Before committing:
