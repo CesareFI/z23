@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /* Tests for zarg — bounded argv parser.
  * Groups: kat, conv, err, usage, null, fuzz. */
 #include "zarg/zarg.h"
@@ -169,10 +170,49 @@ static void test_conv(void) {
 
 /* ---- error paths ------------------------------------------------------ */
 
+static void test_value_err_index(void) {
+  const zarg_opt spec[] = {
+    {'n', "n", ZARG_I64, NULL},
+    {'v', "verbose", ZARG_BOOL, NULL},
+    {'q', "quiet", ZARG_BOOL, NULL},
+  };
+  struct {
+    int argc;
+    char *argv[4];
+    size_t prefix, index;
+  } cases[] = {
+    {2, {"p", "--n=bad"}, 0, 1},
+    {2, {"p", "-nbad"}, 0, 1},
+    {3, {"p", "--n", "bad"}, 0, 2},
+    {3, {"p", "-n", "bad"}, 0, 2},
+    {3, {"p", "pos", "--n=bad"}, 1, 2},
+    {3, {"p", "pos", "-nbad"}, 1, 2},
+    {4, {"p", "pos", "--n", "bad"}, 1, 3},
+    {2, {"p", "-vqnbad"}, 2, 1},
+    {3, {"p", "-vqn", "bad"}, 2, 2},
+    {3, {"p", "pos", "-vqnbad"}, 3, 2},
+    {3, {"p", "--n=bad", "later"}, 0, 1},
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    zarg_parser p;
+    zarg_item it;
+    CHECK(zarg_init(&p, spec, 3, cases[i].argc, cases[i].argv) == ZARG_OK);
+    for (size_t j = 0; j < cases[i].prefix; j++)
+      CHECK(zarg_next(&p, &it) == ZARG_OK);
+    CHECK(zarg_next(&p, &it) == ZARG_ERR_BADVALUE);
+    CHECK(p.err_index == cases[i].index);
+    size_t next = p.next;
+    CHECK(zarg_next(&p, &it) == ZARG_ERR_BADVALUE);
+    CHECK(p.err_index == cases[i].index && p.next == next);
+  }
+}
+
 static void test_err(void) {
   zarg_item items[8];
   size_t n = 0;
   zarg_parser p;
+
+  test_value_err_index();
 
   /* Unknown short, unknown long, bool with =value, missing value,
    * bad typed value, sticky error + err_index. */

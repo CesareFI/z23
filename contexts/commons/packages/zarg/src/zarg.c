@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /* zarg — bounded argv parser. See include/zarg/zarg.h. */
 #include "zarg/zarg.h"
 
@@ -177,6 +178,7 @@ static zarg_err zarg__take_value(zarg_parser *p, size_t si,
                                  const char *inline_value, zarg_item *it) {
   const zarg_opt *o = &p->spec[si];
   const char *value = inline_value;
+  size_t value_index = p->next - 1;
   if (o->type == ZARG_BOOL) {
     it->kind = ZARG_ITEM_OPT;
     it->spec_index = si;
@@ -186,6 +188,7 @@ static zarg_err zarg__take_value(zarg_parser *p, size_t si,
   if (value == NULL) {
     if (p->next >= (size_t)p->argc)
       return zarg__fail(p, ZARG_ERR_MISSING, p->next - 1);
+    value_index = p->next;
     value = p->argv[p->next++];
     if (value == NULL)
       return zarg__fail(p, ZARG_ERR_ARG, p->next - 1);
@@ -195,7 +198,7 @@ static zarg_err zarg__take_value(zarg_parser *p, size_t si,
   {
     zarg_err e = zarg__convert(o, value, it);
     if (e != ZARG_OK)
-      return zarg__fail(p, e, value == inline_value ? p->next : p->next - 1);
+      return zarg__fail(p, e, value_index);
   }
   return ZARG_OK;
 }
