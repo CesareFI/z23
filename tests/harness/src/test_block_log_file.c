@@ -93,6 +93,23 @@ static bool file_size_is(const char *path, off_t expected)
     return stat(path, &st) == 0 && st.st_size == expected;
 }
 
+static bool overwrite_first_index_hash(const char *path,
+                                       const struct block_hash *hash)
+{
+    int fd = open(path, O_RDWR);
+    if (fd < 0) return false;
+    bool ok = lseek(fd, 4, SEEK_SET) == 4;
+    if (ok) ok = write(fd, hash->bytes, sizeof hash->bytes) ==
+                 (ssize_t)sizeof hash->bytes;
+    if (close(fd) != 0) ok = false;
+    return ok;
+}
+
+static bool result_has_code(struct zcl_result result, int code)
+{
+    return !result.ok && result.code == code;
+}
+
 int test_block_log_file(void)
 {
     int failures = 0;
@@ -360,6 +377,41 @@ int test_block_log_file(void)
                   strcmp(ordered.buf, "0,1,2,3") == 0);
         BLF_CHECK("iteration selects latest same-height block",
                   ordered.hash_seed[2] == 0xa4);
+
+        block_log_file_close(h);
+        test_rm_rf(dir);
+    }
+
+    /* ── 9. A corrupt side-index hash must never relabel log bytes. */
+    {
+        char dir[64]; make_tmpdir(dir, sizeof dir);
+        struct block_log_file *h = NULL;
+        struct block_log_port p = {0};
+        ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
+
+        struct block_hash ha, hb, fake;
+        fill_hash(&ha, 0xb0); fill_hash(&hb, 0xb1); fill_hash(&fake, 0xfe);
+        static const uint8_t a[] = "index-integrity-a";
+        static const uint8_t b[] = "index-integrity-b";
+        ZCL_TEST_SETUP(p.append(p.self, 0, &ha, a, sizeof a - 1));
+        ZCL_TEST_SETUP(p.append(p.self, 1, &hb, b, sizeof b - 1));
+        block_log_file_close(h);
+
+        char idxpath[512];
+        snprintf(idxpath, sizeof idxpath, "%s/blocks.idx", dir);
+        BLF_CHECK("corrupt first side-index hash",
+                  overwrite_first_index_hash(idxpath, &fake));
+
+        h = NULL; memset(&p, 0, sizeof p);
+        ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
+        const uint8_t *out = NULL; size_t outlen = 0;
+        struct zcl_result r =
+                p.read_by_hash(p.self, &fake, &out, &outlen);
+        BLF_CHECK("side-index hash mismatch is corrupt",
+                  result_has_code(r, BLOCK_LOG_ERR_CORRUPT));
+        r = p.append(p.self, 0, &fake, a, sizeof a - 1);
+        BLF_CHECK("side-index mismatch is not idempotent append",
+                  result_has_code(r, BLOCK_LOG_ERR_CORRUPT));
 
         block_log_file_close(h);
         test_rm_rf(dir);

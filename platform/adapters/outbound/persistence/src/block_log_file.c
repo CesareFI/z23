@@ -223,6 +223,45 @@ static const struct idx_entry *find_by_hash(const struct block_log_file *h,
     return NULL;
 }
 
+static struct zcl_result validate_existing_append(
+        struct block_log_file *h,
+        const struct idx_entry *existing,
+        uint32_t height,
+        const struct block_hash *hash,
+        const uint8_t *bytes,
+        size_t len)
+{
+    uint32_t stored_len;
+    struct block_hash stored_hash;
+    struct zcl_result r = read_log_record_header(
+            h, (off_t)existing->offset, &stored_hash, &stored_len);
+    if (!r.ok) return r;
+    if (memcmp(stored_hash.bytes, hash->bytes, sizeof hash->bytes) != 0)
+        return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
+                       "blf_append: index/log hash mismatch");
+    if (stored_len != len)
+        return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
+                       "blf_append: idempotency violated — same hash, "
+                       "stored len=%u, new len=%zu", stored_len, len);
+    if (len > 0) {
+        r = read_buf_reserve(h, len);
+        if (!r.ok) return r;
+        r = read_exact(h->log_fd,
+                       (off_t)(existing->offset + LOG_HEADER_BYTES),
+                       h->read_buf, len);
+        if (!r.ok) return r;
+        if (memcmp(h->read_buf, bytes, len) != 0)
+            return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
+                           "blf_append: idempotency violated — same "
+                           "hash, different bytes");
+    }
+    /* A crash-recovered log record has an unknown-height placeholder in
+     * the index. Identical bytes prove this replay is idempotent, so its
+     * authoritative height can be published as a new append-only index
+     * record without rewriting either durable file in place. */
+    return idx_repair_recovered_height(h, existing, height, hash);
+}
+
 static struct zcl_result blf_append(void *self_v,
                                     uint32_t height,
                                     const struct block_hash *hash,
@@ -239,34 +278,9 @@ static struct zcl_result blf_append(void *self_v,
 
     /* Idempotency: hash collision check. */
     const struct idx_entry *existing = find_by_hash(h, hash);
-    if (existing) {
-        uint32_t stored_len;
-        struct block_hash stored_hash;
-        struct zcl_result r = read_log_record_header(
-                h, (off_t)existing->offset, &stored_hash, &stored_len);
-        if (!r.ok) return r;
-        if (stored_len != len)
-            return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
-                           "blf_append: idempotency violated — same hash, "
-                           "stored len=%u, new len=%zu", stored_len, len);
-        if (len > 0) {
-            r = read_buf_reserve(h, len);
-            if (!r.ok) return r;
-            r = read_exact(h->log_fd,
-                           (off_t)(existing->offset + LOG_HEADER_BYTES),
-                           h->read_buf, len);
-            if (!r.ok) return r;
-            if (memcmp(h->read_buf, bytes, len) != 0)
-                return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
-                               "blf_append: idempotency violated — same "
-                               "hash, different bytes");
-        }
-        /* A crash-recovered log record has an unknown-height placeholder in
-         * the index. Identical bytes prove this replay is idempotent, so its
-         * authoritative height can be published as a new append-only index
-         * record without rewriting either durable file in place. */
-        return idx_repair_recovered_height(h, existing, height, hash);
-    }
+    if (existing)
+        return validate_existing_append(
+                h, existing, height, hash, bytes, len);
 
     /* Append a fresh record. */
     off_t end = lseek(h->log_fd, 0, SEEK_END);
@@ -304,6 +318,10 @@ static struct zcl_result blf_read_entry(struct block_log_file *h,
     struct zcl_result r = read_log_record_header(
             h, (off_t)e->offset, &stored_hash, &len);
     if (!r.ok) return r;
+    if (memcmp(stored_hash.bytes, e->hash.bytes,
+               sizeof stored_hash.bytes) != 0)
+        return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
+                       "block log index/header hash mismatch");
 
     r = read_buf_reserve(h, len ? len : 1);
     if (!r.ok) return r;
