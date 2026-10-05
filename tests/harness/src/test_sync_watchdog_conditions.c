@@ -244,9 +244,12 @@ int test_sync_watchdog_conditions(void)
         reducer_frontier_provable_tip_set(100);
         bool ok = sync_monitor_tip_advance_age() == 0;
 
-        fake_clock_set(&clock, 7008);
+        /* Verified-frontier staleness is elapsed process time, independent of
+         * a wall correction in the opposite direction. */
+        fake_clock_set_split(&clock, 7008, 6500);
         ok = ok && sync_monitor_tip_advance_age() == 8;
 
+        fake_clock_set_split(&clock, 7008, 7008);
         reducer_frontier_provable_tip_set(101);
         ok = ok && sync_monitor_tip_advance_age() == 0;
 

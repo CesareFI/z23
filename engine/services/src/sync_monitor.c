@@ -29,6 +29,7 @@
 #define LOCAL_HEADER_REFILL_MAX_RETRIES 3
 
 static _Atomic int64_t g_last_block_connected_ts;
+static _Atomic int64_t g_last_block_connected_progress_us;
 static _Atomic int g_last_block_connected_height;
 /* The reducer-owned provable tip is the runtime serving authority.  P2P body
  * intake can complete without moving that frontier, so its callback must not
@@ -64,6 +65,7 @@ static struct msg_processor *g_condition_mp;
 #ifdef ZCL_TESTING
 /* Deterministic condition tests explicitly inject the legacy timestamp. */
 static _Atomic bool g_tip_advance_test_override;
+static _Atomic int64_t g_tip_advance_test_age;
 #endif
 
 static struct {
@@ -99,10 +101,12 @@ void sync_monitor_init(void)
     memset(g_last_recovery_reason, 0, sizeof(g_last_recovery_reason));
     memset(g_last_recovery_trigger, 0, sizeof(g_last_recovery_trigger));
     atomic_store(&g_last_block_connected_ts, 0);
+    atomic_store(&g_last_block_connected_progress_us, 0);
     atomic_store(&g_last_block_connected_height, -1);
     atomic_store(&g_last_observed_provable_tip, -1);
 #ifdef ZCL_TESTING
     atomic_store(&g_tip_advance_test_override, false);
+    atomic_store(&g_tip_advance_test_age, -1);
 #endif
     atomic_store(&g_recoveries_total, 0);
     atomic_store(&g_last_recovery_time, 0);
@@ -142,6 +146,8 @@ void sync_monitor_set_context(struct connman *cm,
     if (ms && atomic_load(&g_last_block_connected_ts) == 0) {
         int height = active_chain_height(&ms->chain_active);
         if (height >= 0) {
+            atomic_store(&g_last_block_connected_progress_us,
+                         platform_time_monotonic_us());
             atomic_store(&g_last_block_connected_ts,
                          (int64_t)platform_time_wall_time_t());
             atomic_store(&g_last_block_connected_height, height);
@@ -171,6 +177,8 @@ void sync_monitor_on_block_connected(int height)
      * authoritative progress; receipt of another body is not tip advance. */
     if (reducer_frontier_provable_tip_is_published())
         return;
+    atomic_store(&g_last_block_connected_progress_us,
+                 platform_time_monotonic_us());
     atomic_store(&g_last_block_connected_ts,
                  (int64_t)platform_time_wall_time_t());
     atomic_store(&g_last_block_connected_height, height);
@@ -198,8 +206,10 @@ static void sync_monitor_observe_provable_tip(void)
         /* A decrease is progress too: it is an authoritative reorg/rewind and
          * resets the stall clock while the reducer establishes the new branch.
          * Publish the observation marker last so another reader that sees it
-         * also sees the matching height and timestamp. */
+         * also sees the matching height and time anchors. */
         atomic_store(&g_last_block_connected_height, current);
+        atomic_store(&g_last_block_connected_progress_us,
+                     platform_time_monotonic_us());
         atomic_store(&g_last_block_connected_ts,
                      (int64_t)platform_time_wall_time_t());
         atomic_store(&g_last_observed_provable_tip, current);
@@ -210,11 +220,15 @@ static void sync_monitor_observe_provable_tip(void)
 int64_t sync_monitor_tip_advance_age(void)
 {
     sync_monitor_observe_provable_tip();
-    int64_t last = atomic_load(&g_last_block_connected_ts);
-    if (last == 0)
+#ifdef ZCL_TESTING
+    if (atomic_load(&g_tip_advance_test_override))
+        return atomic_load(&g_tip_advance_test_age);
+#endif
+    if (atomic_load(&g_last_block_connected_ts) == 0)
         return -1; // raw-return-ok:sentinel
-    int64_t now = (int64_t)platform_time_wall_time_t();
-    return (now > last) ? (now - last) : 0;
+    int64_t last_us = atomic_load(&g_last_block_connected_progress_us);
+    int64_t now_us = platform_time_monotonic_us();
+    return (now_us > last_us) ? (now_us - last_us) / INT64_C(1000000) : 0;
 }
 
 int sync_monitor_peer_height_cached(void)
@@ -893,7 +907,13 @@ void sync_monitor_test_set_local_recovery(bool active,
 
 void sync_monitor_test_set_tip_advance_ts(int64_t ts)
 {
+    int64_t age = -1;
+    if (ts != 0) {
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        age = (now > ts) ? now - ts : 0;
+    }
     atomic_store(&g_tip_advance_test_override, true);
+    atomic_store(&g_tip_advance_test_age, age);
     atomic_store(&g_last_block_connected_ts, ts);
 }
 #endif
