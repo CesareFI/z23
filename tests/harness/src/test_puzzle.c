@@ -11,7 +11,8 @@
  *   5. puzzle_gate_admit_external's single-use ring rejects replays and
  *      feeds the same load EWMA;
  *   6. a from-zero nonce search is a pure function of (seed, token, ts), so
- *      two honest solvers collide; puzzle_solve_random() avoids that.
+ *      two honest solvers collide; puzzle_solve_random() avoids that;
+ *   7. seed rotation follows monotonic elapsed time across wall rollback.
  *
  * No consensus predicate is touched: it only gates spending server resources. */
 
@@ -210,6 +211,34 @@ static int test_gate_inflight_difficulty(void)
     return failures;
 }
 
+/* ── 4c. Seed epochs survive wall-clock rollback ──────────────────────── */
+static int test_gate_seed_rotation_uses_monotonic_time(void)
+{
+    int failures = 0;
+    TEST("puzzle: seed rotates after monotonic epoch across wall rollback") {
+        struct puzzle_policy pol = { .seed_rotate_secs = 45 };
+        struct puzzle_gate g;
+        memset(&g, 0, sizeof(g));
+        puzzle_gate_init(&g, &pol);
+
+        uint8_t before[32], after[32];
+        int64_t wall = INT64_C(2000000);
+        int64_t mono_us = INT64_C(5000000);
+        puzzle_gate_challenge_at(&g, wall, mono_us, before, NULL, NULL);
+
+        /* NTP/operator correction moves wall time back one hour while the
+         * process advances past a full seed epoch. Rotation must not wait an
+         * extra hour for wall time to catch up. */
+        puzzle_gate_challenge_at(
+            &g, wall - 3600,
+            mono_us + (int64_t)(pol.seed_rotate_secs + 1) * 1000000,
+            after, NULL, NULL);
+        ASSERT(memcmp(before, after, sizeof(before)) != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 5. External single-use ring (snapshot serve path) ─────────────────── */
 static int test_gate_admit_external_replay(void)
 {
@@ -339,6 +368,7 @@ int test_puzzle(void)
     failures += test_gate_challenge_admit_and_replay();
     failures += test_gate_difficulty_rises_and_falls();
     failures += test_gate_inflight_difficulty();
+    failures += test_gate_seed_rotation_uses_monotonic_time();
     failures += test_gate_admit_external_replay();
     failures += test_gate_admit_external_feeds_load();
     failures += test_puzzle_solve_nonce_start();

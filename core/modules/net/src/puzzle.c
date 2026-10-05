@@ -127,7 +127,7 @@ void puzzle_gate_init(struct puzzle_gate *g, const struct puzzle_policy *policy)
     memset(g->prev_seed, 0, sizeof(g->prev_seed));
     g->cur_bits = g->policy.min_bits;
     g->prev_bits = g->policy.min_bits;
-    g->cur_epoch_start = 0;
+    g->cur_epoch_start_us = 0;
     g->have_prev = false;
     g->seeded = false;
     g->inflight = 0;
@@ -207,10 +207,11 @@ static int puzzle_gate_adaptive_bits_locked(const struct puzzle_gate *g)
 }
 
 /* Ensure a live seed exists / rotate if the epoch elapsed (holds g->lock). */
-static void puzzle_gate_rotate_locked(struct puzzle_gate *g, int64_t now_wall)
+static void puzzle_gate_rotate_locked(struct puzzle_gate *g, int64_t now_us)
 {
     bool rotate = !g->seeded ||
-                  (now_wall - g->cur_epoch_start) >= g->policy.seed_rotate_secs;
+                  (now_us - g->cur_epoch_start_us) >=
+                      (int64_t)g->policy.seed_rotate_secs * INT64_C(1000000);
     if (!rotate)
         return;
     if (g->seeded) {
@@ -219,7 +220,7 @@ static void puzzle_gate_rotate_locked(struct puzzle_gate *g, int64_t now_wall)
         g->have_prev = true;
     }
     GetRandBytes(g->cur_seed, 32);
-    g->cur_epoch_start = now_wall;
+    g->cur_epoch_start_us = now_us;
     g->seeded = true;
 }
 
@@ -231,7 +232,7 @@ void puzzle_gate_challenge_at(struct puzzle_gate *g, int64_t now_wall,
     puzzle_gate_ensure_init(g);
     pthread_mutex_lock(&g->lock);
     puzzle_ewma_tick_locked(g, now_us, false);   /* age the load estimate */
-    puzzle_gate_rotate_locked(g, now_wall);
+    puzzle_gate_rotate_locked(g, now_us);
     /* Recompute difficulty bound to the current seed from live load so a
      * flood immediately raises the price of a freshly issued challenge, while
      * an idle node hands out the cheap floor. */

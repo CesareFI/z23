@@ -119,7 +119,7 @@ struct puzzle_gate {
     struct puzzle_policy policy;      /* resolved (zero fields filled) */
     uint8_t  cur_seed[32];
     int      cur_bits;
-    int64_t  cur_epoch_start;         /* wall seconds */
+    int64_t  cur_epoch_start_us;      /* monotonic microseconds */
     uint8_t  prev_seed[32];
     int      prev_bits;
     bool     have_prev;
@@ -175,8 +175,8 @@ int     puzzle_gate_current_bits(struct puzzle_gate *g);
 
 /* Deterministic-clock entry points (testing / reproducible simulation):
  * identical to the wall-clock functions above but the caller supplies both
- * the wall timestamp (seconds, drives seed epoch + skew) and the monotonic
- * clock (microseconds, drives the load EWMA). The public
+ * the wall timestamp (seconds, drives wire timestamps + skew) and the
+ * monotonic clock (microseconds, drives seed epochs + load EWMA). The public
  * puzzle_gate_challenge/verify call these with the live clocks. */
 void puzzle_gate_challenge_at(struct puzzle_gate *g, int64_t now_wall,
                               int64_t now_us, uint8_t out_seed[32],
