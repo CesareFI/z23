@@ -64,6 +64,7 @@ static const char *render(const char *md) {
   } while (0)
 
 static void test_headings(void) {
+  EXPECT("# #", "<h1></h1>\n");
   EXPECT("# Hello", "<h1>Hello</h1>\n");
   EXPECT("###### Six", "<h6>Six</h6>\n");
   EXPECT("####### seven is a paragraph", "<p>####### seven is a paragraph</p>\n");

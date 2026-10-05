@@ -429,7 +429,7 @@ static bool render_heading(zmd_out *o, zmd_scan *sc, const char *s, size_t n,
     while (k > cs && s[k - 1] == '#')
       k--;
     if (k == cs || s[k - 1] == ' ' || s[k - 1] == '\t')
-      ce = rtrim(s, k);
+      ce = k == cs ? cs : rtrim(s, k);
   }
   const char open[4] = { '<', 'h', (char)('0' + lvl), '>' };
   const char close[6] = { '<', '/', 'h', (char)('0' + lvl), '>', '\n' };
