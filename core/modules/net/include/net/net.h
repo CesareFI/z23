@@ -547,7 +547,7 @@ struct p2p_node {
     uint32_t swarm_manifest_num_chunks; /* validated peer manifest span */
     uint8_t swarm_manifest_root[32]; /* validated peer chunk-list identity */
     int32_t swarm_inflight_chunk; /* chunk index assigned to this peer, -1 = none */
-    int64_t swarm_chunk_req_time; /* when chunk was requested (for timeout) */
+    int64_t swarm_chunk_req_time; /* monotonic seconds; chunk timeout owner */
 
     /* Block swarm state (parallel block download) */
     bool blk_manifest_advertise_armed; /* ZCL23 handshake completed */

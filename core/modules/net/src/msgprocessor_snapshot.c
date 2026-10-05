@@ -133,6 +133,11 @@ static int64_t g_swarm_last_progress_time = 0;
 /* Timeout for inflight chunk requests (30 seconds). */
 #define SWARM_CHUNK_TIMEOUT_SECS 30
 
+static int64_t snapshot_swarm_now_seconds(void)
+{
+    return platform_time_monotonic_us() / 1000000;
+}
+
 /* Progress display interval (5 seconds). */
 #define SWARM_PROGRESS_INTERVAL_SECS 5
 /* BLOCK_PIECE_MAX_BLOCK_BYTES lives in msgprocessor_snapshot_internal.h —
@@ -1527,7 +1532,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                         node->swarm_inflight_chunk =
                                             first_chunk;
                                         node->swarm_chunk_req_time =
-                                            (int64_t)platform_time_wall_time_t();
+                                            snapshot_swarm_now_seconds();
                                     }
                                 } else {
                                     /* Init failed — release the claim so
@@ -2145,7 +2150,7 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
 
         /* Handle timeout: if this peer's chunk is stale, re-queue it */
         if (node->swarm_inflight_chunk >= 0) {
-            int64_t now_sw = (int64_t)platform_time_wall_time_t();
+            int64_t now_sw = snapshot_swarm_now_seconds();
             if (now_sw - node->swarm_chunk_req_time > SWARM_CHUNK_TIMEOUT_SECS) {
                 uint32_t ci = (uint32_t)node->swarm_inflight_chunk;
                 if (swarm_sync_requeue_chunk_for_peer(
@@ -2163,7 +2168,7 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
             int32_t ci = swarm_sync_assign_chunk(&g_swarm, node->id);
             if (ci >= 0) {
                 node->swarm_inflight_chunk = ci;
-                node->swarm_chunk_req_time = (int64_t)platform_time_wall_time_t();
+                node->swarm_chunk_req_time = snapshot_swarm_now_seconds();
                 push_assigned_chunk_locked(mp, node, (uint32_t)ci);
             }
         }

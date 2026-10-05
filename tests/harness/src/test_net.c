@@ -6416,6 +6416,64 @@ static int test_net_swarm_completion_clears_reassigned_peer_slot(void)
     return failures;
 }
 
+static int test_net_swarm_peer_request_time_is_monotonic(void)
+{
+    int failures = 0;
+    printf("swarm_sync: peer request ownership uses monotonic time... ");
+
+    uint8_t hashes[2][32] = {{0}};
+    struct sync_manifest manifest = {
+        .num_chunks = 2,
+        .chunk_size = SYNC_CHUNK_SIZE,
+        .chunk_hashes = hashes,
+    };
+    fast_sync_merkle_root(hashes, 2, manifest.merkle_root);
+
+    struct net_manager nm;
+    struct msg_processor mp = {0};
+    struct net_address addr;
+    net_manager_init(&nm);
+    net_address_init(&addr);
+    unsigned char ip4[4] = {127, 0, 0, 73};
+    net_addr_set_ipv4(&addr.svc.addr, ip4);
+    addr.svc.port = 8033;
+    struct p2p_node *peer = p2p_node_create(
+        &nm, ZCL_INVALID_SOCKET, &addr, "swarm-monotonic", true);
+    bool ok = peer != NULL;
+
+    if (ok) {
+        peer->state = PEER_HANDSHAKE_COMPLETE;
+        peer->services = NODE_ZCL23;
+        peer->swarm_manifest_received = true;
+        peer->swarm_manifest_num_chunks = manifest.num_chunks;
+        memcpy(peer->swarm_manifest_root, manifest.merkle_root, 32);
+        peer->swarm_inflight_chunk = -1;
+        mp.params = chain_params_get();
+        mp.net_mgr = &nm;
+
+        ok = msgprocessor_test_swarm_seed(&manifest, peer->id);
+        int64_t before = platform_time_monotonic_us() / 1000000;
+        mp_snapshot_send_tick(&mp, peer);
+        int64_t after = platform_time_monotonic_us() / 1000000;
+
+        /* The peer mirror and global owner must use the same clock. If the
+         * global monotonic sweep requeues after a wall-clock rollback while
+         * this stamp remains in wall time, the sole peer stays locally busy
+         * and cannot reclaim any needed chunk until civil time catches up. */
+        ok = ok && peer->swarm_inflight_chunk == 1 &&
+             peer->swarm_chunk_req_time >= before &&
+             peer->swarm_chunk_req_time <= after;
+    }
+
+    msgprocessor_test_swarm_release();
+    if (peer)
+        p2p_node_free(peer);
+    net_manager_free(&nm);
+    if (ok) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    return failures;
+}
+
 static bool test_write_swarm_manifest(struct byte_stream *wire,
                                       const struct sync_manifest *manifest)
 {
@@ -6999,6 +7057,7 @@ static int test_net_parallel_sync_and_swarm_fixture(void)
     failures += test_net_fc_rate_and_swarm_cas_race_checks();
     failures += test_net_swarm_cas_reset_cycle_re_arms_the_next_cas();
     failures += test_net_swarm_completion_clears_reassigned_peer_slot();
+    failures += test_net_swarm_peer_request_time_is_monotonic();
     failures += test_net_swarm_scheduler_rejects_foreign_manifest_peer();
 
     /* Clean up test database */
