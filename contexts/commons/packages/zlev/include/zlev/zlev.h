@@ -42,7 +42,7 @@ size_t zlev_distance_bounded(const void *a, size_t na, const void *b,
                              size_t nb, size_t limit);
 
 /* Similarity in [0, 1000]: 1000 * (1 - dist / max(na, nb)), with
- * identical-empty defined as 1000. Returns -1 on bad input. */
+ * rounded down to an integer, with identical-empty defined as 1000. Returns -1 on bad input. */
 int zlev_similarity_milli(const void *a, size_t na, const void *b,
                           size_t nb);
 

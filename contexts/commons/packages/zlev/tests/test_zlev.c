@@ -73,7 +73,7 @@ static void test_sim(void) {
   CHECK(zlev_similarity_milli("abc", 3, "abc", 3) == 1000);
   CHECK(zlev_similarity_milli("", 0, "abcd", 4) == 0);
   CHECK(zlev_similarity_milli("kitten", 6, "sitting", 7) ==
-        1000 - (1000 * 3) / 7);
+        (1000 * (7 - 3)) / 7);
   CHECK(zlev_similarity_milli(NULL, 1, "x", 1) == -1);
 }
 
@@ -146,7 +146,12 @@ static void test_fuzz(void) {
   }
 }
 
+static void test_similarity_rounding(void) {
+  CHECK(zlev_similarity_milli("abc", 3, "abd", 3) == 666);
+}
+
 int main(void) {
+  test_similarity_rounding();
   test_kat();
   test_bound();
   test_sim();

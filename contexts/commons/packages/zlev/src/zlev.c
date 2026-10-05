@@ -96,5 +96,5 @@ int zlev_similarity_milli(const void *a, size_t na, const void *b,
   size_t m = na > nb ? na : nb;
   if (d == SIZE_MAX) return -1;
   if (m == 0) return 1000;
-  return (int)(1000u - (1000u * d) / m);
+  return (int)((1000u * (m - d)) / m);
 }
