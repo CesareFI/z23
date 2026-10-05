@@ -1355,8 +1355,9 @@ void net_manager_free(struct net_manager *nm)
 
 /* --- find node --- */
 
-/* Find a matching, NON-disconnect node and take a ref on it atomically under
- * cs_nodes. Returns the node with ref_count already incremented, or NULL.
+/* Caller holds cs_nodes. Find a matching, NON-disconnect node and take a ref
+ * before that lock is released. Returns the node with ref_count already
+ * incremented, or NULL.
  *
  * connect_node runs on a different thread (RPC addnode -> connman_open_
  * connection) than the socket disconnect sweep, which calls p2p_node_free()
@@ -1365,11 +1366,10 @@ void net_manager_free(struct net_manager *nm)
  * the node can be freed in the gap. Keeping the find + add_ref inside one
  * cs_nodes acquire closes that window, and skipping disconnect-flagged nodes
  * avoids re-reffing a peer the sweep is about to reap. */
-static struct p2p_node *find_node_by_service_locked(struct net_manager *nm,
-                                                    const struct net_service *addr)
+static struct p2p_node *find_node_by_service_unlocked(
+    struct net_manager *nm, const struct net_service *addr)
 {
     struct p2p_node *existing = NULL;
-    zcl_mutex_lock(&nm->cs_nodes);
     for (size_t i = 0; i < nm->num_nodes; i++) {
         if (net_addr_eq(&nm->nodes[i]->addr.svc.addr, &addr->addr) &&
             nm->nodes[i]->addr.svc.port == addr->port &&
@@ -1379,6 +1379,14 @@ static struct p2p_node *find_node_by_service_locked(struct net_manager *nm,
             break;
         }
     }
+    return existing;
+}
+
+static struct p2p_node *find_node_by_service_locked(struct net_manager *nm,
+                                                    const struct net_service *addr)
+{
+    zcl_mutex_lock(&nm->cs_nodes);
+    struct p2p_node *existing = find_node_by_service_unlocked(nm, addr);
     zcl_mutex_unlock(&nm->cs_nodes);
     return existing;
 }
@@ -1470,6 +1478,12 @@ struct p2p_node *connect_node_from_socket(struct net_manager *nm,
      * once it has finished deref'ing the node (peer_lifecycle_note_connected
      * etc), freeing it there iff that release brings ref to 0. */
     zcl_mutex_lock(&nm->cs_nodes);
+    existing = find_node_by_service_unlocked(nm, &addr_connect->svc);
+    if (existing) {
+        zcl_mutex_unlock(&nm->cs_nodes);
+        p2p_node_free(node);
+        return existing;
+    }
     p2p_node_add_ref(node); /* MANAGER ref */
     p2p_node_add_ref(node); /* CALLER ref — released by connect_node's caller */
     nm_add_node(nm, node);

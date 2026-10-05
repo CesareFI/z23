@@ -5492,6 +5492,89 @@ static int test_net_p2p_node_create_and_free(void)
     return failures;
 }
 
+struct outbound_publish_race_fixture {
+    struct net_manager nm;
+    struct net_address addr;
+    zcl_barrier_t nodes_created;
+};
+
+struct outbound_publish_race_arg {
+    struct outbound_publish_race_fixture *fixture;
+    struct p2p_node *result;
+    bool created;
+};
+
+static void outbound_publish_race_node_created(void *ctx, node_id_t id,
+                                               struct p2p_node *node)
+{
+    (void)id;
+    (void)node;
+    struct outbound_publish_race_fixture *fixture = ctx;
+    (void)zcl_barrier_wait(&fixture->nodes_created);
+}
+
+static void *outbound_publish_race_worker(void *opaque)
+{
+    struct outbound_publish_race_arg *arg = opaque;
+    arg->result = connect_node_from_socket(
+        &arg->fixture->nm, &arg->fixture->addr, NULL,
+        ZCL_INVALID_SOCKET, &arg->created);
+    return NULL;
+}
+
+static int test_net_outbound_publish_deduplicates_parallel_dials(void)
+{
+    int failures = 0;
+    printf("p2p_node: parallel outbound publication is atomic... ");
+
+    struct outbound_publish_race_fixture fixture;
+    memset(&fixture, 0, sizeof(fixture));
+    net_manager_init(&fixture.nm);
+    net_address_init(&fixture.addr);
+    unsigned char ip4[4] = {198, 51, 100, 23};
+    net_addr_set_ipv4(&fixture.addr.svc.addr, ip4);
+    fixture.addr.svc.port = 8233;
+
+    bool ok = zcl_barrier_init(&fixture.nodes_created, 2) == 0;
+    fixture.nm.signals.ctx = &fixture;
+    fixture.nm.signals.initialize_node = outbound_publish_race_node_created;
+
+    struct outbound_publish_race_arg args[2] = {
+        {.fixture = &fixture},
+        {.fixture = &fixture},
+    };
+    pthread_t threads[2];
+    bool started[2] = {false, false};
+    for (size_t i = 0; ok && i < 2; i++) {
+        started[i] = pthread_create(&threads[i], NULL,
+                                    outbound_publish_race_worker,
+                                    &args[i]) == 0;
+        ok = ok && started[i];
+    }
+    for (size_t i = 0; i < 2; i++) {
+        if (started[i])
+            ok = pthread_join(threads[i], NULL) == 0 && ok;
+    }
+
+    ok = ok && fixture.nm.num_nodes == 1;
+    ok = ok && args[0].result != NULL;
+    ok = ok && args[0].result == args[1].result;
+    ok = ok && args[0].created != args[1].created;
+
+    zcl_mutex_lock(&fixture.nm.cs_nodes);
+    for (size_t i = 0; i < 2; i++) {
+        if (args[i].result)
+            p2p_node_release(args[i].result);
+    }
+    zcl_mutex_unlock(&fixture.nm.cs_nodes);
+    (void)zcl_barrier_destroy(&fixture.nodes_created);
+    net_manager_free(&fixture.nm);
+
+    if (ok) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    return failures;
+}
+
 /* p2p_node: inventory tracking */
 struct p2p_inventory_fixture {
     struct net_manager nm;
@@ -7195,6 +7278,7 @@ int test_net(void)
     failures += test_net_net_manager_init_defaults();
     failures += test_net_accept_inbound_socket_is_set_non_blocking();
     failures += test_net_p2p_node_create_and_free();
+    failures += test_net_outbound_publish_deduplicates_parallel_dials();
     failures += test_net_p2p_node_receive_bytes_parses_message();
     failures += test_net_p2p_node_inventory_known();
     failures += test_net_p2p_node_inventory_relay_queue_is_bounded();
