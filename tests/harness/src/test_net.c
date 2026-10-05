@@ -261,15 +261,17 @@ static void *p25_socket_worker(void *arg)
  * second boundaries and needs dozens of simulated seconds to exercise
  * escalate and de-escalate. Sleeping that long would violate "tests fast
  * always", so drive platform.clock directly — the same injection
- * test_clock.c and the sync-watchdog tests use. The monotonic hand
- * tracks the wall hand so the puzzle gate's load EWMA also advances. */
+ * test_clock.c and the sync-watchdog tests use. The monotonic hand normally
+ * tracks the wall hand so the puzzle gate's load EWMA also advances; the
+ * rollback regression can move them independently. */
 struct onion_fake_clock {
     _Atomic int64_t wall_ms;
+    _Atomic int64_t monotonic_ns;
 };
 static int64_t onion_fake_now_mono(void *self)
 {
     struct onion_fake_clock *c = (struct onion_fake_clock *)self;
-    return atomic_load(&c->wall_ms) * 1000000LL;
+    return atomic_load(&c->monotonic_ns);
 }
 static int64_t onion_fake_now_wall(void *self)
 {
@@ -279,6 +281,15 @@ static int64_t onion_fake_now_wall(void *self)
 static void onion_fake_clock_set_secs(struct onion_fake_clock *c, int64_t secs)
 {
     atomic_store(&c->wall_ms, secs * 1000);
+    atomic_store(&c->monotonic_ns, secs * INT64_C(1000000000));
+}
+static void onion_fake_clock_set_split(struct onion_fake_clock *c,
+                                       int64_t monotonic_secs,
+                                       int64_t wall_secs)
+{
+    atomic_store(&c->monotonic_ns,
+                 monotonic_secs * INT64_C(1000000000));
+    atomic_store(&c->wall_ms, wall_secs * 1000);
 }
 
 /* Hex-decode a 64-char field of a 402 challenge into 32 raw bytes. */
@@ -5877,6 +5888,38 @@ static void test_net_onion_no_pressure_needs_no_puzzle(
     else { printf("FAIL (result=%d)\n", (int)r); (*failures)++; }
 }
 
+static void test_net_onion_wall_rollback_does_not_refresh_budget(
+    struct onion_admission_fixture *fx, int *failures)
+{
+    printf("onion_ratelimit: wall rollback does not refresh a spent budget... ");
+    onion_ratelimit_test_reset();
+    int64_t now = fx->t0 + 1500;
+    onion_fake_clock_set_split(&fx->fake, now, now);
+    int cap = onion_ratelimit_test_cap(ONION_ROUTE_CHEAP);
+    bool ok = true;
+    for (int i = 0; i < cap; i++) {
+        if (onion_ratelimit_admit("GET", "/directory.json", NULL, 0,
+                                  NULL) != ONION_ADMIT_OK)
+            ok = false;
+    }
+    ok = ok && onion_ratelimit_admit("GET", "/directory.json", NULL, 0,
+                                     NULL) == ONION_ADMIT_RATE_LIMITED;
+
+    /* A wall correction is not elapsed process time and must not mint a new
+     * request window. Advancing monotonic time by one second must. */
+    onion_fake_clock_set_split(&fx->fake, now, now - 300);
+    ok = ok && onion_ratelimit_admit("GET", "/directory.json", NULL, 0,
+                                     NULL) == ONION_ADMIT_RATE_LIMITED;
+    onion_fake_clock_set_split(&fx->fake, now + 1, now - 300);
+    ok = ok && onion_ratelimit_admit("GET", "/directory.json", NULL, 0,
+                                     NULL) == ONION_ADMIT_OK;
+
+    onion_ratelimit_test_reset();
+    onion_fake_clock_set_secs(&fx->fake, fx->t0);
+    if (ok) printf("OK\n");
+    else { printf("FAIL\n"); (*failures)++; }
+}
+
 static void test_net_onion_escalation_trips_after_saturation(
     struct onion_admission_fixture *fx, int *failures)
 {
@@ -6128,6 +6171,7 @@ static int test_net_onion_admission_tiered_budgets_and_puzzle_escalation(void)
     test_net_onion_route_classification_by_cost_tier(&fx, &failures);
     test_net_onion_expensive_flood_no_starve(&fx, &failures);
     test_net_onion_cheap_flood_no_starve_static(&fx, &failures);
+    test_net_onion_wall_rollback_does_not_refresh_budget(&fx, &failures);
     test_net_onion_no_pressure_needs_no_puzzle(&fx, &failures);
     test_net_onion_escalation_trips_after_saturation(&fx, &failures);
     test_net_onion_solved_puzzle_admits_while_escalated(&fx, &failures);

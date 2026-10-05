@@ -215,7 +215,7 @@ enum onion_route_class onion_route_classify(const char *method,
 
 struct onion_budget {
     _Atomic int64_t count;
-    _Atomic int64_t window_start;
+    _Atomic int64_t window_start; /* process-monotonic second */
     _Atomic int64_t admitted_total;
     _Atomic int64_t denied_total;
     _Atomic int32_t saturated_streak; /* consecutive whole seconds at cap  */
@@ -332,7 +332,7 @@ static void onion_pressure_update(int64_t prev_window_count)
 
 static bool budget_check(struct onion_budget *b, int cap, bool track_pressure)
 {
-    int64_t now = (int64_t)platform_time_wall_time_t();
+    int64_t now = platform_time_monotonic_us() / INT64_C(1000000);
     int64_t window = atomic_load(&b->window_start);
     if (now != window) {
         if (atomic_compare_exchange_strong(&b->window_start, &window, now)) {
