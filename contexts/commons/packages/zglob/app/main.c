@@ -17,6 +17,12 @@
 
 static char input[MAX_INPUT];
 
+static bool read_input(FILE *in, char *buf, size_t cap, size_t *len) {
+  *len = fread(buf, 1, cap, in);
+  int extra = *len == cap ? fgetc(in) : EOF;
+  return !ferror(in) && extra == EOF;
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     fprintf(stderr, "usage: zglob PATTERN < lines\n");
@@ -25,8 +31,8 @@ int main(int argc, char **argv) {
   const char *pat = argv[1];
   size_t plen = strlen(pat);
 
-  size_t len = fread(input, 1, sizeof(input), stdin);
-  if (ferror(stdin) || !feof(stdin)) {
+  size_t len = 0;
+  if (!read_input(stdin, input, sizeof(input), &len)) {
     fprintf(stderr, "zglob: read error or input over 16 MiB bound\n");
     return 2;
   }

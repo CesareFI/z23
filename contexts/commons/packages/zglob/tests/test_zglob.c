@@ -3,6 +3,7 @@
 #include "zglob/zglob.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures = 0;
@@ -113,7 +114,37 @@ static void test_lengths(void) {
   CHECK(!zglob_match(nullptr, "a"));
 }
 
+static FILE *audit_glob_input;
+#undef stdin
+#define stdin audit_glob_input
+#define main audit_glob_main
+#include "../app/main.c"
+#undef main
+#undef stdin
+
+static void test_cli_inclusive_input_bound(void) {
+  const char *selected = getenv("AUDIT_ROW");
+  for (unsigned row = 1; row <= 3; row++) {
+    if (selected && strtoul(selected, NULL, 10) != row) continue;
+    char block[8192];
+    memset(block, row == 2 ? '\n' : 'a', sizeof block);
+    if (row == 3)
+      for (size_t i = 1; i < sizeof block; i += 2) block[i] = '\n';
+    audit_glob_input = tmpfile();
+    CHECK(audit_glob_input != NULL); if (!audit_glob_input) return;
+    for (size_t done = 0; done < MAX_INPUT; done += sizeof block)
+      CHECK(fwrite(block, 1, sizeof block, audit_glob_input) == sizeof block);
+    rewind(audit_glob_input);
+    char *argv[] = { "zglob", "b", NULL };
+    int rc = audit_glob_main(2, argv);
+    printf("glob inclusive bound row %u input=%u rc=%d expected=1\n", row, MAX_INPUT, rc);
+    CHECK(rc == 1); /* valid complete input, no matching line */
+    CHECK(fclose(audit_glob_input) == 0);
+  }
+}
+
 int main(void) {
+  test_cli_inclusive_input_bound();
   test_literals();
   test_star();
   test_question();
