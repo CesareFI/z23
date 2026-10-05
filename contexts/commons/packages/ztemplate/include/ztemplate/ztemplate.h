@@ -38,9 +38,10 @@ typedef enum {
     ZTEMPLATE_NO_MEMORY      /* segment allocation failed */
 } ztemplate_status;
 
-/* Parse template text[0..text_len). Returns NULL on parse error or
- * allocation failure; when err_pos is non-NULL it receives the byte
- * offset of the offending construct on parse error. */
+/* Parse text[0..text_len); text may be NULL only with text_len == 0.
+ * Returns NULL on parse error or allocation failure, including an
+ * unrepresentable allocation size. On parse error, non-NULL err_pos
+ * receives the byte offset of the offending construct. */
 ztemplate *ztemplate_parse(const char *text, size_t text_len,
                            size_t *err_pos);
 void ztemplate_free(ztemplate *tp);

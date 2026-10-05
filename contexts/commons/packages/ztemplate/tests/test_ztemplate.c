@@ -275,9 +275,14 @@ static void test_render_size_overflow(void) {
     ztemplate_free(tp);
 }
 
+static void test_owned_text_allocation(void)
+{
+    CHECK(ztemplate_parse("x", SIZE_MAX, NULL) == NULL);
+}
 
 int main(void)
 {
+    test_owned_text_allocation();
     test_render_size_overflow();
     test_parse_size_overflow();
     test_basic_render();

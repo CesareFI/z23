@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdckdint.h>
 #include <string.h>
 
 typedef enum { SEG_LITERAL, SEG_VAR } seg_kind;
@@ -32,8 +33,10 @@ static bool seg_push(ztemplate *tp, seg_kind kind, size_t off, size_t len)
         return true;
     }
     if (tp->nsegs == tp->cap_segs) {
-        size_t ncap = tp->cap_segs ? tp->cap_segs * 2 : 16;
-        segment *ns = realloc(tp->segs, ncap * sizeof *ns);
+        size_t ncap = 16, bytes;
+        if (tp->cap_segs && ckd_mul(&ncap, tp->cap_segs, 2)) return false;
+        if (ckd_mul(&bytes, ncap, sizeof *tp->segs)) return false;
+        segment *ns = realloc(tp->segs, bytes);
         if (!ns) return false;
         tp->segs = ns;
         tp->cap_segs = ncap;
