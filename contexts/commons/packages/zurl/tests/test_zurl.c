@@ -269,8 +269,24 @@ static int test_failure_zeroes_all_fields(void) {
   return 0;
 }
 
+static int test_ipv4_trailing_dot(void) {
+  const char *bad[] = {"http://1.2.3.4./", "http://0.0.0.0.:80/"};
+  int failed = 0;
+  for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+    zurl u;
+    if (zurl_parse(bad[i], &u)) {
+      fprintf(stderr, "FAIL ipv4_trailing_dot row=%zu input=%s\n", i, bad[i]);
+      failed = 1;
+    }
+  }
+  CHECK(!failed);
+  return 0;
+}
+
 int main(void) {
     if (test_failure_zeroes_all_fields() != 0) return 1;
+    if (test_ipv4_trailing_dot()) return 1;
+
 
   struct {
     const char *name;

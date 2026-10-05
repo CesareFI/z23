@@ -109,8 +109,10 @@ static bool parse_ipv4(const char *text, size_t host_start, size_t host_end) {
     if (k == d0)
       return false; /* empty octet */
     octets++;
-    if (k < host_end && text[k] == '.')
+    if (k < host_end && text[k] == '.') {
       k++;
+      if (k == host_end) return false;
+    }
   }
   return octets == 4;
 }
