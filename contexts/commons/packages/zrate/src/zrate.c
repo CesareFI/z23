@@ -94,9 +94,19 @@ bool zrate_window_hit(zrate_window *w, uint64_t now_ms)
     return true;
 }
 
+static bool window_enabled(const zrate_window *w)
+{
+    return w && w->events && w->limit != 0;
+}
+
+static uint64_t unavailable_wait(const zrate_window *w)
+{
+    return w ? UINT64_MAX : 0;
+}
+
 uint32_t zrate_window_count(const zrate_window *w, uint64_t now_ms)
 {
-    if (!w) return 0;
+    if (!window_enabled(w)) return 0;
     zrate_window tmp = *w;
     expire(&tmp, now_ms);
     return tmp.count;
@@ -104,7 +114,7 @@ uint32_t zrate_window_count(const zrate_window *w, uint64_t now_ms)
 
 uint64_t zrate_window_wait_ms(const zrate_window *w, uint64_t now_ms)
 {
-    if (!w) return 0;
+    if (!window_enabled(w)) return unavailable_wait(w);
     zrate_window tmp = *w;
     expire(&tmp, now_ms);
     if (tmp.count < tmp.limit) return 0;

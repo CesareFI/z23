@@ -148,8 +148,33 @@ static void test_window_wait_and_wrap(void)
     CHECK(zrate_window_count(NULL, 0) == 0);
 }
 
+static void test_disabled_window_wait(void)
+{
+    uint64_t events[1] = {77};
+    const struct { uint64_t *events; uint32_t limit; uint64_t now; int count; } rows[] = {
+        {NULL, 0, 0, 0},
+        {events, 0, UINT64_MAX, 0},
+        {NULL, 1, 0, 0},
+        {NULL, 1, 0, 1},
+        {events, 0, UINT64_MAX, 1}
+    };
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        zrate_window w;
+        zrate_window_init(&w, rows[i].events, rows[i].limit, 100);
+        w.count = (uint32_t)rows[i].count;
+        fprintf(stderr, "disabled window row %zu\n", i);
+        if (rows[i].count) {
+            CHECK(zrate_window_count(&w, rows[i].now) == 0 &&
+                  zrate_window_wait_ms(&w, rows[i].now) == UINT64_MAX);
+        } else {
+            CHECK(zrate_window_wait_ms(&w, rows[i].now) == UINT64_MAX);
+        }
+    }
+}
+
 int main(void)
 {
+    test_disabled_window_wait();
     test_bucket_basic();
     test_bucket_wait();
     test_window_basic();

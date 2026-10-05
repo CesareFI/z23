@@ -65,10 +65,11 @@ void zrate_window_init(zrate_window *w, uint64_t *events,
 bool zrate_window_hit(zrate_window *w, uint64_t now_ms);
 
 /* Events still live in the window at now_ms. */
+/* Disabled windows (NULL events or zero limit) have no live events. */
 uint32_t zrate_window_count(const zrate_window *w, uint64_t now_ms);
 
 /* Milliseconds until the oldest live event expires; 0 when the window
- * has room now. */
+ * has room now. Disabled windows return UINT64_MAX; NULL w returns 0. */
 uint64_t zrate_window_wait_ms(const zrate_window *w, uint64_t now_ms);
 
 #ifdef __cplusplus
