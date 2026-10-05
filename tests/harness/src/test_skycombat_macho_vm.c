@@ -48,7 +48,8 @@ static int vm_release(void *addr,size_t n)
 }
 static void vm_flush(void *addr,size_t n)
 {
- (void)n;vm_flushes++;
+ vm_flushes++;
+ VM_CHECK(n==1024u*1024u);
  size_t slot=((uint8_t *)addr-(uint8_t *)vm_arena)/(1024u*1024u);
  VM_CHECK(slot<2);if(slot<2)VM_CHECK(vm_rights[slot]==(PROT_READ|PROT_EXEC));
 }

@@ -59,7 +59,7 @@ static enum sky_load_verdict stage_generation(struct sky_part_host *h,struct ima
  write_generation(base,im);
  why="RX publication protection refused";
  if(mprotect(base,SLOT,PROT_READ|PROT_EXEC))goto failed;
- sys_icache_invalidate(base,im->total);
+ sys_icache_invalidate(base,SLOT);
  const struct sky_hud_part_v1 *part=(const void *)(base+im->sec[im->descriptor].mapped+(size_t)im->desc_offset);
  h->arena=arena;h->slot=slot;h->current=(struct sky_part_generation){++h->last_id,part};
  return SKY_LOAD_OK;

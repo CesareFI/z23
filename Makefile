@@ -3103,8 +3103,8 @@ $(BUILD_DIR)/fixtures/rlc_child_broken$(ZCL_HOST_EXEEXT): $(RESIDENT_CONTRACT_FI
 	  -o $@ $(RESIDENT_CONTRACT_FIXTURE_SRC)
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
-	$(wildcard tests/harness/src/*.c)) \
-	contexts/commons/packages/zsha256/src/zsha256.c
+	$(wildcard tests/harness/src/*.c))
+# test_skycombat_macho_loader.c already includes the actual zsha256 source.
 TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c \
 	tools/dev/component_receiver.c \
 	tools/dev/devloop_app_scaffold.c \
