@@ -3,6 +3,7 @@
 #include "zdiff/zdiff.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define CHECK(cond)                                                          \
@@ -297,7 +298,41 @@ static int test_property(void) {
   return 0;
 }
 
+/* Supply read_file a real bounded temporary file, without public paths. */
+static size_t audit_file_len;
+static FILE *audit_diff_fopen(const char *path, const char *mode) {
+  (void)path; (void)mode;
+  FILE *f = tmpfile();
+  if (!f) return NULL;
+  char block[1024]; memset(block, 'x', sizeof block);
+  for (size_t done = 0; done < audit_file_len;) {
+    size_t n = audit_file_len - done; if (n > sizeof block) n = sizeof block;
+    if (fwrite(block, 1, n, f) != n) { fclose(f); return NULL; }
+    done += n;
+  }
+  rewind(f); return f;
+}
+#define fopen audit_diff_fopen
+#define main audit_diff_main
+#include "../app/main.c"
+#undef main
+#undef fopen
+
+static int test_cli_inclusive_read_bound(void) {
+  static const size_t caps[] = { 1, 17, MAX_FILE };
+  const char *selected = getenv("AUDIT_ROW");
+  for (size_t row = 0; row < sizeof caps / sizeof caps[0]; row++) {
+    if (selected && strtoul(selected, NULL, 10) != row + 1) continue;
+    audit_file_len = caps[row]; size_t len = 0;
+    bool ok = read_file("private-fixture", old_text, caps[row], &len);
+    printf("diff inclusive read row %zu cap=%zu ok=%d length=%zu\n", row + 1, caps[row], ok, len);
+    CHECK(ok && len == caps[row] && old_text[0] == 'x' && old_text[len - 1] == 'x');
+  }
+  return 0;
+}
+
 int main(void) {
+  if (test_cli_inclusive_read_bound() != 0) return 1;
   struct {
     const char *name;
     int (*fn)(void);

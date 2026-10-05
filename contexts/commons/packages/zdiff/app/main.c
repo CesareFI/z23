@@ -22,7 +22,9 @@ static bool read_file(const char *path, char *buf, size_t cap,
   if (!f)
     return false;
   size_t n = fread(buf, 1, cap, f);
-  bool ok = !ferror(f) && feof(f); /* !feof: longer than cap */
+  /* A full read does not set EOF; probe to enforce the inclusive bound. */
+  int extra = n == cap ? fgetc(f) : EOF;
+  bool ok = !ferror(f) && extra == EOF;
   fclose(f);
   if (ok)
     *len_out = n;
