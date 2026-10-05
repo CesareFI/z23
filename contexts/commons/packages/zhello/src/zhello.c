@@ -154,7 +154,7 @@ uint64_t zhello_canvas_digest(const struct zhello_canvas *canvas)
 {
 	const size_t bytes = (size_t)canvas->width * (size_t)canvas->height *
 			     ZHELLO_PIXEL_BYTES;
-	uint64_t hash = 1469598103934665603ULL; /* FNV-1a 64 offset basis */
+	uint64_t hash = UINT64_C(14695981039346656037); /* FNV-1a 64 offset basis */
 	const uint8_t *p = canvas->pixels;
 	for (size_t i = 0; i < bytes; i++) {
 		hash ^= p[i];
