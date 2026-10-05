@@ -45,7 +45,8 @@ zbits_err zbits_set_all(uint64_t *w, size_t nbits);
 zbits_err zbits_clear_all(uint64_t *w, size_t nbits);
 zbits_err zbits_flip_all(uint64_t *w, size_t nbits);
 
-/* Popcount. SIZE_MAX on error. */
+/* Popcount over nbits only; unused bits in the final word are ignored.
+ * SIZE_MAX on error. */
 size_t zbits_count(const uint64_t *w, size_t nbits);
 
 /* Number of set bits at indexes < i. SIZE_MAX on error. */

@@ -193,7 +193,23 @@ static void test_fuzz(void) {
   }
 }
 
+static void test_count_ignores_storage_tail(void) {
+  const size_t sizes[] = {1, 65, 130};
+  for (size_t row = 0; row < sizeof sizes / sizeof sizes[0]; row++) {
+    uint64_t words[3] = {UINT64_MAX, UINT64_MAX, UINT64_MAX};
+    const uint64_t before[3] = {UINT64_MAX, UINT64_MAX, UINT64_MAX};
+    size_t count = zbits_count(words, sizes[row]);
+    int ok = count == sizes[row] &&
+             count == zbits_rank(words, sizes[row], sizes[row]) &&
+             memcmp(words, before, sizeof words) == 0;
+    fprintf(stderr, "tail_count_row=%zu nbits=%zu result=%s\n", row,
+            sizes[row], ok ? "PASS" : "FAIL");
+    CHECK(ok);
+  }
+}
+
 int main(void) {
+  test_count_ignores_storage_tail();
   test_basic();
   test_bulk();
   test_rank_first();

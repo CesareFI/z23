@@ -86,11 +86,7 @@ zbits_err zbits_flip_all(uint64_t *w, size_t nbits) {
 }
 
 size_t zbits_count(const uint64_t *w, size_t nbits) {
-  size_t i, nw, total = 0;
-  if (!zbits__valid(w, nbits)) return SIZE_MAX;
-  nw = zbits_words(nbits);
-  for (i = 0; i < nw; i++) total += (size_t)stdc_count_ones_ull(w[i]);
-  return total;
+  return zbits_rank(w, nbits, nbits);
 }
 
 size_t zbits_rank(const uint64_t *w, size_t nbits, size_t i) {
