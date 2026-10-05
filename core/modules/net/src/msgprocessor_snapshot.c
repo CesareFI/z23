@@ -323,6 +323,64 @@ static int64_t g_block_swarm_last_progress = 0;
  * transfer back out of legacy getdata's hands every few seconds. */
 static _Atomic int64_t g_block_swarm_reaped_unix = 0;
 
+/* Caller holds g_block_swarm_mutex. A peer's self-consistent manifest is not
+ * interchangeable with the manifest that armed the active swarm: its Merkle
+ * root commits the exact piece hashes for this range. */
+static bool block_swarm_peer_matches_active_locked(
+    const struct p2p_node *node)
+{
+    return node && node->blk_manifest_received &&
+           node->blk_manifest_start_height ==
+               g_block_swarm.manifest.start_height &&
+           node->blk_manifest_num_pieces > 0 &&
+           memcmp(node->blk_swarm_binding_root,
+                  g_block_swarm.manifest.merkle_root, 32) == 0;
+}
+
+/* Caller holds g_block_swarm_mutex. A shorter or longer manifest can safely
+ * serve the overlapping prefix when piece indices have the same origin and
+ * every shared piece hash matches. Bind the peer to this active swarm root so
+ * a later rearm cannot silently reuse that proof for different content. */
+static bool block_swarm_bind_peer_manifest_locked(
+    struct p2p_node *node, int32_t start_height, uint32_t num_pieces,
+    const uint8_t (*piece_hashes)[32])
+{
+    memset(node->blk_swarm_binding_root, 0,
+           sizeof(node->blk_swarm_binding_root));
+    if (!atomic_load(&g_block_swarm_active) ||
+        start_height != g_block_swarm.manifest.start_height ||
+        !piece_hashes || !g_block_swarm.manifest.piece_hashes)
+        return false;
+
+    uint32_t shared = num_pieces < g_block_swarm.manifest.num_pieces
+        ? num_pieces : g_block_swarm.manifest.num_pieces;
+    if (shared == 0 || memcmp(piece_hashes,
+                              g_block_swarm.manifest.piece_hashes,
+                              (size_t)shared * 32) != 0)
+        return false;
+
+    memcpy(node->blk_swarm_binding_root,
+           g_block_swarm.manifest.merkle_root, 32);
+    return true;
+}
+
+/* Caller holds g_block_swarm_mutex. Changing manifests invalidates every
+ * request in this peer's pipeline, but must not revoke work already reassigned
+ * to another peer after timeout. */
+static size_t block_swarm_release_foreign_peer_locked(struct p2p_node *node)
+{
+    size_t released = 0;
+    for (int i = 0; i < PIECE_PIPELINE_DEPTH; i++) {
+        int32_t piece_index = node->blk_pipeline[i].piece_index;
+        if (piece_index >= 0 && block_swarm_requeue_piece_for_peer(
+                &g_block_swarm, (uint32_t)piece_index, node->id))
+            released++;
+        node->blk_pipeline[i].piece_index = -1;
+        node->blk_pipeline[i].request_time = 0;
+    }
+    return released;
+}
+
 /* Caller holds g_block_swarm_mutex. A piece verified before an unlocked
  * reducer submit may only be credited if the current swarm still binds that
  * index to the same payload hash. */
@@ -601,6 +659,103 @@ static int32_t assign_and_push_block_piece_locked(
              node->addr_name, piece_index,
              released ? "true" : "false");
     return -1;
+}
+
+static void block_swarm_accept_peer_manifest(
+    struct msg_processor *mp, struct p2p_node *node,
+    const struct block_piece_manifest *manifest, int32_t our_height)
+{
+    pthread_mutex_lock(&g_block_swarm_mutex);
+    if (atomic_load(&g_block_swarm_active)) {
+        if (!block_swarm_bind_peer_manifest_locked(
+                node, manifest->start_height, manifest->num_pieces,
+                (const uint8_t (*)[32])manifest->piece_hashes)) {
+            (void)block_swarm_release_foreign_peer_locked(node);
+        }
+    } else if (manifest->end_height > our_height + BLOCKS_PER_PIECE &&
+               (int64_t)platform_time_wall_time_t() -
+                   atomic_load(&g_block_swarm_reaped_unix) >=
+                       BLOCK_SWARM_RESTART_COOLDOWN_SECS &&
+               block_swarm_init(&g_block_swarm, manifest, mp->datadir)) {
+        g_block_swarm.last_complete_unix =
+            (int64_t)platform_time_wall_time_t();
+        mp_block_swarm_mark_complete_through_height(
+            &g_block_swarm, our_height);
+        atomic_store(&g_block_swarm_active, true);
+        (void)block_swarm_bind_peer_manifest_locked(
+            node, manifest->start_height, manifest->num_pieces,
+            (const uint8_t (*)[32])manifest->piece_hashes);
+        g_block_swarm_last_progress =
+            (int64_t)platform_time_wall_time_t();
+        printf("Block swarm started: %u pieces, h=%d..%d "
+               "(already_complete=%u at h=%d)\n",
+               manifest->num_pieces, manifest->start_height,
+               manifest->end_height, g_block_swarm.pieces_complete,
+               our_height);
+    }
+    pthread_mutex_unlock(&g_block_swarm_mutex);
+}
+
+static void block_swarm_send_tick(struct msg_processor *mp,
+                                  struct p2p_node *node)
+{
+    if (!atomic_load(&g_block_swarm_active) ||
+        !peer_supports_fast_sync(node->services) ||
+        !node->blk_manifest_received ||
+        node->state < PEER_HANDSHAKE_COMPLETE)
+        return;
+
+    pthread_mutex_lock(&g_block_swarm_mutex);
+    if (!block_swarm_peer_matches_active_locked(node)) {
+        size_t released = block_swarm_release_foreign_peer_locked(node);
+        pthread_mutex_unlock(&g_block_swarm_mutex);
+        if (released) {
+            LOG_INFO("net",
+                     "block swarm: released %zu piece(s) from peer %s "
+                     "after manifest identity changed",
+                     released, node->addr_name);
+        }
+        return;
+    }
+
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    block_swarm_handle_timeouts(&g_block_swarm,
+                                BLOCK_PIECE_TIMEOUT_SECS);
+    for (int i = 0; i < PIECE_PIPELINE_DEPTH; i++) {
+        int32_t piece_index = node->blk_pipeline[i].piece_index;
+        if (piece_index >= 0 &&
+            now - node->blk_pipeline[i].request_time >
+                BLOCK_PIECE_TIMEOUT_SECS) {
+            (void)block_swarm_requeue_piece_for_peer(
+                &g_block_swarm, (uint32_t)piece_index, node->id);
+            node->blk_pipeline[i].piece_index = -1;
+        }
+    }
+
+    for (int i = 0; i < PIECE_PIPELINE_DEPTH; i++) {
+        if (node->blk_pipeline[i].piece_index >= 0)
+            continue;
+        if (assign_and_push_block_piece_locked(mp, node, i, now) < 0)
+            break;
+    }
+
+    int64_t progress_now = (int64_t)platform_time_wall_time_t();
+    if (progress_now - g_block_swarm_last_progress <
+        SWARM_PROGRESS_INTERVAL_SECS) {
+        pthread_mutex_unlock(&g_block_swarm_mutex);
+        return;
+    }
+
+    g_block_swarm_last_progress = progress_now;
+    int progress = block_swarm_progress(&g_block_swarm);
+    uint32_t complete = g_block_swarm.pieces_complete;
+    uint32_t total = g_block_swarm.manifest.num_pieces;
+    uint32_t inflight = g_block_swarm.pieces_inflight;
+    bool endgame = g_block_swarm.endgame;
+    pthread_mutex_unlock(&g_block_swarm_mutex);
+    printf("BlockSync: %d%% (%u/%u pieces, %u inflight%s)\n",
+           progress, complete, total, inflight,
+           endgame ? " [endgame]" : "");
 }
 
 static bool parse_block_piece_payload_refs(
@@ -1613,7 +1768,12 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                     mp->main_state->pindex_best_header->nHeight;
                             if (anchored) {
                                 node->blk_manifest_received = true;
+                                node->blk_manifest_start_height = start_h;
                                 node->blk_peer_height = end_h;
+                                node->blk_manifest_num_pieces = num_pieces;
+                                memcpy(node->blk_manifest_root,
+                                       merkle_root, 32);
+                                memset(node->blk_swarm_binding_root, 0, 32);
                             } else {
                                 fprintf(stderr,  // obs-ok:peer-scored
                                         "Peer %s: block manifest not "
@@ -1655,12 +1815,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                  * After a stall-abandon, hold off re-arming for
                  * BLOCK_SWARM_RESTART_COOLDOWN_SECS so legacy getdata owns
                  * body transfer long enough to push past the hole. */
-                if (node->blk_manifest_received &&
-                    end_h > our_h + BLOCKS_PER_PIECE &&
-                    !g_block_swarm_active && num_pieces > 0 &&
-                    (int64_t)platform_time_wall_time_t() -
-                        atomic_load(&g_block_swarm_reaped_unix) >=
-                            BLOCK_SWARM_RESTART_COOLDOWN_SECS) {
+                if (node->blk_manifest_received) {
                     struct block_piece_manifest pm = {
                         .start_height = start_h,
                         .end_height = end_h,
@@ -1669,20 +1824,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     };
                     memcpy(pm.tip_hash, tip_hash, 32);
                     memcpy(pm.merkle_root, merkle_root, 32);
-                    pthread_mutex_lock(&g_block_swarm_mutex);
-                    if (block_swarm_init(&g_block_swarm, &pm, mp->datadir)) {
-                        g_block_swarm.last_complete_unix =
-                            (int64_t)platform_time_wall_time_t();
-                        mp_block_swarm_mark_complete_through_height(
-                            &g_block_swarm, our_h);
-                        g_block_swarm_active = true;
-                        g_block_swarm_last_progress = (int64_t)platform_time_wall_time_t();
-                        printf("Block swarm started: %u pieces, h=%d..%d "
-                               "(already_complete=%u at h=%d)\n",
-                               num_pieces, start_h, end_h,
-                               g_block_swarm.pieces_complete, our_h);
-                    }
-                    pthread_mutex_unlock(&g_block_swarm_mutex);
+                    block_swarm_accept_peer_manifest(
+                        mp, node, &pm, our_h);
                 }
                 free(piece_hashes);
             }
@@ -1733,6 +1876,18 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
 
                     /* DEFENSIVE: bounds check before touching swarm */
                     pthread_mutex_lock(&g_block_swarm_mutex);
+                    if (!block_swarm_peer_matches_active_locked(node)) {
+                        size_t released =
+                            block_swarm_release_foreign_peer_locked(node);
+                        pthread_mutex_unlock(&g_block_swarm_mutex);
+                        LOG_INFO("net",
+                                 "zblkdata piece %u ignored: peer manifest "
+                                 "is not the active swarm (released=%zu)",
+                                 piece_index, released);
+                        free(block_refs);
+                        free(blk_hashes);
+                        goto _blkdata_done;
+                    }
                     if (piece_index >= g_block_swarm.manifest.num_pieces) {
                         pthread_mutex_unlock(&g_block_swarm_mutex);
                         printf("Peer %s: zblkdata piece %u out of range "
@@ -2046,58 +2201,5 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
     }
 
 block_swarm_tick:
-    /* ── Block swarm coordinator: parallel block piece download ── */
-    /* Only for ZCL23 peers with completed handshake. Legacy peers
-     * contribute via normal getdata/block (handled by download manager). */
-    if (g_block_swarm_active && peer_supports_fast_sync(node->services) &&
-        node->blk_manifest_received &&
-        node->state >= PEER_HANDSHAKE_COMPLETE) {
-
-        pthread_mutex_lock(&g_block_swarm_mutex);
-
-        /* Handle timeouts on this peer's pipeline */
-        int64_t now_bs = (int64_t)platform_time_wall_time_t();
-        block_swarm_handle_timeouts(&g_block_swarm,
-                                    BLOCK_PIECE_TIMEOUT_SECS);
-        for (int pi = 0; pi < PIECE_PIPELINE_DEPTH; pi++) {
-            int32_t pidx = node->blk_pipeline[pi].piece_index;
-            if (pidx >= 0 &&
-                now_bs - node->blk_pipeline[pi].request_time >
-                    BLOCK_PIECE_TIMEOUT_SECS) {
-                (void)block_swarm_requeue_piece_for_peer(
-                    &g_block_swarm, (uint32_t)pidx, node->id);
-                node->blk_pipeline[pi].piece_index = -1;
-            }
-        }
-
-        /* Fill empty pipeline slots with new piece assignments */
-        for (int pi = 0; pi < PIECE_PIPELINE_DEPTH; pi++) {
-            if (node->blk_pipeline[pi].piece_index >= 0)
-                continue; /* slot occupied */
-
-            int32_t pidx = assign_and_push_block_piece_locked(
-                mp, node, pi, now_bs);
-            if (pidx < 0)
-                break; /* none available, or send failed and was rolled back */
-        }
-
-        /* Progress display (rate-limited) */
-        int64_t now_bp = (int64_t)platform_time_wall_time_t();
-        if (now_bp - g_block_swarm_last_progress >=
-            SWARM_PROGRESS_INTERVAL_SECS) {
-            g_block_swarm_last_progress = now_bp;
-            int bprog = block_swarm_progress(&g_block_swarm);
-            uint32_t bcomplete = g_block_swarm.pieces_complete;
-            uint32_t btotal = g_block_swarm.manifest.num_pieces;
-            uint32_t binflight = g_block_swarm.pieces_inflight;
-            bool endgame = g_block_swarm.endgame;
-            pthread_mutex_unlock(&g_block_swarm_mutex);
-
-            printf("BlockSync: %d%% (%u/%u pieces, %u inflight%s)\n",
-                   bprog, bcomplete, btotal, binflight,
-                   endgame ? " [endgame]" : "");
-        } else {
-            pthread_mutex_unlock(&g_block_swarm_mutex);
-        }
-    }
+    block_swarm_send_tick(mp, node);
 }

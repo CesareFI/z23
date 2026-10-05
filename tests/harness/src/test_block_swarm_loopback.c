@@ -1469,6 +1469,98 @@ static int test_block_swarm_past_peer_manifest(void)
     return failures;
 }
 
+static int test_block_swarm_rejects_foreign_manifest_peer(void)
+{
+    int failures = 0;
+
+    TEST("block swarm: scheduler ignores a peer whose manifest identity "
+         "differs from the active swarm") {
+        const struct chain_params *params = chain_params_get();
+        const int32_t end = 2 * (int32_t)BLOCKS_PER_PIECE;
+        struct bs_seeder active_seed;
+        struct bs_seeder foreign_seed;
+        struct bs_fetcher fetcher;
+        bool ok = true;
+
+        ASSERT(!mp_block_swarm_is_active());
+        ASSERT(bs_seeder_build(&active_seed, end, 31u, "active-manifest"));
+        ASSERT(bs_fetcher_init(&fetcher, end));
+
+        struct p2p_node *active_sender =
+            bs_make_peer(&active_seed.nm, 31);
+        struct p2p_node *active_peer = bs_make_peer(&fetcher.nm, 32);
+        ASSERT(active_sender && active_peer);
+        struct send_segment *active_sent =
+            bs_install_sentinel(active_sender);
+        struct send_segment *active_requests =
+            bs_install_sentinel(active_peer);
+
+        push_block_manifest(&active_seed.mp, active_sender);
+        bs_pump(active_sender, active_sent, &fetcher.mp, active_peer,
+                params->pchMessageStart, &ok);
+        ASSERT(ok && active_peer->blk_manifest_received);
+        ASSERT(mp_block_swarm_is_active());
+
+        ASSERT(bs_seeder_build(&foreign_seed, end, 32u,
+                               "foreign-manifest"));
+        struct p2p_node *foreign_sender =
+            bs_make_peer(&foreign_seed.nm, 33);
+        struct p2p_node *foreign_peer = bs_make_peer(&fetcher.nm, 34);
+        ASSERT(foreign_sender && foreign_peer);
+        struct send_segment *foreign_sent =
+            bs_install_sentinel(foreign_sender);
+        struct send_segment *foreign_requests =
+            bs_install_sentinel(foreign_peer);
+
+        push_block_manifest(&foreign_seed.mp, foreign_sender);
+        bs_pump(foreign_sender, foreign_sent, &fetcher.mp, foreign_peer,
+                params->pchMessageStart, &ok);
+        ASSERT(ok && foreign_peer->blk_manifest_received);
+
+        int score_before = atomic_load(&foreign_peer->misbehavior);
+        ASSERT(bs_send_raw_blkreq(foreign_peer, foreign_requests,
+                                  &foreign_seed.mp, foreign_sender, 0));
+        bs_pump(foreign_sender, foreign_sent, &fetcher.mp, foreign_peer,
+                params->pchMessageStart, &ok);
+        bool foreign_payload_ignored =
+            ok && mp_block_swarm_is_active() &&
+            atomic_load(&foreign_peer->misbehavior) == score_before;
+
+        mp_snapshot_send_tick(&fetcher.mp, foreign_peer);
+        size_t foreign_count = bs_queue_depth(foreign_requests);
+        mp_snapshot_send_tick(&fetcher.mp, active_peer);
+        size_t active_count = bs_queue_depth(active_requests);
+
+        mp_block_swarm_test_seed_stall(0, 0, 0);
+        bs_drop_queue(active_peer, active_requests);
+        bs_drop_queue(foreign_peer, foreign_requests);
+        struct send_segment *sentinels[] = {
+            active_sent, active_requests, foreign_sent, foreign_requests
+        };
+        struct p2p_node *nodes[] = {
+            active_sender, active_peer, foreign_sender, foreign_peer
+        };
+        for (size_t i = 0; i < 4; i++) {
+            send_segment_free(sentinels[i]);
+            nodes[i]->send_head = nodes[i]->send_tail = NULL;
+            p2p_node_free(nodes[i]);
+        }
+        bs_fetcher_free(&fetcher);
+        bs_seeder_free(&foreign_seed);
+        bs_seeder_free(&active_seed);
+
+        printf("(foreign payload ignored=%d requests=%zu; matching "
+               "requests=%zu) ", foreign_payload_ignored,
+               foreign_count, active_count);
+        ASSERT(foreign_payload_ignored);
+        ASSERT_EQ(foreign_count, 0);
+        ASSERT(active_count > 0);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static bool bs_block_submit_refused(struct block *block,
                                     struct validation_state *out, void *ctx)
 {
@@ -1596,6 +1688,7 @@ int test_block_swarm_loopback(void)
     failures += test_block_swarm_sovereignty_gate();
     failures += test_block_swarm_manifest_republish();
     failures += test_block_swarm_past_peer_manifest();
+    failures += test_block_swarm_rejects_foreign_manifest_peer();
     failures += test_block_swarm_submit_failure_preserves_legacy_owner();
     failures += test_block_swarm_rearm_drops_old_payload_credit();
     boot_snapshot_offer_test_set_trust_override(-1);
