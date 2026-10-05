@@ -403,8 +403,8 @@ void zcl_native_handle_fleet_roster(const struct zcl_command_request *request,
 
     machines = zcl_calloc(ROSTER_ROW_MAX, sizeof(*machines), "roster_machines");
     if (machines) {
-        machine_count = db_mesh_machine_observation_list(&ndb, machines,
-                                                         ROSTER_ROW_MAX, now);
+        machine_count = db_mesh_machine_observation_list_after(
+            &ndb, machines, ROSTER_ROW_MAX, now, skip);
         if (machine_count < 0)
             machine_count = 0;
     }

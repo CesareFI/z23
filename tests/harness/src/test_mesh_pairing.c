@@ -234,6 +234,11 @@ static int test_mesh_roster_page(void)
             if (reason != MESH_PAIRING_OK)
                 printf("[accept %s] ", mesh_pairing_reason_token(reason));
             ASSERT(reason == MESH_PAIRING_OK);
+            if (i == ROSTER_PAGE) {
+                struct db_mesh_machine_observation observed;
+                ASSERT(mesh_observation_fixture(&row, wall - 1, "{}", &observed));
+                ASSERT(db_mesh_machine_observation_save(&ndb, &observed));
+            }
             memcpy(ids[i], row.pairing_id, sizeof(ids[i]));
         }
         node_db_close(&ndb);
@@ -256,6 +261,17 @@ static int test_mesh_roster_page(void)
         ASSERT(!json_get_bool(json_get(&page2.data, "truncated")));
         ASSERT(json_get(&page2.data, "next_resume_after") == NULL);
         ASSERT_STR_EQ(roster_row_id(&page2, 0), ids[ROSTER_PAGE]);
+        const struct json_value *rows = json_get(&page2.data, "rows");
+        const struct json_value *verified = json_get(json_at(rows, 0), "verified");
+        bool retained = false;
+        for (size_t i = 0; i < json_size(verified); i++) {
+            const struct json_value *fact = json_at(verified, i);
+            const char *name = json_get_str(json_get(fact, "fact"));
+            if (name && strcmp(name, "reachable") == 0)
+                retained = json_get_bool(json_get(fact, "observed")) &&
+                           json_get_int(json_get(fact, "observed_unix")) == wall - 1;
+        }
+        ASSERT(retained);
         ASSERT(roster_call(&past, dir, true, ROSTER_MACHINES));
         ASSERT_EQ(json_get_int(json_get(&past.data, "row_count")), (int64_t)0);
         ASSERT_EQ(json_get_int(json_get(&past.data, "total")),
@@ -268,6 +284,58 @@ static int test_mesh_roster_page(void)
     zcl_command_reply_free(&page1);
     zcl_command_reply_free(&page2);
     zcl_command_reply_free(&past);
+    return failures;
+}
+
+/* Arm interruption from the statement trace: preparation has finished,
+ * so the failure is a read step rather than a prepare refusal. */
+struct mesh_read_interrupt {
+    sqlite3 *db;
+    bool traced;
+    unsigned calls;
+};
+
+static int mesh_interrupt_trace(unsigned event, void *arg, void *stmt,
+                                 void *text)
+{
+    (void)stmt;
+    (void)text;
+    struct mesh_read_interrupt *fault = arg;
+    if (event == SQLITE_TRACE_STMT) {
+        fault->traced = true;
+        fault->calls++;
+        sqlite3_interrupt(fault->db);
+    }
+    return 0;
+}
+
+static int test_mesh_observation_interrupted_step(void)
+{
+    int failures = 0;
+    struct node_db ndb = {0};
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_pairing", "interrupted-read");
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    TEST("mesh observations: an interrupted read step returns -1") {
+        struct vcs_zcode_dht_delegation delegation;
+        uint8_t fingerprint[32], genesis[32];
+        struct db_mesh_machine_view row;
+        ASSERT(mesh_fixture(&ndb, path, &delegation, fingerprint, genesis));
+        struct mesh_read_interrupt fault = { .db = ndb.db };
+        ASSERT_EQ(sqlite3_trace_v2(ndb.db, SQLITE_TRACE_STMT,
+                                   mesh_interrupt_trace, &fault), SQLITE_OK);
+        int count = db_mesh_machine_observation_list_after(&ndb, &row, 1, 2000, 0);
+        ASSERT_EQ(sqlite3_trace_v2(ndb.db, 0, NULL, NULL), SQLITE_OK);
+        printf("[traced=%d interrupts=%u count=%d] ",
+               fault.traced, fault.calls, count);
+        ASSERT(fault.traced && fault.calls > 0 && count == -1);
+        PASS();
+    } _test_next:;
+    if (ndb.open) {
+        (void)sqlite3_trace_v2(ndb.db, 0, NULL, NULL);
+        node_db_close(&ndb);
+    }
+    test_cleanup_tmpdir(dir);
     return failures;
 }
 
@@ -624,6 +692,7 @@ int test_mesh_pairing(void)
         PASS();
     }
 
+    failures += test_mesh_observation_interrupted_step();
     failures += test_mesh_roster_page();
 
 _test_next:

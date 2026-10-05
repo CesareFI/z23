@@ -48,4 +48,12 @@ int db_mesh_machine_observation_list(
     struct node_db *ndb, struct db_mesh_machine_view *out, size_t max,
     int64_t now);
 
+/* Same ordering and evidence as list(), starting after `skip` pairings.
+ * Returns the row count or -1 on invalid arguments/read failure. Invalid
+ * arguments leave `out` unchanged; max must fit int and skip must fit int64_t.
+ * Expired evidence remains visible on every page. */
+int db_mesh_machine_observation_list_after(
+    struct node_db *ndb, struct db_mesh_machine_view *out, size_t max,
+    int64_t now, size_t skip);
+
 #endif /* ZCL_MODELS_MESH_MACHINE_OBSERVATION_H */

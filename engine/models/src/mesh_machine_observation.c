@@ -4,6 +4,7 @@
 #include "models/mesh_machine_observation.h"
 
 #include "base/hex.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 #include <limits.h>
@@ -182,7 +183,15 @@ int db_mesh_machine_observation_list(
     struct node_db *ndb, struct db_mesh_machine_view *out, size_t max,
     int64_t now)
 {
-    if (!ndb || !ndb->open || !out || max == 0 || now <= 0) {
+    return db_mesh_machine_observation_list_after(ndb, out, max, now, 0);
+}
+
+int db_mesh_machine_observation_list_after(
+    struct node_db *ndb, struct db_mesh_machine_view *out, size_t max,
+    int64_t now, size_t skip)
+{
+    if (!ndb || !ndb->open || !out || max == 0 || now <= 0 ||
+        max > INT_MAX || (uint64_t)skip > (uint64_t)INT64_MAX) {
         LOG_ERROR("mesh_machine_observation", "list: bad arguments");
         return -1;
     }
@@ -195,10 +204,19 @@ int db_mesh_machine_observation_list(
         "o.observed_unix,o.expires_unix,o.received_unix "
         "FROM mesh_pairings p LEFT JOIN mesh_machine_observations o "
         "ON o.pairing_id=p.pairing_id "
-        "ORDER BY p.paired_at,p.pairing_id LIMIT ?", -1);
+        "ORDER BY p.paired_at,p.pairing_id LIMIT ? OFFSET ?", -1);
     AR_BIND_INT(st, 1, (int64_t)max);
+    AR_BIND_INT(st, 2, (int64_t)skip);
     int count = 0;
-    while ((size_t)count < max && AR_STEP_ROW(st)) {
+    while ((size_t)count < max) {
+        int step = AR_STEP_ROW_READONLY(st);
+        if (step == SQLITE_DONE)
+            break;
+        if (step != SQLITE_ROW) {
+            LOG_ERROR("mesh_machine_observation", "list: read failed: %d", step);
+            AR_FINALIZE(st);
+            return -1;
+        }
         memset(&out[count], 0, sizeof(out[count]));
         mesh_machine_pairing_read(&out[count].pairing, st);
         if (sqlite3_column_type(st, 10) != SQLITE_NULL) {
