@@ -12,6 +12,7 @@
 
 #include "test/test_core.h"
 
+#include "base/safe_alloc.h"
 #include "platform/time_compat.h"
 #include "services/reducer_ingest_service.h"
 #include "storage/event_log.h"
@@ -580,6 +581,58 @@ done:
     return failures;
 }
 
+/* A transient allocation failure while validating an already-durable payload
+ * is not evidence of corruption. Recovery must fail closed without truncating
+ * bytes so a later restart can retry with memory available. */
+static int run_recovery_oom_preserves_log(int *failures_out)
+{
+    int failures = 0;
+    char dir[256];
+    test_fmt_tmpdir(dir, sizeof(dir), "event_log", "recov_oom");
+    el_mkdir_p(dir);
+    char path[512];
+    snprintf(path, sizeof(path), "%s/events.log", dir);
+
+    event_log_t *log = event_log_open(path);
+    EL_CHECK("recov oom: open fixture", log != NULL);
+    if (!log) goto done;
+
+    uint8_t payload[64];
+    memset(payload, 0xA5, sizeof(payload));
+    EL_CHECK("recov oom: append durable fixture",
+             event_log_append(log, EV_BLOCK_HEADER, payload,
+                              sizeof(payload)) != UINT64_MAX);
+    uint64_t durable_size = event_log_size(log);
+    event_log_close(log);
+
+    zcl_alloc_fault_fail_next("event_log/recover");
+    event_log_t *oom = event_log_open(path);
+    EL_CHECK("recov oom: open refuses transient allocation failure",
+             oom == NULL);
+    if (oom)
+        event_log_close(oom);
+
+    struct stat st = {0};
+    EL_CHECK("recov oom: durable log bytes remain intact",
+             stat(path, &st) == 0 && (uint64_t)st.st_size == durable_size);
+
+    event_log_t *retry = event_log_open(path);
+    EL_CHECK("recov oom: later open retries successfully", retry != NULL);
+    if (retry) {
+        struct stream_ctx sc = {0};
+        sc.ordered = true;
+        EL_CHECK("recov oom: preserved event remains readable",
+                 event_log_stream(retry, 0, stream_cb, &sc) == 0 &&
+                 sc.count == 1);
+        event_log_close(retry);
+    }
+
+done:
+    test_cleanup_tmpdir(dir);
+    *failures_out += failures;
+    return failures;
+}
+
 /* ── Task 6: benchmark ─────────────────────────────────────────────── */
 
 /* Measures append throughput and prints events/sec. The 50K/sec target is
@@ -1101,6 +1154,7 @@ static int test_event_log_platform_arm(void)
     run_deferred_sync(&failures);
     run_append_path_attribution(&failures);
     run_targeted_recovery(&failures);
+    run_recovery_oom_preserves_log(&failures);
     run_crc32c_dispatch(&failures);
 
     printf("event_log: %d failures\n", failures);

@@ -237,7 +237,18 @@ static int64_t recover_truncate_partial(struct platform_private_file *file,
         uint8_t *payload = NULL;
         if (plen > 0) {
             payload = (uint8_t *)zcl_malloc(plen, "event_log/recover");
-            if (!payload) break;
+            if (!payload) {
+                /* Resource exhaustion is not corruption evidence. Returning
+                 * a hard error keeps the durable bytes intact so a later
+                 * restart can retry, instead of truncating a valid suffix to
+                 * last_good_end merely because validation scratch was
+                 * temporarily unavailable. */
+                fprintf(stderr,  // obs-ok:event-log-open-failure
+                        "[event_log] recovery allocation failed for %u "
+                        "bytes at off=%llu; refusing to truncate %s\n",
+                        plen, (unsigned long long)cursor, path);
+                return -1;
+            }
             if (full_pread(file, payload, plen, cursor + EVT_HDR_LEN) < 0) {
                 free(payload);
                 break;
