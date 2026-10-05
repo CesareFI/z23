@@ -195,6 +195,17 @@ static struct zcl_result idx_append_and_fsync(struct block_log_file *h,
     return ZCL_OK;
 }
 
+static struct zcl_result idx_repair_recovered_height(
+        struct block_log_file *h,
+        const struct idx_entry *existing,
+        uint32_t height,
+        const struct block_hash *hash)
+{
+    if (existing->height != UINT32_MAX || height == UINT32_MAX)
+        return ZCL_OK;
+    return idx_append_and_fsync(h, height, hash, existing->offset);
+}
+
 /* ---- port-impl callbacks ---------------------------------------- */
 
 static const struct idx_entry *find_by_hash(const struct block_log_file *h,
@@ -250,7 +261,11 @@ static struct zcl_result blf_append(void *self_v,
                                "blf_append: idempotency violated — same "
                                "hash, different bytes");
         }
-        return ZCL_OK;
+        /* A crash-recovered log record has an unknown-height placeholder in
+         * the index. Identical bytes prove this replay is idempotent, so its
+         * authoritative height can be published as a new append-only index
+         * record without rewriting either durable file in place. */
+        return idx_repair_recovered_height(h, existing, height, hash);
     }
 
     /* Append a fresh record. */
@@ -335,6 +350,7 @@ static uint32_t blf_tip_height(void *self_v)
     uint32_t hi = 0;
     bool any = false;
     for (size_t i = 0; i < h->count; i++) {
+        if (h->entries[i].height == UINT32_MAX) continue;
         if (!any || h->entries[i].height > hi) {
             hi = h->entries[i].height;
             any = true;
@@ -353,6 +369,7 @@ static struct zcl_result blf_iter_from(void *self_v,
         return ZCL_ERR(BLOCK_LOG_ERR_IO, "blf_iter_from: null arg(s)");
     /* Append-order traversal: skip below start_height, deliver the rest. */
     for (size_t i = 0; i < h->count; i++) {
+        if (h->entries[i].height == UINT32_MAX) continue;
         if (h->entries[i].height < start_height) continue;
         const uint8_t *bytes = NULL;
         size_t len = 0;
@@ -401,7 +418,7 @@ static struct zcl_result load_existing_index(struct block_log_file *h)
 /* Scan blocks.log past the highest indexed offset; rebuild missing
  * index entries. Also truncates a torn final log record. Heights for
  * recovered records default to UINT32_MAX since we cannot know them
- * — the next normal append rewrites with the correct height, and
+ * — the next normal append publishes a correct-height index record, and
  * read-by-hash still works either way. (This is the conservative
  * choice; a header parser could extract block height, but that
  * would couple this adapter to primitives/block.h, which we want to
@@ -414,13 +431,17 @@ static struct zcl_result scan_log_tail(struct block_log_file *h)
 
     off_t cursor = 0;
     if (h->count > 0) {
-        const struct idx_entry *last = &h->entries[h->count - 1];
+        const struct idx_entry *tail = &h->entries[0];
+        for (size_t i = 1; i < h->count; i++) {
+            if (h->entries[i].offset > tail->offset)
+                tail = &h->entries[i];
+        }
         uint32_t len;
         struct block_hash hash;
         struct zcl_result r = read_log_record_header(
-                h, (off_t)last->offset, &hash, &len);
+                h, (off_t)tail->offset, &hash, &len);
         if (!r.ok) return r;
-        cursor = (off_t)(last->offset + LOG_HEADER_BYTES + len);
+        cursor = (off_t)(tail->offset + LOG_HEADER_BYTES + len);
     }
 
     while (cursor < log_end) {

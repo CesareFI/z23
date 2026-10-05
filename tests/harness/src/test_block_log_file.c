@@ -78,6 +78,19 @@ static bool iter_collect(uint32_t height,
     return s->count < 16;
 }
 
+static bool opened_tip_is(struct zcl_result opened,
+                          const struct block_log_port *port,
+                          uint32_t expected)
+{
+    return opened.ok && port->tip_height(port->self) == expected;
+}
+
+static bool file_size_is(const char *path, off_t expected)
+{
+    struct stat st;
+    return stat(path, &st) == 0 && st.st_size == expected;
+}
+
 int test_block_log_file(void)
 {
     int failures = 0;
@@ -220,9 +233,13 @@ int test_block_log_file(void)
         ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
 
         struct block_hash ha; fill_hash(&ha, 0x77);
+        struct block_hash hb; fill_hash(&hb, 0x78);
         static const uint8_t payload[] = "crashA-data!";
+        static const uint8_t payload_b[] = "crashA-second";
         ZCL_TEST_SETUP(p.append(p.self, 100, &ha, payload,
                                 sizeof payload - 1));
+        ZCL_TEST_SETUP(p.append(p.self, 101, &hb, payload_b,
+                                sizeof payload_b - 1));
         block_log_file_close(h);
 
         /* Wipe blocks.idx — simulates a power-cut between log fsync
@@ -240,6 +257,31 @@ int test_block_log_file(void)
         BLF_CHECK("crashA: read_by_hash recovers via scan",
                   r.ok && outlen == sizeof payload - 1 &&
                   memcmp(out, payload, sizeof payload - 1) == 0);
+
+        /* Recovery cannot infer a height from opaque block bytes, so it
+         * publishes UINT32_MAX temporarily. The next ordinary replay append
+         * carries the authoritative height and must repair that placeholder,
+         * including on disk for the following restart. */
+        r = p.append(p.self, 100, &ha, payload, sizeof payload - 1);
+        BLF_CHECK("crashA: replay repairs recovered height", r.ok);
+        BLF_CHECK("crashA: repaired tip is 100",
+                  p.tip_height(p.self) == 100);
+
+        block_log_file_close(h);
+        struct stat idx_before_reopen = {0};
+        BLF_CHECK("crashA: stat repaired index",
+                  stat(idxpath, &idx_before_reopen) == 0);
+        h = NULL; memset(&p, 0, sizeof p);
+        r = block_log_file_open(dir, &h, &p);
+        BLF_CHECK("crashA: repaired height survives reopen",
+                  opened_tip_is(r, &p, 100));
+        BLF_CHECK("crashA: reopen does not duplicate recovered tail",
+                  file_size_is(idxpath, idx_before_reopen.st_size));
+
+        r = p.append(p.self, 101, &hb, payload_b, sizeof payload_b - 1);
+        BLF_CHECK("crashA: second replay repairs recovered height", r.ok);
+        BLF_CHECK("crashA: repaired tip advances to 101",
+                  p.tip_height(p.self) == 101);
 
         block_log_file_close(h);
         test_rm_rf(dir);
