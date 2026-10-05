@@ -47,18 +47,16 @@ row there — nothing else hand-derives a path a second time.
   the flattened term the same way a bare word matches free text. Also never
   creates a missing index.
 
-Every leaf accepts two independent overrides, both explicit CLI flags —
-never an environment variable:
+Every leaf accepts two explicit CLI overrides:
 
 - `--index=<path>` — the sqlite file location, used verbatim.
 - `--state-root=<dir>` — the root every declared source is read from
   (applies uniformly, whether a source is normally zclassic23-rooted or
   dev-state-rooted).
 
-Redirecting one never silently redirects the other: an earlier version read
-both from the same `ZCL_INDEX_STATE_DIR` environment variable, so pointing
-the index somewhere else also pointed source discovery there and made the
-real sources disappear. Neither flag is set, the default index path is
+`--index` changes only the database location. Without `--index`,
+`--state-root` also places the database at `<dir>/index/index.db`. With
+neither flag set, the default index path is
 `~/.local/state/zclassic23/index/index.db`. The database holds a `rows`
 table (source_id, seq, ts, kind, three generic field columns, the raw line,
 and `row_key`), a `cursors` table (one row per file: inode/size/byte-offset/
@@ -68,7 +66,8 @@ flattened text.
 ## Identity, not just a cursor
 
 A `rows` row is only ever inserted once for a given (source_id, row_key)
-pair, where `row_key` is a SHA3-256 hash of the row's raw line bytes,
+pair, where `row_key` is a SHA3-256 hash of the source id, a `0x1f`
+separator, and the line text with its trailing LF or CRLF removed,
 enforced by a `UNIQUE` index and `INSERT ... ON CONFLICT DO NOTHING`. The
 byte-offset cursor is only an optimisation for where to resume reading —
 correctness never depends on it alone. This matters because board.sh's
@@ -109,7 +108,7 @@ take minutes instead of seconds.
 - The chainlog / consensus state (node.db, consensus.db) — a different
   question (chain data, not operational logs) with its own tooling
   (`z23 core storage query`, the explorer projections).
-- Other hosts' state roots — `dev index ingest` only ever reads this box's
+- Other hosts' state roots — by default, `dev index ingest` reads this box's
   own `~/.local/state/zclassic23` and dev-state root; a fleet-wide index
   would need the rows replicated here first (the board's own sync path),
   not a new remote-read capability in this leaf.
@@ -118,10 +117,11 @@ take minutes instead of seconds.
 
 - The `logs` source caps a single ingest at 256 matched files (a directory
   walk bound, not a per-file line limit); a state root with more `*.log`
-  files needs a second `--source=logs` pass after the first files' cursors
-  advance, or a narrower source declaration.
+  files needs a narrower source declaration; another `--source=logs` pass
+  selects the same bounded file list when the directory tree is unchanged,
+  even after those cursors advance.
 - A log line's leading token is trusted as a timestamp only when it looks
   like `YYYY-MM-DDTHH:MM:SS`; anything else leaves that row's `ts` column
   empty (still searchable in the raw text, just not orderable by time).
-- `search` scores nothing beyond FTS5's default ranking and returns at most
+- `search` orders by newest timestamp, then newest row id, and returns at most
   50 hits per query.
