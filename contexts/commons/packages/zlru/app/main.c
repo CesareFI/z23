@@ -22,7 +22,19 @@
 #define MAX_INPUT (16u * 1024u * 1024u)
 #define MAX_CAPACITY 16000000u
 
-static char input[MAX_INPUT];
+/* One sentinel byte for a final key without a newline at the input limit. */
+static char input[MAX_INPUT + 1u];
+
+static int read_input(FILE *in, size_t *len) {
+  *len = fread(input, 1, MAX_INPUT, in);
+  int extra = *len == MAX_INPUT ? fgetc(in) : EOF;
+  if (ferror(in) || extra != EOF) {
+    fprintf(stderr, "zlru: read error or input over 16 MiB bound\n");
+    return 2;
+  }
+  input[*len] = '\0';
+  return 0;
+}
 
 int main(int argc, char **argv) {
   if (argc != 2) {
@@ -36,9 +48,8 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  size_t len = fread(input, 1, sizeof(input), stdin);
-  if (ferror(stdin) || !feof(stdin)) {
-    fprintf(stderr, "zlru: read error or input over 16 MiB bound\n");
+  size_t len;
+  if (read_input(stdin, &len) != 0) {
     return 2;
   }
 

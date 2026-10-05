@@ -1,5 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zlru test suite.  Exits nonzero on the first failure. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "zlru/zlru.h"
 
 #include <stdio.h>
@@ -281,6 +284,32 @@ static void test_stress(void) {
   CHECK(final_size <= 97);
 }
 
+static FILE *zlru_fixture_stdin;
+#undef stdin
+#define stdin zlru_fixture_stdin
+#define main zlru_fixture_main
+#include "../app/main.c"
+#undef main
+#undef stdin
+
+static void test_cli_input_limit(void) {
+#if !defined(_WIN32)
+  static char fixture[MAX_INPUT + 1u];
+  for (unsigned final_key = 0; final_key < 2; final_key++) {
+    memset(fixture, '\n', sizeof(fixture));
+    if (final_key) fixture[MAX_INPUT - 1u] = 'x';
+    FILE *in = fmemopen(fixture, MAX_INPUT, "r");
+    CHECK(in != NULL);
+    if (!in) continue;
+    zlru_fixture_stdin = in;
+    char *argv[] = {"zlru", "1", NULL};
+    CHECK(zlru_fixture_main(2, argv) == 0);
+    CHECK(fclose(in) == 0);
+    zlru_fixture_stdin = NULL;
+  }
+#endif
+}
+
 int main(void) {
   test_basic();
   test_eviction_order();
@@ -292,6 +321,7 @@ int main(void) {
   test_alloc_failure();
   test_null_safety();
   test_stress();
+  test_cli_input_limit();
   if (failures) {
     fprintf(stderr, "test_zlru: %d failure(s)\n", failures);
     return 1;
