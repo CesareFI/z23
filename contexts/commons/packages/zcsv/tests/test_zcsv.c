@@ -241,9 +241,31 @@ static void test_writer_row_and_roundtrip(void) {
   }
 }
 
+static FILE *csvtab_fixture_stdin;
+#undef stdin
+#define stdin csvtab_fixture_stdin
 #define main csvtab_fixture_main
 #include "../app/main.c"
 #undef main
+#undef stdin
+
+static void test_cli_args(void) {
+#if !defined(_WIN32)
+  const char *extra[] = {"ignored", "--stats", "--unknown"};
+  for (size_t i = 0; i < sizeof(extra) / sizeof(extra[0]); i++) {
+    char data[] = "a,b\n";
+    FILE *input = fmemopen(data, sizeof(data) - 1, "r");
+    CHECK(input != NULL);
+    if (!input) continue;
+    csvtab_fixture_stdin = input;
+    char *argv[] = {"csvtab", "--stats", (char *)extra[i], NULL};
+    CHECK(csvtab_fixture_main(3, argv) == 2);
+    CHECK(ftell(input) == 0); /* Argument refusal precedes input consumption. */
+    CHECK(fclose(input) == 0);
+    csvtab_fixture_stdin = NULL;
+  }
+#endif
+}
 
 static void test_input_bound(void) {
 #if !defined(_WIN32)
@@ -346,6 +368,7 @@ int main(void) {
   test_table_layout();
   test_output_errors();
   test_input_bound();
+  test_cli_args();
   if (failures) {
     fprintf(stderr, "zcsv: %d failure(s)\n", failures);
     return 1;

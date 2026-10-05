@@ -142,7 +142,7 @@ static void emit_row(void *vctx, const zcsv_field *fields, size_t n) {
 
 int main(int argc, char **argv) {
   bool stats_only = argc > 1 && strcmp(argv[1], "--stats") == 0;
-  if (argc > 1 && !stats_only) {
+  if (argc > 2 || (argc > 1 && !stats_only)) {
     fprintf(stderr, "usage: csvtab [--stats] < data.csv\n");
     return 2;
   }
