@@ -136,6 +136,34 @@ static int fail_rng(void *ctx, uint8_t *buf, size_t n)
     return -1;
 }
 
+struct partial_rng { size_t written; int calls; };
+static int partial_fail_rng(void *ctx, uint8_t *buf, size_t n)
+{
+    struct partial_rng *r = ctx;
+    CHECK(n == ZUUID_BYTES && r->written <= n);
+    r->calls++;
+    memset(buf, 0x5a, r->written);
+    return -1;
+}
+
+static void test_rng_failure_preserves_uuid(void)
+{
+    for (size_t n = 0; n <= ZUUID_BYTES; n++) {
+        struct partial_rng rng = {n, 0};
+        struct { unsigned char before; zuuid value; unsigned char after; } out;
+        memset(&out, 0xa5, sizeof out);
+        zuuid before = out.value;
+        CHECK(zuuid_generate_v4(&out.value, partial_fail_rng, &rng) == ZUUID_ERR_RNG);
+        CHECK(rng.calls == 1);
+        CHECK(zuuid_equal(&out.value, &before));
+        CHECK(out.before == 0xa5 && out.after == 0xa5);
+        struct counter_rng good = {42};
+        CHECK(zuuid_generate_v4(&out.value, counter_fill, &good) == ZUUID_OK);
+        CHECK(zuuid_version(&out.value) == 4 && zuuid_variant(&out.value) == 1);
+        CHECK(out.before == 0xa5 && out.after == 0xa5);
+    }
+}
+
 static void test_generate_v4(void)
 {
     struct counter_rng rng = {42};
@@ -185,6 +213,7 @@ int main(void)
     test_parse_failure_preserves_uuid();
     test_compare();
     test_generate_v4();
+    test_rng_failure_preserves_uuid();
     test_err_str();
     puts("test_zuuid: all groups passed (nil strict lenient compare v4 errstr)");
     return 0;

@@ -149,9 +149,11 @@ zuuid_err zuuid_generate_v4(zuuid *out,
                             void *ctx)
 {
     if (!out || !rng) return ZUUID_ERR_NULL;
-    if (rng(ctx, out->b, ZUUID_BYTES) != 0) return ZUUID_ERR_RNG;
-    out->b[6] = (uint8_t)((out->b[6] & 0x0f) | 0x40); /* version 4 */
-    out->b[8] = (uint8_t)((out->b[8] & 0x3f) | 0x80); /* RFC variant */
+    zuuid generated;
+    if (rng(ctx, generated.b, ZUUID_BYTES) != 0) return ZUUID_ERR_RNG;
+    generated.b[6] = (uint8_t)((generated.b[6] & 0x0f) | 0x40); /* version 4 */
+    generated.b[8] = (uint8_t)((generated.b[8] & 0x3f) | 0x80); /* RFC variant */
+    *out = generated;
     return ZUUID_OK;
 }
 

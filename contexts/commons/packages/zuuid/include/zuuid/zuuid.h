@@ -67,7 +67,7 @@ int zuuid_variant(const zuuid *u);
 
 /* Generate a version-4 (random) UUID. rng must fill buf with n bytes
  * and return 0 on success; ctx is passed through. Sets the version and
- * variant bits per RFC 9562 §5.4. */
+ * variant bits per RFC 9562 §5.4. On failure, out is unchanged. */
 zuuid_err zuuid_generate_v4(zuuid *out,
                             int (*rng)(void *ctx, uint8_t *buf, size_t n),
                             void *ctx);
