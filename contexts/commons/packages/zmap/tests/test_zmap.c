@@ -96,7 +96,7 @@ static uint64_t hash_constant(const char *key, size_t len) {
 static void test_forced_collisions(void) {
   zmap *m = zmap_create_ex(nullptr, hash_constant);
   CHECK(m != nullptr);
-  char key[16];
+  char key[32];
   for (int i = 0; i < 500; i++) {
     snprintf(key, sizeof(key), "k%d", i);
     CHECK(zmap_put(m, key, (void *)(ptrdiff_t)(i + 1), nullptr));
@@ -120,7 +120,7 @@ static void test_forced_collisions(void) {
 
 static void test_iteration_complete(void) {
   zmap *m = zmap_create();
-  char key[16];
+  char key[32];
   for (int i = 0; i < 100; i++) {
     snprintf(key, sizeof(key), "item-%d", i);
     CHECK(zmap_put(m, key, (void *)(ptrdiff_t)(i + 1), nullptr));
@@ -225,7 +225,30 @@ static void test_100k_smoke(void) {
   zmap_destroy(m, nullptr, nullptr);
 }
 
+static void test_clear_erased_slots(void) {
+  zmap *m = zmap_create_ex(NULL, hash_constant);
+  if (!m) abort();
+  size_t initial = zmap_capacity(m);
+  char key[32];
+  for (int i = 0; i < 11; i++) {
+    snprintf(key, sizeof key, "old%d", i);
+    if (!zmap_put(m, key, (void *)1, NULL)) abort();
+  }
+  for (int i = 0; i < 10; i++) {
+    snprintf(key, sizeof key, "old%d", i);
+    (void)zmap_erase(m, key);
+  }
+  zmap_clear(m, NULL, NULL);
+  for (int i = 0; i < 12; i++) {
+    snprintf(key, sizeof key, "new%d", i);
+    if (!zmap_put(m, key, (void *)1, NULL)) abort();
+  }
+  CHECK(zmap_capacity(m) > initial);
+  zmap_destroy(m, NULL, NULL);
+}
+
 int main(void) {
+  test_clear_erased_slots();
   test_insert_lookup_replace();
   test_key_copied();
   test_erase_cycle();

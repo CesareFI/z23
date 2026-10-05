@@ -74,7 +74,7 @@ size_t zmap_size(const zmap *m);
 size_t zmap_capacity(const zmap *m);
 
 /* Remove every entry (invoking dtor per entry when given) but keep the map
- * allocated with its initial capacity. */
+ * allocated with its current capacity. */
 void zmap_clear(zmap *m, zmap_destroy_fn dtor, void *ctx);
 
 /* Destroy the map, releasing all key copies and the map itself. */

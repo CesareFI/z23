@@ -228,6 +228,7 @@ void zmap_clear(zmap *m, zmap_destroy_fn dtor, void *ctx) {
     s->state = SLOT_EMPTY; /* reset fully; capacity is kept */
     s->value = nullptr;
   }
+  memset(m->slots, 0, m->cap * sizeof(*m->slots));
   m->size = 0;
   m->tombstones = 0;
 }
