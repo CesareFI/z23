@@ -119,6 +119,28 @@ static void test_repeated_and_merge(void)
     CHECK(zstats_count(&e) == 1);
 }
 
+static void test_count_overflow(unsigned row) {
+    zstats s, other;
+    zstats_init(&s); zstats_init(&other);
+    zstats_add_repeated(&s, 1.0, row == 1 ? UINT64_MAX - 1 : UINT64_MAX);
+    zstats before = s;
+    if (row == 0) zstats_add(&s, 2.0);
+    else if (row == 1) zstats_add_repeated(&s, 2.0, 2);
+    else { zstats_add(&other, 2.0); zstats_merge(&s, &other); }
+    CHECK(s.n == before.n && s.mean == before.mean && s.m2 == before.m2 &&
+          s.min == before.min && s.max == before.max && s.sum == before.sum);
+}
+static void test_count_overflow_rows(void) {
+    const char *row = getenv("ZQA_ROW");
+    if (row) {
+        unsigned r = (unsigned)strtoul(row, NULL, 10);
+        if (r > 2) exit(2);
+        test_count_overflow(r);
+    } else {
+        for (unsigned r = 0; r < 3; r++) test_count_overflow(r);
+    }
+}
+
 static uint64_t rng_state = 0x0123456789abcdefull;
 static uint64_t rng_next(void)
 {
@@ -182,6 +204,7 @@ int main(void)
     test_empty_and_single();
     test_known_dataset();
     test_repeated_and_merge();
+    test_count_overflow_rows();
     test_fuzz_vs_reference();
     puts("test_zstats: all groups passed (empty known repeated merge fuzz)");
     return 0;

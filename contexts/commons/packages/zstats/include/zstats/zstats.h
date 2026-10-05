@@ -27,13 +27,14 @@ typedef struct {
 
 void zstats_init(zstats *s);
 
-/* Add one sample. */
+/* Add one sample. No-op if the sample count would exceed UINT64_MAX. */
 void zstats_add(zstats *s, double x);
 
-/* Add the same sample k times (k==0 is a no-op). */
+/* Add the same sample k times. No-op for k==0 or count overflow. */
 void zstats_add_repeated(zstats *s, double x, uint64_t k);
 
-/* Merge another accumulator into s (Chan's algorithm). */
+/* Merge another accumulator into s (Chan's algorithm).
+ * No-op if the combined sample count would exceed UINT64_MAX. */
 void zstats_merge(zstats *s, const zstats *other);
 
 uint64_t zstats_count(const zstats *s);

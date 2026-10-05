@@ -25,9 +25,19 @@ void zstats_init(zstats *s)
     s->sum = 0.0L;
 }
 
+static bool count_fits(const zstats *s, uint64_t k)
+{
+    return s && k <= UINT64_MAX - s->n;
+}
+
+static bool merge_count_fits(const zstats *s, const zstats *other)
+{
+    return (other->n != 0) & (other->n <= UINT64_MAX - s->n);
+}
+
 void zstats_add(zstats *s, double x)
 {
-    if (!s) return;
+    if (!count_fits(s, 1)) return;
     s->n++;
     if (s->n == 1) {
         s->mean = x;
@@ -47,7 +57,7 @@ void zstats_add(zstats *s, double x)
 
 void zstats_add_repeated(zstats *s, double x, uint64_t k)
 {
-    if (!s || k == 0) return;
+    if ((!count_fits(s, k)) | (k == 0)) return;
     if (k == 1 || s->n == 0) {
         /* Fast path for the first k identical samples. */
         if (s->n == 0) {
@@ -76,7 +86,7 @@ void zstats_add_repeated(zstats *s, double x, uint64_t k)
 
 void zstats_merge(zstats *s, const zstats *other)
 {
-    if (!s || !other || other->n == 0) return;
+    if (!s || !other || !merge_count_fits(s, other)) return;
     if (s->n == 0) {
         *s = *other;
         return;
