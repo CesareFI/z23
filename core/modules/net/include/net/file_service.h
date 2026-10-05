@@ -230,6 +230,12 @@ void fs_ip_serve_release(const uint8_t ip[16]);
  * exceeds FS_IP_MAX_BYTES_PER_HOUR (caller should stop serving). */
 bool fs_ip_bytes_charge(const uint8_t ip[16], uint64_t n);
 
+#ifdef ZCL_TESTING
+/* Observe the private process-local rate window without exposing it in
+ * production builds. Returns INT64_MIN when the IP has no slot. */
+int64_t fs_ip_hour_start_for_test(const uint8_t ip[16]);
+#endif
+
 /* Per-connection budget predicate: false once the connection exceeds its
  * byte or monotonic-time ceiling. Times are absolute monotonic milliseconds. */
 bool fs_conn_budget_ok(uint64_t bytes_sent, int64_t start_monotonic_ms,

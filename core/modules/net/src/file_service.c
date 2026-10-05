@@ -280,9 +280,9 @@ struct fs_ip_stat {
     uint8_t  ip[16];
     bool     used;
     uint32_t concurrent;        /* active large serves for this IP */
-    int64_t  hour_start;        /* rolling hour-budget window start */
+    int64_t  hour_start;        /* process-monotonic rate-window start */
     uint64_t bytes_this_hour;   /* bytes charged in the current window */
-    int64_t  last_seen;         /* for LRU eviction when the table is full */
+    int64_t  last_seen;         /* process-monotonic LRU timestamp */
 };
 static struct fs_ip_stat g_fs_ip[FS_IP_TABLE_CAP];
 static pthread_mutex_t g_fs_ip_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -332,7 +332,7 @@ static struct fs_ip_stat *fs_ip_slot_locked(const uint8_t ip[16], int64_t now)
 bool fs_ip_serve_acquire(const uint8_t ip[16])
 {
     if (!ip) return false;
-    int64_t now = (int64_t)platform_time_wall_time_t();
+    int64_t now = platform_time_monotonic_us() / INT64_C(1000000);
     bool ok = false;
     pthread_mutex_lock(&g_fs_ip_mutex);
     struct fs_ip_stat *s = fs_ip_slot_locked(ip, now);
@@ -371,7 +371,7 @@ void fs_ip_serve_release(const uint8_t ip[16])
 bool fs_ip_bytes_charge(const uint8_t ip[16], uint64_t n)
 {
     if (!ip) return false;
-    int64_t now = (int64_t)platform_time_wall_time_t();
+    int64_t now = platform_time_monotonic_us() / INT64_C(1000000);
     bool ok = false;
     pthread_mutex_lock(&g_fs_ip_mutex);
     struct fs_ip_stat *s = fs_ip_slot_locked(ip, now);
@@ -383,7 +383,7 @@ bool fs_ip_bytes_charge(const uint8_t ip[16], uint64_t n)
             s->bytes_this_hour = 0;
             s->concurrent = 0;
         }
-        if (now - s->hour_start > 3600) {
+        if (now > s->hour_start && now - s->hour_start > 3600) {
             s->hour_start = now;
             s->bytes_this_hour = 0;
         }
@@ -398,6 +398,24 @@ bool fs_ip_bytes_charge(const uint8_t ip[16], uint64_t n)
     pthread_mutex_unlock(&g_fs_ip_mutex);
     return ok;
 }
+
+#ifdef ZCL_TESTING
+int64_t fs_ip_hour_start_for_test(const uint8_t ip[16])
+{
+    int64_t start = INT64_MIN;
+    if (!ip)
+        return start;
+    pthread_mutex_lock(&g_fs_ip_mutex);
+    for (size_t i = 0; i < FS_IP_TABLE_CAP; i++) {
+        if (g_fs_ip[i].used && memcmp(g_fs_ip[i].ip, ip, 16) == 0) {
+            start = g_fs_ip[i].hour_start;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_fs_ip_mutex);
+    return start;
+}
+#endif
 
 bool fs_conn_budget_ok(uint64_t bytes_sent, int64_t start_monotonic_ms,
                        int64_t now_monotonic_ms)

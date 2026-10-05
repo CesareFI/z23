@@ -221,6 +221,15 @@ static int test_per_ip_hour_byte_cap(void)
         memset(ip2, 0, 16);
         ip2[15] = 10;
         ASSERT(fs_ip_bytes_charge(ip2, 1));
+
+        /* The window is process-local rate-limit state. Wall-clock steps must
+         * neither refresh its budget early nor strand an exhausted peer. */
+        fs_pow_reset_state();
+        int64_t before = platform_time_monotonic_us() / INT64_C(1000000);
+        ASSERT(fs_ip_bytes_charge(ip, 1));
+        int64_t after = platform_time_monotonic_us() / INT64_C(1000000);
+        int64_t start = fs_ip_hour_start_for_test(ip);
+        ASSERT(start >= before && start <= after);
         PASS();
     } _test_next:;
     return failures;
