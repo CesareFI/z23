@@ -50,9 +50,9 @@ size_t zpath_join(char *dst, size_t cap, const char *a, const char *b) {
   if (zpath_isabs(b) || na == 0) return zpath__emit(dst, cap, b, nb);
   /* a + optional '/' + b */
   need = na + (a[na - 1] != '/' ? 1u : 0u) + nb;
-  if (need > ZPATH_MAX * 2u) return SIZE_MAX;
+  if (need > ZPATH_MAX * 2u + 1u) return SIZE_MAX;
   {
-    char tmp[ZPATH_MAX * 2u + 1u];
+    char tmp[ZPATH_MAX * 2u + 2u];
     memcpy(tmp, a, na);
     pos = na;
     if (a[na - 1] != '/') tmp[pos++] = '/';

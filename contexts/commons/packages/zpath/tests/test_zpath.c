@@ -251,7 +251,22 @@ static void test_fuzz(void) {
   }
 }
 
+static void test_join_maximum(void) {
+  static char a[ZPATH_MAX + 1], b[ZPATH_MAX + 1];
+  static char out[ZPATH_MAX * 2u + 2u];
+  char small[2] = {'x', 'x'};
+  memset(a, 'a', ZPATH_MAX);
+  memset(b, 'b', ZPATH_MAX);
+  CHECK(zpath_join(out, sizeof(out), a, b) == ZPATH_MAX * 2u + 1u &&
+        memcmp(out, a, ZPATH_MAX) == 0 && out[ZPATH_MAX] == '/' &&
+        memcmp(out + ZPATH_MAX + 1u, b, ZPATH_MAX + 1u) == 0);
+  CHECK(zpath_join(NULL, 0, a, b) == ZPATH_MAX * 2u + 1u);
+  CHECK(zpath_join(small, sizeof(small), a, b) == ZPATH_MAX * 2u + 1u &&
+        small[0] == 'a' && small[1] == 0);
+}
+
 int main(void) {
+  test_join_maximum();
   test_norm();
   test_join();
   test_dirbase();
