@@ -693,7 +693,9 @@ struct dl_row {
     char pushed[80];
     char dimension[48];
     char log_path[4096];
-    char detail[256];
+    /* Keep the complete bounded worktree-dependency refusal, including its
+     * repair command, rather than truncating the upstream 1024-byte text. */
+    char detail[1024];
     /* A possible send without durable diagnostics forbids another send.
      * Remote observation remains authoritative, including after a crash. */
     bool push_diagnostic_pending;
@@ -1000,16 +1002,16 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
     char e_phase[64], e_base[160], e_local[160], e_tree[160];
     char e_intent[352], e_pushed[160];
     struct dl_publication_escapes p;
-    /* r->detail is char[256]; dl_escape() can expand a raw control byte
+    /* r->detail is char[1024]; dl_escape() can expand a raw control byte
      * (anything but \n/\r/\t) into a 6-byte "\u00XX" sequence, so an
-     * ALL-control-byte detail needs up to 255*6=1530 bytes to escape
+     * ALL-control-byte detail needs up to 1023*6=6138 bytes to escape
      * cleanly. dl_first_actionable() already sanitises what it copies into
      * detail, but detail has other writers too (the proof stub's raw
      * value among them in tests) — sized here for the true worst case of
      * its source field rather than for the sanitised common case, so a
      * source this leaf does not control can never make dl_escape refuse
      * and the whole row un-persistable. */
-    char e_dim[128], e_log[8192], e_detail[256 * 6 + 16];
+    char e_dim[128], e_log[8192], e_detail[1024 * 6 + 16];
     int w;
     if (!r || !out || cap == 0)
         return false;
