@@ -49,6 +49,20 @@ static struct p2p_node make_stall_node(int starting_height, bool inbound,
     return n;
 }
 
+static int test_fallback_after_clock_rollback(void)
+{
+    struct p2p_node n = make_stall_node(10000, false, 0);
+    n.last_getheaders_time = 100;
+
+    printf("header_sync_stall: fallback recovers after clock rollback... ");
+    if (syncsvc_should_request_headers_with_fallback(&n, 100, 50, true)) {
+        printf("OK\n");
+        return 0;
+    }
+    printf("FAIL\n");
+    return 1;
+}
+
 int test_header_sync_stall(void)
 {
     int failures = 0;
@@ -291,6 +305,9 @@ int test_header_sync_stall(void)
             &n, 100, 15, false);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
+
+    /* ── 17. A wall-clock rollback starts a new request epoch ───── */
+    failures += test_fallback_after_clock_rollback();
 
     return failures;
 }

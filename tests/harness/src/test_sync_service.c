@@ -314,6 +314,11 @@ static int test_sync_service_periodic_getheaders_action(void)
         ASSERT(action.should_send);
         ASSERT(action.anchor == SYNC_HEADER_REQUEST_TIP);
         ASSERT(action.should_log);
+
+        syncsvc_note_headers_requested(&node, 300);
+        syncsvc_plan_periodic_getheaders(&action, &node, 500, 200);
+        ASSERT(action.should_send);
+        ASSERT(action.anchor == SYNC_HEADER_REQUEST_TIP);
         PASS();
     } _test_next:;
 

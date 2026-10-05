@@ -31,6 +31,16 @@ static _Atomic int64_t g_stale_window_min = 0;
 static _Atomic int64_t g_stale_window_max = 0;
 #define STALE_SUMMARY_WINDOW_SECS ((int64_t)60)
 
+static bool getheaders_interval_elapsed(int64_t now_seconds,
+                                        int64_t last_seconds,
+                                        int64_t interval_seconds)
+{
+    /* A future cursor means wall time moved backward. Start a new request
+     * epoch, comparing before subtraction so extreme skew cannot overflow. */
+    return now_seconds < last_seconds ||
+           now_seconds - last_seconds > interval_seconds;
+}
+
 static void syncsvc_build_locator_from_tip(struct block_locator *loc,
                                            const struct block_index *tip,
                                            const char *alloc_label,
@@ -331,8 +341,11 @@ bool syncsvc_should_request_headers(const struct p2p_node *node,
         return false;
 
     int64_t interval = syncsvc_getheaders_interval(node, our_height);
-    return (now_seconds - atomic_load_explicit(&node->last_getheaders_time,
-                                                memory_order_relaxed)) > interval;
+    return getheaders_interval_elapsed(
+        now_seconds,
+        atomic_load_explicit(&node->last_getheaders_time,
+                             memory_order_relaxed),
+        interval);
 }
 
 void syncsvc_plan_periodic_getheaders(struct sync_getheaders_action *action,
@@ -793,6 +806,9 @@ bool syncsvc_should_request_headers_with_fallback(const struct p2p_node *node,
         interval = 10;
     else
         interval = 30; /* tighter during stall */
-    return (now_seconds - atomic_load_explicit(&node->last_getheaders_time,
-                                                memory_order_relaxed)) > interval;
+    return getheaders_interval_elapsed(
+        now_seconds,
+        atomic_load_explicit(&node->last_getheaders_time,
+                             memory_order_relaxed),
+        interval);
 }
