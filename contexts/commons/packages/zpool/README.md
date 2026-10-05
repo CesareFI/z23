@@ -11,7 +11,8 @@ NULL, never a surprise.
 - Validated frees: out-of-arena, misaligned, and double-free are
   rejected with `false` instead of corrupting the free list. Detection
   is exact — free state lives only in free blocks, and `zpool_free`
-  walks the list (O(free blocks)); no metadata is stored inside live
+  scans block starts using pointer equality, then walks the free list
+  (O(block_count + free_count)); no metadata is stored inside live
   blocks, so callers may scribble over the whole block they own.
 - The `zpool` struct is caller-owned plain data; copy it, embed it,
   put it in static storage.

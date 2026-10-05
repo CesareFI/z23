@@ -172,7 +172,62 @@ static void test_foreign_pointer_ownership(void) {
   CHECK(zpool_available(&p) == 16);
 }
 
+/* Refusal includes both the result and the header's no-state-change promise.
+ * Stop before free on a bad owns result so validator mutations cannot write
+ * through foreign, one-past, or NULL pointers. */
+static void check_refusal(zpool *pool, void *ptr, const char *row) {
+  unsigned char before[sizeof(arena)];
+  memcpy(before, arena, sizeof(before));
+  zpool saved = *pool;
+  if (zpool_owns(pool, ptr)) {
+    fprintf(stderr, "FAIL contract row %s: owns accepted\n", row);
+    failures++;
+    return;
+  }
+  bool refused = !zpool_free(pool, ptr);
+  bool unchanged = pool->arena == saved.arena &&
+                   pool->block_size == saved.block_size &&
+                   pool->block_count == saved.block_count &&
+                   pool->free_count == saved.free_count &&
+                   pool->free_head == saved.free_head &&
+                   memcmp(before, arena, sizeof(before)) == 0;
+  if (!refused || !unchanged) {
+    fprintf(stderr, "FAIL contract row %s: free refusal/state\n", row);
+    failures++;
+  }
+}
+
+static void test_contract_rows(void) {
+  zpool p;
+  CHECK(zpool_init(&p, arena, sizeof(arena), 64));
+  check_refusal(&p, arena, "never allocated");
+  void *blocks[16];
+  for (size_t i = 0; i < 16; i++) {
+    blocks[i] = zpool_alloc(&p);
+    if (blocks[i] != arena + i * p.block_size ||
+        !zpool_owns(&p, blocks[i])) {
+      fprintf(stderr, "FAIL contract row live starts: block %zu\n", i);
+      failures++;
+    }
+  }
+  CHECK(32 % _Alignof(max_align_t) == 0);
+  check_refusal(&p, arena + 32, "aligned interior");
+  check_refusal(&p, arena + 1, "misaligned interior");
+  check_refusal(&p, arena + sizeof(arena), "one past");
+  unsigned char foreign[64] = {0};
+  unsigned char saved_foreign[sizeof(foreign)] = {0};
+  check_refusal(&p, foreign, "foreign");
+  CHECK(memcmp(foreign, saved_foreign, sizeof(foreign)) == 0);
+  check_refusal(&p, NULL, "null");
+  for (size_t i = 0; i < 16; i++) {
+    CHECK(zpool_free(&p, blocks[i]));
+    CHECK(zpool_available(&p) == i + 1);
+    check_refusal(&p, blocks[i], "freed");
+  }
+}
+
 int main(void) {
+  test_contract_rows();
   test_foreign_pointer_ownership();
   test_init_validation();
   test_alloc_exhaustion();

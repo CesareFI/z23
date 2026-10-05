@@ -61,16 +61,16 @@ void *zpool_alloc(zpool *pool) {
 
 static bool block_index_of(const zpool *pool, const void *ptr,
                            size_t *index_out) {
-  uintptr_t address = (uintptr_t)ptr;
-  uintptr_t base = (uintptr_t)pool->arena;
-  if (address < base ||
-      address - base >= pool->block_count * pool->block_size)
-    return false;
-  size_t off = (size_t)(address - base);
-  if (off % pool->block_size)
-    return false;
-  *index_out = off / pool->block_size;
-  return true;
+  /* Equality is defined for unrelated objects. Generate block addresses
+   * only within the initialized arena; integer pointer encodings need
+   * not preserve byte offsets. Init bounds each product by arena_len. */
+  for (size_t i = 0; i < pool->block_count; i++) {
+    if (ptr == pool->arena + i * pool->block_size) {
+      *index_out = i;
+      return true;
+    }
+  }
+  return false;
 }
 
 /* True when ptr is on the free list. O(free blocks). */

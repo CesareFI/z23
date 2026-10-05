@@ -10,8 +10,9 @@
  *    alignof(max_align_t) so every block is fully aligned.
  *  - Frees are validated exactly: a pointer outside the arena,
  *    misaligned, or already free is rejected with false instead of
- *    corrupting the list (double-free detection walks the free list,
- *    O(free blocks)). No metadata lives inside live blocks.
+ *    corrupting the list. Pointer validation scans block starts in
+ *    O(block_count); double-free detection walks O(free_count) links.
+ *    No metadata lives inside live blocks.
  *  - No global state; the zpool struct is caller-owned and may live
  *    anywhere (including inside the arena is NOT allowed — keep it
  *    separate).
@@ -42,13 +43,15 @@ bool zpool_init(zpool *pool, void *arena, size_t arena_len,
 void *zpool_alloc(zpool *pool);
 
 /* Return a block. False (and no state change) when ptr is NULL,
- * outside the arena, not block-aligned, or already free. */
+ * outside the arena, not block-aligned, or already free.
+ * Time: O(block_count + free_count), with no allocation. */
 bool zpool_free(zpool *pool, void *ptr);
 
 /* Blocks currently available. */
 size_t zpool_available(const zpool *pool);
 
-/* True when ptr names a live (allocated, aligned, in-arena) block. */
+/* True when ptr names a live (allocated, aligned, in-arena) block.
+ * Time: O(block_count + free_count), with no allocation. */
 bool zpool_owns(const zpool *pool, const void *ptr);
 
 #endif /* ZPOOL_H */
