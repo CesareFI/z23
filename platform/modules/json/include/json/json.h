@@ -39,6 +39,14 @@ struct json_value {
 void json_init(struct json_value *v);
 void json_free(struct json_value *v);
 
+#ifdef ZCL_TESTING
+/* Counts module-created blocks released through the JSON lifecycle. Test
+ * fixtures must use module constructors and isolate snapshot comparisons.
+ * No instrumentation or observation API exists in production builds. */
+size_t json_test_live_blocks(void);
+#endif
+
+
 void json_set_null(struct json_value *v);
 void json_set_bool(struct json_value *v, bool b);
 void json_set_int(struct json_value *v, int64_t i);

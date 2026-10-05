@@ -10,6 +10,56 @@
 #include "base/safe_alloc.h"
 #include "base/hex.h"
 
+#ifdef ZCL_TESTING
+#include <stdatomic.h>
+/* Test-only accounting for module-owned heap blocks. Atomic accounting also
+ * supports ownership transfer between threads. Snapshot assertions require
+ * an isolated fixture with no unrelated JSON allocation in flight. */
+static atomic_size_t json_test_blocks;
+
+size_t json_test_live_blocks(void)
+{
+    return atomic_load_explicit(&json_test_blocks, memory_order_relaxed);
+}
+
+static void *json_heap_alloc(size_t n, const char *label)
+{
+    void *p = zcl_malloc(n, label);
+    if (!p) return NULL; /* checked allocator logged allocation failure */
+    atomic_fetch_add_explicit(&json_test_blocks, 1, memory_order_relaxed);
+    return p;
+}
+
+static void *json_heap_resize(void *p, size_t n, const char *label)
+{
+    bool fresh = p == NULL; /* capture before realloc invalidates old pointer */
+    void *q = zcl_realloc(p, n, label); /* module resize sizes are positive */
+    if (!q) return NULL; /* checked allocator logged allocation failure */
+    if (fresh) atomic_fetch_add_explicit(&json_test_blocks, 1, memory_order_relaxed);
+    return q;
+}
+
+static char *json_heap_strdup(const char *s, const char *label)
+{
+    char *p = zcl_strdup(s, label);
+    if (!p) return NULL; /* NULL input is an absent object key, not a block */
+    atomic_fetch_add_explicit(&json_test_blocks, 1, memory_order_relaxed);
+    return p;
+}
+
+static void json_heap_release(void *p)
+{
+    if (!p) return;
+    atomic_fetch_sub_explicit(&json_test_blocks, 1, memory_order_relaxed);
+    free(p);
+}
+#else
+#define json_heap_alloc zcl_malloc
+#define json_heap_resize zcl_realloc
+#define json_heap_strdup zcl_strdup
+#define json_heap_release free
+#endif
+
 void json_init(struct json_value *v)
 {
     memset(v, 0, sizeof(*v));
@@ -20,10 +70,10 @@ static void json_clear_children(struct json_value *v)
 {
     for (size_t i = 0; i < v->num_children; i++) {
         json_free(&v->children[i]);
-        free(v->keys[i]);
+        json_heap_release(v->keys[i]);
     }
-    free(v->children);
-    free(v->keys);
+    json_heap_release(v->children);
+    json_heap_release(v->keys);
     v->children = NULL;
     v->keys = NULL;
     v->num_children = 0;
@@ -33,7 +83,7 @@ static void json_clear_children(struct json_value *v)
 void json_free(struct json_value *v)
 {
     if (v->type == JSON_STR)
-        free(v->val.s);
+        json_heap_release(v->val.s);
     json_clear_children(v);
 }
 
@@ -67,7 +117,7 @@ void json_set_real(struct json_value *v, double d)
 void json_set_str(struct json_value *v, const char *s)
 {
     json_free(v);
-    v->val.s = zcl_strdup(s, "json_set_str");
+    v->val.s = json_heap_strdup(s, "json_set_str");
     /* Under OOM we silently degrade to JSON_NULL rather than leaving a
      * JSON_STR with NULL val.s — every downstream consumer dereferences
      * val.s expecting a real string. Loud failure was logged inside
@@ -91,11 +141,11 @@ static bool json_grow(struct json_value *v)
 {
     if (v->num_children >= v->children_cap) {
         size_t newcap = v->children_cap == 0 ? 8 : v->children_cap * 2;
-        struct json_value *nc = zcl_realloc(v->children,
+        struct json_value *nc = json_heap_resize(v->children,
                                         newcap * sizeof(*nc), "json_children");
         if (!nc) return false;
         v->children = nc;
-        char **nk = zcl_realloc(v->keys, newcap * sizeof(*nk), "json_keys");
+        char **nk = json_heap_resize(v->keys, newcap * sizeof(*nk), "json_keys");
         if (!nk) return false;
         v->keys = nk;
         v->children_cap = newcap;
@@ -112,7 +162,7 @@ void json_copy(struct json_value *dst, const struct json_value *src)
     case JSON_INT:  dst->val.i = src->val.i; break;
     case JSON_REAL: dst->val.d = src->val.d; break;
     case JSON_STR:
-        dst->val.s = zcl_strdup(src->val.s, "json_copy_str");
+        dst->val.s = json_heap_strdup(src->val.s, "json_copy_str");
         /* Degrade to JSON_NULL on OOM rather than leaving a JSON_STR
          * with NULL val.s — see json_set_str for rationale. */
         if (!dst->val.s) dst->type = JSON_NULL;
@@ -121,14 +171,14 @@ void json_copy(struct json_value *dst, const struct json_value *src)
     }
     if (src->num_children > 0) {
         dst->children_cap = src->num_children;
-        dst->children = zcl_malloc(dst->children_cap * sizeof(*dst->children), "json_copy_children");
+        dst->children = json_heap_alloc(dst->children_cap * sizeof(*dst->children), "json_copy_children");
         if (!dst->children) {
             dst->children_cap = 0;
             return;
         }
-        dst->keys = zcl_malloc(dst->children_cap * sizeof(*dst->keys), "json_copy_keys");
+        dst->keys = json_heap_alloc(dst->children_cap * sizeof(*dst->keys), "json_copy_keys");
         if (!dst->keys) {
-            free(dst->children);
+            json_heap_release(dst->children);
             dst->children = NULL;
             dst->children_cap = 0;
             return;
@@ -136,7 +186,7 @@ void json_copy(struct json_value *dst, const struct json_value *src)
         dst->num_children = src->num_children;
         for (size_t i = 0; i < src->num_children; i++) {
             json_copy(&dst->children[i], &src->children[i]);
-            dst->keys[i] = zcl_strdup(src->keys[i], "json_copy_key");
+            dst->keys[i] = json_heap_strdup(src->keys[i], "json_copy_key");
         }
     }
 }
@@ -159,7 +209,7 @@ bool json_push_kv(struct json_value *obj, const char *key,
     /* Allocate the key first so an OOM here doesn't leave a copied
      * child stranded with a NULL key — json_get does
      * strcmp(obj->keys[i], key) and a NULL slot would crash. */
-    char *kdup = zcl_strdup(key, "json_push_kv_key");
+    char *kdup = json_heap_strdup(key, "json_push_kv_key");
     if (!kdup) return false;
     json_copy(&obj->children[obj->num_children], child);
     obj->keys[obj->num_children] = kdup;
@@ -397,7 +447,7 @@ static bool str_put(char **s, size_t *cap, size_t *len, char c)
     if (!*s)
         return true;
     if (*len >= *cap - 1) {
-        char *ns = zcl_realloc(*s, *cap * 2, "json_string");
+        char *ns = json_heap_resize(*s, *cap * 2, "json_string");
         if (!ns) return false;
         *s = ns;
         *cap *= 2;
@@ -487,17 +537,17 @@ static bool parse_string(char **out, const char **pp, const char *end)
     size_t cap = 64, len = 0;
     char *s = NULL;
     if (out) {
-        s = zcl_malloc(cap, "json_string");
+        s = json_heap_alloc(cap, "json_string");
         if (!s) return false;
     }
     while (p < end && *p != '"') {
         unsigned char c = (unsigned char)*p++;
-        if (c < 0x20) { free(s); return false; }
+        if (c < 0x20) { json_heap_release(s); return false; }
         bool ok = c == '\\' ? str_escape(&s, &cap, &len, &p, end)
                              : str_put(&s, &cap, &len, (char)c);
-        if (!ok) { free(s); return false; }
+        if (!ok) { json_heap_release(s); return false; }
     }
-    if (p >= end) { free(s); return false; }
+    if (p >= end) { json_heap_release(s); return false; }
     p++;
     if (out) {
         s[len] = '\0';
@@ -575,7 +625,7 @@ static bool parse_number(struct json_value *v, const char **pp, const char *end)
 static bool json_append(struct json_value *v, char *key,
                         struct json_value *child)
 {
-    if (!json_grow(v)) { free(key); json_free(child); return false; }
+    if (!json_grow(v)) { json_heap_release(key); json_free(child); return false; }
     v->keys[v->num_children] = key;
     v->children[v->num_children] = *child;
     v->num_children++;
@@ -590,7 +640,7 @@ static bool parse_member_key(char **key, const char **pp, const char *end)
     if (!parse_string(key, &p, end)) return false;
     p = skip_ws(p, end);
     if (p >= end || *p != ':') {
-        if (key) { free(*key); *key = NULL; }
+        if (key) { json_heap_release(*key); *key = NULL; }
         return false;
     }
     *pp = p + 1;
@@ -609,7 +659,7 @@ static bool parse_object_r(struct json_value *v, const char **pp,
         if (!parse_member_key(v ? &key : NULL, &p, end)) return false;
         struct json_value child = {0};
         if (!parse_value_r(v ? &child : NULL, &p, end, depth + 1)) {
-            free(key); json_free(&child); return false;
+            json_heap_release(key); json_free(&child); return false;
         }
         if (v && !json_append(v, key, &child)) return false;
         p = skip_ws(p, end);

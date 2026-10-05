@@ -867,7 +867,7 @@ ADAPTERS_SRCS = $(call zcl_filter_ephemeral_sources,\
 
 # tools/ header root (the "command/" prefix for the native command adapter,
 # plus any other tools headers).
-TOOLS_INCLUDES = -Itools
+TOOLS_INCLUDES = -Itools -Icontexts/commons/packages/zutf8/include
 # The per-node mind (tools/mind): the resident that owns index rebuilds and
 # the state every reader of it shares. Its own header root so nothing has to
 # reach it through a relative path.
@@ -1006,6 +1006,7 @@ DEVLOOP_SRCS = $(filter-out $(DEV_ONLY_SRCS),$(DEVLOOP_ALL_SRCS))
 # rather than the dev-only lane. Header path -Itools is provided by TOOLS_INCLUDES.
 COMMAND_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/command/*.c))
+COMMAND_SRCS += contexts/commons/packages/zutf8/src/zutf8.c
 # Declarative command rows are C include inputs, but the whole-program release
 # rules below do not emit depfiles.  Keep them as explicit prerequisites so a
 # command-contract-only edit cannot leave build/bin/zclassic23 stale.

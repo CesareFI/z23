@@ -4,6 +4,34 @@
 #include "json/json.h"
 
 #include <string.h>
+int cgo_decoder_tests(void);
+int cgo_passive_tests(void);
+
+static int json_heap_accounting_cases(void)
+{
+    int failures = 0;
+    struct json_value value, copy;
+    size_t before = json_test_live_blocks();
+    TEST("json heap accounting: owned strings, copied trees and existing resize blocks balance") {
+        const char *object = "{\"k\":\"v\"}";
+        ASSERT(json_read(&value, object, strlen(object)));
+        ASSERT_EQ(json_test_live_blocks(), before + 4);
+        json_copy(&copy, &value);
+        ASSERT_EQ(json_test_live_blocks(), before + 8);
+        json_free(&copy); json_free(&value);
+        ASSERT_EQ(json_test_live_blocks(), before);
+        const char *array = "[0,1,2,3,4,5,6,7,8]";
+        ASSERT(json_read(&value, array, strlen(array)));
+        ASSERT_EQ(json_test_live_blocks(), before + 2);
+        json_free(&value);
+        ASSERT_EQ(json_test_live_blocks(), before);
+        json_init(&value); json_free(&value);
+        ASSERT_EQ(json_test_live_blocks(), before);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
 
 static bool json_valid_matches_read(void)
 {
@@ -220,7 +248,7 @@ static int json_number_cases(void)
 
 int test_json(void)
 {
-    int failures = json_unicode_cases() + json_number_cases();
+    int failures = json_unicode_cases() + json_number_cases() + json_heap_accounting_cases() + cgo_decoder_tests() + cgo_passive_tests();
 
     printf("json parse integer... ");
     {
