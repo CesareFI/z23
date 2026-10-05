@@ -438,8 +438,8 @@ int test_body_persist_stage(void)
                  body_persist_stage_read_failed_total() == 1);
         /* SILENT-HOLD GUARD. The requeue fires once and the HAVE_DATA gate then
          * idles without re-reading, so a repeat COUNT never grows; the hold
-         * must be a named blocker in `dumpstate blocker`. Drive the hold clock
-         * to 0 so the naming asserts without a sleep. */
+         * must be a named blocker in `dumpstate blocker`. Drive the monotonic
+         * hold threshold to 0 so the naming asserts without a sleep. */
         BP_CHECK("read_failed: hold not yet named (inside the 60s window)",
                  !blocker_exists("body_persist.body_unfetchable"));
         body_persist_stage_set_unfetchable_hold_secs_for_testing(0);
