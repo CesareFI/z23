@@ -90,6 +90,29 @@ static int skycombat_pickup_active(const powerup_manager_t *m, int point)
     return count;
 }
 
+static int skycombat_pickup_time_tests(bool update)
+{
+    int failures = 0;
+    const float invalid[] = {NAN, INFINITY, -INFINITY, -1.0f};
+    powerup_manager_t m = {0}, before;
+    m.spawn_check_interval = 5.0f;
+    powerup_manager_add_spawn_point(&m, (Vector3){10, 20, 30}, POWERUP_HEALTH, 20.0f);
+    powerup_manager_spawn_at_point(&m, 0);
+    powerup_manager_collect(&m, 0);
+    memcpy(&before, &m, sizeof(before));
+    TEST(update ? "pickups: invalid timestep preserves pending reservation and all state"
+                : "pickups: invalid cooldown refuses append and preserves all state") {
+        for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+            if (update) powerup_manager_update(&m, invalid[i]);
+            else powerup_manager_add_spawn_point(&m, (Vector3){100, 20, 30}, POWERUP_SHIELD, invalid[i]);
+            ASSERT(memcmp(&before, &m, sizeof(m)) == 0);
+        }
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
 static int skycombat_pickup_tests(void)
 {
     int failures = 0;
@@ -549,6 +572,8 @@ int test_skycombat_models(void)
 _test_next:;
     failures += skycombat_match_lifecycle_tests();
     failures += skycombat_match_bounds_tests();
+    failures += skycombat_pickup_time_tests(false);
+    failures += skycombat_pickup_time_tests(true);
     failures += skycombat_pickup_tests();
     failures += skycombat_wrap_tests();
     failures += skycombat_document_tests();

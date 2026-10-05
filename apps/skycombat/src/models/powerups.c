@@ -29,8 +29,15 @@ void powerup_manager_destroy(powerup_manager_t* manager) {
     free(manager);
 }
 
+/* Reject invalid time inputs before changing counts, slots or clocks. */
+static bool powerup_time_valid(float value, const char *operation) {
+    if (isfinite(value) && value >= 0.0f) return true;
+    fprintf(stderr, "powerup %s: invalid time input\n", operation);
+    return false;
+}
+
 void powerup_manager_add_spawn_point(powerup_manager_t* manager, Vector3 position, powerup_type_t type, float respawn_time) {
-    if (!manager || manager->spawn_point_count >= 16) return;
+    if (!manager || !powerup_time_valid(respawn_time, "spawn point") || manager->spawn_point_count >= 16) return;
     
     powerup_spawn_point_t* sp = &manager->spawn_points[manager->spawn_point_count];
     sp->position = position;
@@ -73,7 +80,7 @@ static bool powerup_spawn_point_occupied(const powerup_manager_t* manager, int p
 }
 
 void powerup_manager_update(powerup_manager_t* manager, float dt) {
-    if (!manager) return;
+    if (!manager || !powerup_time_valid(dt, "update")) return;
     
     // Update active powerups
     for (int i = 0; i < manager->powerup_count; i++) {
