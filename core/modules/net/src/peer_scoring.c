@@ -13,7 +13,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define PEER_SCORING_DEFAULT_THRESHOLD 100
 #define PEER_SCORING_DEFAULT_BAN_HOURS 24
@@ -134,10 +133,7 @@ int peer_scoring_last_peer_ban_secs(void)
 
 int64_t peer_scoring_now_ms(void)
 {
-    struct timespec ts;
-    if (platform_time_realtime_timespec(&ts) != 0)
-        return 0;
-    return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
+    return platform_time_monotonic_us() / 1000;
 }
 
 /* DoS-policy surface: one row per offence carries both the weight and the
@@ -233,7 +229,7 @@ int peer_scoring_decay(struct p2p_node *node, int64_t now_ms)
     int_least64_t last_good = atomic_load(&node->peer_score_last_good_ms);
     if (last_good == 0) {
         /* First decay call — anchor the timer instead of awarding decay
-         * back to the UNIX epoch. */
+         * back to process start. */
         atomic_store(&node->peer_score_last_good_ms, (int_least64_t)now_ms);
         return score;
     }

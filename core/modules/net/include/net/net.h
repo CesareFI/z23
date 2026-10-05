@@ -500,11 +500,10 @@ struct p2p_node {
     _Atomic bool     reject_probe_pending;
 
     _Atomic int misbehavior;  /* cumulative misbehavior score; banned at 100 */
-    /* Monotonic timestamp (ms since UNIX epoch) of last accepted / valid
-     * message from this peer. Used by peer_scoring.c to decay `misbehavior`
-     * when a peer has been behaving. 0 means "never" — treated as "now"
-     * on first decay call so freshly-connected peers don't get a free
-     * score drop. */
+    /* Process-monotonic timestamp (ms) of the last accepted / valid message
+     * from this peer. Used by peer_scoring.c to decay `misbehavior` when a
+     * peer has been behaving. 0 means "never" — treated as "now" on first
+     * decay call so freshly-connected peers don't get a free score drop. */
     _Atomic int_least64_t peer_score_last_good_ms;
 
     /* Framing-layer offence tag (holds an enum peer_offence value; 0 =

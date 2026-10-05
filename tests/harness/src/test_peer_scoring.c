@@ -10,6 +10,7 @@
 #include "net/peer_scoring.h"
 #include "net/net.h"
 #include "core/utiltime.h"
+#include "platform/time_compat.h"
 #include "util/blocker.h"
 
 #include <stdatomic.h>
@@ -72,6 +73,20 @@ static int test_defaults(void)
         ASSERT_EQ(peer_scoring_ban_threshold(), 100);
         ASSERT_EQ(peer_scoring_ban_hours(), 24);
         ASSERT_EQ(peer_scoring_decay_rate(), 1);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_runtime_clock_is_monotonic(void)
+{
+    int failures = 0;
+    TEST("peer_scoring: runtime interval clock is monotonic") {
+        int64_t before_ms = platform_time_monotonic_us() / 1000;
+        int64_t now_ms = peer_scoring_now_ms();
+        int64_t after_ms = platform_time_monotonic_us() / 1000;
+        ASSERT(now_ms >= before_ms);
+        ASSERT(now_ms <= after_ms);
         PASS();
     } _test_next:;
     return failures;
@@ -843,6 +858,7 @@ int test_peer_scoring(void)
     char *saved_decay = orig_decay ? strdup(orig_decay) : NULL;
 
     failures += test_defaults();
+    failures += test_runtime_clock_is_monotonic();
     failures += test_env_overrides();
     failures += test_invalid_env();
     failures += test_offence_names();

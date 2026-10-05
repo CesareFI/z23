@@ -191,7 +191,7 @@ void peer_scoring_reset(struct p2p_node *node);
  * gets its own honest name. */
 const char *peer_offence_name(enum peer_offence offence);
 
-/* Convenience: milliseconds since the UNIX epoch for decay math.
+/* Convenience: monotonic milliseconds for decay/rate-limit interval math.
  * Exposed so tests can monkey-patch by calling with an explicit value. */
 int64_t peer_scoring_now_ms(void);
 
