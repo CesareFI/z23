@@ -17,6 +17,9 @@
     }                                                                        \
   } while (0)
 
+#ifndef ZJSON_TEST_FORMATTER
+#error "build tests/test_zjson.c and src/zjson.c with -DZJSON_TEST_FORMATTER"
+#endif
 #ifdef ZJSON_TEST_FORMATTER
 static int expect(zjson *w, const char *want);
 /* Controlled libc fixture: no locale installation or global locale change. */

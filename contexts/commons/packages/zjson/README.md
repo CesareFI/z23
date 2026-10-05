@@ -64,7 +64,7 @@ cc -std=c23 -O2 -Iinclude -I<zutf8>/include \
    src/zjson.c <zutf8>/src/zutf8.c app/main.c -o zjson
 
 cc -std=c23 -O1 -g -fsanitize=address,undefined \
-   -Iinclude -I<zutf8>/include \
+   -DZJSON_TEST_FORMATTER -Iinclude -I<zutf8>/include \
    src/zjson.c <zutf8>/src/zutf8.c tests/test_zjson.c -o test_zjson
 ./test_zjson
 ```
