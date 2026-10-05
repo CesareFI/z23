@@ -6,7 +6,7 @@
 #include "../../../apps/skycombat/part/expr_draw.c"
 #include "platform/positioned_file.h"
 enum { ADMIT_PROBE_NONE,ADMIT_PROBE_PARTIAL,ADMIT_PROBE_EOF,ADMIT_PROBE_ERROR,
- ADMIT_PROBE_OVERRUN,ADMIT_PROBE_STAT,ADMIT_PROBE_CHANGED };
+ ADMIT_PROBE_OVERRUN,ADMIT_PROBE_STAT,ADMIT_PROBE_CHANGED,ADMIT_PROBE_STAT_AFTER };
 static unsigned admit_probe_mode,admit_probe_reads,admit_probe_stats,admit_probe_closes;
 static int64_t admit_probe_read(const struct platform_positioned_file *f,void *b,size_t n,uint64_t off)
 {
@@ -20,7 +20,8 @@ static int64_t admit_probe_read(const struct platform_positioned_file *f,void *b
 static bool admit_probe_snapshot(const struct platform_positioned_file *f,struct platform_positioned_file_snapshot *s)
 {
  ++admit_probe_stats;
- if(admit_probe_mode==ADMIT_PROBE_STAT)return false;
+ if(admit_probe_mode==ADMIT_PROBE_STAT ||
+    (admit_probe_mode==ADMIT_PROBE_STAT_AFTER && admit_probe_stats==2))return false;
  bool ok=platform_positioned_file_snapshot(f,s);
  if(ok && admit_probe_mode==ADMIT_PROBE_CHANGED && admit_probe_stats==2)++s->size;
  return ok;
@@ -548,10 +549,11 @@ static int admit_probe_cases(const char *path,const uint8_t pin[32],const double
  admit_probe_mode=ADMIT_PROBE_PARTIAL;admit_probe_reads=admit_probe_closes=admit_probe_stats=0;
  failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_OK,EX_OK);
  failures+=admit_probe_reads!=(n+2)/3;failures+=admit_probe_stats!=2;failures+=admit_probe_closes!=1;
- for(unsigned mode=ADMIT_PROBE_EOF;mode<=ADMIT_PROBE_CHANGED;mode++) {
+ for(unsigned mode=ADMIT_PROBE_EOF;mode<=ADMIT_PROBE_STAT_AFTER;mode++) {
   admit_probe_mode=mode;admit_probe_reads=admit_probe_closes=admit_probe_stats=0;
   failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_READ,EX_IO);
   failures+=admit_probe_closes!=1;
+  if(mode==ADMIT_PROBE_STAT_AFTER)failures+=admit_probe_stats!=2 || admit_probe_reads!=1;
  }
  admit_probe_mode=ADMIT_PROBE_NONE;return failures;
 }

@@ -12074,6 +12074,8 @@ endif
 endif
 
 COV_TEST_SRCS := $(filter-out tests/harness/src/test_parallel.c, $(TEST_SRCS)) $(TEST_DEV_EXECUTOR_SRCS) $(TEST_LAND_SRCS) $(TEST_LINT_SELECTION_SRCS)
+COV_HUD_SHA_SRCS := $(if $(filter tests/harness/src/test_skycombat_macho_loader.c,$(COV_TEST_SRCS)),,contexts/commons/packages/zsha256/src/zsha256.c)
+COV_TEST_SRCS += $(COV_HUD_SHA_SRCS)
 COV_OBJS := $(patsubst %.c,$(COV_BUILD_DIR)/%.o,$(COV_TEST_SRCS) $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS))
 COV_LINK_RSP = $(COV_BUILD_DIR)/link-inputs.rsp
 
