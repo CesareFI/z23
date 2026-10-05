@@ -122,6 +122,8 @@ selftest() (
                 printf '#include "%s/external.h"\nint value(void); int main(void) { return value()!=1; }\n' "$fixture" > contexts/commons/packages/tiny/tests/test_tiny.c
                 result='REFUSE does-not-compile';;
             dirty-helper)
+                # Remain a compiled-test change after unused-test commits its baseline.
+                printf '/* dirty-helper positive control */\nint value(void); int main(void) { return value() != 1; }\n' > contexts/commons/packages/tiny/tests/test_tiny.c
                 selftest_helper "$fixture" "$script" || return 1
                 subject=$fixture/toolkit/tools/scripts/commons_fix_admit.sh
                 result=ADMIT;;
