@@ -12,7 +12,7 @@ the code does not draw is worse than no boundary.
 ## 1. The one-sentence shape
 
 The node process holds every spending key in RAM in cleartext while it is
-unlocked; the disk copy is wrapped under a passphrase the operator supplies;
+unlocked; the disk copy can be wrapped under a passphrase the operator supplies;
 and every typed command an agent issues is bounded by a grant the agent cannot
 mint for itself — but the grant is presented in the agent's own environment,
 so an agent that declines to cooperate is bounded only by the operating system,
@@ -22,8 +22,8 @@ not by this code.
 
 ## 2. Where private keys live
 
-Five places. All five are inside the operator's own trust domain; none is
-network-reachable.
+Five places. All five are inside the operator's own trust domain; private
+keys can be exported through authenticated loopback JSON-RPC.
 
 | # | Location | Form | Encrypted at rest |
 |---|---|---|---|
@@ -53,13 +53,13 @@ is deliberately absent from the rendered `commit_input`. Setting one layer
 does not set the other, and leaving scheduled-backup encryption unset logs one
 warning and proceeds.
 
-**Export paths** (deliberate, OWNER-gated, plan/commit): `dumpprivkey` /
-`z_exportkey` over JSON-RPC, and `core.wallet.address.export-key` over the
-typed surface (`contexts/wallet/controllers/src/wallet_native_handlers.c:310-365`). The
-typed form refuses without `confirm:true`, warns in the plan body that commit
-reveals the key, and returns the WIF in `reply.data.privkey`. Neither path
-logs the key: `rpc_dumpprivkey` logs only the address on every failure branch
-(`contexts/wallet/controllers/src/wallet_controller_keys.c:29-54`).
+**Export paths:** `dumpprivkey` / `z_exportkey` over authenticated JSON-RPC
+export directly; `core.wallet.address.export-key` is OWNER-gated and uses
+plan/commit on the typed surface
+(`contexts/wallet/controllers/src/wallet_native_handlers.c:390-451`). The
+typed form returns a non-revealing plan without `confirm:true`, warns that
+commit reveals the key, and returns the WIF in `reply.data.privkey` on commit. `rpc_dumpprivkey` logs failure context and addresses, not key bytes
+(`contexts/wallet/controllers/src/wallet_controller_keys.c:11-57`).
 
 ### 2.1 The sixth place — twelve words on paper, if they exist
 
@@ -88,10 +88,10 @@ there. SKIP is not a downgraded SHOW: it draws no phrase, so there are no words
 to leak on that path. The cost is that the wallet's only backup is the wallet
 file plus its passphrase.
 
-REFUSE does not stop the node. Per §2's neighbour
-`wallet_at_rest_boot_decision()` the boot continues in **NO-SPEND mode** (zero
-keys minted, nothing written in the clear) and syncs normally; only sending and
-receiving wait. A refusal is scoped to the asset it protects, never to the boot.
+The two refusals differ: `wallet_at_rest_boot_decision()` returning
+`WALLET_BOOT_REFUSE` continues boot in keyless **NO-SPEND mode** and syncs.
+The phrase plan's REFUSE returns failure from `boot_wallet_create_new()`,
+and its boot caller exits with status 1 rather than continuing sync.
 
 Two typed commands read and use this, both `AUTH_OWNER`:
 
@@ -153,18 +153,18 @@ cannot auto-unlock a live encrypted wallet. A headless service instead receives
 the user-scoped systemd credential named `wallet-passphrase`; boot reads its
 private bounded file once before the first WKS1/WKD1 row and registers it in the
 same cleansable runtime buffer used by explicit unlock. A missing credential
-leaves the wallet locked, a malformed credential fails boot by name, and a
-wrong passphrase reaches the existing wallet persistence abort guards rather
-than silently dropping keys.
+supplies no passphrase; with encrypted transparent rows, failed decryption
+reaches the keystore-count abort guard. Malformed credentials fail boot by
+name, and a wrong passphrase likewise reaches the persistence abort guards.
 
-NULL means "no encryption": writes go out in cleartext and enveloped rows on
-disk fail to decrypt and are dropped with a counted warning
-(`g_read_keys_corrupt_rows`). A plaintext wallet is always "unlocked" because
-there is nothing to lock.
+NULL means no active runtime passphrase. Transparent writes to a wallet known
+to be encrypted refuse when wrapping fails; a plaintext wallet can still write
+raw keys. Undecryptable loaded rows are skipped with a counted warning
+(`g_read_keys_corrupt_rows`). A plaintext wallet is always "unlocked".
 
-**The README's claim, checked.** "AES-256-GCM for new wallets; an existing
-plaintext wallet still loads with a warning" is accurate for the
-`wallet_sqlite` path, which is the path the wallet itself uses.
+**Persistence behavior, checked.** The `wallet_sqlite` path uses AES-256-GCM
+when encryption is active and accepts legacy plaintext rows. The first-creation
+policy's environment decision alone does not load a runtime passphrase.
 
 **It is now the whole truth: `wallet_keys` has a single writer.** The former
 second writer — `db_wallet_key_save` / `db_sapling_key_save` /
@@ -203,10 +203,11 @@ which rows are which (§8).
 | `vault.send`, `vault.send-shielded` | typed CLI | vault dispatch + **agent spend policy** |
 | `app.market.buy`, `app.swap.initiate`, `app.swap.participate` | typed CLI | same |
 | `vault.swap.redeem` / `.refund` | typed CLI | authority; **no amount to bound**, so the spend policy refuses them for a grant |
-| `dumpprivkey` / `core.wallet.address.export-key` | both | OWNER + plan/commit; hands over the key, after which no gate applies |
-| `importprivkey` / `core.wallet.address.import` | both | OWNER; installs a key the operator never saw |
+| `dumpprivkey` / `core.wallet.address.export-key` | both | RPC: authentication; typed: OWNER + plan/commit. Export hands over the key, after which no gate applies |
+| `importprivkey` | JSON-RPC | RPC authentication; imports a private key |
+| `core.wallet.address.import` | typed CLI | OWNER; imports a watch-only address |
 
-Two independent runtime gates sit under all of them:
+The spending paths also use two independent runtime gates:
 
 - **`wallet_lock_spend_guard()`** — a locked wallet cannot spend even when
   trust permits (`contexts/wallet/modules/wallet/include/wallet/wallet_lock.h`).
@@ -221,20 +222,22 @@ The grant is a row in `agent_sessions` (migration v36,
 `engine/models/src/database_migrate_features_v30_up.c:200-224`), minted by
 `vault session create` for an existing principal, and presented per invocation
 as `ZCL_AGENT_SESSION=<32 hex chars>`
-(`tools/command/native_command.c:2735, 3173`).
+(`tools/command/native_command.c:3530, 4333`).
 
-It bounds four things and nothing else:
+It bounds the following; spending checks also require determined custody state:
 
 | bound | column | enforced in |
 |---|---|---|
-| amount per transaction | `max_per_tx_zat` | `agent_session_authorize` |
-| amount per rolling window | `max_per_window_zat` + `window_seconds` (≤ 1 year) | same |
+| amount per transaction, including the fee allowance | `max_per_tx_zat` | `agent_session_service_authorize`, `agent_session_authorize` |
+| amount per resetting window | `max_per_window_zat` + `window_seconds` (≤ 1 year) | `agent_session_authorize` |
 | destination | `recipient_allowlist` (exact CSV token, never a prefix) | same |
 | lifetime | `expires_at`, `revoked` | same |
+| wallet scope and identity | `wallet_scope`, `wallet_instance_id`, `wallet_genesis` | same |
+| development reserve and shared lifetime allocation | `reserve_floor_zat`, `lifetime_spent_zat` (5,000,000 zatoshis across dev sessions) | service availability checks and model lifetime checks |
 
-The check and the window debit are **one indivisible step** under a
-process-local mutex, with a targeted `UPDATE` of only the two window columns
-guarded by `revoked=0` — so concurrent invocations cannot jointly blow a cap,
+The model check and debit run under a process-local mutex, with a targeted
+`UPDATE` of the two window columns and lifetime-spend counter
+guarded by `revoked=0` — so concurrent model invocations serialize their cap checks,
 and a revocation landing mid-spend is not undone by the debit rewriting the
 row (`cognition/models/include/models/agent_session.h`, the
 `agent_session_authorize` contract).
@@ -257,7 +260,7 @@ row (`cognition/models/include/models/agent_session.h`, the
 - The gate runs **after** the lane/authority/capability checks, because it is
   the only one that writes; ahead of them, anyone who could reach it could
   drain a session's window with commands that were then denied anyway
-  (`engine/modules/kernel/src/command_registry.c:1740-1800`).
+  (`engine/modules/kernel/src/command_registry_execute.c:184-188`).
 - A plan-stage preview enforces the caps and debits nothing; a handler that
   reports no mutation gets the debit released.
 
@@ -287,11 +290,11 @@ The grant is presented in the agent's own environment and the agent runs as the
 node's uid. Therefore an agent that does not cooperate can:
 
 - run `env -u ZCL_AGENT_SESSION z23 …` and be the unbounded local
-  operator (`native_command.c:3159` — `granted_capabilities=~0`,
+  operator (`tools/command/native_command.c:4319-4323` — `granted_capabilities=~0`,
   `authority_ceiling=OWNER`);
 - read `<datadir>/.cookie` and call `sendtoaddress` straight over JSON-RPC,
   below the kernel and below this policy entirely
-  (`engine/controllers/src/rpc_client.c:184`);
+  (`engine/controllers/src/rpc_client.c:349-365`);
 - read any wallet secret deliberately placed in its own environment, and—when
   it shares the node uid—may reach the node's user-scoped boot credential;
 - read the node's memory, where every spending key is resident.
