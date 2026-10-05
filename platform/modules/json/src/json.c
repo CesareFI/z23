@@ -404,7 +404,83 @@ static bool str_put(char **s, size_t *cap, size_t *len, char c)
     return true;
 }
 
-/* out == NULL validates without allocating (json_valid). */
+static bool str_hex4(const char **pp, const char *end, uint32_t *unit)
+{
+    const char *p = *pp;
+    if ((size_t)(end - p) < 4) return false;
+    uint32_t value = 0;
+    for (size_t i = 0; i < 4; i++) {
+        unsigned char c = (unsigned char)p[i];
+        uint32_t digit;
+        if (c >= '0' && c <= '9') digit = c - '0';
+        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+        else return false;
+        value = (value << 4) | digit;
+    }
+    *unit = value;
+    *pp = p + 4;
+    return true;
+}
+
+static bool str_unicode_scalar(const char **pp, const char *end, uint32_t *cp)
+{
+    uint32_t first, second;
+    if (!str_hex4(pp, end, &first)) return false;
+    if (first >= 0xdc00 && first <= 0xdfff) return false;
+    if (first >= 0xd800 && first <= 0xdbff) {
+        if ((size_t)(end - *pp) < 6 || (*pp)[0] != '\\' || (*pp)[1] != 'u')
+            return false;
+        *pp += 2;
+        if (!str_hex4(pp, end, &second)) return false;
+        if (second < 0xdc00 || second > 0xdfff) return false;
+        first = 0x10000 + ((first - 0xd800) << 10) + second - 0xdc00;
+    }
+    /* json_value strings/keys are C strings: NUL would discard identity. */
+    if (first == 0) return false;
+    *cp = first;
+    return true;
+}
+
+static bool str_unicode_put(char **s, size_t *cap, size_t *len,
+                             const char **pp, const char *end)
+{
+    uint32_t cp;
+    if (!str_unicode_scalar(pp, end, &cp)) return false;
+    char encoded[4];
+    size_t n = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    static const unsigned char prefix[] = {0, 0, 0xc0, 0xe0, 0xf0};
+    if (n == 1) encoded[0] = (char)cp;
+    else {
+        encoded[0] = (char)(prefix[n] | (cp >> (6 * (n - 1))));
+        for (size_t i = 1; i < n; i++)
+            encoded[i] = (char)(0x80 | ((cp >> (6 * (n - 1 - i))) & 0x3f));
+    }
+    for (size_t i = 0; i < n; i++)
+        if (!str_put(s, cap, len, encoded[i])) return false;
+    return true;
+}
+
+/* pp points after the backslash; Unicode consumes its complete scalar. */
+static bool str_escape(char **s, size_t *cap, size_t *len,
+                        const char **pp, const char *end)
+{
+    if (*pp >= end) return false;
+    char c = *(*pp)++;
+    switch (c) {
+    case '"': case '\\': case '/': break;
+    case 'b': c = '\b'; break;
+    case 'f': c = '\f'; break;
+    case 'n': c = '\n'; break;
+    case 'r': c = '\r'; break;
+    case 't': c = '\t'; break;
+    case 'u': return str_unicode_put(s, cap, len, pp, end);
+    default: return false;
+    }
+    return str_put(s, cap, len, c);
+}
+
+/* out == NULL walks the same grammar without allocating (json_valid). */
 static bool parse_string(char **out, const char **pp, const char *end)
 {
     const char *p = *pp;
@@ -417,28 +493,11 @@ static bool parse_string(char **out, const char **pp, const char *end)
         if (!s) return false;
     }
     while (p < end && *p != '"') {
-        char c = *p;
-        if (*p == '\\') {
-            p++;
-            if (p >= end) { free(s); return false; }
-            switch (*p) {
-            case '"':  c = '"'; break;
-            case '\\': c = '\\'; break;
-            case '/':  c = '/'; break;
-            case 'b':  c = '\b'; break;
-            case 'f':  c = '\f'; break;
-            case 'n':  c = '\n'; break;
-            case 'r':  c = '\r'; break;
-            case 't':  c = '\t'; break;
-            case 'u':
-                p += 4;
-                c = '?';
-                break;
-            default: free(s); return false;
-            }
-        }
-        if (!str_put(&s, &cap, &len, c)) { free(s); return false; }
-        p++;
+        unsigned char c = (unsigned char)*p++;
+        if (c < 0x20) { free(s); return false; }
+        bool ok = c == '\\' ? str_escape(&s, &cap, &len, &p, end)
+                             : str_put(&s, &cap, &len, (char)c);
+        if (!ok) { free(s); return false; }
     }
     if (p >= end) { free(s); return false; }
     p++;

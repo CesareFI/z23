@@ -9,8 +9,8 @@ static bool json_valid_matches_read(void)
 {
     /* A caller tells malformed input from exhausted memory by asking
      * json_valid first, so the two must never disagree about a byte
-     * string, quirks included: the bare "-" and the unchecked \u that
-     * json_read accepts, the 64-byte number it refuses, and the depth
+     * string, quirks included: the bare "-" that json_read accepts,
+     * malformed Unicode escapes and the 64-byte number it refuses, and the depth
      * limit on both sides of the line. */
     static const char *const corpus[] = {
         "42", "-", "-7", "1.", "1e", "1.5e+3", "\"\\uZZZZ\"",
@@ -64,9 +64,78 @@ static int json_valid_case(void)
     return 1;
 }
 
-int test_json(void)
+static bool json_unicode_keys_case(void)
+{
+    const char *wire = "{\"publication_hold\":true,\"\\u0070ublication_hold\":false}";
+    struct json_value v;
+    json_init(&v);
+    bool ok = json_read(&v, wire, strlen(wire));
+    ok = ok && v.type == JSON_OBJ && v.num_children == 2;
+    if (ok) {
+        ok = strcmp(v.keys[0], "publication_hold") == 0;
+        ok = ok && strcmp(v.keys[1], v.keys[0]) == 0;
+        ok = ok && json_get_bool(&v.children[0]);
+        ok = ok && !json_get_bool(&v.children[1]);
+    }
+    json_free(&v);
+    return ok;
+}
+
+static bool json_unicode_strings_case(void)
+{
+    const char *wire[] = {"\"abc\\u0041def\"", "\"\\u00e9\"",
+        "\"\\uD83D\\uDE00\"", "\"\\uDBFF\\uDFFF\"", "\"\\uFFFF\""};
+    const char *expected[] = {"abcAdef", "\xc3\xa9", "\xf0\x9f\x98\x80",
+        "\xf4\x8f\xbf\xbf", "\xef\xbf\xbf"};
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(wire) / sizeof(wire[0]); i++) {
+        struct json_value v;
+        json_init(&v);
+        bool parsed = json_read(&v, wire[i], strlen(wire[i]));
+        ok = parsed && ok;
+        if (parsed) ok = strcmp(json_get_str(&v), expected[i]) == 0 && ok;
+        ok = json_valid(wire[i], strlen(wire[i])) && ok;
+        json_free(&v);
+    }
+    return ok;
+}
+
+static bool json_unicode_invalid_case(void)
+{
+    /* This C-string API cannot represent embedded NUL without losing identity. */
+    const char *bad[] = {"\"\\u\"", "\"\\u0\"", "\"\\u00\"", "\"\\u000\"",
+        "\"\\uZZZZ\"", "\"\\uD800\"", "\"\\uDC00\"", "\"\\uD800x\"",
+        "\"\\uD800\\u0041\"", "\"\\uD800\\uD800\"", "\"\\uD800\\uDC0\"",
+        "\"a\\u0000b\"", "{\"publication_hold\\u0000alias\":true}"};
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        struct json_value v;
+        json_init(&v);
+        bool parsed = json_read(&v, bad[i], strlen(bad[i]));
+        ok = !parsed && ok;
+        ok = (v.type == JSON_NULL) && ok;
+        ok = !json_valid(bad[i], strlen(bad[i])) && ok;
+        json_free(&v);
+    }
+    return ok;
+}
+
+static int json_unicode_cases(void)
 {
     int failures = 0;
+
+    printf("json escaped key equals literal key without collapsing duplicates... ");
+    if (json_unicode_keys_case()) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    printf("json Unicode scalar and surrogate-pair UTF8 decoding... ");
+    if (json_unicode_strings_case()) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    printf("json malformed truncated surrogate and NUL escapes refuse and clear... ");
+    if (json_unicode_invalid_case()) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    return failures;
+}
+
+int test_json(void)
+{
+    int failures = json_unicode_cases();
 
     printf("json parse integer... ");
     {
@@ -228,9 +297,9 @@ int test_json(void)
         struct json_value v;
         bool ok = json_read(&v, s, strlen(s));
         ok = ok && (v.type == JSON_STR);
-        /* unicode escapes produce '?' placeholder */
+        /* The escaped scalar must retain its actual decoded identity. */
         const char *r = json_get_str(&v);
-        ok = ok && r && (strlen(r) == 7);
+        ok = ok && r && (strcmp(r, "abcAdef") == 0);
         json_free(&v);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
