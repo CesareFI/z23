@@ -1023,6 +1023,55 @@ static int toggle_file_cases(void)
  unlink(path);unlink(pin_path);return failures;
 }
 
+/* Reload feedback is separate from the admitted HUD and expires by frame time. */
+static int notice_state_cases(void)
+{
+ struct sky_expr_notice notice={0};struct sky_expr_hud hud={.active=true};
+ struct sky_expr_hud before;memcpy(&before,&hud,sizeof hud);int failures=0;
+ const enum expr_admit_status stage[]={EX_ADMIT_ARGUMENT,EX_ADMIT_READ,EX_ADMIT_PIN,
+  EX_ADMIT_VALIDATE,EX_ADMIT_EVALUATE,EX_ADMIT_DRAW,(enum expr_admit_status)99};
+ const char *message[]={"HUD kept: invalid reload request","HUD kept: file could not be read",
+  "HUD kept: pin mismatch or invalid","HUD kept: invalid HUD data",
+  "HUD kept: values could not be evaluated","HUD kept: drawing could not be assembled",
+  "HUD kept: invalid reload request"};
+ for(unsigned i=0;i<sizeof stage/sizeof *stage;i++) {
+  sky_expr_notice_set(&notice,stage[i]);failures+=notice.remaining!=5.0f || notice.status!=stage[i];
+  failures+=strcmp(sky_expr_notice_message(&notice,&hud),message[i])!=0;
+ }
+ sky_expr_notice_set(&notice,EX_ADMIT_OK);
+ failures+=strcmp(sky_expr_notice_message(&notice,&hud),"HUD updated")!=0;
+ failures+=memcmp(&before,&hud,sizeof hud)!=0;sky_expr_toggle(&hud);
+ failures+=strcmp(sky_expr_notice_message(&notice,&hud),"HUD updated (F7 to show)")!=0;
+ sky_expr_toggle(&hud);failures+=strcmp(sky_expr_notice_message(&notice,&hud),"HUD updated")!=0;
+ sky_expr_notice_tick(&notice,1.25f);failures+=notice.remaining!=3.75f;
+ sky_expr_notice_tick(&notice,-1.0f);sky_expr_notice_tick(&notice,NAN);
+ sky_expr_notice_tick(&notice,INFINITY);sky_expr_notice_tick(&notice,0.0f);
+ failures+=notice.remaining!=3.75f;sky_expr_notice_tick(&notice,3.75f);failures+=notice.remaining!=0.0f;
+ sky_expr_notice_tick(&notice,1.0f);failures+=notice.remaining!=0.0f;
+ sky_expr_notice_set(&notice,EX_ADMIT_PIN);failures+=notice.remaining!=5.0f || notice.status!=EX_ADMIT_PIN;
+ sky_expr_notice_tick(&notice,1000.0f);failures+=notice.remaining!=0.0f;
+ return failures;
+}
+static int notice_draw_cases(void)
+{
+ struct sky_expr_notice notice={0};struct sky_expr_hud hud={.active=true};int failures=0;
+ unsigned opens=reload_pin_opens,closes=reload_pin_closes,part_closes=admit_probe_closes,events=use_diag_events;
+ use_trace_at=0;use_trace[0]=0;sky_expr_notice_render(&notice,&hud);failures+=use_trace_at!=0;
+ sky_expr_notice_set(&notice,EX_ADMIT_PIN);sky_expr_notice_render(&notice,&hud);
+ failures+=strcmp(use_trace,"T HUD kept: pin mismatch or invalid 12.0 67.0 18.0\nT HUD kept: pin mismatch or invalid 10.0 65.0 18.0\n")!=0;
+ Color want=ORANGE;Font font=use_font();failures+=memcmp(&use_drawn_color,&want,sizeof want)!=0;
+ failures+=memcmp(&use_drawn_font,&font,sizeof font)!=0 || use_draw_size!=18.0f || use_draw_spacing!=1.0f;
+ sky_expr_notice_set(&notice,EX_ADMIT_OK);hud.builtin_selected=true;use_trace_at=0;use_trace[0]=0;
+ sky_expr_notice_render(&notice,&hud);
+ failures+=strcmp(use_trace,"T HUD updated (F7 to show) 12.0 67.0 18.0\nT HUD updated (F7 to show) 10.0 65.0 18.0\n")!=0;
+ want=GREEN;failures+=memcmp(&use_drawn_color,&want,sizeof want)!=0;
+ sky_expr_notice_tick(&notice,5.0f);use_trace_at=0;use_trace[0]=0;
+ sky_expr_notice_render(&notice,&hud);failures+=use_trace_at!=0;
+ failures+=reload_pin_opens!=opens || reload_pin_closes!=closes || admit_probe_closes!=part_closes;
+ failures+=use_diag_events!=events;return failures;
+}
+
+
 int test_skycombat_expr(void);
 int test_skycombat_expr(void)
 {
@@ -1032,6 +1081,7 @@ int test_skycombat_expr(void)
  failures+=use_metric_cases()+use_metric_range_cases();
  failures+=reload_option_cases()+reload_cases();
  failures+=toggle_recipe_cases()+toggle_file_cases();
+ failures+=notice_state_cases()+notice_draw_cases();
  failures+=admit_file_cases();failures+=use_option_cases()+use_file_cases()+use_box_case()+use_refusal_cases()+use_render_cases()+use_multiple_ops();
  printf("test_skycombat_expr: %s (%d failures)\n",failures?"FAILED":"PASS",failures);
  return failures;

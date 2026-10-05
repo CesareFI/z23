@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <math.h>
 struct sky_expr_option { const char *path,*pin_path; uint8_t pin[32]; };
 struct sky_expr_hud { bool active,builtin_selected; struct expr_part part; };
 static inline const char *sky_expr_pin_option(const char *arg)
@@ -21,6 +22,34 @@ static inline bool sky_expr_custom_selected(const struct sky_expr_hud *hud)
 { return hud->active && !hud->builtin_selected; }
 static inline void sky_expr_toggle(struct sky_expr_hud *hud)
 { if(hud->active)hud->builtin_selected=!hud->builtin_selected; }
+/* Host feedback is independent of the admitted HUD; no path or recipe mutation. */
+struct sky_expr_notice { float remaining; enum expr_admit_status status; };
+static inline void sky_expr_notice_set(struct sky_expr_notice *notice,enum expr_admit_status status)
+{ notice->status=status;notice->remaining=5.0f; }
+static inline void sky_expr_notice_tick(struct sky_expr_notice *notice,float dt)
+{
+ if(!isfinite(dt) || dt<=0.0f)return;
+ notice->remaining=dt<notice->remaining?notice->remaining-dt:0.0f;
+}
+static inline const char *sky_expr_notice_message(const struct sky_expr_notice *notice,const struct sky_expr_hud *hud)
+{
+ switch(notice->status) {
+ case EX_ADMIT_OK:return sky_expr_custom_selected(hud)?"HUD updated":"HUD updated (F7 to show)";
+ case EX_ADMIT_READ:return "HUD kept: file could not be read";
+ case EX_ADMIT_PIN:return "HUD kept: pin mismatch or invalid";
+ case EX_ADMIT_VALIDATE:return "HUD kept: invalid HUD data";
+ case EX_ADMIT_EVALUATE:return "HUD kept: values could not be evaluated";
+ case EX_ADMIT_DRAW:return "HUD kept: drawing could not be assembled";
+ default:return "HUD kept: invalid reload request";
+ }
+}
+static inline void sky_expr_notice_render(const struct sky_expr_notice *notice,const struct sky_expr_hud *hud)
+{
+ if(notice->remaining<=0.0f)return;
+ const char *message=sky_expr_notice_message(notice,hud);Font font=GetFontDefault();
+ DrawTextEx(font,message,(Vector2){12.0f,67.0f},18.0f,1.0f,BLACK);
+ DrawTextEx(font,message,(Vector2){10.0f,65.0f},18.0f,1.0f,notice->status==EX_ADMIT_OK?GREEN:ORANGE);
+}
 /* argv lives through startup; failure leaves out unchanged. No option is default. */
 static inline bool sky_expr_option_parse(int argc,char *const argv[],struct sky_expr_option *out)
 {

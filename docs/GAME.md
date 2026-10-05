@@ -101,6 +101,15 @@ the complete previous HUD; a successful reload can also recover from a refused
 startup. Reloading while the built-in HUD is selected keeps that selection;
 press F7 to show the newly admitted recipe. This is a single-thread frame-boundary change, not native code loading.
 
+After each F6 reload attempt, the game shows a five-second notice below the
+FPS/input overlay: green **HUD updated** on success, or an orange **HUD kept**
+with a short refusal reason. A successful update while the built-in HUD is
+selected offers **F7 to show**; that hint follows your current selection.
+The latest attempt replaces the previous notice. It expires after five seconds
+of positive finite frame time. The admitted HUD and display choice remain
+unchanged on refusal; detailed diagnostics still go to stderr. Ordinary frames
+and F7 do not create a notice.
+
 For the red square above, start a reloadable session:
 
 ```sh

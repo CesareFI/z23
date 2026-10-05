@@ -273,10 +273,11 @@ static void render_hud_ultimate(void *context) {
     }
 }
 
-static void render_game_hud(const struct sky_expr_hud *hud,multiplayer_game_t *game)
+static void render_game_hud(const struct sky_expr_hud *hud,const struct sky_expr_notice *notice,multiplayer_game_t *game)
 {
     if(sky_expr_custom_selected(hud))render_host_debug(game);
     sky_expr_render(hud,render_hud_ultimate,game);
+    sky_expr_notice_render(notice,hud);
 }
 
 /* Update camera with smooth following */
@@ -328,7 +329,7 @@ static void report_game_input(const multiplayer_game_t *game)
     printf("Joystick: %s\n", game->input_system->model.connected ? "CONNECTED" : "Keyboard Mode");
     if (game->input_system->model.is_astro_c40)printf("ASTRO C40 TR Controller detected!\n");
 }
-static void update_part_hud(const struct sky_expr_option *option,multiplayer_game_t *game,struct sky_expr_hud *hud,bool reload)
+static void update_part_hud(const struct sky_expr_option *option,multiplayer_game_t *game,struct sky_expr_hud *hud,bool reload,struct sky_expr_notice *notice)
 {
     const managed_aircraft_t *player=aircraft_manager_get(game->aircraft_mgr,game->local_player_id);
     double fields[XF_COUNT]={0};
@@ -346,12 +347,13 @@ static void update_part_hud(const struct sky_expr_option *option,multiplayer_gam
     fields[XF_BOOST_MS]=floor((double)game->boost_timer*1000.0);
     fields[XF_CONNECTED]=game->input_system->model.connected;
     fields[XF_FLASH]=game->damage_flash>0;
-    if(reload)(void)sky_expr_reload(option,fields,hud);else sky_expr_start(option,fields,hud);
+    if(reload)sky_expr_notice_set(notice,sky_expr_reload(option,fields,hud));else sky_expr_start(option,fields,hud);
 }
 
-static void poll_part_hud(const struct sky_expr_option *option,multiplayer_game_t *game,struct sky_expr_hud *hud)
+static void poll_part_hud(const struct sky_expr_option *option,multiplayer_game_t *game,struct sky_expr_hud *hud,struct sky_expr_notice *notice,float dt)
 {
-    if(option->pin_path && IsKeyPressed(KEY_F6))update_part_hud(option,game,hud,true);
+    sky_expr_notice_tick(notice,dt);
+    if(option->pin_path && IsKeyPressed(KEY_F6))update_part_hud(option,game,hud,true,notice);
     if(IsKeyPressed(KEY_F7))sky_expr_toggle(hud);
 }
 
@@ -426,6 +428,7 @@ int main(int argc, char **argv) {
     unsigned qa_frames;
     struct sky_expr_option option;
     static struct sky_expr_hud part_hud;
+    struct sky_expr_notice notice={0};
     int launch = prepare_game_window(argc, argv, &qa_frames, &option);
     if (launch) return launch;
     
@@ -506,7 +509,7 @@ int main(int argc, char **argv) {
     cyberpunk_world_generate(game.world, 42);
     cyberpunk_set_theme_blade_runner(game.world);
     
-    update_part_hud(&option,&game,&part_hud,false);
+    update_part_hud(&option,&game,&part_hud,false,&notice);
 
     /* Create render texture for post-processing */
     RenderTexture2D screen_buffer = LoadRenderTexture(GetScreenWidth(), GetScreenHeight());
@@ -518,7 +521,7 @@ int main(int argc, char **argv) {
     while (game_frame_pending(qa_frames, rendered_frames)) {
         float dt = GetFrameTime();
         game_time += dt;
-        poll_part_hud(&option,&game,&part_hud);
+        poll_part_hud(&option,&game,&part_hud,&notice,dt);
         
         /* Update input system */
         input_view_fast_t view = input_mvc_fast_update(game.input_system);
@@ -699,7 +702,7 @@ int main(int argc, char **argv) {
         
         /* UI and effects */
         effects_draw_ui(game.effects, GetScreenWidth(), GetScreenHeight());
-        render_game_hud(&part_hud,&game);
+        render_game_hud(&part_hud,&notice,&game);
         
         /* Damage flash */
         if (game.damage_flash > 0) {
