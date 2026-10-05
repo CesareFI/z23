@@ -3,6 +3,7 @@
 #include "test/test_core.h"
 #include "../../../apps/skycombat/part/expr_validate.c"
 #include "../../../apps/skycombat/part/expr_eval.c"
+#include "../../../apps/skycombat/part/expr_draw.c"
 #include <math.h>
 static const uint8_t expr_empty[32]={'H','U','D','X',0,0,32,0,1};
 static const uint8_t expr_rect[88]={
@@ -292,11 +293,179 @@ static int eval_defensive_bounds(void)
  return failures;
 }
 
+static size_t draw_fixture(uint8_t *b,unsigned kind,unsigned draws)
+{
+ memset(b,0,2048);memcpy(b,expr_empty,32);b[12]=8;b[14]=(uint8_t)draws;
+ const int32_t value[]={0,0,10,20,30,40,-1,12};
+ for(unsigned i=0;i<8;i++)eval_leaf(b+32+16*i,EX_CONST_I32,value[i]);
+ eval_leaf(b+48,EX_FIELD,XF_SHIELD);
+ size_t at=160;
+ if(kind>=3) {
+  b[16]=1;b[18]=2;b[20]=3;b[at+2]=2;at+=8;
+  b[at]=1;zcl_write_u16_le(b+at+2,EXPR_NONE);b[at+8]=3;at+=12;
+  b[at]=2;b[at+2]=2;at+=12;
+ }
+ for(unsigned i=0;i<draws;i++,at+=24) {
+  b[at]=(uint8_t)kind;b[at+2]=1;b[at+4]=2;b[at+6]=3;
+  b[at+8]=(uint8_t)(kind==3?0:4);b[at+10]=(uint8_t)(kind==3?0:5);
+  b[at+12]=6;b[at+14]=(uint8_t)(kind>=3?7:0);
+  zcl_write_u16_le(b+at+18,kind>=3?0:EXPR_NONE);
+ }
+ if(kind>=3){memcpy(b+at,"HUD",3);at+=3;}
+ return at;
+}
+static struct expr_values draw_values(void)
+{
+ struct expr_values v={.count=8,.steps=8,.value={0,1,10,20,30,40,-1,12}};return v;
+}
+static int draw_expect(const void *b,size_t n,const struct expr_values *v,
+ unsigned ops,unsigned text,enum expr_status want)
+{
+ struct sky_hud_recipe_v1 out,before;memset(&out,0x5a,sizeof out);before=out;
+ struct expr_error e={0};enum expr_status got=expr_build_draws(b,n,v,ops,text,&out,&e);
+ bool ok=got==want && e.code==got && e.reason &&
+  (got==EX_OK || !memcmp(&out,&before,sizeof out));
+ if(got==EX_OK)ok=ok && out.op_count<=ops && out.text_used<=text && memcmp(&out,&before,sizeof out);
+ if(!ok)printf("draw expected=%u got=%u atomic=%d\n",want,got,!memcmp(&out,&before,sizeof out));
+ return !ok;
+}
+static int draw_geometry_result(const struct sky_hud_recipe_v1 *out,unsigned kind,bool success)
+{
+ const struct sky_hud_op_v1 *o=&out->ops[0];int failures=0;
+ success=success && out->op_count==1 && o->kind==kind;
+ failures+=!success || out->op_count!=1 || o->kind!=kind;
+ failures+=!success || o->x!=10 || o->y!=20 || o->rgba!=UINT32_MAX;
+ failures+=!success || o->w!=(kind==3?0:30) || o->h!=(kind==3?0:40);
+ return failures;
+}
+static int draw_text_result(const struct sky_hud_recipe_v1 *out,unsigned kind,bool success)
+{
+ const struct sky_hud_op_v1 *o=&out->ops[0];int failures=0;
+ success=success && out->op_count==1 && o->kind==kind;
+ failures+=!success || o->font_px!=(kind>=3?12u:0u) || o->align!=0;
+ failures+=!success || out->text_used!=(kind>=3?5u:0u) || o->text_off!=0 || o->text_len!=(kind>=3?5u:0u);
+ failures+=!success || (kind>=3 && memcmp(out->text,"HUD10",5));
+ return failures;
+}
+static int draw_kinds(void)
+{
+ uint8_t b[2048];struct expr_values v=draw_values();int failures=0;
+ for(unsigned kind=1;kind<=4;kind++) {
+  size_t n=draw_fixture(b,kind,1);struct sky_hud_recipe_v1 out={0};struct expr_error e={0};
+  bool success=expr_build_draws(b,n,&v,64,1024,&out,&e)==EX_OK;
+  failures+=!success;
+  failures+=draw_geometry_result(&out,kind,success)+draw_text_result(&out,kind,success);
+  v.value[1]=0;failures+=draw_expect(b,n,&v,0,0,EX_OK);v.value[1]=1;
+ }
+ size_t n=draw_fixture(b,3,2);struct sky_hud_recipe_v1 out={0};
+ bool success=expr_build_draws(b,n,&v,2,10,&out,NULL)==EX_OK;
+ failures+=!success || out.op_count!=2 || out.text_used!=10 || out.ops[1].text_off!=5 || out.ops[1].text_len!=5;
+ const int32_t numbers[]={0,-42,INT32_MIN,INT32_MAX};
+ const char *const strings[]={"HUD0","HUD-42","HUD-2147483648","HUD2147483647"};
+ n=draw_fixture(b,3,1);
+ for(unsigned i=0;i<4;i++) {
+  v.value[2]=numbers[i];success=expr_build_draws(b,n,&v,1,14,&out,NULL)==EX_OK;
+  failures+=!success || out.text_used!=strlen(strings[i]) || memcmp(out.text,strings[i],strlen(strings[i]));
+ }
+ v=draw_values();n=draw_fixture(b,3,1);b[208]=2; /* align ref is numeric expression 2. */
+ v.value[2]=2;success=expr_build_draws(b,n,&v,1,5,&out,NULL)==EX_OK;
+ failures+=!success || out.ops[0].align!=2;
+ struct expr_values empty={0};
+ failures+=draw_expect(expr_empty,32,&empty,0,0,EX_OK);
+ return failures;
+}
+static int draw_refusals(void)
+{
+ uint8_t b[2048];struct expr_values v=draw_values();size_t n=draw_fixture(b,3,1);int failures=0;
+ failures+=draw_expect(NULL,n,&v,64,1024,EX_ARGUMENT);
+ failures+=draw_expect(b,n,NULL,64,1024,EX_ARGUMENT);
+ struct expr_error e={0};failures+=expr_build_draws(b,n,&v,64,1024,NULL,&e)!=EX_ARGUMENT;
+ failures+=draw_expect(b,n,&v,65,1024,EX_LIMIT);
+ failures+=draw_expect(b,n,&v,64,1025,EX_LIMIT);
+ failures+=draw_expect(b,n-1,&v,64,1024,EX_BOUNDS);
+ v.count=7;failures+=draw_expect(b,n,&v,64,1024,EX_VALUES);v.count=8;
+ v.steps=7;failures+=draw_expect(b,n,&v,64,1024,EX_VALUES);v.steps=8;
+ v.value[1]=2;failures+=draw_expect(b,n,&v,64,1024,EX_VALUES);v.value[1]=1;
+ for(unsigned i=0;i<2;i++) {
+  v.value[7]=i?4097:0;failures+=draw_expect(b,n,&v,64,1024,EX_RANGE);
+ }
+ v.value[7]=12;b[208]=2;
+ for(unsigned i=0;i<2;i++) {v.value[2]=i?3:-1;failures+=draw_expect(b,n,&v,64,1024,EX_RANGE);}
+ v=draw_values();n=draw_fixture(b,1,1);
+ v.value[4]=-1;failures+=draw_expect(b,n,&v,64,1024,EX_RANGE);v.value[4]=30;
+ v.value[5]=-1;failures+=draw_expect(b,n,&v,64,1024,EX_RANGE);v.value[5]=40;
+ b[162]=8;failures+=draw_expect(b,n,&v,64,1024,EX_TYPE);
+ n=draw_fixture(b,3,1);b[210]=1;failures+=draw_expect(b,n,&v,64,1024,EX_SCHEMA);
+ n=draw_fixture(b,3,1);b[172]=1;failures+=draw_expect(b,n,&v,64,1024,EX_LITERAL);
+ n=draw_fixture(b,1,1);b[160]=5;failures+=draw_expect(b,n,&v,64,1024,EX_SCHEMA);
+ return failures;
+}
+static int draw_capacity(void)
+{
+ uint8_t b[2048];struct expr_values v=draw_values();size_t n=draw_fixture(b,1,64);int failures=0;
+ struct sky_hud_recipe_v1 out={0};bool success=expr_build_draws(b,n,&v,64,1024,&out,NULL)==EX_OK;
+ failures+=!success || out.op_count!=64 || out.ops[63].kind!=1;
+ failures+=draw_expect(b,n,&v,63,1024,EX_OUTPUT);
+ n=draw_fixture(b,3,2);failures+=draw_expect(b,n,&v,2,9,EX_OUTPUT);
+ failures+=draw_expect(b,n,&v,1,10,EX_OUTPUT);
+ n=draw_fixture(b,3,1);failures+=draw_expect(b,n,&v,1,4,EX_OUTPUT);
+ failures+=draw_expect(b,n,&v,1,5,EX_OK);
+ /* One canonical literal consumes the entire ABI arena, without a terminator. */
+ b[18]=1;zcl_write_u32_le(b+20,1024);b[162]=1;zcl_write_u32_le(b+176,1024);
+ memmove(b+180,b+192,24);memset(b+204,'Z',1024);n=1228;
+ success=expr_build_draws(b,n,&v,1,1024,&out,NULL)==EX_OK;
+ failures+=!success || out.text_used!=1024 || out.ops[0].text_len!=1024 || out.text[1023]!='Z';
+ failures+=draw_expect(b,n,&v,1,1023,EX_OUTPUT);
+ return failures;
+}
+
+static int draw_followups(void)
+{
+ uint8_t b[2048];size_t n=draw_fixture(b,3,1);double fields[XF_COUNT]={0};fields[XF_SHIELD]=1;
+ struct expr_values v={0};struct sky_hud_recipe_v1 out,zero={0};memset(&out,0x5a,sizeof out);
+ bool evaluated=expr_evaluate(b,n,fields,8,&v,NULL)==EX_OK;int failures=0;
+ bool success=expr_build_draws(b,n,&v,64,1024,&out,NULL)==EX_OK;
+ failures+=!evaluated || !success;
+ failures+=draw_geometry_result(&out,3,success)+draw_text_result(&out,3,success);
+ failures+=!success || memcmp(out.ops+1,zero.ops+1,63*sizeof out.ops[0]);
+ failures+=!success || memcmp(out.text+5,zero.text+5,1019);
+ /* Empty pool, one zero-length literal: no NUL or out-of-table byte is read. */
+ b[18]=1;b[20]=0;b[162]=1;b[176]=0;memmove(b+180,b+192,24);n=204;
+ success=expr_build_draws(b,n,&v,1,0,&out,NULL)==EX_OK;
+ failures+=!success || out.op_count!=1 || out.text_used!=0 || out.ops[0].text_len!=0;
+ return failures;
+}
+static int draw_defensive(void)
+{
+ uint8_t b[2048];size_t n=draw_fixture(b,3,1);struct expr_values v=draw_values();
+ struct draw_table t={b,n,{160,168,192,216},{1,2,1,3},&v,8,64,1024};
+ struct sky_hud_recipe_v1 out={0};struct expr_error e={0};const uint8_t *p=NULL;int32_t value=0;int failures=0;
+ failures+=draw_read(&t,4,0,&p,&e)!=EX_REFERENCE;
+ failures+=draw_read(&t,0,1,&p,&e)!=EX_REFERENCE;
+ t.base[0]=n+1;failures+=draw_read(&t,0,0,&p,&e)!=EX_BOUNDS;
+ t.base[0]=n-7;failures+=draw_read(&t,0,0,&p,&e)!=EX_BOUNDS;
+ t.base[0]=160;t.count[0]=9;failures+=draw_read(&t,0,8,&p,&e)!=EX_BOUNDS;t.count[0]=1;
+ t.expressions=7;failures+=draw_value(&t,7,&value,&e)!=EX_REFERENCE;t.expressions=8;
+ v.count=7;failures+=draw_value(&t,7,&value,&e)!=EX_REFERENCE;v.count=257;t.expressions=257;
+ failures+=draw_value(&t,256,&value,&e)!=EX_REFERENCE;v.count=8;t.expressions=8;
+ b[172]=4;failures+=draw_piece(&t,0,&out,&e)!=EX_LITERAL;b[172]=0;
+ b[176]=4;failures+=draw_piece(&t,0,&out,&e)!=EX_LITERAL;b[176]=3;
+ t.base[3]=n;failures+=draw_piece(&t,0,&out,&e)!=EX_BOUNDS;t.base[3]=216;
+ b[168]=3;failures+=draw_piece(&t,0,&out,&e)!=EX_OPCODE;b[168]=1;
+ b[182]=8;failures+=draw_piece(&t,1,&out,&e)!=EX_REFERENCE;b[182]=2;
+ b[160]=3;failures+=draw_text(&t,0,&out,&out.ops[0],&e)!=EX_REFERENCE;b[160]=0;
+ b[162]=3;failures+=draw_text(&t,0,&out,&out.ops[0],&e)!=EX_REFERENCE;b[162]=2;
+ b[192]=5;failures+=draw_emit(&t,0,&out,&e)!=EX_SCHEMA;
+ out.text_used=1025;failures+=draw_append(&t,&out,NULL,0,&e)!=EX_OUTPUT;
+ return failures;
+}
+
 int test_skycombat_expr(void);
 int test_skycombat_expr(void)
 {
  int failures=expr_headers()+expr_records()+expr_text_cases()+expr_limits();
  failures+=eval_operators()+eval_domains()+eval_bounds()+eval_defensive_bounds();
+ failures+=draw_kinds()+draw_refusals()+draw_capacity()+draw_followups()+draw_defensive();
  printf("test_skycombat_expr: %s (%d failures)\n",failures?"FAILED":"PASS",failures);
  return failures;
 }

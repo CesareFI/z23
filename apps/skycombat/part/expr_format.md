@@ -110,3 +110,36 @@ zeroed unused slots. Required output changes only on complete success; failures
 leave it byte-for-byte unchanged and optionally set/log a trusted error.
 Input storage and the two output objects must not overlap, and input storage
 must remain valid and immutable for the entire call.
+
+`expr_build_draws(bytes,n,values,op_capacity,text_capacity,out,error)` revalidates
+this complete part and assembles its visible draws in order into the supplied
+SKY_HUD_PART v1.2 data ABI: 64 forty-byte operations and a 1024-byte text arena,
+3592 bytes total. No loader, renderer, file/network input, or host string API is
+introduced. Capacities may reduce these limits; values above them refuse EX_LIMIT.
+Exceeding either capacity refuses EX_OUTPUT for the whole part, never truncates
+or publishes a partial recipe. Zero capacities accept an empty/fully hidden list.
+
+The caller supplies the complete `expr_evaluate` result for these exact immutable
+part bytes; count and steps must equal E or EX_VALUES refuses. These metadata
+checks do not establish byte identity or authenticate computed numbers. All
+input/output objects must be valid, disjoint, and immutable during the call.
+Every section record, expression reference, text partition and literal extent is
+checked before use. Visibility must be canonical 0/1 (otherwise EX_VALUES).
+Only visible draws require nonnegative w/h; text additionally requires font
+1..4096 and alignment 0..2, otherwise EX_RANGE. x/y stay signed I32; rgba preserves
+the I32 bit pattern modulo 2^32. Structural zero fields still obey validation.
+
+RECT/RECT_LINES emit their respective kind and geometry with zero text fields.
+TEXT emits an anchor and font/alignment, with w=h=0. TEXT_BOX emits centre/top,
+padding/height and font, with align=0; measurement remains the host's operation.
+LITERAL bytes come only from the canonical literal pool with explicit lengths;
+DECIMAL pieces emit canonical signed decimal I32 (including INT32_MIN), without
+locale, formatting strings or external text. Each visible text use copies its
+pieces into the arena, with checked text_off/text_len. Empty literals are valid.
+The arena is counted bytes, not NUL-terminated strings; repeated uses cost bytes.
+
+Assembly allocates nothing, recurses nowhere and retains no input. One fixed
+local recipe plus bounded scalar metadata/11-byte decimal workspace provides
+atomic publication. Success zeroes unused operations/arena bytes; every refusal
+leaves output unchanged and optionally reports a trusted error. Validation's
+conservative 1024-byte text budget includes invisible and repeated uses.
