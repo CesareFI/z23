@@ -49,7 +49,8 @@ zhuman_err zhuman_format_duration(uint64_t ms, char *out, size_t cap);
 
 /* Parse "1d 2h 3m 4.5s", "90m", "250ms", "1h30m" (spaces optional
  * between components). Units: d, h, m, s, ms. Components may appear
- * at most once and in any order; total must fit in uint64 ms. */
+ * at most once and in any order; total must fit in uint64 ms.
+ * Fractions are accepted only on seconds, truncated to milliseconds. */
 zhuman_err zhuman_parse_duration(const char *str, uint64_t *out_ms);
 
 const char *zhuman_err_str(zhuman_err e);

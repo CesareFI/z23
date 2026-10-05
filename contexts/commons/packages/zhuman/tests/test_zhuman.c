@@ -168,6 +168,23 @@ static void test_duration(void)
     expect_parse_duration("1.5s", 1500);
     expect_parse_duration("2s 500ms", 2500);
 
+    /* A zero-valued fraction still violates non-second unit grammar. */
+    uint64_t unchanged = 123;
+    CHECK(zhuman_parse_duration("1.0m", &unchanged) == ZHUMAN_ERR_FORMAT);
+    CHECK(unchanged == 123);
+    CHECK(zhuman_parse_duration("1.0001h", &unchanged) == ZHUMAN_ERR_FORMAT);
+    CHECK(unchanged == 123);
+    CHECK(zhuman_parse_duration("1.0d", &unchanged) == ZHUMAN_ERR_FORMAT);
+    CHECK(unchanged == 123);
+    CHECK(zhuman_parse_duration("1.0ms", &unchanged) == ZHUMAN_ERR_FORMAT);
+    CHECK(unchanged == 123);
+    CHECK(zhuman_parse_duration("1s 2.0001m", &unchanged) == ZHUMAN_ERR_FORMAT);
+    CHECK(unchanged == 123); /* no partial total is published */
+    CHECK(zhuman_parse_duration("1.0s", &unchanged) == ZHUMAN_OK);
+    CHECK(unchanged == 1000);
+    CHECK(zhuman_parse_duration("1.0001s", &unchanged) == ZHUMAN_OK);
+    CHECK(unchanged == 1000); /* preserve sub-millisecond truncation */
+
     /* Errors: repeats, fractions on non-second units, junk. */
     uint64_t v;
     CHECK(zhuman_parse_duration("", &v) == ZHUMAN_ERR_FORMAT);

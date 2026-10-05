@@ -187,7 +187,9 @@ zhuman_err zhuman_parse_duration(const char *str, uint64_t *out_ms)
         }
         /* Optional fraction, only meaningful before 's'. */
         uint64_t frac_ms = 0;
+        bool has_fraction = false;
         if (*str == '.') {
+            has_fraction = true;
             str++;
             if (!(*str >= '0' && *str <= '9')) return ZHUMAN_ERR_FORMAT;
             uint64_t place = 100; /* first digit is tenths of a second */
@@ -216,7 +218,7 @@ zhuman_err zhuman_parse_duration(const char *str, uint64_t *out_ms)
         } else {
             return ZHUMAN_ERR_FORMAT;
         }
-        if (frac_ms && bit != 3) return ZHUMAN_ERR_FORMAT; /* "1.5m" rejected */
+        if (has_fraction && bit != 3) return ZHUMAN_ERR_FORMAT; /* "1.5m" rejected */
         if (seen & (1u << bit)) return ZHUMAN_ERR_FORMAT;  /* repeated unit */
         seen |= 1u << bit;
 
