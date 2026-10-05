@@ -1,8 +1,14 @@
 #include "zvarint/zvarint.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Exercise the CLI in the package's registered suite without a subprocess. */
+#define main zvarint_cli_main
+#include "../app/main.c"
+#undef main
 
 #define CHECK(cond) do { \
     if (!(cond)) { \
@@ -179,6 +185,49 @@ static void test_err_str(void)
     CHECK(zvarint_err_str((zvarint_err)999) != NULL);
 }
 
+static void test_cli_decimal_refusal(void)
+{
+    static const struct { char *mode; char *number; } cases[] = {
+        {"enc", "18446744073709551616"},
+        {"encs", "9223372036854775808"},
+        {"encs", "-9223372036854775809"},
+        {"enc", ""}, {"encs", ""},
+        {"enc", "-1"}, {"enc", " -1"}
+    };
+    size_t accepted = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        char *args[] = {"zvarint", cases[i].mode, cases[i].number, NULL};
+        int status = zvarint_cli_main(3, args);
+        if (status == 0) {
+            fprintf(stderr, "accepted invalid decimal: %s [%s]\n",
+                    cases[i].mode, cases[i].number);
+            ++accepted;
+        }
+    }
+    CHECK(accepted == 0);
+}
+
+/* Compatibility controls, not additional defect claims. */
+static void test_cli_decimal_controls(void)
+{
+    static const struct { char *mode; char *number; int valid; } cases[] = {
+        {"enc", "18446744073709551614", 1},
+        {"enc", "18446744073709551615", 1},
+        {"encs", "9223372036854775806", 1},
+        {"encs", "9223372036854775807", 1},
+        {"encs", "-9223372036854775808", 1},
+        {"encs", "-9223372036854775807", 1},
+        {"enc", "0", 1}, {"encs", "0", 1},
+        {"enc", " +1", 1}, {"encs", " -1", 1},
+        {"enc", "12x", 0}, {"encs", "+", 0}
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        char *args[] = {"zvarint", cases[i].mode, cases[i].number, NULL};
+        errno = ERANGE;
+        CHECK((zvarint_cli_main(3, args) == 0) == cases[i].valid);
+    }
+}
+
 int main(void)
 {
     test_known_vectors();
@@ -186,6 +235,8 @@ int main(void)
     test_errors();
     test_roundtrip();
     test_err_str();
-    puts("test_zvarint: all groups passed (vectors zigzag errors roundtrip errstr)");
+    test_cli_decimal_refusal();
+    test_cli_decimal_controls();
+    puts("test_zvarint: all groups passed (vectors zigzag errors roundtrip errstr cli)");
     return 0;
 }
