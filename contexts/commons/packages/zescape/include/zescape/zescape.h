@@ -28,7 +28,8 @@ typedef enum {
     ZESCAPE_ERR_BAD_HEX      /* \x not followed by 2 hex digits */
 } zescape_err;
 
-/* Worst-case escaped length of n input bytes (every byte -> \xNN). */
+/* Worst-case escaped length of n input bytes (every byte -> \xNN).
+ * Returns SIZE_MAX when that bound is not representable. */
 size_t zescape_escaped_max(size_t n);
 
 /* Escape in[0..len) into out (capacity cap), writing *out_len bytes

@@ -174,8 +174,27 @@ static void test_err_str(void)
     CHECK(zescape_err_str((zescape_err)999) != NULL);
 }
 
+#define main escape_fixture_main
+#include "../app/main.c"
+#undef main
+
+static void test_escaped_size_overflow(void)
+{
+    const size_t sizes[] = {SIZE_MAX / 4 + 1, SIZE_MAX};
+    int failed = 0;
+    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+        if (zescape_escaped_max(sizes[i]) != SIZE_MAX) {
+            fprintf(stderr, "FAIL escaped_size row=%zu\n", i);
+            failed = 1;
+        }
+    }
+    CHECK(!failed);
+}
+
 int main(void)
 {
+    test_escaped_size_overflow();
+
     test_escape_basics();
     test_escape_small_buffer();
     test_unescape_basics();

@@ -40,7 +40,13 @@ int main(int argc, char **argv)
     if (!data) { fprintf(stderr, "zescape: out of memory\n"); return 1; }
 
     if (strcmp(argv[1], "escape") == 0) {
-        size_t cap = zescape_escaped_max(len) + 1;
+        size_t cap = zescape_escaped_max(len);
+        if (cap == SIZE_MAX) {
+            fprintf(stderr, "zescape: escaped size exceeds addressable memory\n");
+            free(data);
+            return 1;
+        }
+        cap++;
         char *out = malloc(cap);
         if (!out) { free(data); return 1; }
         size_t n = 0;

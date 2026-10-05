@@ -12,6 +12,7 @@ static int hexval(char c)
 
 size_t zescape_escaped_max(size_t n)
 {
+    if (n > SIZE_MAX / 4) return SIZE_MAX;
     return n * 4;
 }
 
