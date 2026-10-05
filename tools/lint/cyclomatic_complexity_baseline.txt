@@ -783,7 +783,7 @@ contexts/commons/packages/zpath/src/zpath.c:zpath_normalize:23
 contexts/commons/packages/zpct/src/zpct.c:zpct__in_set:26
 contexts/commons/packages/zpct/src/zpct.c:zpct_encode:19
 contexts/commons/packages/zpem/src/zpem.c:zpem_parse:29
-contexts/commons/packages/zpool/app/main.c:main:28
+contexts/commons/packages/zpool/app/main.c:main:25
 contexts/commons/packages/zpuny/src/zpuny.c:utf8_decode_all:18
 contexts/commons/packages/zpuny/src/zpuny.c:zpuny_decode:31
 contexts/commons/packages/zpuny/src/zpuny.c:zpuny_encode:33

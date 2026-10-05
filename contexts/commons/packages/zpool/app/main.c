@@ -37,6 +37,14 @@ static bool init_pool(zpool *pool, size_t block_size, size_t count) {
   return zpool_init(pool, arena, stride * count, block_size);
 }
 
+static bool parse_index(const char *text, size_t count, unsigned long *index) {
+  char *end = NULL;
+  unsigned long value = strtoul(text, &end, 10);
+  if (end == text || (*end && *end != '\n') || value >= count) return false;
+  *index = value;
+  return true;
+}
+
 int main(int argc, char **argv) {
   
   if (argc != 3) {
@@ -74,9 +82,8 @@ int main(int argc, char **argv) {
         printf("a -> %zu\n", idx);
       }
     } else if (op[0] == 'f' || op[0] == 'o') {
-      char *e2 = NULL;
-      unsigned long idx = strtoul(op + 1, &e2, 10);
-      if (!e2 || (*e2 && *e2 != '\n') || idx >= pool.block_count) {
+      unsigned long idx;
+      if (!parse_index(op + 1, pool.block_count, &idx)) {
         fprintf(stderr, "zpool: bad op '%s'", op);
         bad = 2;
         break;
