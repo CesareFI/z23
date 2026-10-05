@@ -144,6 +144,13 @@ bool zmap_put(zmap *m, const char *key, void *value, void **old_value) {
     return true;
   }
 
+  /* Reserve the key before rehash so failed allocation leaves capacity intact. */
+  size_t key_len = strlen(key);
+  char *copy = zm_alloc(m, key_len + 1);
+  if (!copy)
+    return false;
+  memcpy(copy, key, key_len + 1);
+
   /* Rehash before inserting when the probe load (including tombstones)
    * would reach 3/4.  Prefer clearing tombstones at the current capacity;
    * double only when the live entries alone would still breach the bound,
@@ -152,17 +159,14 @@ bool zmap_put(zmap *m, const char *key, void *value, void **old_value) {
     size_t new_cap = (m->size + 1) * 4 >= m->cap * 3 ? m->cap * 2 : m->cap;
     if (new_cap > ZMAP_MAX_CAP || !rehash(m, new_cap)) {
       /* Fall back to a same-size rehash before giving up. */
-      if (m->tombstones == 0 || new_cap == m->cap || !rehash(m, m->cap))
+      if (m->tombstones == 0 || new_cap == m->cap || !rehash(m, m->cap)) {
+        zm_free(m, copy);
         return false;
+      }
     }
     s = find_slot(m, key, hash);
   }
 
-  size_t key_len = strlen(key);
-  char *copy = zm_alloc(m, key_len + 1);
-  if (!copy)
-    return false;
-  memcpy(copy, key, key_len + 1);
 
   if (s->state == SLOT_TOMBSTONE)
     m->tombstones--;

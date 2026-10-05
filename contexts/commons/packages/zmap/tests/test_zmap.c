@@ -247,7 +247,26 @@ static void test_clear_erased_slots(void) {
   zmap_destroy(m, NULL, NULL);
 }
 
+static void test_failed_growth_preserves_capacity(void) {
+  int budget = 100;
+  zmap_alloc a = {.ctx = &budget, .alloc = counting_alloc,
+                  .dealloc = counting_dealloc};
+  zmap *m = zmap_create_ex(&a, NULL);
+  if (!m) abort();
+  char key[32];
+  for (int i = 0; i < 11; i++) {
+    snprintf(key, sizeof key, "old%d", i);
+    if (!zmap_put(m, key, (void *)1, NULL)) abort();
+  }
+  size_t before = zmap_capacity(m);
+  budget = 1;
+  bool inserted = zmap_put(m, "new", (void *)2, NULL);
+  CHECK(!inserted && zmap_capacity(m) == before && zmap_size(m) == 11);
+  zmap_destroy(m, NULL, NULL);
+}
+
 int main(void) {
+  test_failed_growth_preserves_capacity();
   test_clear_erased_slots();
   test_insert_lookup_replace();
   test_key_copied();
