@@ -9,7 +9,7 @@
   "dependencies": [
     {
       "name": "zutf8/zutf8",
-      "root": "32095f0a1cd96d634f1dcac964256cafdfe12be8628f5789f013feb811f9ccc8",
+      "root": "af83b6a944a42d26ad7af42e18ec0d67119bfda96c539baca0091a6a1d76b6b6",
       "semver": "0.1.0"
     }
   ],

@@ -44,12 +44,12 @@
     },
     {
       "name": "zjson/zjson",
-      "root": "4f02b7bde678bc18fa1a28c56512df7b8323e93dc8474918780edc88170bcb2c",
+      "root": "9d6deead41e106fa0a414f2767cb767850aac321203d4de887aebad983edcc13",
       "semver": "0.1.0"
     },
     {
       "name": "zjsonp/zjsonp",
-      "root": "124ae50ea389d8daa787e5fdad275e59b25e72e1acf9a5aec195fa7ca735de23",
+      "root": "15988e532dbcf5693bc01afacda312e671c8fc77f15f690b7653fa1804d22308",
       "semver": "0.1.0"
     },
     {
@@ -99,12 +99,12 @@
     },
     {
       "name": "zutf8/zutf8",
-      "root": "32095f0a1cd96d634f1dcac964256cafdfe12be8628f5789f013feb811f9ccc8",
+      "root": "af83b6a944a42d26ad7af42e18ec0d67119bfda96c539baca0091a6a1d76b6b6",
       "semver": "0.1.0"
     },
     {
       "name": "zvarint/zvarint",
-      "root": "f63cd7f8b9e5b02194eaf9e4c9886cc4822b4c26e8310b9957110c197af1018a",
+      "root": "e6cc3aa6ddc7650ce2e212d171625853db8a39556bf0ec7cb371759cb90b44a5",
       "semver": "0.1.0"
     }
   ],
