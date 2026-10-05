@@ -342,8 +342,21 @@ static void test_fail_closed(void) {
   }
 }
 
+/* A trailing separator must not opt into following the root symlink. */
+static void test_symlink_root_slashes(void) {
+  static const char *const suffixes[] = {"dlink/", "dlink///"};
+  for (size_t i = 0; i < sizeof suffixes / sizeof suffixes[0]; i++) {
+    char path[512];
+    path_to(path, sizeof path, suffixes[i]);
+    nvisits = 0;
+    bool ok = zwalk(path, NULL, record, NULL);
+    CHECK(ok && nvisits == 1 && visits[0][0] == 'S');
+  }
+}
+
 int main(void) {
   build_fixture();
+  test_symlink_root_slashes();
   test_default_walk();
   test_depth_limit();
   test_skip_hidden();

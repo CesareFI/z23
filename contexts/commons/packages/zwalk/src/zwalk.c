@@ -132,6 +132,26 @@ static wk_status visit_node(const char *path, int depth,
   return status;
 }
 
+/* lstat("link/") follows a directory symlink on POSIX. Inspect the final
+ * component without separators first, then retain the original filesystem
+ * validation for ordinary files and directories. The callback still receives
+ * the exact supplied root spelling. */
+static int root_lstat(const char *path, struct stat *st) {
+  size_t len = strlen(path);
+  if (len == 0 || path[len - 1] != '/')
+    return lstat(path, st);
+  if (len >= PATH_MAX)
+    return -1;
+  char bare[PATH_MAX];
+  memcpy(bare, path, len + 1);
+  while (len > 1 && bare[len - 1] == '/')
+    bare[--len] = '\0';
+  int rc = lstat(bare, st);
+  if (rc != 0 || S_ISLNK(st->st_mode))
+    return rc;
+  return lstat(path, st);
+}
+
 bool zwalk(const char *root, const struct zwalk_opts *opts,
            zwalk_visit_fn visit, void *ctx) {
   if (!root || !visit || root[0] == '\0')
@@ -142,7 +162,7 @@ bool zwalk(const char *root, const struct zwalk_opts *opts,
   if (o.max_depth < 0)
     return false;
   struct stat st;
-  int rc = o.follow_symlinks ? stat(root, &st) : lstat(root, &st);
+  int rc = o.follow_symlinks ? stat(root, &st) : root_lstat(root, &st);
   if (rc != 0)
     return false;
   return visit_node(root, 0, &st, &o, visit, ctx) != WK_ERR;
