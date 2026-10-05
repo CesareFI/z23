@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
- * purpose: Evaluate bounded validated HUD expressions without host effects. */
+ * purpose: Evaluate bounded validated HUD expressions with stderr diagnostics as its only host effect. */
 #include "expr_format.h"
 #include <base/serialize_le.h>
 #include <math.h>
@@ -10,7 +10,7 @@ static enum expr_status eval_fail(struct expr_error *e,enum expr_status code,
  unsigned i,const char *reason)
 {
  if(e)*e=(struct expr_error){code,i,reason};
- fprintf(stderr,"HUD expression evaluation: code=%u record=%u: %s\n",code,i,reason);
+ fprintf(stderr,"HUD expression evaluation: code=%u record=%u: %s\n",(unsigned)code,i,reason);
  return code;
 }
 static int32_t eval_saturate(int64_t value)

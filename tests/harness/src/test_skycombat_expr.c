@@ -168,7 +168,7 @@ static int eval_expect(const uint8_t *b,size_t n,const double *fields,unsigned b
  bool ok=got==want && e.code==got && e.reason;
  if(got==EX_OK)ok=ok && eval_result_ok(b,n,&out,last);
  else ok=ok && !memcmp(&out,&before,sizeof out);
- if(!ok)printf("eval want=%u got=%u last=%d expected=%d\n",want,got,
+ if(!ok)printf("eval want=%u got=%u last=%d expected=%d\n",(unsigned)want,(unsigned)got,
   got==EX_OK && out.count<=256 && out.count?out.value[out.count-1]:0,last);
  return !ok;
 }
