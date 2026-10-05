@@ -57,6 +57,16 @@ selftest_native() {
         [[ $rc == 5 ]] || return 1
         printf 'commons-fix-admit selftest %s immutable-grants/launch-refusal: PASS\n' "$mode"
     done
+    # A regular-file RLIMIT_FSIZE death must not become an ordinary red exit.
+    printf '#include <stdio.h>\nint main(void) { FILE *f=fopen("limit-file", "wb"); if(!f) return 0; char block[65536]={0}; for(int i=0;i<1025;i++) if(fwrite(block, 1, sizeof(block), f) != sizeof(block)) { fclose(f); return 0; } fclose(f); return 0; }\n' > "$fixture/native-source/file-limit.c" || return 1
+    "$verifier" --fix-admit-compile "$fixture/native-source" "$fixture/native-build" "${CC:-gcc-14}" \
+        -std=c23 -O1 -Wall -Wextra -Werror -pedantic "$fixture/native-source/file-limit.c" \
+        -o "$fixture/native-build/file-limit" || return 1
+    rc=0
+    "$verifier" --fix-admit-test "$fixture/native-source" "$fixture/native-build" \
+        "$fixture/native-build/file-limit" > "$fixture/native-refusal" 2>&1 || rc=$?
+    [[ $rc == 5 ]] || { cat "$fixture/native-refusal" >&2; return 1; }
+    printf 'commons-fix-admit selftest native-file-limit: PASS\n'
 }
 
 selftest() (
@@ -83,7 +93,7 @@ selftest() (
     printf 'baseline\n' > unstaged-sentinel
     git add . || return 1
     git -c user.name=Fixture -c user.email=fixture@example.invalid -c core.hooksPath=/dev/null commit -qm baseline || return 1
-    for case_name in ${COMMONS_FIX_ADMIT_SELFTEST_CASES:-admit assertion outside adds deletes no-test passes compile-red compile-green fails traversal-dependency invalid-dependency mismatched-dependency nul-dependency unused-test outside-write evidence-write outside-include dirty-helper}; do
+    for case_name in ${COMMONS_FIX_ADMIT_SELFTEST_CASES:-admit assertion assertion-signal signal file-limit outside adds deletes no-test passes compile-red compile-green fails traversal-dependency invalid-dependency mismatched-dependency nul-dependency unused-test outside-write evidence-write outside-include dirty-helper}; do
         subject=$script
         git reset -q || return 1
         git restore . || return 1
@@ -100,7 +110,10 @@ selftest() (
             compile-green) printf 'invalid C\n' > contexts/commons/packages/tiny/src/tiny.c; result='REFUSE does-not-compile';;
             fails) printf 'int value(void) { return 2; }\n' > contexts/commons/packages/tiny/src/tiny.c; result='REFUSE test-fails-with-fix';;
             admit) result=ADMIT;;
-            assertion) printf '#include <assert.h>\nint value(void); int main(void) { assert(value() == 1); return 0; }\n' > contexts/commons/packages/tiny/tests/test_tiny.c; result=ADMIT;;
+            assertion) printf '#include <stdio.h>\nint value(void); int main(void) { if(value() != 1) { fputs("test assertion failed: value() == 1\\n", stderr); return 1; } return 0; }\n' > contexts/commons/packages/tiny/tests/test_tiny.c; result=ADMIT;;
+            assertion-signal) printf '#include <assert.h>\nint value(void); int main(void) { assert(value() == 1); return 0; }\n' > contexts/commons/packages/tiny/tests/test_tiny.c; result='REFUSE test-did-not-complete';;
+            signal) printf 'int value(void); int main(void) { if(value() == 1) return 0; volatile int numerator=42, denominator=value(); return numerator/denominator; }\n' > contexts/commons/packages/tiny/tests/test_tiny.c; result='REFUSE test-did-not-complete';;
+            file-limit) printf '#include <stdio.h>\nint value(void); int main(void) { if(value() == 1) return 0; FILE *f=fopen("limit-file", "wb"); if(!f) return 0; char block[65536]={0}; for(int i=0;i<1025;i++) if(fwrite(block, 1, sizeof(block), f) != sizeof(block)) { fclose(f); return 0; } fclose(f); return 0; }\n' > contexts/commons/packages/tiny/tests/test_tiny.c; result='REFUSE test-did-not-complete';;
             traversal-dependency) printf '{"name":"tiny/tiny","dependencies":[{"name":"../outside"}]}\n' > contexts/commons/packages/tiny/zcode-package.json; result='REFUSE does-not-compile';;
             invalid-dependency) printf '{"name":"tiny/tiny","dependencies":[{"name":"Upper/Upper"}]}\n' > contexts/commons/packages/tiny/zcode-package.json; result='REFUSE does-not-compile';;
             mismatched-dependency) printf '{"name":"tiny/tiny","dependencies":[{"name":"leaf/other"}]}\n' > contexts/commons/packages/tiny/zcode-package.json; result='REFUSE does-not-compile';;

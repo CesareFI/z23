@@ -29,11 +29,15 @@ static int pv_fix_admit_outcome(const struct pv_run *run)
 {
     if (!run->launched || run->sandbox_fail || run->timed_out ||
         run->headroom_exhausted || run->budget_exceeded ||
+        !run->exited || run->term_signal != 0 ||
         (run->exited && run->exit_code == PV_CHILD_EXEC_FAIL)) {
-        fprintf(stderr, "fix-admit: child setup, confinement or resource failure: %.512s\n", run->stderr_buf);
+        fprintf(stderr, "fix-admit: child setup, confinement or resource failure exit=%d signal=%d: %.512s\n",
+                run->exit_code, run->term_signal, run->stderr_buf);
         return 5;
     }
     if (run->exited && run->exit_code == 0) return 0;
+    /* Red evidence requires a completed test assertion exit, never a crash,
+     * timeout or resource death (including signals without resource flags). */
     fprintf(stderr, "fix-admit: child failed exit=%d signal=%d: %.512s\n",
             run->exit_code, run->term_signal, run->stderr_buf);
     return 10;
