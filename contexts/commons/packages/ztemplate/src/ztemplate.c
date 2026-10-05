@@ -131,6 +131,30 @@ void ztemplate_free(ztemplate *tp)
     free(tp);
 }
 
+static void copy_fragment(char *out, size_t out_cap, size_t offset,
+                          const char *src, size_t len)
+{
+    if (out && offset < out_cap) {
+        size_t room = out_cap - offset;
+        size_t take = len < room ? len : room;
+        if (take > 0) memcpy(out + offset, src, take);
+    }
+}
+
+static bool append_fragment(char *out, size_t out_cap, size_t *offset,
+                            const char *src, size_t len, size_t *out_len)
+{
+    if (len > SIZE_MAX - *offset) {
+        if (out && out_cap > 0)
+            out[*offset < out_cap ? *offset : out_cap - 1] = '\0';
+        *out_len = SIZE_MAX;
+        return false;
+    }
+    copy_fragment(out, out_cap, *offset, src, len);
+    *offset += len;
+    return true;
+}
+
 ztemplate_status ztemplate_render(const ztemplate *tp,
                                   ztemplate_lookup lookup, void *ctx,
                                   char *out, size_t out_cap,
@@ -154,17 +178,13 @@ ztemplate_status ztemplate_render(const ztemplate *tp,
             src = val;
             slen = vlen;
         }
-        if (out && o < out_cap) {
-            size_t room = out_cap - o;
-            size_t take = slen < room ? slen : room;
-            memcpy(out + o, src, take);
-        }
-        o += slen;
+        if (!append_fragment(out, out_cap, &o, src, slen, out_len))
+            return ZTEMPLATE_OVERFLOW;
     }
     if (out && out_cap > 0)
         out[o < out_cap ? o : out_cap - 1] = '\0';
     *out_len = o;
-    if (!out || o >= out_cap || o > out_cap)
+    if (!out || o >= out_cap)
         return ZTEMPLATE_OVERFLOW;
     return ZTEMPLATE_OK;
 }

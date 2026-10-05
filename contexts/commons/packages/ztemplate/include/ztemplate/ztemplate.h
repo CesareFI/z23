@@ -12,7 +12,7 @@
  *   (write the braces as a variable value if you need them)
  *
  * Rendering is allocation-free into a caller buffer; the exact
- * required length is always reported so a two-pass size-then-fill
+ * required length is reported when representable so a two-pass size-then-fill
  * pattern works. Unknown variables are a render error (fail-closed),
  * never silently empty.
  *
@@ -33,7 +33,7 @@ typedef struct ztemplate ztemplate;
 typedef enum {
     ZTEMPLATE_OK = 0,
     ZTEMPLATE_PARSE_ERROR,   /* malformed template syntax */
-    ZTEMPLATE_OVERFLOW,      /* output buffer too small */
+    ZTEMPLATE_OVERFLOW,      /* output buffer too small or length overflow */
     ZTEMPLATE_UNKNOWN_VAR,   /* lookup returned false */
     ZTEMPLATE_NO_MEMORY      /* segment allocation failed */
 } ztemplate_status;
@@ -52,10 +52,14 @@ typedef bool (*ztemplate_lookup)(const char *name, size_t name_len,
                                  const char **value, size_t *value_len,
                                  void *ctx);
 
-/* Render into out[0..out_cap). *out_len always receives the exact
- * rendered length. Returns ZTEMPLATE_OVERFLOW when out is NULL or
- * too small (length still reported). The output is NUL-terminated
- * when it fits. */
+/* Render into out[0..out_cap). On success or buffer overflow, *out_len
+ * receives the rendered length. If that length cannot fit in size_t,
+ * rendering stops before the overflowing segment, *out_len is SIZE_MAX,
+ * and ZTEMPLATE_OVERFLOW is returned. Returns ZTEMPLATE_OVERFLOW when
+ * out is NULL or too small, including space for the NUL terminator.
+ * Any supplied nonempty output buffer is NUL-terminated on overflow.
+ * Invalid arguments or unknown variables return an error; their output
+ * buffer and length are unspecified. */
 ztemplate_status ztemplate_render(const ztemplate *tp,
                                   ztemplate_lookup lookup, void *ctx,
                                   char *out, size_t out_cap,

@@ -246,8 +246,39 @@ static void test_parse_size_overflow(void)
     CHECK(ztemplate_parse("", SIZE_MAX, NULL) == NULL);
 }
 
+static bool huge_lookup(const char *name, size_t name_len,
+                        const char **value, size_t *value_len, void *ctx)
+{
+    (void)name;
+    (void)name_len;
+    (void)ctx;
+    /* Synthetic length metadata exercises arithmetic without allocating
+     * an impossible span. Size-only rendering never reads this value. */
+    *value = "v";
+    *value_len = SIZE_MAX;
+    return true;
+}
+
+static void test_render_size_overflow(void) {
+    ztemplate *tp = ztemplate_parse("p{{big}}x", 9, NULL);
+    CHECK(tp != NULL);
+    size_t n = 99;
+    CHECK(ztemplate_render(tp, huge_lookup, NULL, NULL, 0, &n)
+          == ZTEMPLATE_OVERFLOW && n == SIZE_MAX);
+    char out[6];
+    memset(out, '!', sizeof out);
+    CHECK(ztemplate_render(tp, huge_lookup, NULL, out, 4, &n)
+          == ZTEMPLATE_OVERFLOW && n == SIZE_MAX &&
+          out[0] == 'p' && out[1] == '\0' &&
+          out[2] == '!' && out[3] == '!' &&
+          out[4] == '!' && out[5] == '!');
+    ztemplate_free(tp);
+}
+
+
 int main(void)
 {
+    test_render_size_overflow();
     test_parse_size_overflow();
     test_basic_render();
     test_whitespace_and_reuse();
