@@ -98,8 +98,10 @@ bool privkey_verify_pubkey(const struct privkey *k, const struct pubkey *pk)
     if (pubkey_is_compressed(pk) != k->fCompressed)
         return false;
     unsigned char rnd[8];
-    if (!zcl_random_secret_bytes(rnd, sizeof(rnd), "privkey_verify_nonce"))
+    if (!zcl_random_secret_bytes(rnd, sizeof(rnd), "privkey_verify_nonce")) {
+        memory_cleanse(rnd, sizeof(rnd));
         return false;
+    }
     const char *str = "Zclassic key verification\n";
     size_t str_len = 26;
     struct sha256_ctx hasher;
@@ -113,11 +115,22 @@ bool privkey_verify_pubkey(const struct privkey *k, const struct pubkey *pk)
     sha256_write(&hasher2, tmp, 32);
     struct uint256 hash;
     sha256_finalize(&hasher2, hash.data);
+    memory_cleanse(rnd, sizeof(rnd));
+    memory_cleanse(&hasher, sizeof(hasher));
+    memory_cleanse(tmp, sizeof(tmp));
+    memory_cleanse(&hasher2, sizeof(hasher2));
 
     unsigned char sig[SIGNATURE_SIZE];
     size_t siglen = SIGNATURE_SIZE;
-    privkey_sign(k, &hash, sig, &siglen);
-    return pubkey_verify(pk, &hash, sig, siglen);
+    if (!privkey_sign(k, &hash, sig, &siglen)) {
+        memory_cleanse(&hash, sizeof(hash));
+        memory_cleanse(sig, sizeof(sig));
+        return false;
+    }
+    bool verified = pubkey_verify(pk, &hash, sig, siglen);
+    memory_cleanse(&hash, sizeof(hash));
+    memory_cleanse(sig, sizeof(sig));
+    return verified;
 }
 
 bool privkey_derive(const struct privkey *k, struct privkey *child,
