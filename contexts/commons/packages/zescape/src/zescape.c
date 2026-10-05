@@ -72,6 +72,12 @@ zescape_err zescape_escape(const void *in, size_t len,
     return ZESCAPE_OK;
 }
 
+static zescape_err unescape_small(size_t *err_pos, size_t pos)
+{
+    if (err_pos) *err_pos = pos;
+    return ZESCAPE_ERR_SMALL;
+}
+
 zescape_err zescape_unescape(const char *in, size_t len,
                              void *out, size_t cap,
                              size_t *out_len, size_t *err_pos)
@@ -84,7 +90,7 @@ zescape_err zescape_unescape(const char *in, size_t len,
     while (i < len) {
         char c = in[i];
         if (c != '\\') {
-            if (o >= cap) return ZESCAPE_ERR_SMALL;
+            if (o >= cap) return unescape_small(err_pos, i);
             dst[o++] = (uint8_t)c;
             i++;
             continue;
@@ -127,7 +133,7 @@ zescape_err zescape_unescape(const char *in, size_t len,
             if (err_pos) *err_pos = esc;
             return ZESCAPE_ERR_BAD_ESCAPE;
         }
-        if (o >= cap) return ZESCAPE_ERR_SMALL;
+        if (o >= cap) return unescape_small(err_pos, esc);
         dst[o++] = v;
         i++;
     }

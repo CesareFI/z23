@@ -119,6 +119,10 @@ static void test_unescape_errors(void)
           == ZESCAPE_ERR_BAD_HEX);
     CHECK(pos == 3);
 
+    /* Capacity failure identifies the first unwritten input byte. */
+    CHECK(zescape_unescape("abcdef", 6, buf, 3, &n, &pos)
+          == ZESCAPE_ERR_SMALL && pos == 3);
+
     /* Output capacity. */
     CHECK(zescape_unescape("abcdef", 6, buf, 3, &n, &pos)
           == ZESCAPE_ERR_SMALL);

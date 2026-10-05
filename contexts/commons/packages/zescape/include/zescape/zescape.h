@@ -44,7 +44,8 @@ zescape_err zescape_escape(const void *in, size_t len,
  * Supported escapes: \\ \" \' \n \r \t \0 \a \b \f \v \xHH (exactly
  * two hex digits). A trailing backslash is ZESCAPE_ERR_TRUNCATED.
  * On error *err_pos (if non-NULL) is the offset of the offending
- * backslash or digit. */
+ * backslash or digit for syntax errors. On ZESCAPE_ERR_SMALL it is the
+ * first unwritten literal byte or the backslash starting its escape. */
 zescape_err zescape_unescape(const char *in, size_t len,
                              void *out, size_t cap,
                              size_t *out_len, size_t *err_pos);
