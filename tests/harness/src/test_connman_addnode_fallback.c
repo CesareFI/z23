@@ -91,10 +91,48 @@ static int test_dial_cadence_after_clock_rollback(void)
     return ok ? 0 : 1;
 }
 
+static int test_addnode_cooldown_after_clock_rollback(void)
+{
+    printf("connman_addnode_fallback: addnode cooldown recovers after clock "
+           "rollback... ");
+    chain_params_select(CHAIN_MAIN);
+    const struct chain_params *params = chain_params_get();
+    struct connman cm;
+    struct node_signals sigs;
+    memset(&sigs, 0, sizeof(sigs));
+    bool ok = connman_init(&cm, params, &sigs);
+
+    if (ok) {
+        struct net_address addr;
+        test_set_ipv4(&addr, 203, 0, 113, 90, 8033);
+        cm.addnodes[cm.num_addnodes++] = addr;
+        cm.addnode_backoff_sec[0] = 60;
+        cm.addnode_last_attempt[0] =
+            (int64_t)platform_time_wall_time_t() + 3600;
+
+        struct addr_info pick;
+        enum connman_outbound_target_source source = CONNMAN_TARGET_NONE;
+        size_t addnode_index = SIZE_MAX;
+        memset(&pick, 0, sizeof(pick));
+        ok = connman_pick_next_outbound_target(&cm,
+                                               &cm.next_addnode_cursor,
+                                               &pick,
+                                               &source,
+                                               &addnode_index) &&
+             source == CONNMAN_TARGET_ADDNODE && addnode_index == 0;
+    }
+
+    connman_free(&cm);
+    if (ok) printf("OK\n");
+    else printf("FAIL\n");
+    return ok ? 0 : 1;
+}
+
 int test_connman_addnode_fallback(void)
 {
     int failures = 0;
     failures += test_dial_cadence_after_clock_rollback();
+    failures += test_addnode_cooldown_after_clock_rollback();
     failures += check_connman_addnode_dht_hint_priority_dial();
     failures += check_connman_addnode_loopback_edges_distinct();
     failures += check_connman_addnode_custom_port_onion_redial();

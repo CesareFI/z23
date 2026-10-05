@@ -949,6 +949,13 @@ bool connman_node_is_addnode(struct connman *cm,
     return connman_find_addnode_index(cm, &node->addr, NULL);
 }
 
+static bool connman_addnode_cooldown_active(int64_t now, int64_t last,
+                                            int cooldown)
+{
+    /* A backward wall adjustment must not extend a bounded retry delay. */
+    return now >= last && now - last < cooldown;
+}
+
 static bool connman_ready_addnode_from_other_group(struct connman *cm,
                                                    uint16_t saturated_group,
                                                    int64_t now)
@@ -961,7 +968,8 @@ static bool connman_ready_addnode_from_other_group(struct connman *cm,
             continue;
         const int cooldown = cm->addnode_backoff_sec[ai] > 0
                            ? cm->addnode_backoff_sec[ai] : 30;
-        if (now - cm->addnode_last_attempt[ai] < cooldown)
+        if (connman_addnode_cooldown_active(
+                now, cm->addnode_last_attempt[ai], cooldown))
             continue;
         if (connman_addnode_is_connected(cm, (size_t)ai))
             continue;
@@ -1007,7 +1015,8 @@ bool connman_pick_next_outbound_target(
                 cm->addnode_backoff_sec[ai] = 0;
                 continue;
             }
-            if (now - cm->addnode_last_attempt[ai] < cooldown)
+            if (connman_addnode_cooldown_active(
+                    now, cm->addnode_last_attempt[ai], cooldown))
                 continue;
 
             if (net_addr_is_ipv4(&cm->addnodes[ai].svc.addr)) {
