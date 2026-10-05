@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#define main zprng_cli_main
+#include "../app/main.c"
+#undef main
+
 static int failures;
 
 static void check(int cond, const char *name)
@@ -191,8 +195,27 @@ static void test_shuffle_size_overflow(void)
     check(ok, "overflowing shuffle span leaves buffer and generator unchanged");
 }
 
+static void test_cli_rejects_invalid_arguments(void)
+{
+    const char *seed_rows[] = {"", "-1", "18446744073709551616", "seed"};
+    for (size_t i = 0; i < sizeof seed_rows / sizeof seed_rows[0]; i++) {
+        char *args[] = {"zprng", (char *)seed_rows[i], "0", NULL};
+        int ok = zprng_cli_main(3, args) == 2;
+        fprintf(stderr, "prng_seed_row=%zu result=%s\n", i, ok ? "PASS" : "FAIL");
+        check(ok, "demo rejects invalid seed");
+    }
+    const char *count_rows[] = {"", "count"};
+    for (size_t i = 0; i < sizeof count_rows / sizeof count_rows[0]; i++) {
+        char *args[] = {"zprng", "42", (char *)count_rows[i], NULL};
+        int ok = zprng_cli_main(3, args) == 2;
+        fprintf(stderr, "prng_count_row=%zu result=%s\n", i, ok ? "PASS" : "FAIL");
+        check(ok, "demo rejects invalid count");
+    }
+}
+
 int main(void)
 {
+    test_cli_rejects_invalid_arguments();
     test_shuffle_size_overflow();
     test_shuffle_large_items();
     test_splitmix_vectors();
