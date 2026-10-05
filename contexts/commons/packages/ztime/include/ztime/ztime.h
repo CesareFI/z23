@@ -50,7 +50,7 @@ void ztime_civil_from_days(int64_t days, int64_t *year_out,
  * or range violation; *out is zeroed in that case. */
 bool ztime_parse_n(const char *str, size_t len, ztime_instant *out);
 
-/* NUL-terminated convenience wrapper. */
+/* NUL-terminated convenience wrapper. NULL str fails and zeroes non-NULL out. */
 bool ztime_parse(const char *str, ztime_instant *out);
 
 /* Format as canonical RFC 3339 UTC ("YYYY-MM-DDTHH:MM:SS[.fffffffff]Z";

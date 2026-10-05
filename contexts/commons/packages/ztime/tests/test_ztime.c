@@ -51,7 +51,13 @@ static void test_parse_kats(void) {
   PARSE("2001-09-09T06:16:40+04:30", 1000000000, 0);
 }
 
+static void test_null_parse_state(void) {
+  ztime_instant it = {.unix_secs = 123, .nanos = 456};
+  CHECK(!ztime_parse(NULL, &it) && it.unix_secs == 0 && it.nanos == 0);
+}
+
 static void test_parse_errors(void) {
+  test_null_parse_state();
   BAD("");
   BAD("1970-01-01"); /* date only */
   BAD("1970-01-01 00:00:00Z"); /* space, not 'T' */
