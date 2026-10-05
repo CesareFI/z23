@@ -83,8 +83,7 @@ is the full `zcl.transaction_type.v2` contract. The collection also reports
 `fully_demonstrated`, and `fully_chain_or_process_verified`, so an agent can
 assess proof coverage without parsing all catalog rows. It also names the
 reverse lookup command and counts the explicitly audited alternate routes and
-non-chain dispositions. The current catalog has 6 alternate route bindings and
-18 explicit negative classifications.
+non-chain dispositions.
 `core.wallet.transaction.list` is different: it is
 wallet history, not the type catalog. `app.protocols` describes broader
 application protocols, not an exhaustive transaction inventory.
