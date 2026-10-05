@@ -1,3 +1,5 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
+ * purpose: store arbitrary byte keys and roll back refused insertions. */
 #include "ztrie/ztrie.h"
 
 #include <stdint.h>
@@ -77,17 +79,45 @@ static ztrie_node *find_node(const ztrie *t, const uint8_t *key,
     return n;
 }
 
+static void remember_branch(ztrie_node ***first, ztrie_node **link)
+{
+    if (!*first) *first = link;
+}
+
+static bool rollback_branch(ztrie *t, ztrie_node **link)
+{
+    if (link) {
+        ztrie_node *node = *link;
+        *link = NULL;
+        /* A newly created branch has at most one child per node. */
+        while (node) {
+            ztrie_node *next = NULL;
+            for (unsigned i = 0; i < 256; ++i) {
+                if (node->child[i]) {
+                    next = node->child[i];
+                    break;
+                }
+            }
+            t->alloc.free_fn(t->alloc.ctx, node);
+            node = next;
+        }
+    }
+    return false;
+}
+
 bool ztrie_put(ztrie *t, const void *key_, size_t key_len, void *value,
                void **old_out)
 {
     if (!t || (!key_ && key_len > 0)) return false;
     const uint8_t *key = key_;
+    ztrie_node **first = NULL;
     if (old_out) *old_out = NULL;
 
     if (!t->root) {
         t->root = t->alloc.malloc_fn(t->alloc.ctx, sizeof(ztrie_node));
         if (!t->root) return false;
         memset(t->root, 0, sizeof(ztrie_node));
+        first = &t->root;
     }
 
     ztrie_node *n = t->root;
@@ -95,9 +125,10 @@ bool ztrie_put(ztrie *t, const void *key_, size_t key_len, void *value,
         if (!n->child[key[i]]) {
             ztrie_node *c = t->alloc.malloc_fn(t->alloc.ctx,
                                                sizeof(ztrie_node));
-            if (!c) return false;
+            if (!c) return rollback_branch(t, first);
             memset(c, 0, sizeof(ztrie_node));
             n->child[key[i]] = c;
+            remember_branch(&first, &n->child[key[i]]);
         }
         n = n->child[key[i]];
     }

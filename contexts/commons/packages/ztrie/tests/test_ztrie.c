@@ -1,3 +1,5 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
+ * purpose: verify trie values, byte spans and allocation-refusal rollback. */
 #include "ztrie/ztrie.h"
 
 #include <stdint.h>
@@ -315,7 +317,7 @@ static void test_stress_vs_model(void)
     ztrie_destroy(t);
 }
 
-int main(void)
+static int baseline_main(void)
 {
     test_basic();
     test_longest_prefix();
@@ -325,4 +327,55 @@ int main(void)
     test_stress_vs_model();
     puts("test_ztrie: all groups passed (basic lpm erase foreach allocfail stress)");
     return 0;
+}
+static void test_partial_branch_rollback(void) {
+    struct test_alloc state = {0, 0, SIZE_MAX};
+    ztrie *t = ztrie_create((ztrie_alloc){ta_malloc, ta_free, &state});
+    if (!t) exit(2);
+    size_t before = state.mallocs - state.frees;
+    state.fail_after = state.mallocs + 2;
+    bool inserted = ztrie_put(t, "abc", 3, NULL, NULL);
+    bool unchanged = state.mallocs - state.frees == before &&
+                     ztrie_len(t) == 0 && !ztrie_contains(t, "abc", 3);
+    ztrie_destroy(t);
+    CHECK(!inserted && unchanged && state.mallocs == state.frees);
+}
+static void test_long_branch_rollback(void)
+{
+    const size_t length = 65536;
+    uint8_t *key = malloc(length);
+    CHECK(key != NULL);
+    memset(key, 'a', length);
+    struct test_alloc state = {0, 0, SIZE_MAX};
+    ztrie *t = ztrie_create((ztrie_alloc){ta_malloc, ta_free, &state});
+    CHECK(t != NULL);
+    int value = 1, sibling = 2;
+    CHECK(cstr_put(t, "a", &value, NULL));
+    CHECK(cstr_put(t, "b", &sibling, NULL));
+    size_t before = state.mallocs - state.frees;
+    state.fail_after = state.mallocs + length - 2;
+    void *old = &value;
+    CHECK(!ztrie_put(t, key, length, NULL, &old));
+    CHECK(old == NULL && state.mallocs - state.frees == before);
+    CHECK(ztrie_len(t) == 2 && cstr_get(t, "a") == &value);
+    CHECK(cstr_get(t, "b") == &sibling);
+    CHECK(!ztrie_contains(t, key, length));
+    CHECK(!ztrie_contains(t, key, 2));
+    state.fail_after = SIZE_MAX;
+    CHECK(cstr_put(t, "ac", &value, NULL));
+    ztrie_destroy(t);
+    CHECK(state.mallocs == state.frees);
+    free(key);
+}
+
+int main(void) {
+    const char *row = getenv("ZTRIE_FIX_ROW");
+    if (row) {
+        if (strcmp(row, "0") != 0) return 2;
+        test_long_branch_rollback();
+        return 0;
+    }
+    test_long_branch_rollback();
+    test_partial_branch_rollback();
+    return baseline_main();
 }
