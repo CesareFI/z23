@@ -1101,6 +1101,7 @@ int main(int argc, char **argv)
       failures += test_test_png_writer(); }
     { extern int test_arena_view(void); failures += test_arena_view(); }
     { extern int test_skycombat_models(void); failures += test_skycombat_models(); }
+    { extern int test_skycombat_expr(void); failures += test_skycombat_expr(); }
     { extern int test_qr(void); failures += test_qr(); }
     { extern int test_shared_validators_zcl_address(void);
       failures += test_shared_validators_zcl_address(); }
