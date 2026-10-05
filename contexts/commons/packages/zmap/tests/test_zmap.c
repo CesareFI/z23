@@ -265,7 +265,61 @@ static void test_failed_growth_preserves_capacity(void) {
   zmap_destroy(m, NULL, NULL);
 }
 
+static void test_clear_tombstone_growth(void) {
+  zmap *m = zmap_create_ex(nullptr, hash_constant);
+  if (!m) exit(2);
+  char key[16];
+  for (int i = 0; i < 11; i++) {
+    snprintf(key, sizeof key, "old-%d", i);
+    if (!zmap_put(m, key, (void *)1, nullptr)) exit(2);
+  }
+  for (int i = 0; i < 10; i++) {
+    snprintf(key, sizeof key, "old-%d", i);
+    (void)zmap_erase(m, key);
+  }
+  zmap_clear(m, nullptr, nullptr);
+  for (int i = 0; i < 12; i++) {
+    snprintf(key, sizeof key, "new-%d", i);
+    if (!zmap_put(m, key, (void *)1, nullptr)) exit(2);
+  }
+  CHECK(zmap_capacity(m) == 32);
+  zmap_destroy(m, nullptr, nullptr);
+}
+
+static void test_clear_initial_capacity(void) {
+  zmap *m = zmap_create();
+  if (!m) exit(2);
+  char key[32];
+  for (int i = 0; i < 40; i++) {
+    snprintf(key, sizeof key, "key-%d", i);
+    if (!zmap_put(m, key, (void *)1, nullptr)) exit(2);
+  }
+  zmap_clear(m, nullptr, nullptr);
+  CHECK(zmap_capacity(m) == 16);
+  zmap_destroy(m, nullptr, nullptr);
+}
+
+static void test_failed_growth_unchanged(void) {
+  int budget = 100;
+  zmap_alloc a = {.ctx = &budget, .alloc = counting_alloc,
+                  .dealloc = counting_dealloc};
+  zmap *m = zmap_create_ex(&a, nullptr);
+  if (!m) exit(2);
+  char key[32];
+  for (int i = 0; i < 11; i++) {
+    snprintf(key, sizeof key, "key-%d", i);
+    if (!zmap_put(m, key, (void *)1, nullptr)) exit(2);
+  }
+  budget = 1;
+  if (zmap_put(m, "new", (void *)1, nullptr)) exit(2);
+  CHECK(zmap_capacity(m) == 16);
+  zmap_destroy(m, nullptr, nullptr);
+}
+
 int main(void) {
+    test_failed_growth_unchanged();
+    test_clear_initial_capacity();
+    test_clear_tombstone_growth();
   test_failed_growth_preserves_capacity();
   test_clear_erased_slots();
   test_insert_lookup_replace();

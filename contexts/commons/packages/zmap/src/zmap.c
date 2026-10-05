@@ -224,8 +224,10 @@ size_t zmap_capacity(const zmap *m) { return m->cap; }
 void zmap_clear(zmap *m, zmap_destroy_fn dtor, void *ctx) {
   for (size_t i = 0; i < m->cap; i++) {
     zmap_slot *s = &m->slots[i];
-    if (s->state != SLOT_LIVE)
+    if (s->state != SLOT_LIVE) {
+      s->state = SLOT_EMPTY;
       continue;
+    }
     if (dtor)
       dtor(ctx, s->key, s->value);
     free_slot_key(m, s);
@@ -235,6 +237,7 @@ void zmap_clear(zmap *m, zmap_destroy_fn dtor, void *ctx) {
   memset(m->slots, 0, m->cap * sizeof(*m->slots));
   m->size = 0;
   m->tombstones = 0;
+  m->cap = ZMAP_INITIAL_CAP;
 }
 
 void zmap_destroy(zmap *m, zmap_destroy_fn dtor, void *ctx) {
