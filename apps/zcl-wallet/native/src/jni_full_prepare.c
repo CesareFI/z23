@@ -16,12 +16,12 @@ zcl_status zcl_jni_prepare_full_review(JNIEnv *env, zcl_review_owner *owner,
     zcl_status status = zcl_jni_draft_count(env, destinations, ZCL_TX_OUTPUT_MAX, &request.output_count);
     if (status == ZCL_OK)
         status = zcl_jni_draft_count(env, previous, ZCL_TX_INPUT_MAX, &request.input_count);
-    /* Java array lengths are immutable. Admit the bounded scalar packet before
-     * capturing or allocating up to 816000 bytes of previous transactions. */
+    /* Java array lengths are immutable. Admit the bounded scalar and address
+     * packets before capturing or allocating up to 816000 source bytes. */
     if (status == ZCL_OK) status = zcl_jni_draft_parameters(env, parameters, &request);
+    if (status == ZCL_OK) status = zcl_jni_draft_destinations(env, destinations, &request);
     if (status == ZCL_OK) status = zcl_jni_full_sources_copy(env, previous, &copy);
     for (size_t i = 0; i < copy.count; ++i) request.inputs[i].previous = copy.sources[i];
-    if (status == ZCL_OK) status = zcl_jni_draft_destinations(env, destinations, &request);
     if (status == ZCL_OK) status = zcl_jni_draft_full_wire(&request, wire, sizeof(wire), &length);
     if (status == ZCL_OK)
         status = zcl_review_open_full_sources(owner, wire, length, network,

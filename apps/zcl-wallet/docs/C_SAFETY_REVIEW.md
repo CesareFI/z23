@@ -5043,3 +5043,27 @@ assessment and serialization code is unchanged.
 RED, final late-admission mutation and restored GREEN prove the allocation-order
 assertion. Focused dual-compiler sanitizers and the complete TLS-OFF analyzer and
 145/140 CTest matrix pass. No Android runtime or physical-device claim is made.
+
+## JNI destination admission before source allocation — 2026-10-06
+
+`zcl_jni_prepare_full_review` now invokes the existing bounded destination
+parser after scalar admission and before previous-transaction capture. The
+accepted path then follows the same source-copy, wire-construction,
+review-opening and prepared-publication sequence.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer bounds and copying | Each destination remains bounded and copied by the existing address parser. On malformed input, the regression observes exactly the first 35-byte destination span and no bytes from either maximum 102,000-byte source array. |
+| Allocation and ownership | Destination refusal allocates no source owner and borrows no source element. Accepted requests retain the source copier's existing checked count, per-element maximum and wipe-before-free ownership. |
+| Integer conversion and overflow | No arithmetic or conversion was added. Existing JNI count admission, source-length bounds and draft-size checks remain authoritative. |
+| Initialization and retirement | The zeroed request and address scratch retain their existing cleanup. The refusal regression observes one address clear and one request clear, with no copied owner to retire. |
+| JNI exceptions and references | Destination length, reference and region failures are resolved before any source reference is borrowed. The parser retains its pending-exception checks and local-reference retirement. |
+| Stack and complexity | No frame was added. Production remains M<=10 across 601 functions and tests remain M<=15 across 1,853 functions without suppression. |
+| Transaction semantics | Successful address bytes and scalar fields reach the same draft constructor. Fee, amount, source validity, network, review identity and signing predicates are unchanged. |
+| Secrets and concurrency | Addresses and previous transactions are public data. No seed/key material, shared state, lock, logging or lifetime was added. |
+
+Canonical RED and a late-admission placement mutant both fail the zero-source-
+allocation assertion. Exact restored GREEN, dual-compiler ASan/UBSan/LSan,
+both static analyzers and the complete 145/140 CTest matrix pass. TLS remains
+quarantined. This is host fake-VM evidence, not ART, emulator, device or
+physical-custody proof.

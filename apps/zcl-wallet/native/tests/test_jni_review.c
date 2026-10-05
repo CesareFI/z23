@@ -881,6 +881,19 @@ static void preparation_admission(void)
     }
 }
 
+static void preparation_destination_admission(void)
+{
+    setup();
+    for (size_t i = 0; i < fixture.spending.input_count; ++i)
+        java_previous->data.objects[i]->length = (jsize)ZCL_V4_SOURCE_MAX;
+    java_destinations->data.objects[0]->data.bytes[0] = 0xff;
+    CHECK(open_review(100) < 0);
+    CHECK(last_allocation_size == 0 && owned_inputs == NULL && borrowed == 0);
+    CHECK(byte_reads == (size_t)java_destinations->data.objects[0]->length);
+    CHECK(address_clears == 1 && request_clears == 1);
+    release_references();
+}
+
 static void preparation_arguments(void)
 {
     setup();
@@ -916,7 +929,7 @@ static void regressions(void)
     full_sources = true;
     profile_regressions(); captured_sources(); source_bounds(); exceptional_reference(); draft_admission();
     preparing = true;
-    preparation_admission();
+    preparation_admission(); preparation_destination_admission();
     golden_and_lifetime(); opening_failures(); publication_failures(); publication_races();
     maximum_packet(); captured_sources(); source_bounds(); exceptional_reference();
     prepared_copy_lifetime(); preparation_fields(); preparation_arguments();

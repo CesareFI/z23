@@ -8386,3 +8386,28 @@ unchanged frame warnings. Production covers 601 functions with none above M=10;
 after helper extraction, 1,852 test functions have none above M=15. No
 consensus, monetary, PoW, upgrade, transparent/shielded validity, custody,
 storage, network or TLS behavior changes.
+
+## Production continuation: destinations admitted before source allocation — 2026-10-06
+
+Full-source JNI review preparation now parses its bounded destination packet
+before allocating or copying previous transactions. A malformed destination
+paired with two maximum 102,000-byte source arrays previously reached roughly
+204,000 bytes of irrelevant source capture before the address parser refused
+it. The same request now reads only the first invalid 35-byte destination,
+allocates no source owner, borrows no source reference, and retires the address
+and request scratch. Successful preparation uses the unchanged address parser,
+source copier, draft encoder, review opener and publication path.
+
+Canonical RED reaches the source allocation before destination refusal. GREEN
+proves zero source allocation and exact destination-span copying; moving the
+destination admission back after source capture restores RED, and the exact
+saved production source restores GREEN. Clang 20 and GCC 14 optimized
+ASan/UBSan/LSan runs pass.
+
+The complete current-tree TLS-OFF C safety gate passes both static analyzers,
+all 145 Clang and 140 GCC CTest cases, pinned vendor/reference hashes and the
+unchanged frame warnings. Production covers 601 functions with none above
+M=10; 1,853 test functions have none above M=15. No consensus, monetary, PoW,
+upgrade, transparent/shielded validity, custody, storage, network or TLS
+behavior changes. This fake-VM evidence makes no ART, emulator, hardware or
+physical-device claim.
