@@ -6,8 +6,18 @@
 # Compiler/tests use the existing confined package verifier, never a bare exec.
 set -u
 export LC_ALL=C
-tool_root=$(cd "$(dirname "$0")/../.." && pwd) || exit 1
+tool_root=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
 refuse() { printf 'REFUSE %s\n' "$1"; exit 1; }
+# Bind trusted helper identity before Git can consult ambient routing/config.
+# Do not print values: they may contain private paths or configuration.
+for git_env in ${!GIT_@}; do
+    case "$git_env" in
+        GIT_PAGER|GIT_TERMINAL_PROMPT) continue ;;
+    esac
+    refuse inherited-git-selector
+done
+[[ "$(git -C "$tool_root" rev-parse --show-toplevel 2>/dev/null)" == "$tool_root" ]] ||
+    refuse toolkit-root-mismatch
 helper_inputs=(tools/jsonq.c contexts/commons/packages/zjsonp/include
     contexts/commons/packages/zjsonp/src/zjsonp.c contexts/commons/packages/zutf8/include
     contexts/commons/packages/zutf8/src/zutf8.c)
@@ -18,7 +28,7 @@ selftest_helper() {
     mkdir -p "$toolkit/tools/scripts" "$toolkit/build/bin" || return 1
     archive_helper "$fixture/tool-helper.tar" || return 1
     tar -xf "$fixture/tool-helper.tar" -C "$toolkit" || return 1
-    awk '/^tool_root=/ {print "tool_root=$(cd \"$(dirname \"$0\")/../..\" && pwd) || exit 1";next} {print}' \
+    awk '/^tool_root=/ {print "tool_root=$(cd \"$(dirname \"$0\")/../..\" && pwd -P) || exit 1";next} {print}' \
         "$subject" > "$toolkit/tools/scripts/commons_fix_admit.sh" || return 1
     chmod +x "$toolkit/tools/scripts/commons_fix_admit.sh" || return 1
     cp "$tool_root/build/bin/zclassic23-package-verify-dev" "$toolkit/build/bin/" || return 1
@@ -29,6 +39,83 @@ selftest_helper() {
     # This is a dirty proposal in the toolkit, not an accepted helper input.
     printf '#include <stdio.h>\n__attribute__((constructor)) static void dirty_helper(void) { FILE *f=fopen("%s/outside","w"); if(f) { fputs("corrupted",f); fclose(f); } }\n' \
         "$fixture" >> "$toolkit/contexts/commons/packages/zutf8/src/zutf8.c" || return 1
+}
+
+selftest_git_environment() {
+    local fixture=$1 script=$2 patch=$3 test_root=$1/git-environment
+    local toolkit alternate selector value rc output
+    mkdir "$test_root" || return 1
+    printf 'outside\n' > "$test_root/outside" || return 1
+    selftest_helper "$test_root" "$script" || return 1
+    toolkit=$test_root/toolkit
+    alternate=$test_root/alternate
+    mkdir "$alternate" || return 1
+    tar -xf "$test_root/tool-helper.tar" -C "$alternate" || return 1
+    git archive HEAD contexts/commons/packages > "$test_root/packages.tar" || return 1
+    tar -xf "$test_root/packages.tar" -C "$alternate" || return 1
+    # Committed replacement helper: executing its constructor escapes the
+    # package child's grants because the parser itself is a trusted helper.
+    printf '#include <stdio.h>\n__attribute__((constructor)) static void replaced_helper(void) { FILE *f=fopen("%s/outside","w"); if(f) { fputs("corrupted",f); fclose(f); } }\n' \
+        "$test_root" >> "$alternate/contexts/commons/packages/zutf8/src/zutf8.c" || return 1
+    git -C "$alternate" init -q || return 1
+    git -C "$alternate" add tools/jsonq.c contexts || return 1
+    git -C "$alternate" -c user.name=Fixture -c user.email=fixture@example.invalid \
+        -c core.hooksPath=/dev/null -c commit.gpgsign=false commit -qm replacement-helper || return 1
+    git diff > "$test_root/before" || return 1
+    git ls-files --stage > "$test_root/index-before" || return 1
+    if [[ ${COMMONS_FIX_ADMIT_SELFTEST_CASES:-} != git-replacement ]]; then
+    for selector in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+        GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG_COUNT \
+        GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_PARAMETERS GIT_CONFIG \
+        GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM \
+        GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM \
+        GIT_NAMESPACE GIT_TRACE GIT_FUTURE_SELECTOR; do
+        case "$selector" in
+            GIT_DIR|GIT_COMMON_DIR) value=$alternate/.git ;;
+            GIT_WORK_TREE|GIT_CEILING_DIRECTORIES) value=$alternate ;;
+            GIT_INDEX_FILE) value=$alternate/.git/index ;;
+            GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES) value=$alternate/.git/objects ;;
+            GIT_CONFIG_COUNT) value=0 ;;
+            GIT_CONFIG_KEY_0) value=core.worktree ;;
+            GIT_CONFIG_VALUE_0) value=$alternate ;;
+            GIT_CONFIG_PARAMETERS) value="'core.worktree'='$alternate'" ;;
+            GIT_CONFIG|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM) value=$alternate/.git/config ;;
+            GIT_TRACE) value=$test_root/trace ;;
+            *) value= ;;
+        esac
+        rc=0
+        output=$(env "$selector=$value" "$toolkit/tools/scripts/commons_fix_admit.sh" "$patch" tiny) || rc=$?
+        [[ $rc == 1 && "$output" == 'REFUSE inherited-git-selector' ]] || {
+            printf 'selftest git-environment %s: expected selector refusal, got %s (exit %s)\n' "$selector" "$output" "$rc" >&2
+            return 1
+        }
+        [[ ! -e "$test_root/trace" && "$(cat "$test_root/outside")" == outside ]] || return 1
+        printf 'commons-fix-admit selftest git-environment %s: PASS\n' "$selector"
+    done
+    git -C "$toolkit" config core.worktree "$alternate" || return 1
+    rc=0
+    output=$("$toolkit/tools/scripts/commons_fix_admit.sh" "$patch" tiny) || rc=$?
+    git --git-dir="$toolkit/.git" config --unset core.worktree || return 1
+    [[ $rc == 1 && "$output" == 'REFUSE toolkit-root-mismatch' ]] || return 1
+    [[ "$(cat "$test_root/outside")" == outside ]] || return 1
+    printf 'commons-fix-admit selftest git-environment toolkit-root: PASS\n'
+    fi
+    # A usable alternate repository, with the toolkit pathname still matching
+    # --show-toplevel. Without the environment guard, its helper executes.
+    rc=0
+    output=$(env GIT_DIR="$alternate/.git" GIT_WORK_TREE="$toolkit" \
+        "$toolkit/tools/scripts/commons_fix_admit.sh" "$patch" tiny) || rc=$?
+    if [[ $rc != 1 || "$output" != 'REFUSE inherited-git-selector' ||
+          "$(cat "$test_root/outside")" != outside ]]; then
+        printf 'selftest git-environment replacement-helper: got %s (exit %s), sentinel=%s\n' \
+            "$output" "$rc" "$(cat "$test_root/outside")" >&2
+        return 1
+    fi
+    git diff > "$test_root/after" || return 1
+    git ls-files --stage > "$test_root/index-after" || return 1
+    cmp -s "$test_root/before" "$test_root/after" || return 1
+    cmp -s "$test_root/index-before" "$test_root/index-after" || return 1
+    printf 'commons-fix-admit selftest git-environment replacement-helper: PASS\n'
 }
 
 selftest_native() {
@@ -93,7 +180,7 @@ selftest() (
     printf 'baseline\n' > unstaged-sentinel
     git add . || return 1
     git -c user.name=Fixture -c user.email=fixture@example.invalid -c core.hooksPath=/dev/null commit -qm baseline || return 1
-    for case_name in ${COMMONS_FIX_ADMIT_SELFTEST_CASES:-admit assertion assertion-signal signal file-limit outside adds deletes no-test passes compile-red compile-green fails traversal-dependency invalid-dependency mismatched-dependency nul-dependency unused-test outside-write evidence-write outside-include dirty-helper}; do
+    for case_name in ${COMMONS_FIX_ADMIT_SELFTEST_CASES:-admit assertion assertion-signal signal file-limit outside adds deletes no-test passes compile-red compile-green fails traversal-dependency invalid-dependency mismatched-dependency nul-dependency unused-test outside-write evidence-write outside-include dirty-helper git-environment}; do
         subject=$script
         git reset -q || return 1
         git restore . || return 1
@@ -101,6 +188,11 @@ selftest() (
         printf 'int value(void) { return 1; }\n' > contexts/commons/packages/tiny/src/tiny.c
         printf 'int value(void); int main(void) { return value() != 1; }\n' > contexts/commons/packages/tiny/tests/test_tiny.c
         case "$case_name" in
+            git-environment|git-replacement)
+                printf '/* repository selector control */\nint value(void); int main(void) { return value() != 1; }\n' > contexts/commons/packages/tiny/tests/test_tiny.c
+                git diff > "$fixture/item.patch" || return 1
+                selftest_git_environment "$fixture" "$script" "$fixture/item.patch" || return 1
+                continue;;
             outside) printf 'changed\n' > outside; result='REFUSE touches-files-outside-package';;
             adds) printf 'int other;\n' > contexts/commons/packages/tiny/src/new.c; git add -N contexts/commons/packages/tiny/src/new.c || return 1; result='REFUSE adds-file';;
             deletes) rm contexts/commons/packages/tiny/src/tiny.c; result='REFUSE changes-file-type-or-name';;
