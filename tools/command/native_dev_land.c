@@ -694,6 +694,9 @@ struct dl_row {
     char local[80];
     char tree[80];
     char proof_intent[176];
+    long long predecessor_seq;
+    char predecessor_local[80], predecessor_base[80], predecessor_tree[80];
+    char predecessor_intent[176];
     /* Signed Git landing intent, bound to the exact proven pair. The bundle
      * lives under land/ and its digest is checked again before dispatch. */
     char publication_target[65];
@@ -809,6 +812,50 @@ static bool dl_hex_ok(const char *s, size_t length)
               (s[i] >= 'a' && s[i] <= 'f')))
             return false;
     return true;
+}
+
+/* Dependency fields are authority: inspect only unique, typed top-level keys.
+ * Absence (or a complete empty tuple) preserves legacy independent rows. */
+static bool dl_chain_shape_ok(const struct dl_row *r)
+{
+    char intent[176];
+    if (!r->predecessor_seq)
+        return !r->predecessor_local[0] && !r->predecessor_base[0] &&
+            !r->predecessor_tree[0] && !r->predecessor_intent[0];
+    (void)snprintf(intent, sizeof(intent), "%s@%s", r->predecessor_local, r->predecessor_base);
+    return r->predecessor_seq > 0 && r->predecessor_seq < r->seq &&
+        dl_hex_ok(r->predecessor_local, 40) && dl_hex_ok(r->predecessor_base, 40) &&
+        dl_hex_ok(r->predecessor_tree, 40) && strcmp(intent, r->predecessor_intent) == 0;
+}
+
+static bool dl_chain_fields_parse(const char *line, struct dl_row *r)
+{
+    static const char *const names[] = { "predecessor_seq", "predecessor_local",
+        "predecessor_base", "predecessor_tree", "predecessor_intent" };
+    char *targets[] = { NULL, r->predecessor_local, r->predecessor_base,
+        r->predecessor_tree, r->predecessor_intent };
+    const size_t caps[] = { 0, sizeof(r->predecessor_local), sizeof(r->predecessor_base),
+        sizeof(r->predecessor_tree), sizeof(r->predecessor_intent) };
+    struct json_value doc; json_init(&doc);
+    unsigned seen = 0;
+    bool ok = json_read(&doc, line, strlen(line)) && doc.type == JSON_OBJ;
+    for (size_t i = 0; ok && i < doc.num_children; ++i) {
+        for (size_t j = 0; ok && j < 5; ++j) {
+            if (strcmp(doc.keys[i], names[j]) != 0) continue;
+            const struct json_value *v = &doc.children[i];
+            ok = !(seen & (1u << j)) && v->type == (j ? JSON_STR : JSON_INT);
+            seen |= 1u << j;
+            if (!ok) break;
+            if (!j) r->predecessor_seq = json_get_int(v);
+            else {
+                const char *value = json_get_str(v);
+                ok = strlen(value) < caps[j];
+                if (ok) (void)snprintf(targets[j], caps[j], "%s", value);
+            }
+        }
+    }
+    json_free(&doc);
+    return ok && (seen == 0 || seen == 31) && dl_chain_shape_ok(r);
 }
 
 static bool dl_publication_shape_ok(const struct dl_row *r)
@@ -935,7 +982,7 @@ static bool dl_parse_dispatch_fields(const char *line, struct dl_row *r)
     (void)dl_line_int(line, "push_diagnostic_pending", &pending);
     r->push_diagnostic_pending = pending != 0;
     (void)dl_line_int(line, "fence_peer", &r->fence_peer);
-    return r->fence_peer >= 0 &&
+    return dl_chain_fields_parse(line, r) && r->fence_peer >= 0 &&
         (strcmp(r->state, "fenced") != 0 || r->fence_peer > 0);
 }
 
@@ -975,8 +1022,14 @@ static bool dl_parse_row(const char *line, struct dl_row *r)
 
 static bool dl_escape_proof_fields(const struct dl_row *r,
                                     char base[160], char local[160],
-                                    char tree[160], char intent[352])
+                                    char tree[160], char intent[352], char dependency[512])
 {
+    if (!dl_chain_shape_ok(r)) return false;
+    if (r->predecessor_seq && snprintf(dependency, 512,
+        ",\"predecessor_seq\":%lld,\"predecessor_local\":\"%s\",\"predecessor_base\":\"%s\","
+        "\"predecessor_tree\":\"%s\",\"predecessor_intent\":\"%s\"",
+        r->predecessor_seq, r->predecessor_local, r->predecessor_base,
+        r->predecessor_tree, r->predecessor_intent) >= 512) return false;
     return dl_escape(r->base, base, 160) &&
            dl_escape(r->local, local, 160) &&
            dl_escape(r->tree, tree, 160) &&
@@ -1030,6 +1083,7 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
     char e_ts[128], e_tip[160], e_wt[8192], e_note[2048], e_state[64];
     char e_phase[64], e_base[160], e_local[160], e_tree[160];
     char e_intent[352], e_pushed[160];
+    char dependency[512] = "";
     struct dl_publication_escapes p;
     /* r->detail is char[1024]; dl_escape() can expand a raw control byte
      * (anything but \n/\r/\t) into a 6-byte "\u00XX" sequence, so an
@@ -1046,7 +1100,7 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
         return false;
     if (!dl_escape_start_fields(r, e_ts, e_tip, e_wt, e_note, e_state,
                                 e_phase) ||
-        !dl_escape_proof_fields(r, e_base, e_local, e_tree, e_intent) ||
+        !dl_escape_proof_fields(r, e_base, e_local, e_tree, e_intent, dependency) ||
         !dl_escape_publication_fields(r, &p) ||
         !dl_escape(r->pushed, e_pushed, sizeof(e_pushed)) ||
         !dl_escape(r->dimension, e_dim, sizeof(e_dim)) ||
@@ -1069,7 +1123,7 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
                  "\"precheck_uncertain_main\":\"%s\","
                  "\"precheck_uncertain\":%lld,\"detail\":\"%s\","
                  "\"push_diagnostic_pending\":%d,\"fence_peer\":%lld,"
-                 "\"publication_hold\":%s}\n",
+                 "\"publication_hold\":%s%s}\n",
                  r->seq, r->priority_seq, e_ts, e_tip, e_wt, e_note, e_state, e_phase,
                  r->attempt, r->started, e_base, e_local, e_tree, e_intent,
                  e_pushed, p.target, p.proof, p.bundle, p.signer, p.signature,
@@ -1079,7 +1133,7 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
                   * precheck admit only a 40-hex commit id or "". */
                  e_dim, e_log, r->prechecked, r->uncertain_main,
                  r->uncertain_tries, e_detail, r->push_diagnostic_pending ? 1 : 0,
-                 r->fence_peer, dl_hold_literal(r->publication_hold));
+                 r->fence_peer, dl_hold_literal(r->publication_hold), dependency);
     if (w <= 0 || (size_t)w >= cap)
         return false;
     if (len_out)
@@ -1112,6 +1166,15 @@ static bool dl_queue_row_ok(const char *line, struct dl_row *r,
             strcmp(r->state, "inflight") == 0) &&
            r->seq > last_seq;
 }
+
+#if defined(ZCL_TESTING)
+bool zcl_native_dev_land_test_chain_codec(const char *line, char *out, size_t cap)
+{
+    struct dl_row row;
+    return dl_parse_row(line, &row) && dl_encode_row(&row, out, cap, NULL);
+}
+
+#endif
 
 static bool dl_rows_reserve(struct dl_row **rows, size_t *cap, size_t n,
                              char *why, size_t why_cap)
@@ -1553,6 +1616,11 @@ static bool dl_outcome_inputs_match(const struct dl_row *row,
                                     const struct dl_row *want)
 {
     return strcmp(row->note, want->note) == 0 &&
+           row->predecessor_seq == want->predecessor_seq &&
+           strcmp(row->predecessor_local, want->predecessor_local) == 0 &&
+           strcmp(row->predecessor_base, want->predecessor_base) == 0 &&
+           strcmp(row->predecessor_tree, want->predecessor_tree) == 0 &&
+           strcmp(row->predecessor_intent, want->predecessor_intent) == 0 &&
            (!want->base[0] || strcmp(row->base, want->base) == 0) &&
            (!want->local[0] || strcmp(row->local, want->local) == 0);
 }
@@ -6858,6 +6926,155 @@ static bool dl_publication_receipt_verify(const struct dl_row *row)
     return false;
 #endif
 }
+
+static bool dl_chain_pair_bound(const struct dl_row *r)
+{
+    char intent[176];
+    (void)snprintf(intent, sizeof(intent), "%s@%s", r->local, r->base);
+    return dl_hex_ok(r->local, 40) && dl_hex_ok(r->base, 40) &&
+        dl_hex_ok(r->tree, 40) && strcmp(intent, r->proof_intent) == 0;
+}
+
+static bool dl_chain_git(const struct dl_dirs *d, const char *const *args,
+    char *out, size_t cap, int64_t deadline)
+{
+    int64_t left = deadline - platform_time_monotonic_ms();
+    return left > 0 && dl_git(d->wt, args, out, cap,
+        left > INT_MAX ? INT_MAX : (int)left) == 0;
+}
+enum dl_chain_relation {
+    DL_CHAIN_CURRENT, DL_CHAIN_PENDING, DL_CHAIN_DIVERGED,
+    DL_CHAIN_UNKNOWN, DL_CHAIN_INVALID
+};
+
+static bool dl_chain_identity_equal(const struct dl_row *r, const struct dl_row *p)
+{
+    return r->predecessor_seq == p->seq &&
+        strcmp(r->predecessor_local, p->local) == 0 &&
+        strcmp(r->predecessor_base, p->base) == 0 &&
+        strcmp(r->predecessor_tree, p->tree) == 0 &&
+        strcmp(r->predecessor_intent, p->proof_intent) == 0;
+}
+
+/* Revalidate queue admission against immutable Git objects, never cache labels. */
+static bool dl_chain_prepared(const struct dl_dirs *d, const struct dl_row *p, int64_t deadline)
+{
+    char signature[64] = {0}, tree[80];
+    const char *sig[] = { "--no-replace-objects", "log", "-1", "--format=%G?", p->local, NULL };
+    const char *object[] = { "--no-replace-objects", "show", "-s", "--format=%T", p->local, NULL };
+    const char *ancestry[] = { "--no-replace-objects", "merge-base", "--is-ancestor", p->base, p->local, NULL };
+    if (!dl_chain_pair_bound(p) || p->fence_peer)
+        return false;
+    return dl_chain_git(d, sig, signature, sizeof(signature), deadline) && signature[0] == 'G' &&
+        dl_chain_git(d, object, tree, sizeof(tree), deadline) &&
+        (dl_trim(tree), strcmp(tree, p->tree) == 0) &&
+        dl_chain_git(d, ancestry, tree, sizeof(tree), deadline);
+}
+
+/* Read the existing terminal authority by sequence; duplicate or malformed
+ * observations refuse. No state=landed shortcut can replace the signed receipt. */
+static bool dl_chain_outcome(const struct dl_dirs *d, long long seq,
+    struct dl_row *out, bool *present)
+{
+    char path[4192]; size_t len = 0, count = 0;
+    *present = false;
+    if (snprintf(path, sizeof(path), "%s/outcomes.jsonl", d->land) >= (int)sizeof(path)) return false;
+    char *data = zcl_malloc(DL_FILE_CAP, "dev.land.chain.history");
+    if (!data) return false;
+    if (!dl_read_file(path, data, DL_FILE_CAP, &len)) {
+        int saved = errno; free(data); return saved == ENOENT;
+    }
+    bool ok = !len || data[len - 1] == '\n';
+    char *save = NULL;
+    for (char *line = strtok_r(data, "\n", &save); ok && line; line = strtok_r(NULL, "\n", &save)) {
+        struct dl_row row;
+        ok = ++count <= 65536 && dl_parse_row(line, &row) &&
+            strcmp(row.state, "queued") != 0 && strcmp(row.state, "inflight") != 0;
+        if (ok && row.seq == seq) {
+            ok = !*present; *present = true; *out = row;
+        }
+    }
+    free(data); return ok;
+}
+
+static bool dl_chain_find(const struct dl_row *rows, size_t count, long long seq, const struct dl_row **found)
+{
+    *found = NULL;
+    for (size_t i = 0; i < count; ++i) {
+        if (rows[i].seq != seq) continue;
+        if (*found) return false;
+        *found = &rows[i];
+    }
+    return true;
+}
+
+static bool dl_chain_predecessor(const struct dl_dirs *d, const struct dl_row *r,
+    const struct dl_row *rows, size_t nrows, struct dl_row *out, int64_t deadline)
+{
+    const struct dl_row *p = NULL;
+    struct dl_row terminal;
+    bool present = false;
+    if (!dl_chain_shape_ok(r) || !dl_chain_pair_bound(r) || strcmp(r->base, r->predecessor_local) != 0) return false;
+    if (!dl_chain_find(rows, nrows, r->predecessor_seq, &p)) return false;
+    if (!dl_chain_outcome(d, r->predecessor_seq, &terminal, &present)) return false;
+    if (present) {
+        if (p && !dl_chain_identity_equal(r, p)) return false;
+        p = &terminal;
+    }
+    if (!p || !dl_chain_identity_equal(r, p) || !dl_chain_prepared(d, p, deadline)) return false;
+    *out = *p;
+    return strcmp(p->state, "inflight") == 0 || strcmp(p->state, "queued") == 0 ||
+        (strcmp(p->state, "landed") == 0 && dl_publication_receipt_verify(p));
+}
+
+/* Consume a fresh observation supplied by the caller. Equality is checked only
+ * AFTER every pinned dependency qualifies. Exact anchors wait, ancestry does not.
+ * B1 has no submit producer or scheduler integration: B2 enables those together. */
+[[maybe_unused]] static enum dl_chain_relation dl_chain_relation(const struct dl_dirs *d,
+    const struct dl_row *r, const struct dl_row *rows, size_t nrows,
+    const char *main, long long *waiting_seq, char *why, size_t why_len)
+{
+    bool pending = false;
+    *waiting_seq = 0;
+    if (why_len) why[0] = '\0';
+    if (!dl_sha_ok(main)) return DL_CHAIN_UNKNOWN;
+    int64_t deadline = platform_time_monotonic_ms() + 5000;
+    struct dl_row dependency = *r;
+    for (size_t hop = 0; dependency.predecessor_seq; ++hop) {
+        struct dl_row predecessor;
+        if (hop >= 65536 || !dl_chain_predecessor(d, &dependency, rows, nrows, &predecessor, deadline)) {
+            (void)snprintf(why, why_len, "chain_dependency_invalid_seq_%lld", dependency.predecessor_seq);
+            fprintf(stderr, "[dev.land] %s\n", why);
+            *waiting_seq = 0; return DL_CHAIN_INVALID;
+        }
+        if (strcmp(predecessor.state, "landed") != 0 && strcmp(main, predecessor.base) == 0) {
+            pending = true; *waiting_seq = predecessor.seq;
+        }
+        if (strcmp(predecessor.state, "landed") == 0) break;
+        dependency = predecessor;
+    }
+    if (strcmp(main, r->base) == 0) { *waiting_seq = 0; return DL_CHAIN_CURRENT; }
+    return pending ? DL_CHAIN_PENDING : DL_CHAIN_DIVERGED;
+}
+
+#if defined(ZCL_TESTING)
+int zcl_native_dev_land_test_chain_relation(const char *line,
+    const char *const *lines, size_t count, const char *main, long long *waiting)
+{
+    struct dl_dirs d;
+    struct dl_row row;
+    char why[128];
+    if (!dl_parse_row(line, &row) || count > 65536 || !dl_dirs_make(&d)) return DL_CHAIN_INVALID;
+    struct dl_row *rows = zcl_calloc(count ? count : 1, sizeof(*rows), "dev.land.chain.fixture");
+    if (!rows) return DL_CHAIN_INVALID;
+    for (size_t i = 0; i < count; ++i) {
+        if (!dl_parse_row(lines[i], &rows[i])) { free(rows); return DL_CHAIN_INVALID; }
+    }
+    (void)snprintf(d.wt, sizeof(d.wt), "%s", count ? rows[0].worktree : row.worktree);
+    enum dl_chain_relation relation = dl_chain_relation(&d, &row, rows, count, main, waiting, why, sizeof(why));
+    free(rows); return relation;
+}
+#endif
 
 static bool dl_resume_phase_ready(const char *phase)
 {

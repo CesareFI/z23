@@ -49,6 +49,9 @@ bool zcl_native_dev_land_test_idle_note(int64_t age_s, char *detail,
 int64_t zcl_native_dev_land_test_idle_bound(void);
 /* The drive's base probe (dl_base_observe) against one worktree's origin. */
 int zcl_native_dev_land_test_base_observe(const char *wt, const char *base);
+bool zcl_native_dev_land_test_chain_codec(const char *line, char *out, size_t cap);
+int zcl_native_dev_land_test_chain_relation(const char *line,
+    const char *const *lines, size_t count, const char *main, long long *waiting);
 #if !defined(_WIN32)
 /* dl_base_probe() watching an already-forked worker, as dl_drive_proof()
  * does, through the proof's own requester wait loop. */
@@ -5560,6 +5563,175 @@ static int test_dev_land_long_proof_root(void)
     return failures;
 }
 
+/* Codec cases deliberately exercise the production parser and encoder before
+ * a submit interface can produce dependency authority. */
+#define DLX_CHAIN_M "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+#define DLX_CHAIN_A "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+#define DLX_CHAIN_B "cccccccccccccccccccccccccccccccccccccccc"
+#define DLX_CHAIN_ROW "\"seq\":3,\"tip\":\"" DLX_CHAIN_B "\",\"state\":\"queued\",\"attempt\":1"
+#define DLX_CHAIN_FIELDS "\"predecessor_seq\":2,\"predecessor_local\":\"" DLX_CHAIN_A "\",\"predecessor_base\":\"" DLX_CHAIN_M "\",\"predecessor_tree\":\"" DLX_CHAIN_A "\",\"predecessor_intent\":\"" DLX_CHAIN_A "@" DLX_CHAIN_M "\""
+
+static int test_dev_land_chain_codec(void)
+{
+    int failures = 0;
+    TEST("land: dependency tuple round trips and malformed authority refuses") {
+        char out[32768], again[32768];
+        ASSERT(zcl_native_dev_land_test_chain_codec("{" DLX_CHAIN_ROW "}", out, sizeof(out)));
+        ASSERT(strstr(out, "predecessor_") == NULL);
+        dlx_isolate("chain_codec_refusal");
+        struct dlx_call call; dlx_begin(&call, "step"); ASSERT(dlx_run(&call) && dlx_ok(&call)); dlx_end(&call);
+        char land[1024], queue[1200], history[1200], bytes[2048]; size_t len = 0;
+        dlx_landdir(land, sizeof(land));
+        (void)snprintf(queue, sizeof(queue), "%s/queue.jsonl", land);
+        (void)snprintf(history, sizeof(history), "%s/outcomes.jsonl", land);
+        static const char partial[] = "{" DLX_CHAIN_ROW ",\"predecessor_seq\":2}\n";
+        static const char terminal[] = "{\"seq\":1,\"tip\":\"" DLX_CHAIN_M "\",\"state\":\"cancelled\",\"attempt\":1}\n";
+        ASSERT(dlx_write(queue, partial)); ASSERT(dlx_write(history, terminal));
+        static const char *actions[] = { "status", "step" };
+        for (size_t i = 0; i < 2; ++i) {
+            dlx_begin(&call, actions[i]);
+            ASSERT(dlx_run(&call)); ASSERT_STR_EQ(dlx_err_code(&call), "QUEUE_READ_FAILED");
+            ASSERT_STR_EQ(dlx_err_evidence(&call), "malformed_queue_record_1"); dlx_end(&call);
+            ASSERT(dlx_slurp(queue, bytes, sizeof(bytes) - 1, &len)); bytes[len] = '\0'; ASSERT_STR_EQ(bytes, partial);
+            ASSERT(dlx_slurp(history, bytes, sizeof(bytes) - 1, &len)); bytes[len] = '\0'; ASSERT_STR_EQ(bytes, terminal);
+        }
+        dlx_restore();
+        ASSERT(zcl_native_dev_land_test_chain_codec("{" DLX_CHAIN_ROW "," DLX_CHAIN_FIELDS "}", out, sizeof(out)));
+        ASSERT(strstr(out, "\"predecessor_seq\":2") != NULL);
+        ASSERT(strstr(out, DLX_CHAIN_A "@" DLX_CHAIN_M) != NULL);
+        ASSERT(zcl_native_dev_land_test_chain_codec(out, again, sizeof(again)));
+        ASSERT_STR_EQ(out, again);
+        static const char *fields[] = { "predecessor_local", "predecessor_base", "predecessor_tree", "predecessor_intent", "predecessor_seq" };
+        static const long long bad_sequences[] = { -1, 0, 3, 4 };
+        for (size_t i = 0; i < 5; ++i) {
+            for (int kind = 0; kind < 4; ++kind) {
+                struct json_value doc; json_init(&doc);
+                ASSERT(json_read(&doc, again, strlen(again)));
+                struct json_value *v = NULL;
+                for (size_t j = 0; j < doc.num_children; ++j)
+                    if (strcmp(doc.keys[j], fields[i]) == 0) v = &doc.children[j];
+                ASSERT(v != NULL);
+                char oversized[256]; memset(oversized, 'a', sizeof(oversized) - 1); oversized[255] = '\0';
+                if (i == 4) json_set_int(v, bad_sequences[kind]);
+                else if (kind == 0) json_set_null(v);
+                else if (kind == 1) json_set_int(v, 1);
+                else json_set_str(v, kind == 2 ? "bad" : oversized);
+                char line[2048]; size_t n = json_write(&doc, line, sizeof(line)); json_free(&doc);
+                ASSERT(n > 0 && n < sizeof(line));
+                ASSERT(!zcl_native_dev_land_test_chain_codec(line, out, sizeof(out)));
+            }
+        }
+        static const char *bad[] = {
+            "\"predecessor_seq\":2", "\"predecessor_local\":\"" DLX_CHAIN_A "\"",
+            DLX_CHAIN_FIELDS ",\"predecessor_seq\":2",
+            DLX_CHAIN_FIELDS ",\"predecessor_local\":null",
+            DLX_CHAIN_FIELDS ",\"predecessor_base\":0",
+            DLX_CHAIN_FIELDS ",\"predecessor_tree\":\"bad\"",
+            DLX_CHAIN_FIELDS ",\"predecessor_intent\":\"bad\"",
+            "\"predecessor_seq\":-1", "\"predecessor_seq\":9223372036854775808",
+            "\"predecessor_seq\":null", "\"predecessor_seq\":\"2\"",
+            "\"predecessor_seq\":0,\"predecessor_local\":\"" DLX_CHAIN_A "\""
+        };
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+            char line[2048];
+            ASSERT(snprintf(line, sizeof(line), "{%s,%s}", DLX_CHAIN_ROW, bad[i]) < (int)sizeof(line));
+            ASSERT(!zcl_native_dev_land_test_chain_codec(line, out, sizeof(out)));
+        }
+        ASSERT(zcl_native_dev_land_test_chain_codec("{" DLX_CHAIN_ROW ",\"nested\":{" DLX_CHAIN_FIELDS "}}", out, sizeof(out)));
+        ASSERT(strstr(out, "predecessor_") == NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool dlx_chain_row(char *out, size_t cap, long long seq,
+    const char *repo, const char *local, const char *base, const char *state,
+    long long predecessor, const char *pred_base, const char *pred_tree)
+{
+    char tree[64], dependency[512] = "";
+    const char *args[] = { "--no-replace-objects", "show", "-s", "--format=%T", local, NULL };
+    if (dlx_git_out(repo, args, tree, sizeof(tree)) != 0) return false;
+    if (predecessor && snprintf(dependency, sizeof(dependency),
+        ",\"predecessor_seq\":%lld,\"predecessor_local\":\"%s\",\"predecessor_base\":\"%s\","
+        "\"predecessor_tree\":\"%s\",\"predecessor_intent\":\"%s@%s\"",
+        predecessor, base, pred_base, pred_tree, base, pred_base) >= (int)sizeof(dependency)) return false;
+    return snprintf(out, cap,
+        "{\"seq\":%lld,\"tip\":\"%s\",\"state\":\"%s\",\"phase\":\"prove\",\"attempt\":1,"
+        "\"worktree\":\"%s\",\"base\":\"%s\",\"local\":\"%s\",\"tree\":\"%s\",\"proof_intent\":\"%s@%s\"%s}",
+        seq, local, state, repo, base, local, tree, local, base, dependency) < (int)cap;
+}
+
+static int test_dev_land_chain_relation(void)
+{
+    int failures = 0;
+    TEST("land: only exact live dependency anchors wait; invalid identity never becomes current") {
+        struct dlx_rig rig;
+        char m[64], a[64], b[64], c[64], ta[64], tb[64];
+        char ar[2048], br[2048], cr[2048], changed[2048];
+        long long waiting = 0;
+        dlx_isolate("chain_relation");
+        ASSERT(dlx_rig_make(&rig, "chain_relation_rig"));
+        ASSERT(dlx_origin_main(&rig, m));
+        ASSERT(dlx_sign_arm(rig.clone, "chain_relation_sign"));
+        const char *sign[] = { "commit", "--amend", "--no-edit", "--no-verify", "-S", NULL };
+        const char *head[] = { "rev-parse", "HEAD", NULL };
+        const char *tree[] = { "rev-parse", "HEAD^{tree}", NULL };
+        ASSERT(dlx_git(rig.clone, sign) == 0);
+        ASSERT(dlx_git_out(rig.clone, head, a, sizeof(a)) == 0);
+        ASSERT(dlx_git_out(rig.clone, tree, ta, sizeof(ta)) == 0);
+        ASSERT(dlx_commit(rig.clone, "b.txt", "b\n", b));
+        ASSERT(dlx_git(rig.clone, sign) == 0);
+        ASSERT(dlx_git_out(rig.clone, head, b, sizeof(b)) == 0);
+        ASSERT(dlx_git_out(rig.clone, tree, tb, sizeof(tb)) == 0);
+        ASSERT(dlx_commit(rig.clone, "c.txt", "c\n", c));
+        ASSERT(dlx_chain_row(ar, sizeof(ar), 1, rig.clone, a, m, "inflight", 0, NULL, NULL));
+        ASSERT(dlx_chain_row(br, sizeof(br), 2, rig.clone, b, a, "queued", 1, m, ta));
+        ASSERT(dlx_chain_row(cr, sizeof(cr), 3, rig.clone, c, b, "queued", 2, a, tb));
+        const char *rows[] = { ar, br };
+        ASSERT(zcl_native_dev_land_test_chain_relation(br, rows, 1, m, &waiting) == 1);
+        ASSERT(waiting == 1);
+        ASSERT(zcl_native_dev_land_test_chain_relation(br, rows, 1, a, &waiting) == 0);
+        ASSERT(zcl_native_dev_land_test_chain_relation(br, rows, 1, c, &waiting) == 2);
+        ASSERT(zcl_native_dev_land_test_chain_relation(br, rows, 1, DLX_CHAIN_M, &waiting) == 2);
+        ASSERT(zcl_native_dev_land_test_chain_relation(cr, rows, 2, m, &waiting) == 1);
+        ASSERT(zcl_native_dev_land_test_chain_relation(cr, rows, 2, a, &waiting) == 1);
+        ASSERT(zcl_native_dev_land_test_chain_relation(cr, rows, 2, b, &waiting) == 0);
+        ASSERT(zcl_native_dev_land_test_chain_relation(br, rows, 1, "", &waiting) == 3);
+        ASSERT(zcl_native_dev_land_test_chain_relation(br, rows, 0, a, &waiting) == 4);
+        const char *duplicates[] = { ar, ar };
+        ASSERT(zcl_native_dev_land_test_chain_relation(br, duplicates, 2, a, &waiting) == 4);
+        static const char *states[] = { "failed", "cancelled", "fenced", "conflict", "landed" };
+        for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); ++i) {
+            ASSERT(dlx_chain_row(changed, sizeof(changed), 1, rig.clone, a, m, states[i], 0, NULL, NULL));
+            const char *invalid[] = { changed };
+            ASSERT(zcl_native_dev_land_test_chain_relation(br, invalid, 1, a, &waiting) == 4);
+        }
+        ASSERT(dlx_chain_row(changed, sizeof(changed), 1, rig.clone, a, m, "inflight", 0, NULL, NULL));
+        const char *invalid[] = { changed };
+        static const char *pins[] = { "local", "base", "tree", "proof_intent" };
+        for (size_t i = 0; i < 4; ++i) {
+            ASSERT(dlx_chain_row(changed, sizeof(changed), 1, rig.clone, a, m, "inflight", 0, NULL, NULL));
+            char needle[64]; (void)snprintf(needle, sizeof(needle), "\"%s\":\"", pins[i]);
+            char *pin = strstr(changed, needle); ASSERT(pin != NULL); pin += strlen(needle);
+            *pin = *pin == '0' ? '1' : '0';
+            ASSERT(zcl_native_dev_land_test_chain_relation(br, invalid, 1, a, &waiting) == 4);
+        }
+        ASSERT(dlx_chain_row(changed, sizeof(changed), 1, rig.clone, a, m, "queued", 0, NULL, NULL));
+        ASSERT(snprintf(changed, sizeof(changed), "{\"seq\":1,\"tip\":\"%s\",\"state\":\"queued\",\"attempt\":1}", a) < (int)sizeof(changed));
+        ASSERT(zcl_native_dev_land_test_chain_relation(br, invalid, 1, a, &waiting) == 4);
+        ASSERT(dlx_chain_row(changed, sizeof(changed), 1, rig.clone, rig.tip, m, "inflight", 0, NULL, NULL));
+        ASSERT(zcl_native_dev_land_test_chain_relation(br, invalid, 1, a, &waiting) == 4);
+        char land[1024], history[1200]; dlx_landdir(land, sizeof(land));
+        (void)snprintf(history, sizeof(history), "%s/outcomes.jsonl", land);
+        ASSERT(dlx_chain_row(changed, sizeof(changed), 1, rig.clone, a, m, "landed", 0, NULL, NULL));
+        size_t n = strlen(changed); ASSERT(n + 2 < sizeof(changed)); changed[n] = '\n'; changed[n + 1] = '\0';
+        ASSERT(dlx_write(history, changed));
+        ASSERT(zcl_native_dev_land_test_chain_relation(br, rows, 1, a, &waiting) == 4);
+        dlx_restore(); PASS();
+    } _test_next:;
+    dlx_restore(); return failures;
+}
+
 static int test_dev_land_malformed_queue_refusal(void)
 {
     int failures = 0;
@@ -9276,6 +9448,8 @@ int test_dev_land(void)
     failures += test_dev_land_watcher_admission();
     failures += test_dev_land_long_proof_root();
     failures += test_dev_land_malformed_queue_refusal();
+    failures += test_dev_land_chain_codec();
+    failures += test_dev_land_chain_relation();
     failures += test_dev_land_malformed_priority_refusal();
     failures += test_dev_land_malformed_outcome_refusal();
     failures += test_dev_land_exact_tree();

@@ -1206,6 +1206,10 @@ its whole run and a second driver that finds it held gets `STEP_BUSY`
 (retryable) and steps again shortly rather than racing the first driver's
 rebase and lint against the shared landing worktree.
 
+The queue codec reserves a strict, exact predecessor tuple and an internal
+classifier distinguishes pending anchors from divergence. Submit and scheduler
+waiting are not enabled yet; independent rows retain their existing lifecycle.
+
 Before it starts an exact proof, a landing step runs `make lint-land` in the
 landing worktree: `LINT_FAST_GATES` plus `LINT_LAND_EXTRA_GATES`, the cheap
 (p50 at or under ~2.5 s) gates that historically failed only in the proof's
