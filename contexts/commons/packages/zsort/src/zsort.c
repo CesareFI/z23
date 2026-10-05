@@ -229,7 +229,7 @@ int zargsort(size_t *perm, const void *base, size_t n, size_t size,
   const unsigned char *b = base;
   if (!cmp || size == 0) return 0;
   if (n == 0) return perm != NULL;
-  if (!perm || !base) return 0;
+  if ((perm == NULL) | ((base == NULL) & (n > 1))) return 0;
   for (i = 0; i < n; i++) perm[i] = i;
   for (i = 0; i < n; i += 32) {
     size_t hi = i + 32 < n ? i + 32 : n;

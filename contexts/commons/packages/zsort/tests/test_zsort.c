@@ -263,7 +263,14 @@ static void test_bad_args(void) {
   CHECK(perm[0] == 0);
 }
 
+static void test_null_singleton(void) {
+  size_t perm = 99;
+  CHECK(zargsort(&perm, NULL, 1, sizeof(int), cmp_int, NULL) == 1 &&
+        perm == 0);
+}
+
 int main(void) {
+  test_null_singleton();
   test_basic();
 
   test_wide_elements();
