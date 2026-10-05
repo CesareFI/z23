@@ -6409,6 +6409,123 @@ static int test_net_swarm_completion_clears_reassigned_peer_slot(void)
     return failures;
 }
 
+static bool test_write_swarm_manifest(struct byte_stream *wire,
+                                      const struct sync_manifest *manifest)
+{
+    stream_init(wire, 128 + (size_t)manifest->num_chunks * 32);
+    if (!stream_write_i32_le(wire, manifest->height) ||
+        !stream_write_bytes(wire, manifest->block_hash, 32) ||
+        !stream_write_u64_le(wire, manifest->num_utxos) ||
+        !stream_write_u32_le(wire, manifest->num_chunks) ||
+        !stream_write_u32_le(wire, manifest->chunk_size) ||
+        !stream_write_bytes(wire, manifest->merkle_root, 32) ||
+        !stream_write_bytes(wire, manifest->utxo_sha3, 32))
+        return false;
+    for (uint32_t i = 0; i < manifest->num_chunks; i++) {
+        if (!stream_write_bytes(wire, manifest->chunk_hashes[i], 32))
+            return false;
+    }
+    wire->read_pos = 0;
+    return true;
+}
+
+static int test_net_swarm_scheduler_rejects_foreign_manifest_peer(void)
+{
+    int failures = 0;
+    printf("swarm_sync: scheduler rejects a peer bound to a different "
+           "valid manifest... ");
+
+    uint8_t active_hashes[2][32];
+    uint8_t foreign_hashes[2][32];
+    memset(active_hashes[0], 0xA1, 32);
+    memset(active_hashes[1], 0xA2, 32);
+    memset(foreign_hashes[0], 0xB1, 32);
+    memset(foreign_hashes[1], 0xB2, 32);
+
+    struct sync_manifest active = {
+        .height = 500,
+        .num_chunks = 2,
+        .chunk_size = SYNC_CHUNK_SIZE,
+        .chunk_hashes = active_hashes,
+    };
+    fast_sync_merkle_root(active_hashes, 2, active.merkle_root);
+
+    struct sync_manifest foreign = {
+        .height = 600,
+        .num_chunks = 2,
+        .chunk_size = SYNC_CHUNK_SIZE,
+        .chunk_hashes = foreign_hashes,
+    };
+    memset(foreign.block_hash, 0xB3, 32);
+    memset(foreign.utxo_sha3, 0xB4, 32);
+    fast_sync_merkle_root(foreign_hashes, 2, foreign.merkle_root);
+
+    struct main_state ms;
+    struct net_manager nm;
+    struct msg_processor mp = {0};
+    struct net_address addr;
+    main_state_init(&ms);
+    net_manager_init(&nm);
+    net_address_init(&addr);
+    unsigned char ip4[4] = {127, 0, 0, 73};
+    net_addr_set_ipv4(&addr.svc.addr, ip4);
+    addr.svc.port = 8033;
+    struct p2p_node *peer = p2p_node_create(
+        &nm, ZCL_INVALID_SOCKET, &addr, "foreign-manifest", true);
+    ip4[3] = 74;
+    net_addr_set_ipv4(&addr.svc.addr, ip4);
+    struct p2p_node *matching_peer = p2p_node_create(
+        &nm, ZCL_INVALID_SOCKET, &addr, "matching-manifest", true);
+    bool ok = peer != NULL && matching_peer != NULL;
+
+    if (ok) {
+        peer->state = PEER_HANDSHAKE_COMPLETE;
+        peer->services = NODE_ZCL23;
+        matching_peer->state = PEER_HANDSHAKE_COMPLETE;
+        matching_peer->services = NODE_ZCL23;
+        mp.main_state = &ms;
+        mp.net_mgr = &nm;
+        mp.params = chain_params_get();
+        mp.datadir = ".";
+        ok = msgprocessor_test_swarm_seed(&active, 999);
+    }
+
+    struct byte_stream wire;
+    memset(&wire, 0, sizeof(wire));
+    if (ok) {
+        ok = test_write_swarm_manifest(&wire, &foreign);
+        ok = ok && mp_handle_zcl23_sync(&mp, peer, &wire, MSG_MANIFEST);
+        mp_snapshot_send_tick(&mp, peer);
+        ok = ok && peer->swarm_manifest_received &&
+             peer->swarm_inflight_chunk == -1;
+        stream_free(&wire);
+        memset(&wire, 0, sizeof(wire));
+
+        ok = ok && test_write_swarm_manifest(&wire, &active);
+        ok = ok && mp_handle_zcl23_sync(
+            &mp, matching_peer, &wire, MSG_MANIFEST);
+        mp_snapshot_send_tick(&mp, matching_peer);
+        ok = ok && matching_peer->swarm_inflight_chunk == 1;
+    }
+
+    int32_t foreign_assigned = peer ? peer->swarm_inflight_chunk : -2;
+    int32_t matching_assigned = matching_peer
+        ? matching_peer->swarm_inflight_chunk : -2;
+    msgprocessor_test_swarm_release();
+    stream_free(&wire);
+    if (peer)
+        p2p_node_free(peer);
+    if (matching_peer)
+        p2p_node_free(matching_peer);
+    net_manager_free(&nm);
+    main_state_free(&ms);
+
+    if (ok) printf("OK\n");
+    else { printf("FAIL (foreign=%d matching=%d)\n",
+                  foreign_assigned, matching_assigned); failures++; }
+    return failures;
+}
+
 /* ── peer_strategy tests ─────────────────────────────── */
 static int test_net_peer_strategy_transport_selection_basics(void)
 {
@@ -6839,6 +6956,7 @@ static int test_net_parallel_sync_and_swarm_fixture(void)
     failures += test_net_fc_rate_and_swarm_cas_race_checks();
     failures += test_net_swarm_cas_reset_cycle_re_arms_the_next_cas();
     failures += test_net_swarm_completion_clears_reassigned_peer_slot();
+    failures += test_net_swarm_scheduler_rejects_foreign_manifest_peer();
 
     /* Clean up test database */
     sqlite3_close(test_db);

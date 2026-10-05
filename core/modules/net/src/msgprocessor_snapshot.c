@@ -71,6 +71,33 @@ static void swarm_mutex_unlock(void)
     pthread_mutex_unlock(&g_swarm_mutex);
 }
 
+static bool snapshot_swarm_peer_ready(const struct p2p_node *node)
+{
+    return atomic_load(&g_swarm_active) &&
+           node->swarm_manifest_received &&
+           node->state >= PEER_HANDSHAKE_COMPLETE;
+}
+
+/* Caller holds g_swarm_mutex. A peer may serve the active swarm only when
+ * its independently validated chunk list is the one that armed the swarm. */
+static bool snapshot_swarm_prepare_peer_locked(struct p2p_node *node)
+{
+    bool matches =
+        node->swarm_manifest_num_chunks == g_swarm.manifest.num_chunks &&
+        memcmp(node->swarm_manifest_root,
+               g_swarm.manifest.merkle_root, 32) == 0;
+    if (matches)
+        return true;
+
+    if (node->swarm_inflight_chunk >= 0) {
+        (void)swarm_sync_requeue_chunk_for_peer(
+            &g_swarm, (uint32_t)node->swarm_inflight_chunk, node->id);
+        node->swarm_inflight_chunk = -1;
+        node->swarm_chunk_req_time = 0;
+    }
+    return false;
+}
+
 /* Snapshot sync service — global singleton in snapshot_sync_service.c */
 static int64_t g_swarm_last_progress_time = 0;
 
@@ -1254,6 +1281,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                             "manifest merkle root mismatch");
                     } else {
                         node->swarm_manifest_received = true;
+                        node->swarm_manifest_num_chunks = num_chunks;
+                        memcpy(node->swarm_manifest_root, merkle_root, 32);
                         int our_h = active_chain_height(
                             &mp->main_state->chain_active);
                         printf("Peer %s: manifest h=%d chunks=%u "
@@ -1912,13 +1941,16 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
     /* ── Swarm parallel chunk sync coordinator ────────────── */
     /* For each connected ZCL23 peer with no inflight chunk, assign one
      * and send a zchunkreq. Also handle timeouts on stale requests. */
-    if (g_swarm_active && node->swarm_manifest_received &&
-        node->state >= PEER_HANDSHAKE_COMPLETE) {
+    if (snapshot_swarm_peer_ready(node)) {
 
         if (!swarm_mutex_lock()) {
             LOG_ERROR("net", "snapshot send tick refused: swarm mutex "
                       "unavailable peer=%s", node->addr_name);
             return;
+        }
+        if (!snapshot_swarm_prepare_peer_locked(node)) {
+            swarm_mutex_unlock();
+            goto block_swarm_tick;
         }
 
         /* Requeue globally stale inflight chunks. A peer can disconnect and
@@ -1984,6 +2016,7 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
         }
     }
 
+block_swarm_tick:
     /* ── Block swarm coordinator: parallel block piece download ── */
     /* Only for ZCL23 peers with completed handshake. Legacy peers
      * contribute via normal getdata/block (handled by download manager). */
