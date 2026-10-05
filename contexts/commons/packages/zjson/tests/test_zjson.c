@@ -1,5 +1,28 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: KAT, state-machine, bounds, and stress tests for zjson. */
+#ifndef ZJSON_TEST_FORMATTER
+#define ZJSON_TEST_FORMATTER
+#endif
+/* Compile the controlled witness from the actual writer source. Namespace
+ * its API before the header so ordinary package objects can also be linked. */
+#define zjson_init zjson_fixture_init
+#define zjson_status_of zjson_fixture_status_of
+#define zjson_status_name zjson_fixture_status_name
+#define zjson_len zjson_fixture_len
+#define zjson_obj_open zjson_fixture_obj_open
+#define zjson_obj_close zjson_fixture_obj_close
+#define zjson_arr_open zjson_fixture_arr_open
+#define zjson_arr_close zjson_fixture_arr_close
+#define zjson_key_n zjson_fixture_key_n
+#define zjson_key zjson_fixture_key
+#define zjson_str_n zjson_fixture_str_n
+#define zjson_str zjson_fixture_str
+#define zjson_i64 zjson_fixture_i64
+#define zjson_u64 zjson_fixture_u64
+#define zjson_f64 zjson_fixture_f64
+#define zjson_bool zjson_fixture_bool
+#define zjson_null zjson_fixture_null
+#define zjson_finish zjson_fixture_finish
 #include "zjson/zjson.h"
 
 #include <math.h>
@@ -17,15 +40,16 @@
     }                                                                        \
   } while (0)
 
-#ifndef ZJSON_TEST_FORMATTER
-#error "build tests/test_zjson.c and src/zjson.c with -DZJSON_TEST_FORMATTER"
-#endif
-#ifdef ZJSON_TEST_FORMATTER
+#include "../src/zjson.c"
+#undef snprintf
+#undef localeconv
+
 static int expect(zjson *w, const char *want);
 /* Controlled libc fixture: no locale installation or global locale change. */
 static const char *test_radix = ".";
 static int format_fault;
 static unsigned locale_calls;
+static unsigned locale_witness_rows;
 struct lconv *zjson_test_localeconv(void) {
   ++locale_calls;
   static struct lconv info;
@@ -68,6 +92,7 @@ static int test_locale_formatter(void) {
     test_radix = ".";
     CHECK(st == ZJSON_OK);
     CHECK(expect(&w, "1.5") == 0);
+    ++locale_witness_rows;
   }
   for (int fault = -1; fault <= 1; fault += 2) {
     for (int kind = 0; kind < 3; ++kind) {
@@ -84,11 +109,11 @@ static int test_locale_formatter(void) {
       CHECK(st == ZJSON_ENCODING);
       CHECK(zjson_len(&w) == 0);
       CHECK(zjson_bool(&w, true) == ZJSON_ENCODING);
+      ++locale_witness_rows;
     }
   }
   return 0;
 }
-#endif
 
 /* Build a document with a generous buffer and compare to expected. */
 static int expect(zjson *w, const char *want) {
@@ -537,9 +562,7 @@ int main(void) {
     const char *name;
     int (*fn)(void);
   } tests[] = {
-#ifdef ZJSON_TEST_FORMATTER
       {"locale_formatter", test_locale_formatter},
-#endif
       {"kat_basics", test_kat_basics},   {"escapes", test_escapes},
       {"numbers", test_numbers},         {"state_errors", test_state_errors},
       {"depth", test_depth},             {"overflow", test_overflow},
@@ -551,6 +574,8 @@ int main(void) {
       return 1;
     }
   }
+  CHECK(locale_witness_rows == 8);
+  printf("locale witness: 2 separators and 6 formatter faults passed\n");
   printf("all %zu zjson tests passed\n", sizeof tests / sizeof tests[0]);
   return 0;
 }

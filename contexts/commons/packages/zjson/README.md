@@ -64,10 +64,16 @@ cc -std=c23 -O2 -Iinclude -I<zutf8>/include \
    src/zjson.c <zutf8>/src/zutf8.c app/main.c -o zjson
 
 cc -std=c23 -O1 -g -fsanitize=address,undefined \
-   -DZJSON_TEST_FORMATTER -Iinclude -I<zutf8>/include \
+   -Iinclude -I<zutf8>/include \
    src/zjson.c <zutf8>/src/zutf8.c tests/test_zjson.c -o test_zjson
 ./test_zjson
 ```
+
+The test translation unit always includes a namespaced copy of the actual
+writer source with controlled formatter and locale hooks. No compiler define
+or installed locale is needed for the locale witness. Both the ordinary
+package recipe and a build with `-DZJSON_TEST_FORMATTER` run it; the test
+requires all eight witness rows before reporting success.
 
 Tests cover KAT documents, every mandatory escape plus UTF-8
 passthrough, invalid-UTF-8 rejection, integer and double formatting
