@@ -126,7 +126,32 @@ static void test_borrowed_fields(void) {
   CHECK(memcmp(v.build, "meta", 4) == 0);
 }
 
+static bool semver_fields_zero(const zsemver *v) {
+  return v->major == 0 && v->minor == 0 && v->patch == 0 &&
+         v->prerelease == NULL && v->prerelease_len == 0 &&
+         v->build == NULL && v->build_len == 0;
+}
+
+static void test_failed_parse_zeroes(void) {
+  static const char *const bad[] = {
+    NULL, "1", "1.2", "1.2.3-", "1.2.3-01", "1.2.3-alpha+",
+    "1.2.3-alpha+b..c", "1.2.3!", "1.18446744073709551616.0",
+  };
+  for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+    zsemver v;
+    memset(&v, 0xAA, sizeof(v));
+    bool ok = bad[i] ? zsemver_parse_n(bad[i], strlen(bad[i]), &v)
+                     : zsemver_parse(NULL, &v);
+    bool zero = semver_fields_zero(&v);
+    CHECK(!ok && zero);
+    fprintf(stderr, "semver_zero_row=%zu result=%s\n", i,
+            !ok && zero ? "PASS" : "FAIL");
+  }
+}
+
+
 int main(void) {
+  test_failed_parse_zeroes();
   test_valid_grammar();
   test_invalid_grammar();
   test_precedence_spec_chain();

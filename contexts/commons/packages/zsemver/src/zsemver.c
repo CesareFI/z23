@@ -74,46 +74,50 @@ bool zsemver_parse_n(const char *str, size_t len, zsemver *out) {
     return false;
   memset(out, 0, sizeof(*out));
   if (!str || len == 0)
-    return false;
+    goto fail;
 
   size_t pos = 0;
   if (!parse_number(str, len, &pos, &out->major))
-    return false;
+    goto fail;
   if (pos >= len || str[pos] != '.')
-    return false;
+    goto fail;
   pos++;
   if (!parse_number(str, len, &pos, &out->minor))
-    return false;
+    goto fail;
   if (pos >= len || str[pos] != '.')
-    return false;
+    goto fail;
   pos++;
   if (!parse_number(str, len, &pos, &out->patch))
-    return false;
+    goto fail;
 
   if (pos < len && str[pos] == '-') {
     size_t pre_start = ++pos;
     while (pos < len && str[pos] != '+')
       pos++;
     if (!parse_identifiers(str, pre_start, pos, true))
-      return false;
+      goto fail;
     out->prerelease = str + pre_start;
     out->prerelease_len = pos - pre_start;
   }
   if (pos < len && str[pos] == '+') {
     size_t build_start = ++pos;
     if (!parse_identifiers(str, build_start, len, false))
-      return false;
+      goto fail;
     out->build = str + build_start;
     out->build_len = len - build_start;
     pos = len;
   }
   if (pos != len)
-    return false; /* trailing garbage */
+    goto fail; /* trailing garbage */
   return true;
+
+fail:
+  memset(out, 0, sizeof(*out));
+  return false;
 }
 
 bool zsemver_parse(const char *str, zsemver *out) {
-  return str && zsemver_parse_n(str, strlen(str), out);
+  return zsemver_parse_n(str, str ? strlen(str) : 0, out);
 }
 
 static int cmp_u64(uint64_t a, uint64_t b) {
