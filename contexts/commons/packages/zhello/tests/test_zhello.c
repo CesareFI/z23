@@ -6,6 +6,40 @@
 #include <stdio.h>
 #include <string.h>
 
+static int io_failure_mode;
+static int io_getc(FILE *stream)
+{
+	return io_failure_mode == 1 ? EOF : fgetc(stream);
+}
+static int io_error(FILE *stream)
+{
+	return io_failure_mode == 1 ? 1 : ferror(stream);
+}
+static int io_close(FILE *stream)
+{
+	const int result = fclose(stream);
+	return io_failure_mode == 2 ? EOF : result;
+}
+#define zhello_world_init probe_init
+#define zhello_world_step probe_step
+#define zhello_render probe_render
+#define zhello_canvas_digest probe_digest
+#define zhello_world_save probe_save
+#define zhello_world_load probe_load
+#define fgetc io_getc
+#define ferror io_error
+#define fclose io_close
+#include "../src/zhello.c"
+#undef fclose
+#undef ferror
+#undef fgetc
+#undef zhello_world_load
+#undef zhello_world_save
+#undef zhello_canvas_digest
+#undef zhello_render
+#undef zhello_world_step
+#undef zhello_world_init
+
 enum { TEST_WIDTH = 96, TEST_HEIGHT = 96 };
 
 #define CHECK(cond) do { \
@@ -17,6 +51,7 @@ enum { TEST_WIDTH = 96, TEST_HEIGHT = 96 };
 
 int main(void)
 {
+	(void)io_error;
 	const struct zhello_canvas empty_canvas = {NULL, 0, 0};
 	uint8_t zero_pixel[4] = {0};
 	const struct zhello_canvas one_pixel = {zero_pixel, 1, 1};
@@ -92,6 +127,22 @@ int main(void)
 	/* A damaged file is refused, never folded into "start over": that is
 	 * how a person's state disappears with nobody told. `missing` stays
 	 * false, so the caller can tell the two apart. */
+	bool io_failed = false;
+	for (int mode = 1; mode <= 2; mode++) {
+		struct zhello_world failed_io = closed;
+		failed_io.x += 7.0;
+		failed_io.frames += 9u;
+		const struct zhello_world previous = failed_io;
+		missing = true;
+		io_failure_mode = mode;
+		if (probe_load(&failed_io, state_path, &missing) || missing ||
+		    memcmp(&failed_io, &previous, sizeof failed_io) != 0) {
+			(void)fprintf(stderr, "FAIL saved-state I/O refusal mode=%d\n", mode);
+			io_failed = true;
+		}
+	}
+	io_failure_mode = 0;
+	CHECK(!io_failed);
 	/* A valid header must not turn nonfinite saved coordinates into a
 	 * world that the painter cannot convert to integer pixel positions. */
 	FILE *nonfinite = fopen(state_path, "r+b");

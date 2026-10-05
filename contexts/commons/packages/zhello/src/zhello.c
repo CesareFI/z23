@@ -228,6 +228,12 @@ bool zhello_world_save(const struct zhello_world *world, const char *path)
 	return fclose(f) == 0 && wrote;
 }
 
+static bool zhello_world_finite(const struct zhello_world *world)
+{
+	return isfinite(world->x) && isfinite(world->y) &&
+	       isfinite(world->vx) && isfinite(world->vy);
+}
+
 bool zhello_world_load(struct zhello_world *world, const char *path,
 		       bool *missing)
 {
@@ -250,9 +256,9 @@ bool zhello_world_load(struct zhello_world *world, const char *path,
 	/* One byte past the wire means this is not the file we think it is, so
 	 * the read asks for one more than it wants and requires that to be the
 	 * end. */
-	const bool at_end = fgetc(f) == EOF;
-	(void)fclose(f);
-	if (got != sizeof wire || !at_end)
+	const bool at_end = fgetc(f) == EOF && !ferror(f);
+	const bool closed = fclose(f) == 0;
+	if (got != sizeof wire || !at_end || !closed)
 		return false;
 	if (memcmp(wire, ZHELLO_STATE_MAGIC, ZHELLO_STATE_MAGIC_BYTES) != 0)
 		return false;
@@ -267,8 +273,7 @@ bool zhello_world_load(struct zhello_world *world, const char *path,
 		.vy = zhello_get_f64(wire + 34),
 		.frames = zhello_get_u64(wire + 42),
 	};
-	if (!isfinite(loaded.x) || !isfinite(loaded.y) ||
-	    !isfinite(loaded.vx) || !isfinite(loaded.vy))
+	if (!zhello_world_finite(&loaded))
 		return false;
 	*world = loaded;
 	return true;
