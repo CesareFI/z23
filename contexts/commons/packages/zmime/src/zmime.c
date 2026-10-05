@@ -1,4 +1,5 @@
-/* zmime — media type registry and Content-Type parsing.  See zmime.h. */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Purpose: media type registry and Content-Type parsing. See zmime.h. */
 
 #include "zmime/zmime.h"
 

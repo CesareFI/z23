@@ -1,3 +1,4 @@
+<!-- Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0 -->
 # zmime
 
 MIME media type lookup and Content-Type header parsing in freestanding

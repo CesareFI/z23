@@ -1,4 +1,5 @@
-/*
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Purpose: declare MIME lookup and Content-Type parsing interfaces.
  * zmime — MIME media type lookup and Content-Type header parsing in
  * freestanding C23.
  *

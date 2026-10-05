@@ -1,4 +1,5 @@
-/* zmime tests: registry KATs, Content-Type parse KATs and rejection
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Purpose: zmime tests: registry KATs, Content-Type parse KATs and rejection
  * table, format round-trips, quoting rules, and a randomised
  * token-invariant oracle.  Built with -std=c23 -Wall -Wextra -Werror
  * -pedantic under ASan/UBSan. */
@@ -42,7 +43,10 @@ static void test_registry(void) {
     const char *e = zmime_to_extension("text/html", 9);
     CHECK(e && (strcmp(e, "htm") == 0 || strcmp(e, "html") == 0));
   }
-  CHECK(strcmp(zmime_to_extension("Application/JSON", 16), "json") == 0);
+  {
+    const char *e = zmime_to_extension("Application/JSON", 16);
+    CHECK(e && strcmp(e, "json") == 0);
+  }
   CHECK(zmime_to_extension("application/x-not-registered", 26) == NULL);
   CHECK(zmime_to_extension(NULL, 5) == NULL);
 }
