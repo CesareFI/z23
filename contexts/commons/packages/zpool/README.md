@@ -57,7 +57,7 @@ cc -std=c23 -O2 -Iinclude src/zpool.c app/main.c -o zpool
 
 cc -std=c23 -O1 -g -fsanitize=address,undefined -Iinclude \
    src/zpool.c tests/test_zpool.c -o test_zpool
-./test_zpool
+TMPDIR="${TMPDIR:-/tmp}" ./test_zpool
 ```
 
 Tests cover init validation (overflow, alignment, tiny arenas),
@@ -65,6 +65,9 @@ exhaustion, LIFO reuse through fully scribbled blocks, every rejected
 free shape (double, misaligned, out-of-arena, never-allocated),
 `zpool_owns`, and a 2000-round interleaved churn with per-round
 aliasing and accounting checks.
+CLI block-count tests use an absolute writable `TMPDIR` outside the package
+source tree; the package verifier supplies its confined build scratch directory.
+They check rounded block sizes 1, 17 and 63, maximum capacity, and refused inputs.
 
 ## License
 
