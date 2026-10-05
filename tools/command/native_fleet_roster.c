@@ -54,6 +54,8 @@
  * ROSTER_IDENTITY_COLLISION when two rows carry one ZID fingerprint, which
  * would double-count one machine as two; the roster refuses rather than
  * reward it.
+ * ROSTER_OBSERVATIONS_UNAVAILABLE when the observation page cannot be
+ * allocated or read; no successful roster rows are emitted after that refusal.
  */
 
 #include "command/native_command.h"
@@ -339,12 +341,29 @@ static const char *roster_identity_collision(
     return NULL;
 }
 
+static bool roster_read_evidence(
+    struct node_db *ndb, int64_t now, size_t skip,
+    const struct mesh_pairing_public_view *views, size_t view_count,
+    struct roster_evidence *evidence)
+{
+    struct db_mesh_machine_view *machines =
+        zcl_calloc(ROSTER_ROW_MAX, sizeof(*machines), "roster_machines");
+    int count = -1;
+    if (machines)
+        count = db_mesh_machine_observation_list_after(
+            ndb, machines, ROSTER_ROW_MAX, now, skip);
+    if (count >= 0)
+        roster_match_evidence(views, view_count, machines, (size_t)count,
+                              evidence);
+    free(machines);
+    return count >= 0;
+}
+
 void zcl_native_handle_fleet_roster(const struct zcl_command_request *request,
                                     struct zcl_command_reply *reply)
 {
     struct mesh_pairing_public_view views[ROSTER_ROW_MAX];
     struct roster_evidence evidence[ROSTER_ROW_MAX];
-    struct db_mesh_machine_view *machines = NULL;
     struct db_mesh_pairing_counts counts;
     struct json_value rows, airships, rules;
     const struct json_value *arg;
@@ -352,7 +371,6 @@ void zcl_native_handle_fleet_roster(const struct zcl_command_request *request,
     sqlite3 *db = NULL;
     struct node_db ndb;
     size_t view_count = 0;
-    int machine_count = 0;
     int64_t now;
 
     if (!reply)
@@ -401,17 +419,16 @@ void zcl_native_handle_fleet_roster(const struct zcl_command_request *request,
         return;
     }
 
-    machines = zcl_calloc(ROSTER_ROW_MAX, sizeof(*machines), "roster_machines");
-    if (machines) {
-        machine_count = db_mesh_machine_observation_list_after(
-            &ndb, machines, ROSTER_ROW_MAX, now, skip);
-        if (machine_count < 0)
-            machine_count = 0;
-    }
-    roster_match_evidence(views, view_count, machines, (size_t)machine_count,
-                          evidence);
-    free(machines);
+    bool observed = roster_read_evidence(&ndb, now, skip, views, view_count,
+                                          evidence);
     zcl_native_node_db_close_readonly(&db, &ndb);
+    if (!observed) {
+        roster_fail(reply, "ROSTER_OBSERVATIONS_UNAVAILABLE",
+                    "the machine observation page could not be allocated or "
+                    "read, so no roster can be reported",
+                    "check the local mesh observation store and available memory");
+        return;
+    }
 
     (void)json_push_kv_str(&reply->data, "leaf", ROSTER_LEAF);
     (void)json_push_kv_int(&reply->data, "generated_unix", now);

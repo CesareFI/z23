@@ -9,6 +9,7 @@
 #include "config/boot_mesh_status.h"
 #include "config/boot_mesh_machines.h"
 #include "base/cleanse.h"
+#include "base/safe_alloc.h"
 #include "base/hex.h"
 #include "command/native_command.h"
 #include "config/command_catalog.h"
@@ -335,6 +336,77 @@ static int test_mesh_observation_interrupted_step(void)
         (void)sqlite3_trace_v2(ndb.db, 0, NULL, NULL);
         node_db_close(&ndb);
     }
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static unsigned mesh_roster_denied_reads;
+
+static int mesh_roster_interrupt_observation(unsigned event, void *arg,
+                                              void *statement, void *text)
+{
+    (void)statement;
+    const char *sql = text;
+    if (event == SQLITE_TRACE_STMT && sql &&
+        strstr(sql, "LEFT JOIN mesh_machine_observations")) {
+        mesh_roster_denied_reads++;
+        sqlite3_interrupt(arg);
+    }
+    return 0;
+}
+
+static int mesh_roster_read_fault(sqlite3 *db, char **error,
+                                  const sqlite3_api_routines *api)
+{
+    (void)error;
+    (void)api;
+    return sqlite3_trace_v2(db, SQLITE_TRACE_STMT,
+                          mesh_roster_interrupt_observation, db);
+}
+
+static int test_mesh_roster_observation_refusal(bool allocation)
+{
+    int failures = 0;
+    struct node_db ndb = {0};
+    struct zcl_command_reply reply = {0};
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_pairing", "roster-refusal");
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    TEST(allocation ? "ops.mesh.roster: refuses observation allocation failure"
+                    : "ops.mesh.roster: refuses an observation read failure") {
+        struct vcs_zcode_dht_delegation delegation;
+        uint8_t fingerprint[32], genesis[32];
+        struct db_mesh_pairing row;
+        ASSERT(mesh_fixture(&ndb, path, &delegation, fingerprint, genesis));
+        ASSERT_EQ(mesh_pairing_service_accept(
+                      &ndb, genesis, &delegation, fingerprint,
+                      delegation.noise_static_pubkey, true,
+                      MESH_PAIRING_CAP_STATUS_READ, 2000, 3000, &row),
+                  MESH_PAIRING_OK);
+        node_db_close(&ndb);
+        mesh_roster_denied_reads = 0;
+        if (allocation)
+            zcl_alloc_fault_fail_next("roster_machines");
+        else
+            ASSERT_EQ(sqlite3_auto_extension((void (*)(void))mesh_roster_read_fault),
+                      SQLITE_OK);
+        bool passed = roster_call(&reply, dir, false, 0);
+        bool consumed = zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+        (void)sqlite3_cancel_auto_extension((void (*)(void))mesh_roster_read_fault);
+        ASSERT(allocation ? consumed : mesh_roster_denied_reads > 0);
+        ASSERT(!passed);
+        ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_FAILED);
+        ASSERT_STR_EQ(reply.error.code, "ROSTER_OBSERVATIONS_UNAVAILABLE");
+        ASSERT(reply.error.message[0] != '\0');
+        ASSERT(json_get(&reply.data, "rows") == NULL);
+        PASS();
+    } _test_next:;
+    zcl_alloc_fault_clear();
+    (void)sqlite3_cancel_auto_extension((void (*)(void))mesh_roster_read_fault);
+    zcl_command_reply_free(&reply);
+    if (ndb.open)
+        node_db_close(&ndb);
     test_cleanup_tmpdir(dir);
     return failures;
 }
@@ -694,6 +766,8 @@ int test_mesh_pairing(void)
 
     failures += test_mesh_observation_interrupted_step();
     failures += test_mesh_roster_page();
+    failures += test_mesh_roster_observation_refusal(true);
+    failures += test_mesh_roster_observation_refusal(false);
 
 _test_next:
     if (ndb.open)
