@@ -40,51 +40,17 @@ static bool count_fits(const zstats *s, uint64_t k)
 
 void zstats_add(zstats *s, double x)
 {
-    if (!count_fits(s, 1)) return;
-    s->n++;
-    if (s->n == 1) {
-        s->mean = x;
-        s->min = x;
-        s->max = x;
-        s->m2 = 0.0;
-    } else {
-        double delta = x - s->mean;
-        s->mean += delta / (double)s->n;
-        double delta2 = x - s->mean;
-        s->m2 += delta * delta2;
-        if (x < s->min) s->min = x;
-        if (x > s->max) s->max = x;
-    }
-    s->sum += (long double)x;
+    zstats_add_repeated(s, x, 1);
 }
 
 void zstats_add_repeated(zstats *s, double x, uint64_t k)
 {
-    if ((!count_fits(s, k)) | (k == 0)) return;
-    if (k == 1 || s->n == 0) {
-        /* Fast path for the first k identical samples. */
-        if (s->n == 0) {
-            s->n = k;
-            s->mean = x;
-            s->min = x;
-            s->max = x;
-            s->m2 = 0.0;
-            s->sum = (long double)x * (long double)k;
-            return;
-        }
-        zstats_add(s, x);
-        return;
-    }
-    /* Merge k identical samples as a block: their internal variance is
-     * zero; only the mean shift matters. */
-    uint64_t new_n = s->n + k;
-    double delta = x - s->mean;
-    s->mean += delta * (double)k / (double)new_n;
-    s->m2 += delta * delta * (double)s->n * (double)k / (double)new_n;
-    s->n = new_n;
-    if (x < s->min) s->min = x;
-    if (x > s->max) s->max = x;
-    s->sum += (long double)x * (long double)k;
+    if (!count_fits(s, k) || k == 0) return;
+    const zstats block = {
+        .n = k, .mean = x, .m2 = 0.0, .min = x, .max = x,
+        .sum = (long double)x * (long double)k
+    };
+    zstats_merge(s, &block);
 }
 
 /* A finite binary64 value is an integer multiple of 2^-1074. The

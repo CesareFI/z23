@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0 */
 /* zstats — streaming statistics (C23).
  *
- * Welford online mean/variance, min/max, exact integer sums, and
+ * Count-weighted mean/variance, min/max, long-double totals, and
  * merge of partial accumulators (Chan's parallel algorithm). No
  * allocation, fully deterministic, no wall clock.
  *
@@ -28,10 +28,16 @@ typedef struct {
 
 void zstats_init(zstats *s);
 
-/* Add one sample. No-op if the sample count would exceed UINT64_MAX. */
+/* Add one sample as a constant block through merge. NULL, count overflow,
+ * or negative M2 in a nonempty destination are no-ops without mutation.
+ * Empty payloads are ignored. The mean/M2 policies below apply. */
 void zstats_add(zstats *s, double x);
 
-/* Add the same sample k times. No-op for k==0 or count overflow. */
+/* Add the same sample k times as a constant block through merge. NULL,
+ * k==0, count overflow, or negative M2 in a nonempty destination are no-ops
+ * without mutation. An empty destination receives mean/min/max=x, M2=0
+ * and sum=(long double)x*k, including for a non-finite first sample.
+ * For a nonempty destination, the mean/M2 policies below apply. */
 void zstats_add_repeated(zstats *s, double x, uint64_t k);
 
 /* Merge another accumulator into s (Chan's algorithm).
@@ -51,7 +57,8 @@ void zstats_add_repeated(zstats *s, double x, uint64_t k);
  * For finite means, NaN M2 propagates before +infinity M2; otherwise M2 is
  * M2a + M2b + (b-a)^2*nA*nB/(nA+nB), with floating-point rounding and
  * possible +infinity. A non-finite nonempty mean makes M2 NaN (undefined
- * variance). These policies apply to merge; add/add_repeated are separate.
+ * variance). Add and add_repeated use these same policies by merging a
+ * constant block with M2=0; totals use rounded long-double arithmetic.
  * Requires IEEE binary64 double and default round-to-nearest arithmetic. */
 void zstats_merge(zstats *s, const zstats *other);
 

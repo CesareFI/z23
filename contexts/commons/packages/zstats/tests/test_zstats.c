@@ -381,8 +381,242 @@ static void test_merge_contract(unsigned selected)
     }
 }
 
+/* Append-contract rows: constants are independent of the merge comparison. */
+typedef struct {
+    uint64_t n, k;
+    double a, b, mean, m2;
+} add_case;
+
+static zstats constant_block(uint64_t n, double x)
+{
+    return (zstats){.n=n, .mean=x, .m2=0, .min=x, .max=x,
+                    .sum=(long double)x * (long double)n};
+}
+
+static void append_api(zstats *s, double x, unsigned api, uint64_t k)
+{
+    if (api == 0) zstats_add(s, x);
+    else zstats_add_repeated(s, x, k);
+}
+
+static void check_all_fields(const zstats *actual, const zstats *expected)
+{
+    CHECK(actual->n == expected->n);
+    check_contract_value(actual->mean, expected->mean);
+    check_contract_value(actual->m2, expected->m2);
+    check_contract_value(actual->min, expected->min);
+    check_contract_value(actual->max, expected->max);
+    if (isnan(expected->sum)) CHECK(isnan(actual->sum));
+    else {
+        CHECK(actual->sum == expected->sum);
+        CHECK(!!signbit(actual->sum) == !!signbit(expected->sum));
+    }
+}
+
+static void test_add_case(const char *name, const add_case *row)
+{
+    for (unsigned api = row->k == 1 ? 0u : 1u; api < 2; api++) {
+        zstats actual = constant_block(row->n, row->a);
+        zstats expected = actual, block = constant_block(row->k, row->b);
+        zstats_merge(&expected, &block);
+        append_api(&actual, row->b, api, row->k);
+        fprintf(stderr, "ADD-%s api%u n=%llu k=%llu: mean %a expected %a; M2 %a expected %a\n",
+                name, api, (unsigned long long)row->n,
+                (unsigned long long)row->k, actual.mean, row->mean,
+                actual.m2, row->m2);
+        CHECK(actual.n == row->n + row->k);
+        check_contract_value(actual.mean, row->mean);
+        check_contract_value(actual.m2, row->m2);
+        check_all_fields(&actual, &expected);
+    }
+}
+
+static void test_add_extremes(void)
+{
+    static const add_case rows[] = {
+        {1,1,DBL_MAX,-DBL_MAX,0,INFINITY},
+        {1,1,-DBL_MAX,DBL_MAX,0,INFINITY},
+        {1,2,DBL_MAX,-DBL_MAX,-DBL_MAX/3.0,INFINITY},
+        {1,2,-DBL_MAX,DBL_MAX,DBL_MAX/3.0,INFINITY},
+        {2,1,DBL_MAX,-DBL_MAX,DBL_MAX/3.0,INFINITY},
+        {2,1,-DBL_MAX,DBL_MAX,-DBL_MAX/3.0,INFINITY},
+        {UINT64_C(1)<<63,(UINT64_C(1)<<63)-1,
+         DBL_MAX,-DBL_MAX,0x1.fffffffffffffp959,INFINITY},
+        {(UINT64_C(1)<<63)-1,UINT64_C(1)<<63,
+         -DBL_MAX,DBL_MAX,0x1.fffffffffffffp959,INFINITY},
+        {UINT64_C(1)<<63,(UINT64_C(1)<<63)-1,
+         -DBL_MAX,DBL_MAX,-0x1.fffffffffffffp959,INFINITY},
+    };
+    for (size_t i=0; i<sizeof rows/sizeof rows[0]; i++)
+        test_add_case("B1", &rows[i]);
+}
+
+static void test_add_nonfinite(void)
+{
+    static const struct { double a,b,mean; } rows[] = {
+        {INFINITY,2,INFINITY}, {2,INFINITY,INFINITY},
+        {-INFINITY,2,-INFINITY}, {2,-INFINITY,-INFINITY},
+        {INFINITY,-2,INFINITY}, {-2,INFINITY,INFINITY},
+        {-INFINITY,-2,-INFINITY}, {-2,-INFINITY,-INFINITY},
+        {INFINITY,INFINITY,INFINITY}, {-INFINITY,-INFINITY,-INFINITY},
+        {INFINITY,-INFINITY,NAN}, {-INFINITY,INFINITY,NAN},
+        {NAN,2,NAN}, {2,NAN,NAN}, {NAN,INFINITY,NAN},
+        {INFINITY,NAN,NAN}, {NAN,-INFINITY,NAN}, {-INFINITY,NAN,NAN},
+    };
+    for (size_t i=0; i<sizeof rows/sizeof rows[0]; i++) {
+        for (uint64_t k=1; k<=2; k++) {
+            const add_case row = {1,k,rows[i].a,rows[i].b,rows[i].mean,NAN};
+            test_add_case("B2", &row);
+        }
+    }
+}
+
+static void test_add_zeros(void)
+{
+    static const struct { double a,b,mean; } rows[] = {
+        {-0.0,-0.0,-0.0}, {0.0,0.0,0.0},
+        {-0.0,0.0,0.0}, {0.0,-0.0,0.0},
+        {DBL_MAX,DBL_MAX,DBL_MAX}, {-DBL_MAX,-DBL_MAX,-DBL_MAX},
+        {7,7,7},
+    };
+    for (size_t i=0; i<sizeof rows/sizeof rows[0]; i++) {
+        for (uint64_t k=1; k<=2; k++) {
+            const add_case row = {1,k,rows[i].a,rows[i].b,rows[i].mean,0};
+            test_add_case("B3", &row);
+        }
+    }
+}
+
+static void check_append_refusal(zstats original, unsigned api, uint64_t k)
+{
+    unsigned char before[sizeof original];
+    memcpy(before, &original, sizeof original);
+    append_api(&original, 0, api, k);
+    fprintf(stderr, "ADD-B4 api%u k=%llu: refusal snapshot\n",
+            api, (unsigned long long)k);
+    CHECK(memcmp(before, &original, sizeof original) == 0);
+}
+
+static void test_add_m2_control(double m2)
+{
+    for (unsigned api=0; api<2; api++) {
+        zstats actual = constant_block(1,1);
+        actual.m2 = m2;
+        zstats expected = actual, block = constant_block(1,3);
+        zstats_merge(&expected, &block);
+        append_api(&actual, 3, api, 1);
+        CHECK(actual.n == 2 && actual.mean == 2);
+        check_contract_value(actual.m2, m2);
+        check_all_fields(&actual, &expected);
+    }
+}
+
+static void test_add_refusal(void)
+{
+    static const uint64_t counts[] = {1,UINT64_MAX-1,UINT64_MAX};
+    static const double invalid[] = {-1,-INFINITY};
+    for (size_t i=0; i<sizeof counts/sizeof counts[0]; i++) {
+        for (size_t j=0; j<sizeof invalid/sizeof invalid[0]; j++) {
+            zstats s = constant_block(counts[i],0);
+            s.m2 = invalid[j];
+            check_append_refusal(s,0,1);
+            for (uint64_t k=0; k<=2; k++) check_append_refusal(s,1,k);
+        }
+    }
+    zstats full = constant_block(UINT64_MAX,0);
+    check_append_refusal(full,0,1);
+    check_append_refusal(full,1,1);
+    zstats near = constant_block(UINT64_MAX-1,0);
+    check_append_refusal(near,1,2);
+    for (unsigned api=0; api<2; api++) {
+        zstats accepted = near;
+        append_api(&accepted,0,api,1);
+        CHECK(accepted.n == UINT64_MAX && accepted.mean == 0 && accepted.m2 == 0);
+    }
+    zstats_add(NULL,1);
+    zstats_add_repeated(NULL,1,0);
+    zstats_add_repeated(NULL,1,1);
+    zstats_add_repeated(NULL,1,2);
+    test_add_m2_control(NAN);
+    test_add_m2_control(INFINITY);
+}
+
+static void test_add_scaled(void)
+{
+    static const add_case rows[] = {
+        {UINT64_C(1)<<62,UINT64_C(1)<<62,0,0x1p-540,0x1p-541,0x1p-1019},
+        {UINT64_C(1)<<62,UINT64_C(1)<<62,0x1p-540,0,0x1p-541,0x1p-1019},
+        {1,2,0,0x1p512,0x1.5555555555555p511,0x1.5555555555555p1023},
+        {2,1,0x1p512,0,0x1.5555555555555p511,0x1.5555555555555p1023},
+        {1,1,0,0x1p512,0x1p511,0x1p1023},
+        {1,1,0x1p512,0,0x1p511,0x1p1023},
+        {1,1,1,3,2,2}, {1,1,3,1,2,2},
+    };
+    for (size_t i=0; i<sizeof rows/sizeof rows[0]; i++)
+        test_add_case("B5", &rows[i]);
+}
+
+static void test_add_empty_row(unsigned dirty, double x, unsigned api, uint64_t k)
+{
+    zstats actual = {0};
+    if (dirty) {
+        actual.mean = actual.min = actual.max = NAN;
+        actual.m2 = dirty == 1 ? NAN : -INFINITY;
+        actual.sum = NAN;
+    }
+    unsigned char before[sizeof actual];
+    memcpy(before, &actual, sizeof actual);
+    zstats expected = constant_block(k,x);
+    zstats merged = actual;
+    zstats_merge(&merged, &expected);
+    append_api(&actual,x,api,k);
+    fprintf(stderr, "ADD-B6 dirty%u api%u k=%llu: empty payload\n",
+            dirty, api, (unsigned long long)k);
+    if (k == 0) CHECK(memcmp(before, &actual, sizeof actual) == 0);
+    else {
+        check_all_fields(&actual, &expected);
+        check_all_fields(&actual, &merged);
+    }
+}
+
+static void test_add_empty(void)
+{
+    static const double samples[] = {3,NAN,INFINITY,-INFINITY,-0.0};
+    for (unsigned dirty=1; dirty<=3; dirty++) {
+        for (size_t i=0; i<sizeof samples/sizeof samples[0]; i++) {
+            unsigned payload = dirty == 3 ? 0 : dirty;
+            test_add_empty_row(payload,samples[i],0,1);
+            test_add_empty_row(payload,samples[i],1,1);
+            test_add_empty_row(payload,samples[i],1,2);
+            test_add_empty_row(payload,samples[i],1,0);
+        }
+    }
+}
+
+static bool test_add_contract(const char *selected)
+{
+    static const struct { const char *name; void (*run)(void); } groups[] = {
+        {"B1",test_add_extremes}, {"B2",test_add_nonfinite},
+        {"B3",test_add_zeros}, {"B4",test_add_refusal},
+        {"B5",test_add_scaled}, {"B6",test_add_empty},
+    };
+    bool found = false;
+    for (size_t i=0; i<sizeof groups/sizeof groups[0]; i++) {
+        if (selected && strcmp(selected,groups[i].name) != 0) continue;
+        found = true;
+        groups[i].run();
+    }
+    return found;
+}
+
 int main(void)
 {
+    const char *add_row = getenv("ZSTATS_ADD_ROW");
+    if (add_row) {
+        if (!test_add_contract(add_row)) return 2;
+        puts("append contract selected group passed");
+        return 0;
+    }
     const char *contract_row = getenv("ZSTATS_CONTRACT_ROW");
     if (contract_row) {
         char *end;
@@ -404,6 +638,7 @@ int main(void)
         else return 2;
         return 0;
     }
+    CHECK(test_add_contract(NULL));
     for (unsigned row = 1; row <= 27; row++) test_merge_contract(row);
     test_nonfinite_merge(NULL);
     test_merge_weight(0);
