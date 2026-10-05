@@ -45,7 +45,7 @@ zslug_opts zslug_default_opts(void);
 /*
  * Slugify in[0..in_len) into out[0..out_cap).
  * Returns the untruncated slug length (excluding NUL).  If the return
- * value is >= out_cap, or >= opts.max_len when set, the output was
+ * value is >= out_cap, or > opts.max_len when set, the output was
  * truncated; out still holds a valid, word-boundary-trimmed slug.
  * NULL out with out_cap 0 is legal for pure length measurement.
  * NULL in with in_len > 0 returns 0 and writes an empty string.
@@ -54,7 +54,8 @@ size_t zslug(const char *in, size_t in_len, char *out, size_t out_cap,
              const zslug_opts *opts);
 
 /* Convenience: validate that a string already is a canonical slug
- * under the given options (only [a-z0-9] and single separators, no
+ * under the given options ([a-z0-9], also [A-Z] when fold_case is 0,
+ * and single separators, no
  * leading/trailing/doubled separator, within max_len).  Returns 1 or 0. */
 int zslug_is_canonical(const char *s, size_t len, const zslug_opts *opts);
 

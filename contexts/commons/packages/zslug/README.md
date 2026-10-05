@@ -14,7 +14,7 @@ Deterministic URL/filename slug generation in freestanding C23.
   dropped.
 - `snprintf`-style contract: the return value is the untruncated slug
   length, so truncation is detectable. Output is always NUL-terminated
-  when capacity permits. `max_len` truncation happens at a word
+  when capacity permits. Capacity and maximum-length truncation happen at a word
   boundary when possible.
 - `zslug_is_canonical` validates that a string already is a slug under
   given options.

@@ -243,7 +243,37 @@ static void test_fuzz_bounded(void) {
   }
 }
 
+static void test_distinguishing_boundaries(void) {
+  static const struct {
+    const char *in, *want;
+    size_t cap, max_len, len;
+    int custom;
+  } rows[] = {
+    {"hello world", "hello", 7, 0, 11, 0},
+    {"hello world", "hello", 10, 0, 11, 0},
+    {"hello world", "hello", 9, 8, 11, 0},
+    {"hello world again", "hello-world", 13, 0, 17, 0},
+    {"Hello World Again", "Hello_World", 13, 0, 17, 1},
+    {"a\xc3\x9f" " b\xc3\xa9" " c", "ass", 6, 0, 8, 0},
+    {"a\xc3\x9f" " b\xc3\xa9" " c", "ass", 6, 5, 8, 0},
+    {"a\xe0\x80" " b", "a", 3, 0, 3, 0},
+    {"hello world", "hello", 7, SIZE_MAX, 11, 0}
+  };
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    char out[32];
+    memset(out, 0x7f, sizeof out);
+    zslug_opts opts = zslug_default_opts();
+    opts.max_len = rows[i].max_len;
+    if (rows[i].custom) { opts.sep = '_'; opts.fold_case = 0; }
+    size_t n = zslug(rows[i].in, strlen(rows[i].in), out, rows[i].cap, &opts);
+    CHECK(n == rows[i].len && strcmp(out, rows[i].want) == 0 &&
+          (unsigned char)out[rows[i].cap] == 0x7f &&
+          zslug_is_canonical(out, strlen(out), &opts));
+  }
+}
+
 int main(void) {
+  test_distinguishing_boundaries();
   test_basic_kats();
   test_latin1_folds();
   test_beyond_latin1();

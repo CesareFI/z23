@@ -87,6 +87,16 @@ static void emit_sep(slug_state *s) {
   if (s->len > 0) s->pending_sep = 1;
 }
 
+static void finish_prefix(char *out, size_t term, size_t total, char sep) {
+  while (term > 0 && out[term - 1] == sep) term--;
+  if (term < total && out[term] != sep) {
+    size_t j = term;
+    while (j > 0 && out[j - 1] != sep) j--;
+    if (j > 0) term = j - 1;
+  }
+  out[term] = '\0';
+}
+
 size_t zslug(const char *in, size_t in_len, char *out, size_t out_cap,
              const zslug_opts *opts) {
   slug_state s;
@@ -154,7 +164,7 @@ size_t zslug(const char *in, size_t in_len, char *out, size_t out_cap,
       }
       term = cut;
     }
-    out[term] = '\0';
+    finish_prefix(out, term, s.len, s.opts.sep);
   }
   return s.len;
 }
