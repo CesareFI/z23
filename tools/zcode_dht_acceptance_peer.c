@@ -291,18 +291,42 @@ static int connect_ipv4(const char *host, uint16_t port)
     return fd;
 }
 
+/* Load the three identity artifacts for one attack. A datadir long enough
+ * to truncate the v2_identity.key path is refused: read_exact_0600 would
+ * otherwise open the chopped path while the online-key and delegation
+ * loads walk the full datadir, mixing keys from two directories. */
+static bool load_identity(const char *datadir, uint8_t *noise_priv,
+                          uint8_t *online_seed, uint8_t *online_pub,
+                          struct vcs_zcode_dht_delegation *delegation,
+                          uint8_t *node_id, char *err, size_t err_cap)
+{
+    char path[1400];
+    if (strlen(datadir) + sizeof("/v2_identity.key") > sizeof(path)) {
+        snprintf(err, err_cap, "identity-datadir too long (max %zu "
+                 "characters)", sizeof(path) - sizeof("/v2_identity.key"));
+        return false;
+    }
+    snprintf(path, sizeof(path), "%s/v2_identity.key", datadir);
+    if (!read_exact_0600(path, noise_priv, 32) ||
+        !vcs_zcode_dht_online_key_load(datadir, online_seed, online_pub,
+                                       err, err_cap) ||
+        !vcs_zcode_dht_delegation_load(datadir, delegation, err,
+                                       err_cap) ||
+        !vcs_zcode_dht_delegation_node_id(node_id, delegation)) {
+        if (err[0] == '\0')
+            snprintf(err, err_cap, "identity unreadable");
+        return false;
+    }
+    return true;
+}
+
 static int attack_peer(const char *host, uint16_t port, const char *datadir)
 {
-    char path[1400], err[160];
+    char err[160];
     uint8_t noise_priv[32], online_seed[32], online_pub[32], node_id[32];
     struct vcs_zcode_dht_delegation delegation;
-    snprintf(path, sizeof(path), "%s/v2_identity.key", datadir);
-    if (!read_exact_0600(path, noise_priv, sizeof(noise_priv)) ||
-        !vcs_zcode_dht_online_key_load(datadir, online_seed, online_pub,
-                                       err, sizeof(err)) ||
-        !vcs_zcode_dht_delegation_load(datadir, &delegation, err,
-                                       sizeof(err)) ||
-        !vcs_zcode_dht_delegation_node_id(node_id, &delegation)) {
+    if (!load_identity(datadir, noise_priv, online_seed, online_pub,
+                       &delegation, node_id, err, sizeof(err))) {
         fprintf(stderr, "identity load failed: %s\n", err);
         return 2;
     }

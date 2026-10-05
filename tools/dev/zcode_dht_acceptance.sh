@@ -61,7 +61,22 @@ dht_lifecycle_selftest() {
     local v6_shell v6_pid v6_port v6_start
     local one_pid one_port one_start two_pid two_port two_start
     local three_pid three_port three_start signal_pid signal_port signal_start
+    local long_dir
     dht_make_work zcl23-dhtprobe
+
+    # Peer argument hardening: an identity-datadir long enough to truncate
+    # the v2_identity.key path must be refused by name (exit 2), not split
+    # — otherwise read_exact_0600 opens the chopped path while the
+    # online-key and delegation loads walk the full datadir, and the
+    # handshake authenticates with keys from two directories.
+    dht_build_helper
+    long_dir="$(printf '%*s' 1385 '' | tr ' ' x)/dd"
+    if "$DHT_WORK/dht-peer" attack 127.0.0.1 9 "$long_dir" \
+            >"$DHT_WORK/peer-long-dir.log" 2>&1; then
+        dht_die "peer attack accepted an over-long identity-datadir"
+    fi
+    grep -q "identity-datadir too long" "$DHT_WORK/peer-long-dir.log" ||
+        dht_die "peer attack refused the over-long identity-datadir without naming it"
 
     dht_spawn_owned_command one_shell "$DHT_WORK/one.log" env \
         DHT_LIFECYCLE_MODE=probe DHT_PROBE_OUTCOME=success \
@@ -150,14 +165,6 @@ dht_lifecycle_selftest() {
     dht_note "PASS lifecycle ownership: concurrent isolation, failure, interruption, immediate rerun"
 }
 
-case "${DHT_LIFECYCLE_MODE:-scenario}" in
-    probe) dht_lifecycle_probe_child; exit 0 ;;
-    selftest) dht_lifecycle_selftest; exit 0 ;;
-    scenario) ;;
-    *) dht_die "unknown DHT_LIFECYCLE_MODE=${DHT_LIFECYCLE_MODE:-}" ;;
-esac
-
-
 dht_build_helper() {
     cc -std=c23 -O1 -w -D_GNU_SOURCE -ffunction-sections -fdata-sections \
         "${DHT_GC_SECTIONS_LDFLAGS[@]}" \
@@ -207,6 +214,15 @@ dht_build_helper() {
         "$REPO_ROOT/platform/modules/util/src/cpu_topology.c" ||
         dht_die "acceptance helper compile failed"
 }
+
+
+case "${DHT_LIFECYCLE_MODE:-scenario}" in
+    probe) dht_lifecycle_probe_child; exit 0 ;;
+    selftest) dht_lifecycle_selftest; exit 0 ;;
+    scenario) ;;
+    *) dht_die "unknown DHT_LIFECYCLE_MODE=${DHT_LIFECYCLE_MODE:-}" ;;
+esac
+
 
 dht_check_find() {
     local reply="$1" target="$2" a_id="$3" b_id="$4"
