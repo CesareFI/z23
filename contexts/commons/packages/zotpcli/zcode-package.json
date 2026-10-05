@@ -9,7 +9,7 @@
   "dependencies": [
     {
       "name": "zarg/zarg",
-      "root": "7d6383545064935c399b7d29c84bb904e54d1fcd2601ef77428fe26b1c3e6c8a",
+      "root": "7309492dde70c7fa5ccb8f9b171810860251794f3b65b69c689407415b8fe303",
       "semver": "0.1.0"
     },
     {
@@ -29,12 +29,12 @@
     },
     {
       "name": "zfmt/zfmt",
-      "root": "0ee9d7603c2f14719fd90c1e8115cd96dd5c02c1fe4444a2fa71cb718bb590dd",
+      "root": "b1cda301e340bd4334d7ac04a8bbda5bcb2be4045930bb0fdab6974726e209db",
       "semver": "0.1.0"
     },
     {
       "name": "zhex/zhex",
-      "root": "cb89a33e69f5d526bd960c3a59050421401169617f2559b9e147eb532fec3e05",
+      "root": "14cdf8dfb79bd55018759301c489411cc4003b0f0765cf891f39a5231e99dc70",
       "semver": "0.1.0"
     },
     {
@@ -49,7 +49,7 @@
     },
     {
       "name": "zjsonp/zjsonp",
-      "root": "e635c5f856c857c83edc8939cfd0d18f1cef8f4322f20468253d1d9035d5bc4a",
+      "root": "f76eaa514a71217aad7acb6ffd3d21cc8e128a601125fbd74227edc8ed048acb",
       "semver": "0.1.0"
     },
     {
