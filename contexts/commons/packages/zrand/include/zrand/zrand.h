@@ -47,7 +47,9 @@ bool zrand_bool(zrand *r);
 /* Fill buf with n bytes. */
 void zrand_bytes(zrand *r, void *buf, size_t n);
 
-/* Fisher–Yates shuffle of n elements of size elem_size. */
+/* Fisher-Yates shuffle of n elements of size elem_size. NULL r/base,
+ * zero size, fewer than two elements, or an unrepresentable n*elem_size
+ * leaves both the buffer and generator unchanged. */
 void zrand_shuffle(zrand *r, void *base, size_t n, size_t elem_size);
 
 /* Advance 2^128 steps (jump) or 2^192 steps (long_jump): split the

@@ -198,8 +198,64 @@ static void test_null_safety(void)
     zrand_long_jump(NULL);
 }
 
+static void test_shuffle_large_items(void)
+{
+    unsigned failures = 0;
+    const size_t sizes[] = {257, 512, 513};
+    for (size_t row = 0; row < sizeof sizes / sizeof sizes[0]; row++) {
+        size_t size = sizes[row];
+        unsigned char actual[3 * 513 + 2], expected[sizeof actual];
+        memset(actual, 0xa5, sizeof actual);
+        for (size_t i = 0; i < 3; i++)
+            for (size_t j = 0; j < size; j++)
+                actual[1 + i * size + j] = (unsigned char)(i * 67 + j);
+        memcpy(expected, actual, sizeof actual);
+        zrand rng, reference;
+        zrand_seed(&rng, 1234);
+        reference = rng;
+        for (size_t i = 2; i > 0; i--) {
+            size_t k = (size_t)zrand_bounded(&reference, i + 1);
+            for (size_t j = 0; j < size; j++) {
+                unsigned char byte = expected[1 + i * size + j];
+                expected[1 + i * size + j] = expected[1 + k * size + j];
+                expected[1 + k * size + j] = byte;
+            }
+        }
+        zrand_shuffle(&rng, actual + 1, 3, size);
+        unsigned char held[4] = {1, 2, 3, 4};
+        const unsigned char unchanged[4] = {1, 2, 3, 4};
+        zrand invalid, saved;
+        zrand_seed(&invalid, 1234);
+        saved = invalid;
+        zrand_shuffle(&invalid, held, 3, SIZE_MAX / 2 + 1);
+        zrand_shuffle(&invalid, held, 2, SIZE_MAX - 10);
+        int ok = memcmp(held, unchanged, sizeof held) == 0 &&
+                 memcmp(&invalid, &saved, sizeof invalid) == 0 &&
+                 memcmp(actual, expected, sizeof actual) == 0 &&
+                 memcmp(&rng, &reference, sizeof rng) == 0;
+        fprintf(stderr, "large_shuffle_row=%zu size=%zu result=%s\n", row,
+                size, ok ? "PASS" : "FAIL");
+        if (!ok) failures++;
+    }
+    CHECK(failures == 0);
+}
+
+static void test_shuffle_span_overflow(void)
+{
+    unsigned char bytes[4] = {1, 2, 3, 4};
+    const unsigned char expected[4] = {1, 2, 3, 4};
+    zrand rng, original;
+    zrand_seed(&rng, 1234);
+    original = rng;
+    zrand_shuffle(&rng, bytes, SIZE_MAX / 2 + 1, 2);
+    CHECK(memcmp(bytes, expected, sizeof bytes) == 0 &&
+          memcmp(&rng, &original, sizeof rng) == 0);
+}
+
 int main(void)
 {
+    test_shuffle_large_items();
+    test_shuffle_span_overflow();
     test_reference_vectors();
     test_bounded();
     test_double_bool_bytes();

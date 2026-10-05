@@ -86,19 +86,33 @@ void zrand_bytes(zrand *r, void *buf, size_t n)
     }
 }
 
+static bool shuffle_span_fits(size_t n, size_t elem_size)
+{
+    return n <= SIZE_MAX / elem_size; /* caller already rejected zero size */
+}
+
+static void swap_record(uint8_t *a, uint8_t *b, size_t size)
+{
+    uint8_t tmp[256];
+    for (size_t off = 0; off < size;) {
+        size_t take = size - off;
+        if (take > sizeof tmp) take = sizeof tmp;
+        memcpy(tmp, a + off, take);
+        memcpy(a + off, b + off, take);
+        memcpy(b + off, tmp, take);
+        off += take;
+    }
+}
+
 void zrand_shuffle(zrand *r, void *base, size_t n, size_t elem_size)
 {
     if (!r || !base || elem_size == 0 || n < 2) return;
     uint8_t *b = base;
-    uint8_t tmp[256];
-    uint8_t *scratch = tmp;
-    if (elem_size > sizeof tmp) return; /* oversized elements unsupported */
+    if (!shuffle_span_fits(n, elem_size)) return;
     for (size_t i = n - 1; i > 0; i--) {
         size_t j = (size_t)zrand_bounded(r, (uint64_t)i + 1);
         if (j == i) continue;
-        memcpy(scratch, b + i * elem_size, elem_size);
-        memmove(b + i * elem_size, b + j * elem_size, elem_size);
-        memcpy(b + j * elem_size, scratch, elem_size);
+        swap_record(b + i * elem_size, b + j * elem_size, elem_size);
     }
 }
 
