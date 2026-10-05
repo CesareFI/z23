@@ -40,14 +40,15 @@ static inline void sky_expr_draw_op(const struct sky_hud_recipe_v1 *recipe,const
  if(op->kind==SKY_HUD_OP_RECT_LINES){DrawRectangleLinesEx(rect,1.0f,color);return;}
  char text[SKY_HUD_TEXT_BYTES+1];memcpy(text,recipe->text+op->text_off,op->text_len);text[op->text_len]=0;
  Font font=GetFontDefault();float px=(float)op->font_px;
- int width=MeasureText(text,(int)op->font_px);
+ const float spacing=1.0f;float raw=MeasureTextEx(font,text,px,spacing).x;
+ int width=raw>=0.0f && raw<2147483648.0f?(int)raw:0;
  Vector2 at={(float)op->x,(float)op->y};
  if(op->kind==SKY_HUD_OP_TEXT_BOX) {
   rect.x=(float)((int64_t)op->x-width/2-op->w);rect.width=(float)((int64_t)width+2*(int64_t)op->w);
   DrawRectangleRec(rect,color);return;
  } else if(op->align==SKY_HUD_ALIGN_CENTER)at.x=(float)((int64_t)op->x-width/2);
  else if(op->align==SKY_HUD_ALIGN_RIGHT)at.x=(float)((int64_t)op->x-width);
- DrawTextEx(font,text,at,px,1.0f,color);
+ DrawTextEx(font,text,at,px,spacing,color);
 }
 /* Private admitted state stays immutable. Each frame draws the captured recipe. */
 static inline void sky_expr_render(const struct sky_expr_hud *hud,void (*builtin)(void *),void *context)

@@ -643,27 +643,48 @@ static int admit_file_cases(void)
 /* Trace only the raylib calls made by the production recipe renderer. */
 #include <raylib.h>
 static char use_trace[4096];static size_t use_trace_at;
+static void use_trace_append(const char *format,...)
+{
+ va_list args;va_start(args,format);
+ int n=vsnprintf(use_trace+use_trace_at,sizeof use_trace-use_trace_at,format,args);va_end(args);
+ if(n<0 || (size_t)n>=sizeof use_trace-use_trace_at){fprintf(stderr,"HUD trace overflow\n");abort();}
+ use_trace_at+=(size_t)n;
+}
+
 static void use_shape(char kind,Rectangle r,Color c)
-{ use_trace_at+=(size_t)snprintf(use_trace+use_trace_at,sizeof use_trace-use_trace_at,"%c %.1f %.1f %.1f %.1f %u %u %u %u\n",kind,(double)r.x,(double)r.y,(double)r.width,(double)r.height,(unsigned)c.r,(unsigned)c.g,(unsigned)c.b,(unsigned)c.a); }
+{ use_trace_append("%c %.1f %.1f %.1f %.1f %u %u %u %u\n",kind,(double)r.x,(double)r.y,(double)r.width,(double)r.height,(unsigned)c.r,(unsigned)c.g,(unsigned)c.b,(unsigned)c.a); }
 static void use_rect(Rectangle r,Color c){use_shape('R',r,c);}
-static void use_lines(Rectangle r,float thick,Color c){(void)thick;use_shape('L',r,c);}
-static Font use_font(void) {return (Font){0};}
-static int use_measure(const char *text,int px) {return (int)strlen(text)*px;}
+static float use_line_thickness;
+static void use_lines(Rectangle r,float thick,Color c){use_line_thickness=thick;use_shape('L',r,c);}
+static Font use_font(void) {return (Font){.baseSize=10,.texture={.id=1}};}
+static float use_measure_spacing,use_draw_spacing,use_measure_size,use_draw_size;
+static Font use_measured_font,use_drawn_font;static Color use_drawn_color;
+static bool use_metric_override;static float use_metric_width;
+static Vector2 use_measure_ex(Font font,const char *text,float px,float spacing)
+{
+ use_measured_font=font;use_measure_spacing=spacing;use_measure_size=px;size_t n=strlen(text);
+ return (Vector2){use_metric_override?use_metric_width:(float)n*px+(n?(float)(n-1)*spacing:0.0f),px};
+}
+[[maybe_unused]] static int use_measure(const char *text,int px)
+{ if(px<10)px=10;return (int)use_measure_ex(use_font(),text,(float)px,(float)(px/10)).x; }
+
 static void use_text(Font f,const char *text,Vector2 at,float px,float spacing,Color c)
-{ (void)f;(void)spacing;(void)c;use_trace_at+=(size_t)snprintf(use_trace+use_trace_at,sizeof use_trace-use_trace_at,"T %s %.1f %.1f %.1f\n",text,(double)at.x,(double)at.y,(double)px); }
+{ use_drawn_font=f;use_drawn_color=c;use_draw_spacing=spacing;use_draw_size=px;use_trace_append("T %s %.1f %.1f %.1f\n",text,(double)at.x,(double)at.y,(double)px); }
 #define DrawRectangleRec use_rect
 #define DrawRectangleLinesEx use_lines
 #define GetFontDefault use_font
 #define MeasureText use_measure
+#define MeasureTextEx use_measure_ex
 #define DrawTextEx use_text
 #include "../../../apps/skycombat/part/expr_use.h"
 #undef DrawRectangleRec
 #undef DrawRectangleLinesEx
 #undef GetFontDefault
 #undef MeasureText
+#undef MeasureTextEx
 #undef DrawTextEx
 static void use_builtin(void *context)
-{ const char *s=context;use_trace_at+=(size_t)snprintf(use_trace+use_trace_at,sizeof use_trace-use_trace_at,"%s",s); }
+{ const char *s=context;use_trace_append("%s",s); }
 static int use_option_cases(void)
 {
  struct sky_expr_option option,before;memset(&option,0x5a,sizeof option);char good[100];memset(good,'0',sizeof good);
@@ -714,7 +735,7 @@ static int use_box_case(void)
  double fields[XF_COUNT]={0};fields[XF_SHIELD]=1;struct sky_expr_hud hud={0};
  sky_expr_start(&option,fields,&hud);int failures=!hud.active;
  use_trace_at=0;use_trace[0]=0;sky_expr_render(&hud,use_builtin,"BUILTIN\n");
- failures+=strcmp(use_trace,"R -50.0 20.0 120.0 40.0 17 34 51 68\n")!=0;
+ failures+=strcmp(use_trace,"R -52.0 20.0 124.0 40.0 17 34 51 68\n")!=0;
  unlink(path);return failures;
 }
 
@@ -742,18 +763,20 @@ static int use_render_cases(void)
  struct sky_hud_op_v1 *op=recipe.ops;
  *op=(struct sky_hud_op_v1){.kind=SKY_HUD_OP_TEXT,.x=10,.y=20,.rgba=0x11223344,.font_px=13,.text_len=5};
  int failures=0;
- const char *expected[]={"T HUD10 10.0 20.0 13.0\n","T HUD10 -22.0 20.0 13.0\n","T HUD10 -55.0 20.0 13.0\n"};
+ const char *expected[]={"T HUD10 10.0 20.0 13.0\n","T HUD10 -24.0 20.0 13.0\n","T HUD10 -59.0 20.0 13.0\n"};
  for(unsigned align=0;align<3;align++) {
   op->align=align;use_trace_at=0;use_trace[0]=0;sky_expr_draw_op(&recipe,op);
   failures+=strcmp(use_trace,expected[align])!=0;
+  failures+=use_drawn_color.r!=17 || use_drawn_color.g!=34 || use_drawn_color.b!=51 || use_drawn_color.a!=68;
  }
  op->align=0;op->kind=SKY_HUD_OP_TEXT_BOX;op->w=30;op->h=40;
  use_trace_at=0;use_trace[0]=0;sky_expr_draw_op(&recipe,op);
- failures+=strcmp(use_trace,"R -52.0 20.0 125.0 40.0 17 34 51 68\n")!=0;
+ failures+=strcmp(use_trace,"R -54.0 20.0 129.0 40.0 17 34 51 68\n")!=0;
  op->text_len=0;op->font_px=0;op->kind=SKY_HUD_OP_RECT;use_trace_at=0;use_trace[0]=0;sky_expr_draw_op(&recipe,op);
  failures+=strcmp(use_trace,"R 10.0 20.0 30.0 40.0 17 34 51 68\n")!=0;
  op->kind=SKY_HUD_OP_RECT_LINES;use_trace_at=0;use_trace[0]=0;sky_expr_draw_op(&recipe,op);
  failures+=strcmp(use_trace,"L 10.0 20.0 30.0 40.0 17 34 51 68\n")!=0;
+ failures+=use_line_thickness!=1.0f;
  return failures;
 }
 
@@ -766,12 +789,46 @@ static int use_multiple_ops(void)
  return strcmp(use_trace,"R 1.0 2.0 3.0 4.0 17 34 51 68\nL 5.0 6.0 7.0 8.0 85 102 119 136\n")!=0;
 }
 
+static int use_metric_cases(void)
+{
+ struct sky_hud_recipe_v1 r={.op_count=1,.text_used=5};memcpy(r.text,"HUD10",5);
+ struct sky_hud_op_v1 *op=r.ops;
+ *op=(struct sky_hud_op_v1){.kind=SKY_HUD_OP_TEXT,.x=10,.y=20,.font_px=25,.text_len=5,.align=SKY_HUD_ALIGN_RIGHT};
+ const unsigned sizes[]={25,7};const char *expected[]={"T HUD10 -119.0 20.0 25.0\n","T HUD10 -29.0 20.0 7.0\n"};int failures=0;
+ for(unsigned i=0;i<2;i++) {
+  op->font_px=sizes[i];use_measure_spacing=-1;use_draw_spacing=-2;use_measure_size=-1;use_draw_size=-2;
+  use_trace_at=0;use_trace[0]=0;sky_expr_draw_op(&r,op);
+  failures+=strcmp(use_trace,expected[i])!=0;failures+=use_measure_spacing!=use_draw_spacing;
+  failures+=use_measure_size!=use_draw_size;
+  failures+=use_measured_font.baseSize!=10 || use_drawn_font.baseSize!=10;
+  failures+=use_measured_font.texture.id!=1 || use_drawn_font.texture.id!=1;
+ }
+ op->font_px=25;op->kind=SKY_HUD_OP_TEXT_BOX;op->w=30;op->h=40;
+ use_trace_at=0;use_trace[0]=0;sky_expr_draw_op(&r,op);
+ failures+=strcmp(use_trace,"R -84.0 20.0 189.0 40.0 0 0 0 0\n")!=0;
+ return failures;
+}
+
+static int use_metric_range_cases(void)
+{
+ struct sky_hud_recipe_v1 r={.op_count=1,.text_used=1};r.text[0]='A';
+ struct sky_hud_op_v1 op={.kind=SKY_HUD_OP_TEXT,.x=10,.y=20,.font_px=25,.text_len=1,.align=SKY_HUD_ALIGN_RIGHT};
+ const float widths[]={NAN,INFINITY,-INFINITY,-1.0f,2147483648.0f};int failures=0;
+ use_metric_override=true;
+ for(unsigned i=0;i<sizeof widths/sizeof *widths;i++) {
+  use_metric_width=widths[i];use_trace_at=0;use_trace[0]=0;sky_expr_draw_op(&r,&op);
+  failures+=strcmp(use_trace,"T A 10.0 20.0 25.0\n")!=0;
+ }
+ use_metric_override=false;return failures;
+}
+
 int test_skycombat_expr(void);
 int test_skycombat_expr(void)
 {
  int failures=expr_headers()+expr_records()+expr_text_cases()+expr_limits();
  failures+=eval_operators()+eval_domains()+eval_bounds()+eval_defensive_bounds();
  failures+=draw_kinds()+draw_refusals()+draw_capacity()+draw_followups()+draw_defensive();
+ failures+=use_metric_cases()+use_metric_range_cases();
  failures+=admit_file_cases();failures+=use_option_cases()+use_file_cases()+use_box_case()+use_refusal_cases()+use_render_cases()+use_multiple_ops();
  printf("test_skycombat_expr: %s (%d failures)\n",failures?"FAILED":"PASS",failures);
  return failures;
