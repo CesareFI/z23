@@ -17,7 +17,8 @@
  *
  * snprintf-style contract: the return value is the length that would
  * have been written (excluding NUL); the output is always
- * NUL-terminated when out_cap > 0.  NULL out with out_cap 0 measures.
+ * NUL-terminated when out_cap > 0. Truncation retains a prefix of whole
+ * codepoints (or individual malformed bytes). NULL out with out_cap 0 measures.
  */
 #ifndef ZWRAP_H
 #define ZWRAP_H

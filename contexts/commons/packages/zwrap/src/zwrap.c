@@ -15,15 +15,9 @@ typedef struct {
   char *out;
   size_t cap;
   size_t len; /* logical length */
+  size_t stored; /* complete prefix bytes in out */
+  int clipped; /* no later sequence may fill a truncation gap */
 } emit_state;
-
-static void emit(emit_state *s, const char *bytes, size_t n) {
-  size_t i;
-  for (i = 0; i < n; i++) {
-    if (s->out && s->len + 1 < s->cap) s->out[s->len] = bytes[i];
-    s->len++;
-  }
-}
 
 /* One "character": either a decoded codepoint (n = sequence length) or
  * one undecodable byte (n = 1).  Returns the byte count consumed. */
@@ -32,6 +26,25 @@ static size_t next_char(const char *p, size_t avail, uint32_t *cp) {
   if (zutf8_decode_n(p, avail, cp, &consumed) == ZUTF8_OK) return consumed;
   *cp = 0xFFFFFFFFu; /* sentinel: raw byte */
   return 1;
+}
+
+static void emit(emit_state *s, const char *bytes, size_t n) {
+  size_t i = 0;
+  while (i < n) {
+    uint32_t cp;
+    size_t step = next_char(bytes + i, n - i, &cp);
+    if (s->out && !s->clipped) {
+      if (s->cap > s->stored && step < s->cap - s->stored) {
+        for (size_t j = 0; j < step; j++)
+          s->out[s->stored + j] = bytes[i + j];
+        s->stored += step;
+      } else {
+        s->clipped = 1;
+      }
+    }
+    s->len += step;
+    i += step;
+  }
 }
 
 static int is_blank(uint32_t cp, char raw) {
@@ -54,6 +67,8 @@ size_t zwrap(const char *in, size_t in_len, char *out, size_t out_cap,
   s.out = out;
   s.cap = out_cap;
   s.len = 0;
+  s.stored = 0;
+  s.clipped = 0;
 
   while (i < in_len) {
     uint32_t cp;
@@ -125,6 +140,6 @@ size_t zwrap(const char *in, size_t in_len, char *out, size_t out_cap,
     }
   }
 
-  if (out && out_cap > 0) out[s.len < out_cap ? s.len : out_cap - 1] = '\0';
+  if (out && out_cap > 0) out[s.stored < out_cap ? s.stored : out_cap - 1] = '\0';
   return s.len;
 }

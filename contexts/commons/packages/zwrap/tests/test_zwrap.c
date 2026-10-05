@@ -174,7 +174,26 @@ static void test_fuzz_invariant(void) {
   }
 }
 
+static void test_utf8_truncation(void) {
+  static const struct { const char *in; size_t cap; const char *want; } rows[] = {
+    {"a\xC3\xA9" "z", 3, "a"},
+    {"\xE4\xB8\xAD" "a", 2, ""},
+    {"\xE4\xB8\xAD" "a", 3, ""},
+    {"\xF0\x9F\x98\x80" "a", 2, ""},
+    {"\xF0\x9F\x98\x80" "a", 3, ""},
+    {"\xF0\x9F\x98\x80" "a", 4, ""}
+  };
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    char out[16];
+    memset(out, 'X', sizeof out);
+    size_t n = zwrap(rows[i].in, strlen(rows[i].in), out, rows[i].cap, NULL);
+    CHECK(n == strlen(rows[i].in) && zutf8_validate(out) &&
+          strcmp(out, rows[i].want) == 0 && out[rows[i].cap] == 'X');
+  }
+}
+
 int main(void) {
+  test_utf8_truncation();
   test_kats();
   test_long_words();
   test_utf8_width();

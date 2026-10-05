@@ -12,7 +12,8 @@ Greedy UTF-8-aware word wrapping in C23, built on the
 - Malformed UTF-8 passes through byte-for-byte, one column per byte;
   output is valid UTF-8 whenever the input is.
 - `snprintf`-style contract: returns the would-be length, always
-  NUL-terminates when capacity permits, NULL/0 measures.
+  NUL-terminates when capacity permits, NULL/0 measures. Truncated output
+  retains only a prefix of whole codepoints (or individual malformed bytes).
 - No allocation, no globals.
 
 ## API
