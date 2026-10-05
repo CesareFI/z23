@@ -8,6 +8,21 @@
 #include <stdint.h>
 #include <string.h>
 
+static unsigned cli_read_calls;
+static size_t cli_read(void *buffer, size_t size, size_t count, FILE *stream) {
+  (void)buffer;
+  (void)size;
+  (void)count;
+  (void)stream;
+  cli_read_calls++;
+  return 0;
+}
+#define fread cli_read
+#define main zcrc_cli_main
+#include "../app/main.c"
+#undef main
+#undef fread
+
 static int failures = 0;
 
 #define CHECK(cond)                                                     \
@@ -112,6 +127,10 @@ static void test_misc(void) {
 }
 
 int main(void) {
+  char *missing[] = {"zcrc", "missing-fixture/file", NULL};
+  cli_read_calls = 0;
+  CHECK(zcrc_cli_main(2, missing) == 1);
+  CHECK(cli_read_calls == 0);
   test_check_vectors();
   test_reference_oracle();
   test_streaming();

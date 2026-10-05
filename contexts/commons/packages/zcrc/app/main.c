@@ -30,6 +30,7 @@ int main(int argc, char **argv) {
       continue;
     }
     {
+      files = 1;
       FILE *f = fopen(argv[i], "rb");
       if (!f) {
         fprintf(stderr, "zcrc: cannot open %s\n", argv[i]);
@@ -38,7 +39,6 @@ int main(int argc, char **argv) {
       }
       rc |= crc_stream(f, argv[i], use_c);
       fclose(f);
-      files = 1;
     }
   }
   if (!files) rc |= crc_stream(stdin, "-", use_c);
