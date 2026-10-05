@@ -3,6 +3,7 @@
  * and a randomized differential test against a reference renderer. */
 #include "ztemplate/ztemplate.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -237,8 +238,14 @@ static void test_differential(void)
     }
 }
 
+static void test_parse_size_overflow(void)
+{
+    CHECK(ztemplate_parse("", SIZE_MAX, NULL) == NULL);
+}
+
 int main(void)
 {
+    test_parse_size_overflow();
     test_basic_render();
     test_whitespace_and_reuse();
     test_comments();

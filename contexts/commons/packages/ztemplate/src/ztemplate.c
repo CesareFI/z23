@@ -1,6 +1,7 @@
 /* ztemplate — minimal {{variable}} template engine. */
 #include "ztemplate/ztemplate.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -47,10 +48,15 @@ static bool is_name_char(char c)
            (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-';
 }
 
+static bool template_input_valid(const char *text, size_t len)
+{
+    return (text || len == 0) && len != SIZE_MAX;
+}
+
 ztemplate *ztemplate_parse(const char *text, size_t text_len,
                            size_t *err_pos)
 {
-    if (!text && text_len > 0) return NULL;
+    if (!template_input_valid(text, text_len)) return NULL;
     ztemplate *tp = calloc(1, sizeof *tp);
     if (!tp) return NULL;
     tp->text = malloc(text_len + 1);
