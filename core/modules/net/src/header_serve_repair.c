@@ -150,6 +150,12 @@ static bool hsr_peer_usable(const struct p2p_node *node, int32_t height)
     return node->starting_height >= height;
 }
 
+static bool hsr_send_throttled(int64_t now_us, int64_t last_us)
+{
+    return last_us != 0 && now_us >= last_us &&
+           now_us - last_us < HSR_SEND_INTERVAL_US;
+}
+
 static void hsr_send_claimed_span(struct msg_processor *mp,
                                   struct p2p_node *node,
                                   const struct uint256 *parent_hash,
@@ -192,7 +198,10 @@ void header_serve_repair_maybe_send(struct msg_processor *mp,
     int64_t now_us = now_seconds * 1000000;
     int64_t last = atomic_load_explicit(&g_hsr_last_send_us,
                                         memory_order_relaxed);
-    if (last != 0 && now_us - last < HSR_SEND_INTERVAL_US)
+    /* Wall time can step backward. Treat that as a new throttle epoch instead
+     * of suppressing every peer until the old future stamp is reached; the
+     * claim CAS below still selects exactly one sender. */
+    if (hsr_send_throttled(now_us, last))
         return; // raw-return-ok:bounded-repair-throttled
 
     struct block_index *target =

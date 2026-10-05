@@ -1249,7 +1249,7 @@ core/modules/net/src/file_service_transport.c:fs_recv_chunk_fast:19
 core/modules/net/src/file_service_transport.c:send_all_until:23
 core/modules/net/src/flyclient.c:fc_generate_indices:27
 core/modules/net/src/header_serve_repair.c:header_serve_repair_arm:16
-core/modules/net/src/header_serve_repair.c:header_serve_repair_maybe_send:24
+core/modules/net/src/header_serve_repair.c:header_serve_repair_maybe_send:23
 core/modules/net/src/https_server.c:handle_https_client:34
 core/modules/net/src/https_server.c:https_server_start_on_port:19
 core/modules/net/src/https_server.c:sni_certificates_refresh:18

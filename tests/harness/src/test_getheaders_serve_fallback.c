@@ -203,8 +203,17 @@ static int gsf_repair_send_failure_retry(struct msg_processor *mp,
               retry_peer.send_size > 0 &&
               header_serve_repair_test_expected_count() == 3);
 
+    gsf_drain_send_queue(&retry_peer);
+    struct p2p_node clock_step_peer;
+    gsf_setup_outbound_peer(&clock_step_peer, peer_height);
+    header_serve_repair_maybe_send(mp, &clock_step_peer, 0);
+    GSF_CHECK("backward wall-clock step keeps header repair eligible",
+              clock_step_peer.send_size > 0 &&
+              header_serve_repair_test_expected_count() == 3);
+
     gsf_free_outbound_peer(&failed_peer);
     gsf_free_outbound_peer(&retry_peer);
+    gsf_free_outbound_peer(&clock_step_peer);
     return failures;
 }
 
