@@ -96,6 +96,15 @@ static int line_end(const char *buf, size_t n, size_t i, size_t *next)
     return 0;
 }
 
+static int end_marker_at_line_start(const char *pem, size_t n,
+                                    size_t body_start, size_t marker,
+                                    size_t marker_len)
+{
+    return marker + marker_len <= n &&
+           (marker == body_start || pem[marker - 1] == '\n' ||
+            pem[marker - 1] == '\r');
+}
+
 zpem_err zpem_parse(const char *pem, size_t n, zpem_block *blk)
 {
     if (!pem || !blk) return ZPEM_ERR_ARG;
@@ -137,7 +146,8 @@ zpem_err zpem_parse(const char *pem, size_t n, zpem_block *blk)
             return ZPEM_ERR_FORMAT;
         j++;
     }
-    if (j + sizeof(end) - 1 > n) return ZPEM_ERR_FORMAT; /* no END */
+    if (!end_marker_at_line_start(pem, n, b64_start, j, sizeof(end) - 1))
+        return ZPEM_ERR_FORMAT;
     size_t b64_len = j - b64_start;
 
     /* END label must match. */

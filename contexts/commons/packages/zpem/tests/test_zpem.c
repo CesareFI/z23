@@ -147,11 +147,27 @@ static void test_crlf(void)
                     der, sizeof(der), &der_len, &blk) == ZPEM_OK);
     CHECK(der_len == 2 && der[0] == 'h' && der[1] == 'i');
     CHECK(blk.consumed == strlen(crlf));
+
+    /* Preserve the body CR tolerance and an empty body at the boundary. */
+    static const char cr_body[] =
+        "-----BEGIN X-----\naGk=\r-----END X-----\n";
+    CHECK(zpem_read(cr_body, strlen(cr_body), scratch, sizeof(scratch),
+                    der, sizeof(der), &der_len, &blk) == ZPEM_OK);
+    CHECK(der_len == 2 && der[0] == 'h' && der[1] == 'i');
+    CHECK(blk.consumed == strlen(cr_body));
+    static const char empty[] = "-----BEGIN X-----\n-----END X-----\n";
+    CHECK(zpem_read(empty, strlen(empty), scratch, sizeof(scratch),
+                    der, sizeof(der), &der_len, &blk) == ZPEM_OK);
+    CHECK(der_len == 0 && blk.consumed == strlen(empty));
 }
 
 static void test_rejects(void)
 {
     struct { const char *pem; zpem_err err; } bad[] = {
+        { "-----BEGIN X-----\naGk=-----END X-----\n",
+          ZPEM_ERR_FORMAT },                        /* END inside body line */
+        { "-----BEGIN X-----\r\naGVsbG8=-----END X-----\r\n",
+          ZPEM_ERR_FORMAT },                        /* same with CRLF framing */
         { "-----BEGIN X-----\naGk=\n-----END Y-----\n",
           ZPEM_ERR_FORMAT },                        /* label mismatch */
         { "----BEGIN X-----\naGk=\n-----END X-----\n",
