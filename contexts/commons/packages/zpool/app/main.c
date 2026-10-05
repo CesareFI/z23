@@ -53,6 +53,14 @@ static int finish_input(FILE *in, int result) {
   return result;
 }
 
+static int finish_output(FILE *out, int result) {
+  if (fflush(out) == EOF || ferror(out)) {
+    fputs("zpool: write error\n", stderr);
+    return 2;
+  }
+  return result;
+}
+
 int main(int argc, char **argv) {
   
   if (argc != 3) {
@@ -112,5 +120,5 @@ int main(int argc, char **argv) {
       break;
     }
   }
-  return finish_input(stdin, bad);
+  return finish_output(stdout, finish_input(stdin, bad));
 }
