@@ -157,7 +157,7 @@ bool ztime_parse_n(const char *str, size_t len, ztime_instant *out) {
 }
 
 bool ztime_parse(const char *str, ztime_instant *out) {
-  return str && ztime_parse_n(str, strlen(str), out);
+  return ztime_parse_n(str, str ? strlen(str) : 0, out);
 }
 
 size_t ztime_format(const ztime_instant *instant, char *out,

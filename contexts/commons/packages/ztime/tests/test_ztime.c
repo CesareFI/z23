@@ -80,6 +80,8 @@ static void test_parse_errors(void) {
   {
     ztime_instant it;
     CHECK(!ztime_parse(NULL, &it));
+    it = (ztime_instant){123, 456};
+    CHECK(!ztime_parse(NULL, &it) && it.unix_secs == 0 && it.nanos == 0);
     CHECK(!ztime_parse_n(NULL, 20, &it));
     CHECK(!ztime_parse_n("1970-01-01T00:00:00Z", 20, NULL));
   }
