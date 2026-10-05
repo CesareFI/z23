@@ -113,11 +113,12 @@ stage names work directly as subsystems too: `header_admit`, `validate_headers`,
 server-side regex tail, `z23 dbquery` for SELECT-only node-database
 inspection, and `z23 ops mirror` for the local reference-daemon view.
 
-The complete subsystem list is one array in code:
-`engine/controllers/src/diagnostics_registry.c` (`g_dumpers[]`). Adding a new
-introspectable subsystem is one entry there plus one `*_dump_state_json` function —
-no new command route or schema.
-
+The subsystem dispatcher uses `g_dumpers[]` in
+`engine/controllers/src/diagnostics_registry.c`, generated from the domain
+descriptor files included by
+`engine/controllers/include/controllers/diagnostics_dumpers.def`. Add a new
+subsystem's descriptor row to its owning domain file and implement its dump
+function; the generic dispatcher looks up the registered name.
 ## 4. What is real vs what is being deleted
 
 **Real (load-bearing, stays):**
