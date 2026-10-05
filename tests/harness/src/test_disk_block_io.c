@@ -531,6 +531,69 @@ static int test_write_allocates_append_position(void)
     return failures;
 }
 
+static int test_append_rotates_before_size_wrap(void)
+{
+    int failures = 0;
+    char tmpdir[256], path0[512], path1[512];
+    make_test_dir(tmpdir, sizeof(tmpdir));
+
+    TEST("write_block_to_disk: oversized sparse tail rotates without size wrap") {
+        struct block b;
+        build_test_block(&b, 626262);
+        struct byte_stream serialized;
+        stream_init(&serialized, 4096);
+        if (!block_serialize(&b, &serialized) ||
+            serialized.size >= UINT32_MAX - 8u) {
+            printf("FAIL (serialize fixture)\n");
+            failures++;
+            stream_free(&serialized);
+            block_free(&b);
+            goto _test_next;
+        }
+
+        /* Make last_size + body_size + frame_size wrap in uint32_t while the
+         * file remains sparse. A bounded allocator must rotate before doing
+         * any write to this foreign/oversized tail. */
+        off_t sparse_size = (off_t)((uint64_t)UINT32_MAX -
+                                    (uint64_t)serialized.size - 4u);
+        snprintf(path0, sizeof(path0), "%s/blocks/blk00000.dat", tmpdir);
+        int fd = open(path0, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        bool fixture_ok = fd >= 0 && ftruncate(fd, sparse_size) == 0;
+        if (fd >= 0)
+            close(fd);
+        stream_free(&serialized);
+        if (!fixture_ok) {
+            printf("FAIL (sparse fixture: %s)\n", strerror(errno));
+            failures++;
+            block_free(&b);
+            goto _test_next;
+        }
+
+        struct disk_block_pos pos;
+        disk_block_pos_init(&pos);
+        bool wrote = write_block_to_disk(&b, &pos, tmpdir, TEST_MSG_START);
+        block_free(&b);
+
+        snprintf(path1, sizeof(path1), "%s/blocks/blk00001.dat", tmpdir);
+        struct stat st0 = {0}, st1 = {0};
+        bool ok = wrote && pos.nFile == 1 &&
+                  stat(path0, &st0) == 0 && st0.st_size == sparse_size &&
+                  stat(path1, &st1) == 0 && st1.st_size > 8 &&
+                  st1.st_size < 0x8000000;
+        if (!ok) {
+            printf("FAIL (wrote=%d file=%d tail=%lld rotated=%lld)\n",
+                   wrote, pos.nFile, (long long)st0.st_size,
+                   (long long)st1.st_size);
+            failures++;
+            goto _test_next;
+        }
+        printf("OK\n");
+    }
+_test_next:
+    cleanup_test_dir(tmpdir);
+    return failures;
+}
+
 /* Read an entire file into a malloc'd buffer. Returns bytes read, -1 on error.
  * Caller frees *out. */
 static long slurp_file(const char *path, unsigned char **out)
@@ -1180,6 +1243,7 @@ int test_disk_block_io(void)
     failures += test_pread_refuses_unframed_position();
     failures += test_set_have_data_verified();
     failures += test_write_allocates_append_position();
+    failures += test_append_rotates_before_size_wrap();
     failures += test_append_quarantines_hardlinked_tail();
     failures += test_explicit_write_refuses_hardlinked_file();
     failures += test_deferred_sync_byte_identical();

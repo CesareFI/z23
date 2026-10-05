@@ -221,7 +221,8 @@ static bool choose_append_block_pos(struct disk_block_pos *pos,
         last_size = (unsigned int)metadata.size;
     }
 
-    if (last_shared || last_size + block_size + 8u > 0x8000000u) {
+    if (last_shared ||
+        (uint64_t)last_size + (uint64_t)block_size + 8u > 0x8000000u) {
         last_file++;
         last_size = 0;
     }
