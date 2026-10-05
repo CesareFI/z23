@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /* zwrap tests: golden wraps, codepoint-accurate widths with multibyte
  * UTF-8, long-word policies, newline preservation, NULL/measurement,
  * and a randomised width-invariant oracle.  Real consumer of zutf8.
@@ -192,7 +193,24 @@ static void test_utf8_truncation(void) {
   }
 }
 
+/* Oversized metadata is refused before the input extent is accessed. */
+static void test_input_extent_refusal(void) {
+  static const size_t lengths[] = {SIZE_MAX / 2 + 1, SIZE_MAX};
+  zwrap_opts opts = {1, 1};
+  for (size_t i = 0; i < sizeof lengths / sizeof lengths[0]; i++) {
+    char out[4] = {'X', 'X', 'X', 'X'};
+    CHECK(zwrap("x", lengths[i], out, 2, &opts) == SIZE_MAX);
+    CHECK(out[0] == 0 && out[1] == 'X' && out[2] == 'X' && out[3] == 'X');
+    CHECK(zwrap("x", lengths[i], NULL, 0, &opts) == SIZE_MAX);
+  }
+  char out[8];
+  CHECK(zwrap("abcd", 4, out, sizeof out, &opts) == 7);
+  CHECK(strcmp(out, "a\nb\nc\nd") == 0);
+  CHECK(zwrap("abcd", 4, NULL, 0, &opts) == 7);
+}
+
 int main(void) {
+  test_input_extent_refusal();
   test_utf8_truncation();
   test_kats();
   test_long_words();

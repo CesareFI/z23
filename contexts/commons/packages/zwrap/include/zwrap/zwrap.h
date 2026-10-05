@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /*
  * zwrap — greedy UTF-8-aware word wrapping, built on zutf8.
  *
@@ -19,6 +20,10 @@
  * have been written (excluding NUL); the output is always
  * NUL-terminated when out_cap > 0. Truncation retains a prefix of whole
  * codepoints (or individual malformed bytes). NULL out with out_cap 0 measures.
+ * Input extents above SIZE_MAX/2 are refused before reading input, returning
+ * SIZE_MAX and an empty output when writable. This bound keeps the worst-case
+ * width-one expansion representable. NULL input with nonzero length retains
+ * its empty-output, zero-return behavior. Input and output must be disjoint.
  */
 #ifndef ZWRAP_H
 #define ZWRAP_H

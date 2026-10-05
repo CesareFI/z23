@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /* zwrap — greedy UTF-8-aware word wrapping.  See zwrap.h. */
 
 #include "zwrap/zwrap.h"
@@ -52,6 +53,15 @@ static int is_blank(uint32_t cp, char raw) {
   return cp == ' ' || cp == '\t';
 }
 
+/* Width-one expansion is at most two output bytes per input byte. */
+static int input_extent_valid(const char *in, size_t len) {
+  return (in != NULL || len == 0) && len <= SIZE_MAX / 2;
+}
+
+static size_t input_refusal(const char *in) {
+  return in ? SIZE_MAX : 0;
+}
+
 size_t zwrap(const char *in, size_t in_len, char *out, size_t out_cap,
              const zwrap_opts *opts) {
   emit_state s;
@@ -63,7 +73,7 @@ size_t zwrap(const char *in, size_t in_len, char *out, size_t out_cap,
 
   if (out_cap > 0 && out) out[0] = '\0';
   if (o.width == 0) o.width = 72;
-  if (!in && in_len > 0) return 0;
+  if (!input_extent_valid(in, in_len)) return input_refusal(in);
   s.out = out;
   s.cap = out_cap;
   s.len = 0;
