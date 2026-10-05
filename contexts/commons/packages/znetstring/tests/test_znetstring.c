@@ -173,10 +173,27 @@ static void test_cli_read_failure(void) {
     CHECK(status != 0);
 }
 
+static void test_cli_write_failure(void) {
+    FILE *saved_in = stdin, *saved_out = stdout;
+    FILE *empty = fopen("/dev/null", "r");
+    FILE *bad_out = fopen("/dev/null", "r");
+    if (!empty || !bad_out) abort();
+    stdin = empty;
+    stdout = bad_out;
+    char *args[] = {"znetstring", "encode", NULL};
+    int status = znetstring_cli_main(2, args);
+    stdin = saved_in;
+    stdout = saved_out;
+    fclose(empty);
+    fclose(bad_out);
+    CHECK(status != 0);
+}
+
 int main(void)
 {
     test_kat();
     test_cli_read_failure();
+    test_cli_write_failure();
     test_roundtrip_sizes();
     test_stream_framing();
     test_rejects();

@@ -32,6 +32,15 @@ static uint8_t *read_all(FILE *f, size_t *out_len)
     return buf;
 }
 
+/* Keep write/flush checks in a small helper rather than the CLI dispatch. */
+static int write_output(const void *bytes, size_t len) {
+    if (fwrite(bytes, 1, len, stdout) != len || fflush(stdout) != 0) {
+        fprintf(stderr, "znetstring: write error\n");
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2 || (strcmp(argv[1], "encode") != 0 &&
@@ -40,6 +49,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    int status = 0;
     size_t len = 0;
     uint8_t *data = read_all(stdin, &len);
     if (!data) { fprintf(stderr, "znetstring: read error or out of memory\n"); return 1; }
@@ -62,7 +72,7 @@ int main(int argc, char **argv)
             free(data);
             return 1;
         }
-        fwrite(out, 1, out_len, stdout);
+        status = write_output(out, out_len);
         free(out);
     } else {
         if (len > 0 && data[len - 1] == '\n') len--; /* tolerate newline */
@@ -75,8 +85,8 @@ int main(int argc, char **argv)
             free(data);
             return 1;
         }
-        fwrite(ns.payload, 1, ns.payload_len, stdout);
+        status = write_output(ns.payload, ns.payload_len);
     }
     free(data);
-    return 0;
+    return status;
 }
