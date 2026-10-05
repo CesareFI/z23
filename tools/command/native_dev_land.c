@@ -421,36 +421,19 @@ static bool dl_line_int(const char *line, const char *key, long long *out)
 static bool dl_line_str(const char *line, const char *key, char *out,
                         size_t cap)
 {
-    char pat[64];
-    const char *p;
-    size_t used = 0;
-    (void)snprintf(pat, sizeof(pat), "\"%s\":\"", key);
-    p = strstr(line, pat);
-    if (!p || !out || cap == 0)
+    if (!line || !key || !out || cap == 0)
         return false;
-    p += strlen(pat);
-    while (*p && *p != '"') {
-        if (used + 2 > cap)
-            return false;
-        if (*p == '\\' && p[1]) {
-            if (p[1] == 'u' && isxdigit((unsigned char)p[2]) &&
-                isxdigit((unsigned char)p[3]) &&
-                isxdigit((unsigned char)p[4]) &&
-                isxdigit((unsigned char)p[5])) {
-                out[used++] = '?';
-                p += 6;
-            } else {
-                out[used++] = p[1];
-                p += 2;
-            }
-        } else {
-            out[used++] = *p++;
-        }
-    }
-    if (*p != '"')
-        return false;
-    out[used] = '\0';
-    return true;
+    out[0] = '\0';
+    struct json_value doc;
+    json_init(&doc);
+    bool parsed = json_read(&doc, line, strlen(line));
+    const struct json_value *value = parsed && doc.type == JSON_OBJ
+        ? json_get(&doc, key) : NULL;
+    bool ok = value && value->type == JSON_STR && value->val.s &&
+              strlen(value->val.s) < cap;
+    if (ok) memcpy(out, value->val.s, strlen(value->val.s) + 1);
+    json_free(&doc);
+    return ok;
 }
 
 /* ── bounded file IO ───────────────────────────────────────────────────── */

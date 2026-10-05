@@ -8971,6 +8971,79 @@ _test_next:
     return failures;
 }
 
+/* Reopen an otherwise-valid failed outcome through the actual native reader. */
+static bool dlx_outcome_detail_matches(struct dlx_call *c, const char *expected)
+{
+    const struct json_value *outcomes = dlx_arr(c, "outcomes");
+    if (!outcomes || outcomes->num_children != 1) return false;
+    const char *observed = json_get_str(json_get(&outcomes->children[0], "detail"));
+    return observed && strcmp(expected, observed) == 0;
+}
+
+static bool dlx_outcome_detail_wire(const char *wire, const char *expected)
+{
+    struct dlx_rig rig;
+    struct dlx_call c;
+    char land[1200], queue[1400], outcome[1400], body[16384], changed[16384];
+    size_t length = 0;
+    dlx_isolate("escaped_outcome");
+    bool ok = dlx_rig_make(&rig, "escaped_outcome_rig");
+    setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+    setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+    if (!ok) goto done;
+    dlx_submit(&c, &rig, rig.tip);
+    ok = dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    if (!ok || !dlx_queue_bytes(body, sizeof(body), &length)) {
+        ok = false;
+        goto done;
+    }
+    char *state = strstr(body, "\"state\":\"queued\"");
+    char *field = strstr(body, "\"detail\":\"\"");
+    if (!state || !field) { ok = false; goto done; }
+    memcpy(state + strlen("\"state\":\""), "failed", 6);
+    int n = snprintf(changed, sizeof(changed), "%.*s\"detail\":%s%s",
+                     (int)(field - body), body, wire,
+                     field + strlen("\"detail\":\"\""));
+    dlx_landdir(land, sizeof(land));
+    (void)snprintf(queue, sizeof(queue), "%s/queue.jsonl", land);
+    (void)snprintf(outcome, sizeof(outcome), "%s/outcomes.jsonl", land);
+    ok = n > 0 && (size_t)n < sizeof(changed) &&
+         dlx_write(outcome, changed) && dlx_write(queue, "");
+    if (!ok) goto done;
+    dlx_begin(&c, "status");
+    ok = dlx_run(&c) && dlx_ok(&c) && dlx_outcome_detail_matches(&c, expected);
+    dlx_end(&c);
+done:
+    dlx_restore();
+    return ok;
+}
+
+static int dlx_outcome_escape_cases(void)
+{
+    int failures = 0;
+    TEST("land: status reopens escaped outcome diagnostics with exact identity") {
+        const char *wire[] = {
+            "\"repair\\ncommand\\tpath\\u0001suffix\"",
+            "\"carriage\\rback\\bform\\f\"",
+            "\"quote\\\"slash\\\\solidus\\/\"",
+            "\"\\u00e9\\uD83D\\uDE00\"",
+            "\"\""
+        };
+        const char *expected[] = {
+            "repair\ncommand\tpath\001suffix",
+            "carriage\rback\bform\f",
+            "quote\"slash\\solidus/",
+            "\xc3\xa9\xf0\x9f\x98\x80",
+            ""
+        };
+        for (size_t i = 0; i < sizeof(wire) / sizeof(wire[0]); i++)
+            ASSERT(dlx_outcome_detail_wire(wire[i], expected[i]));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_dev_land(void)
 {
     /* Canonical registered group: private bare origin only, no live queue. */
@@ -10926,6 +10999,7 @@ int test_dev_land(void)
     failures += test_dev_land_final_plan_preparation();
     failures += test_dev_land_rebase_regen_cases();
     failures += test_dev_land_queued_precheck_cases();
+    failures += dlx_outcome_escape_cases();
 
 #endif /* !defined(_WIN32) */
 
