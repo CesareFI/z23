@@ -573,6 +573,8 @@ bool connman_outbound_rate_allowed_for_test(bool below_floor,
 bool connman_dial_interval_elapsed_for_test(int64_t now_seconds,
                                             int64_t last_seconds,
                                             int64_t interval_seconds);
+bool connman_feeler_handshake_expired_for_test(int64_t now_seconds,
+                                               int64_t connected_seconds);
 int connman_addrman_retry_cooldown_for_test(int attempts);
 /* Mutual-dial tie-break lines emitted after rate limiting, process-wide. */
 uint64_t connman_mutual_dial_log_lines_for_test(void);

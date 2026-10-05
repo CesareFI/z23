@@ -85,7 +85,10 @@ static int test_dial_cadence_after_clock_rollback(void)
            "rollback... ");
     bool ok = connman_dial_interval_elapsed_for_test(900, 1000, 60) &&
               connman_dial_interval_elapsed_for_test(1060, 1000, 60) &&
-              !connman_dial_interval_elapsed_for_test(1059, 1000, 60);
+              !connman_dial_interval_elapsed_for_test(1059, 1000, 60) &&
+              connman_feeler_handshake_expired_for_test(900, 1000) &&
+              !connman_feeler_handshake_expired_for_test(1040, 1000) &&
+              connman_feeler_handshake_expired_for_test(1041, 1000);
     if (ok) printf("OK\n");
     else printf("FAIL\n");
     return ok ? 0 : 1;

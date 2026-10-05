@@ -136,6 +136,21 @@ bool connman_dial_interval_elapsed_for_test(int64_t now_seconds,
 #define ZCL_FEELER_INTERVAL_DEFAULT_SECS 120
 #define ZCL_FEELER_HANDSHAKE_BUDGET_SECS 40
 
+static bool connman_feeler_handshake_expired(int64_t now,
+                                             int64_t connected_time)
+{
+    return now < connected_time ||
+           now - connected_time > ZCL_FEELER_HANDSHAKE_BUDGET_SECS;
+}
+
+#ifdef ZCL_TESTING
+bool connman_feeler_handshake_expired_for_test(int64_t now,
+                                               int64_t connected_time)
+{
+    return connman_feeler_handshake_expired(now, connected_time);
+}
+#endif
+
 /* Supervisor liveness for the outbound-dialer thread. Registered/retired
  * from connman_start()/connman_join() in connman.c (declared extern in
  * connman_internal.h); beaten from thread_open_connections() below. */
@@ -468,7 +483,8 @@ static void connman_sweep_feelers(struct connman *cm)
                 n, P2P_DISCONNECT_FEELER_COMPLETE,
                 P2P_DISCONNECT_SOURCE_DIAL_SCHEDULER,
                 n->endpoint_generation);
-        } else if (now - n->time_connected > ZCL_FEELER_HANDSHAKE_BUDGET_SECS) {
+        } else if (connman_feeler_handshake_expired(now,
+                                                    n->time_connected)) {
             (void)p2p_node_request_disconnect(
                 n, P2P_DISCONNECT_FEELER_TIMEOUT,
                 P2P_DISCONNECT_SOURCE_DIAL_SCHEDULER,
