@@ -41,6 +41,11 @@ seq 3 | zdeque reverse      # -> 3 2 1
 seq 5 | zdeque rotate 2     # -> 3 4 5 1 2
 ```
 
+The CLI accepts at most 4,096 lines and 511 bytes per line, excluding
+the newline. It accepts a final line without a newline. Oversized input,
+embedded NUL bytes, and input read errors return failure before producing
+reordered output.
+
 ## Build
 
 C23, single translation unit: compile `src/zdeque.c` with `-Iinclude`.

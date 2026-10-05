@@ -11,9 +11,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+static FILE *cli_input;
+static int cli_printf(const char *format, ...) {
+    (void)format;
+    return 0;
+}
+#undef stdin
+#define stdin cli_input
+#define printf cli_printf
 #define main zdeque_cli_main
 #include "../app/main.c"
 #undef main
+#undef printf
+#undef stdin
 
 static int failures = 0;
 
@@ -151,8 +161,37 @@ static void test_errors(void)
 
 int main(void)
 {
+    cli_input = tmpfile();
+    CHECK(cli_input != NULL);
+    if (!cli_input) return 1;
     char *bad_rotation[] = {"zdeque", "rotate", "1x", NULL};
     CHECK(zdeque_cli_main(3, bad_rotation) == 2);
+    for (int i = 0; i < MAX_LINE + 1; i++) CHECK(fputc('x', cli_input) != EOF);
+    rewind(cli_input);
+    char *reverse[] = {"zdeque", "reverse", NULL};
+    CHECK(zdeque_cli_main(2, reverse) == 1);
+    CHECK(fclose(cli_input) == 0);
+    cli_input = tmpfile();
+    CHECK(cli_input != NULL);
+    if (!cli_input) return 1;
+    for (int i = 0; i < MAX_LINE - 1; i++) CHECK(fputc('x', cli_input) != EOF);
+    rewind(cli_input);
+    CHECK(zdeque_cli_main(2, reverse) == 0);
+    CHECK(fclose(cli_input) == 0);
+    cli_input = tmpfile();
+    CHECK(cli_input != NULL);
+    if (!cli_input) return 1;
+    for (int i = 0; i <= MAX_LINES; i++) CHECK(fputc('\n', cli_input) != EOF);
+    rewind(cli_input);
+    CHECK(zdeque_cli_main(2, reverse) == 1);
+    CHECK(fclose(cli_input) == 0);
+    cli_input = tmpfile();
+    CHECK(cli_input != NULL);
+    if (!cli_input) return 1;
+    for (int i = 0; i < MAX_LINES; i++) CHECK(fputc('\n', cli_input) != EOF);
+    rewind(cli_input);
+    CHECK(zdeque_cli_main(2, reverse) == 0);
+    CHECK(fclose(cli_input) == 0);
     test_fifo();
     test_stack_discipline();
     test_wraparound();

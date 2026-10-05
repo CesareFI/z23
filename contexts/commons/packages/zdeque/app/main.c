@@ -26,6 +26,44 @@ static int parse_rotation(int argc, char **argv, long *rotation)
     return 1;
 }
 
+static int append_line(zdeque *dq, char *line, size_t length)
+{
+    line[length] = '\0';
+    if (zdeque_push_back(dq, line) != ZDEQUE_OK) {
+        fprintf(stderr, "zdeque: cannot append input line\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int read_lines(zdeque *dq, char lines[MAX_LINES][MAX_LINE])
+{
+    size_t n = 0, length = 0;
+    int c;
+    while ((c = fgetc(stdin)) != EOF) {
+        if (n >= MAX_LINES) {
+            fprintf(stderr, "zdeque: input exceeds %d lines\n", MAX_LINES);
+            return 1;
+        }
+        if (c == '\n') {
+            if (append_line(dq, lines[n], length)) return 1;
+            n++;
+            length = 0;
+        } else {
+            if (c == '\0' || length >= MAX_LINE - 1) {
+                fprintf(stderr, "zdeque: invalid or oversized input line\n");
+                return 1;
+            }
+            lines[n][length++] = (char)c;
+        }
+    }
+    if (ferror(stdin)) {
+        fprintf(stderr, "zdeque: error reading stdin\n");
+        return 1;
+    }
+    return length ? append_line(dq, lines[n], length) : 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2 || (strcmp(argv[1], "reverse") != 0 &&
@@ -39,13 +77,7 @@ int main(int argc, char **argv)
     zdeque dq;
     if (zdeque_init(&dq, slots, MAX_LINES) != ZDEQUE_OK) return 1;
 
-    size_t n = 0;
-    while (n < MAX_LINES && fgets(lines[n], MAX_LINE, stdin)) {
-        size_t l = strlen(lines[n]);
-        if (l > 0 && lines[n][l - 1] == '\n') lines[n][l - 1] = '\0';
-        if (zdeque_push_back(&dq, lines[n]) != ZDEQUE_OK) break;
-        n++;
-    }
+    if (read_lines(&dq, lines)) return 1;
 
     if (strcmp(argv[1], "reverse") == 0) {
         void *p;
