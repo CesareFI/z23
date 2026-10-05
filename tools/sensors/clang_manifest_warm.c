@@ -420,10 +420,14 @@ static int cm_name_cmp(const void *a, const void *b)
 
 static bool cm_sdir_add(struct cm_sdir *d, const char *name)
 {
+    char *dup;
     if (!cm_grow((void **)&d->names, &d->cap, d->nnames, sizeof(*d->names)))
         return false;
-    d->names[d->nnames] = cm_strdup(name);
-    return d->names[d->nnames++] != NULL;
+    dup = cm_strdup(name);
+    if (dup == NULL)
+        return false; /* never store a NULL name: cm_sdir_read qsorts */
+    d->names[d->nnames++] = dup;
+    return true;
 }
 
 static bool cm_sdir_read(struct cm_shadow *s, struct cm_sdir *d)
