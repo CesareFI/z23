@@ -1,5 +1,8 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+/* Purpose: encode and parse bounded PEM frames with matching labels. */
 #include "zpem/zpem.h"
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "zbase64/zbase64.h"
@@ -85,24 +88,38 @@ zpem_err zpem_encode(const char *label, size_t label_len,
     return ZPEM_OK;
 }
 
+static bool span_fits(size_t n, size_t start, size_t bytes)
+{
+    return start <= n && bytes <= n - start;
+}
+
+static const char end_marker[] = "-----END ";
+
+static bool end_marker_matches(const char *pem, size_t n,
+                               size_t body_start, size_t marker)
+{
+    if (!span_fits(n, marker, sizeof end_marker - 1) || marker < body_start)
+        return false;
+    return (marker == body_start || pem[marker - 1] == '\n' ||
+            pem[marker - 1] == '\r') &&
+           memcmp(pem + marker, end_marker, sizeof end_marker - 1) == 0;
+}
+
+static bool trailer_fits(size_t n, size_t start, size_t label_len)
+{
+    return span_fits(n, start, label_len) &&
+           span_fits(n, start + label_len, 5);
+}
+
 static int line_end(const char *buf, size_t n, size_t i, size_t *next)
 {
     /* Returns bytes of line ending (1 for \n, 2 for \r\n) at i, or 0. */
     if (i < n && buf[i] == '\n') { *next = i + 1; return 1; }
-    if (i + 1 < n && buf[i] == '\r' && buf[i + 1] == '\n') {
+    if (span_fits(n, i, 2) && buf[i] == '\r' && buf[i + 1] == '\n') {
         *next = i + 2;
         return 2;
     }
     return 0;
-}
-
-static int end_marker_at_line_start(const char *pem, size_t n,
-                                    size_t body_start, size_t marker,
-                                    size_t marker_len)
-{
-    return marker + marker_len <= n &&
-           (marker == body_start || pem[marker - 1] == '\n' ||
-            pem[marker - 1] == '\r');
 }
 
 zpem_err zpem_parse(const char *pem, size_t n, zpem_block *blk)
@@ -111,14 +128,13 @@ zpem_err zpem_parse(const char *pem, size_t n, zpem_block *blk)
     memset(blk, 0, sizeof(*blk));
 
     static const char begin[] = "-----BEGIN ";
-    static const char end[] = "-----END ";
     if (n < sizeof(begin) - 1 || memcmp(pem, begin, sizeof(begin) - 1) != 0)
         return ZPEM_ERR_FORMAT;
 
     /* Label ends at the next '-' run: find "-----\n". */
     size_t i = sizeof(begin) - 1;
     size_t label_end = n;
-    for (; i + 6 <= n; i++) {
+    for (; span_fits(n, i, 6); i++) {
         if (memcmp(pem + i, "-----", 5) == 0) {
             size_t after;
             int eol = line_end(pem, n, i + 5, &after);
@@ -136,8 +152,8 @@ zpem_err zpem_parse(const char *pem, size_t n, zpem_block *blk)
 
     /* Scan body until the END marker line. */
     size_t j = b64_start;
-    while (j + sizeof(end) - 1 <= n) {
-        if (memcmp(pem + j, end, sizeof(end) - 1) == 0) break;
+    while (span_fits(n, j, sizeof end_marker - 1)) {
+        if (end_marker_matches(pem, n, b64_start, j)) break;
         char c = pem[j];
         /* Body chars: base64 alphabet, '=', CR, LF only. */
         if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
@@ -146,13 +162,12 @@ zpem_err zpem_parse(const char *pem, size_t n, zpem_block *blk)
             return ZPEM_ERR_FORMAT;
         j++;
     }
-    if (!end_marker_at_line_start(pem, n, b64_start, j, sizeof(end) - 1))
-        return ZPEM_ERR_FORMAT;
+    if (!span_fits(n, j, sizeof end_marker - 1)) return ZPEM_ERR_FORMAT; /* no END */
     size_t b64_len = j - b64_start;
 
     /* END label must match. */
-    size_t k = j + sizeof(end) - 1;
-    if (k + label_len + 5 > n) return ZPEM_ERR_FORMAT;
+    size_t k = j + sizeof end_marker - 1;
+    if (!trailer_fits(n, k, label_len)) return ZPEM_ERR_FORMAT;
     if (memcmp(pem + k, label, label_len) != 0) return ZPEM_ERR_FORMAT;
     k += label_len;
     if (memcmp(pem + k, "-----", 5) != 0) return ZPEM_ERR_FORMAT;

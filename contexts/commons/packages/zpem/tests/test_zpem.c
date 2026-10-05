@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /* zpem tests — hand-written known-answer, round-trip, and fault cases.
  *
  * Covers: a hand-computed exact wire form, round trips across base64
@@ -259,8 +260,54 @@ static void test_args_and_ranges(void)
         CHECK(zpem_err_str((zpem_err)e) != NULL);
 }
 
+/* Inspect checked spans without requiring impossible allocations. */
+#define zpem_encoded_len fixture_pem_encoded_len
+#define zpem_encode fixture_pem_encode
+#define zpem_parse fixture_pem_parse
+#define zpem_decode fixture_pem_decode
+#define zpem_read fixture_pem_read
+#define zpem_err_str fixture_pem_err_str
+#include "../src/zpem.c"
+#undef zpem_encoded_len
+#undef zpem_encode
+#undef zpem_parse
+#undef zpem_decode
+#undef zpem_read
+#undef zpem_err_str
+
+static void test_parser_span_bounds(void) {
+    CHECK(!span_fits(SIZE_MAX, SIZE_MAX - 5, 6));
+    CHECK(span_fits(SIZE_MAX, SIZE_MAX - 5, 5));
+    CHECK(!span_fits(SIZE_MAX - 1, SIZE_MAX, 0));
+    CHECK(trailer_fits(SIZE_MAX, SIZE_MAX - 5, 0));
+    CHECK(!trailer_fits(SIZE_MAX, SIZE_MAX - 5, 1));
+    CHECK(!trailer_fits(8, 9, SIZE_MAX));
+    size_t next = 23;
+    CHECK(line_end("x", SIZE_MAX, SIZE_MAX, &next) == 0);
+    CHECK(next == 23);
+    CHECK(!end_marker_matches("x", SIZE_MAX, 0, SIZE_MAX - 2));
+    CHECK(!end_marker_matches("-----END A", 10, 5, 0));
+    CHECK(end_marker_matches("-----END A", 10, 0, 0));
+}
+/* An END boundary must occupy its own line, including CRLF frames. */
+static void test_inline_end_refusal(void) {
+    static const char *const rows[] = {
+        "-----BEGIN A-----\naGk=-----END A-----\n",
+        "-----BEGIN A-----\r\naGk=-----END A-----\r\n"};
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        zpem_block block;
+        CHECK(zpem_parse(rows[i], strlen(rows[i]), &block) == ZPEM_ERR_FORMAT);
+    }
+    static const char empty[] = "-----BEGIN A-----\n-----END A-----\n";
+    zpem_block block;
+    CHECK(zpem_parse(empty, sizeof empty - 1, &block) == ZPEM_OK);
+    CHECK(block.b64_len == 0 && block.consumed == sizeof empty - 1);
+}
+
 int main(void)
 {
+    test_parser_span_bounds();
+    test_inline_end_refusal();
     test_kat();
     test_roundtrip_boundaries();
     test_line_layout();

@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /* zpem — PEM armor (RFC 7468) over DER bytes
  *
  * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
@@ -11,7 +12,8 @@
  * Labels are 1..32 chars from [A-Z0-9 -], never starting or ending
  * with a space or hyphen ("CERTIFICATE", "PRIVATE KEY", "EC
  * PARAMETERS"). The parser is strict: markers must match exactly,
- * labels must agree, and the base64 body is validated by zbase64's
+ * labels must agree, the END boundary starts on its own line (or at the
+ * start of an empty body), and the base64 body is validated by zbase64's
  * strict decoder after line-ending removal. Only CR and LF are
  * tolerated inside the body; any other whitespace or character is
  * rejected.
