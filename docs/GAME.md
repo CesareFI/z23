@@ -18,6 +18,22 @@ make game-check    # compiles the game and raylib to objects only, no window
 ./build/bin/z23-skycombat
 ```
 
+For a bounded launch health check on Linux, macOS or Windows, run the same
+native game binary with a frame count:
+
+```bash
+./build/bin/z23-skycombat --qa-frames=120
+```
+
+On Windows use `build/bin/z23-skycombat.exe --qa-frames=120`. This opens the
+normal game window, completes exactly 120 rendered frames, cleans up and exits
+0. `N` must be canonical decimal in `--qa-frames=N`, from 1 through 3600;
+zero, negative, nonnumeric, overflowing, leading-zero and extra arguments
+exit 2 before any window opens. Window initialization failure or closing the
+window before the requested frames complete exits 1. With no argument the
+game remains interactive. A health check still needs a working native display
+and graphics driver, and its own watchdog for a stalled driver or process.
+
 Both are **opt-in**: the default build, `build-only`, the push proof and every
 lint gate ignore them, so a headless or header-less host is never blocked by
 the game. `make game` probes for the platform headers first and, if they are
@@ -77,6 +93,13 @@ world bounds, with fixed inputs and private shims for seven raylib drawing,
 random and time calls. An additive check reads this public launch document
 and refuses obsolete scope claims. Rendering, physical input devices and the
 window itself have no automatic test in this group.
+
+`make t-fast-exact ONLY=skycombat_qa_frames` checks the strict argument parser
+and executes the actual playable entrypoint against an inert window/drawing
+fixture. It proves pre-window refusal, exact frame termination, early-close
+failure and the unchanged interactive selection. The fixture does not qualify
+GPU rendering, input devices or a real window; the bounded command above is
+the native launch check.
 
 `make t-fast-exact ONLY=skycombat_fp_contract` builds and tests the actual
 game aircraft object without window-system headers. Its known-answer yaw

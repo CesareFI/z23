@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Sky Combat: five-player split-screen game.
+ * purpose: five-player split-screen game with checked bounded QA launches.
  */
 
 /* GCC uses the build's -ffp-contract=off; Clang also enforces it here. */
@@ -24,6 +24,7 @@
 #include "sky_combat/models/enemies.h"
 #include "sky_combat/controllers/input_mvc_fast.h"
 #include "sky_combat/views/combat_effects.h"
+#include "sky_combat/qa_frames.h"
 
 #define SCREEN_WIDTH 1920
 #define SCREEN_HEIGHT 1080
@@ -307,11 +308,47 @@ static void update_match_ledger(multiplayer_game_t *game, float dt) {
     if (match_state_set_team_scores(game->match, scores)) match_state_update(game->match, dt);
 }
 
-int main(void) {
+/* Keep admission and completion checks separate from the gameplay loop. */
+static int prepare_game_window(int argc, char **argv, unsigned *qa_frames)
+{
+    if (!sky_combat_qa_frames_parse(argc, argv, qa_frames)) {
+        fprintf(stderr, "Usage: z23-skycombat [--qa-frames=1..%u]\n",
+                SKY_COMBAT_QA_FRAMES_MAX);
+        return 2;
+    }
     /* Initialize window */
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT);
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Sky Combat - Multiplayer Ultimate");
+    if (!IsWindowReady()) {
+        fprintf(stderr, "Sky Combat: window initialization failed\n");
+        return 1;
+    }
     SetTargetFPS(TARGET_FPS);
+    return 0;
+}
+static bool game_systems_ready(const multiplayer_game_t *game)
+{
+    return game->aircraft_mgr && game->powerup_mgr && game->match &&
+        game->world && game->input_system && game->effects && game->weapons;
+}
+static bool game_frame_pending(unsigned limit, unsigned rendered)
+{
+    return (!limit || rendered < limit) && !WindowShouldClose();
+}
+static int game_frame_result(unsigned limit, unsigned rendered)
+{
+    if (limit && rendered != limit) {
+        fprintf(stderr, "Sky Combat: closed after %u of %u QA frames\n",
+                rendered, limit);
+        return 1;
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    unsigned qa_frames;
+    int launch = prepare_game_window(argc, argv, &qa_frames);
+    if (launch) return launch;
     
     /* Create game state */
     multiplayer_game_t game = {0};
@@ -325,8 +362,7 @@ int main(void) {
     game.effects = effects_create(1000, 10000);  /* Lots of particles! */
     game.weapons = weapons_create();
     
-    if (!game.aircraft_mgr || !game.powerup_mgr || !game.match || 
-        !game.world || !game.input_system || !game.effects || !game.weapons) {
+    if (!game_systems_ready(&game)) {
         fprintf(stderr, "Failed to create game systems\n");
         return 1;
     }
@@ -400,8 +436,9 @@ int main(void) {
     
     /* Main game loop */
     float game_time = 0;
+    unsigned rendered_frames = 0;
     
-    while (!WindowShouldClose()) {
+    while (game_frame_pending(qa_frames, rendered_frames)) {
         float dt = GetFrameTime();
         game_time += dt;
         
@@ -593,6 +630,7 @@ int main(void) {
         }
         
         EndDrawing();
+        rendered_frames += qa_frames != 0;
     }
     
     /* Cleanup */
@@ -600,5 +638,5 @@ int main(void) {
     destroy_game_systems(&game);
     
     CloseWindow();
-    return 0;
+    return game_frame_result(qa_frames, rendered_frames);
 }

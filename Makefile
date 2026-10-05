@@ -2857,6 +2857,15 @@ game-check: $(SKYCOMBAT_OBJS) $(Z23RAYLIB_OBJS)
 	@test $(words $(Z23RAYLIB_SRCS)) -eq 5 || { echo "game_check_scan_floor: expected 5 raylib sources, found $(words $(Z23RAYLIB_SRCS))" >&2; exit 2; }
 	@echo "game-check: compiled $(words $(SKYCOMBAT_SRCS)) game and $(words $(Z23RAYLIB_SRCS)) raylib translation units, no link"
 
+# Source-bound QA entrypoint fixture: no window-system headers or GPU needed.
+SKYCOMBAT_QA_BIN := $(BIN_DIR)/skycombat-qa-entrypoint
+$(SKYCOMBAT_QA_BIN): tests/fixtures/skycombat_qa/run.c $(SKYCOMBAT_GAME_MAIN) Makefile \
+                   $(wildcard apps/skycombat/include/sky_combat/*.h) \
+                   $(wildcard apps/skycombat/include/sky_combat/*/*.h) | $(BIN_DIR)
+	$(CC) $(SKYCOMBAT_CFLAGS) $(SKYCOMBAT_SIM_FP_FLAGS) $< -o $@ -lm
+.PHONY: skycombat-qa-entrypoint
+skycombat-qa-entrypoint: $(SKYCOMBAT_QA_BIN)
+
 .PHONY: worktree-prime worktree-prime-selftest
 # Formalizes the "copy generated vendor inputs before a fresh worktree can
 # compile and link" tribal knowledge (docs/work/README.md, the zclassic23-dev

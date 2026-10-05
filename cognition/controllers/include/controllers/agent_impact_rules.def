@@ -520,6 +520,7 @@ AGENT_IMPACT_RULE("contexts/commons/apps/yardsale/*|contexts/market/controllers/
  * rides along because apps/ and vendor/ are both scanned roots for the
  * structural gates. */
 AGENT_IMPACT_RULE("apps/skycombat/*|vendor/raylib/*|tests/harness/src/test_skycombat_models.c", "skycombat_models make_lint_gates")
+AGENT_IMPACT_RULE("apps/skycombat/include/sky_combat/qa_frames.h|apps/skycombat/src/sky_combat_multiplayer_ultimate.c|tests/harness/src/test_skycombat_qa_frames.c|tests/fixtures/skycombat_qa/*", "skycombat_qa_frames skycombat_models make_lint_gates")
 /* Yardsale wallet glue: typed yardsale.* native leaves -> node RPC ->
  * yardsale_wallet_service plan/commit against the yardsale_plans table. */
 AGENT_IMPACT_RULE("contexts/wallet/services/src/yardsale_wallet_service.c|contexts/wallet/services/src/yardsale_wallet_service_buy.c|contexts/wallet/services/include/services/yardsale_wallet_service.h|contexts/wallet/services/include/services/yardsale_wallet_internal.h|contexts/market/models/src/yardsale_plan.c|contexts/market/models/include/models/yardsale_plan.h|contexts/wallet/controllers/src/yardsale_wallet_controller.c|contexts/wallet/controllers/include/controllers/yardsale_wallet_controller.h|tools/command/native_yardsale_command.c|engine/composition/commands/yardsale.def|tests/harness/src/test_yardsale_wallet.c", "yardsale_wallet yardsale_app db_validators command_registry_catalog cli_render make_lint_gates")

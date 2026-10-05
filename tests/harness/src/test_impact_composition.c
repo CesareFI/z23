@@ -7692,6 +7692,7 @@ static int test_ic_proof_test_needs_whole_catalog(void)
             "fleet-gateway", "export_snapshot", "sqlq", "p2_invariant_check",
             "jsonq", "process-group-exec", "tools/consensus_rule_sweep",
             "skycombat-fp-contract",
+            "skycombat-qa-entrypoint",
         };
         const size_t expected_count = sizeof(expected) / sizeof(expected[0]);
         ASSERT(zcl_dev_proof_test_needs_argv("-j4", selector, argv,
@@ -7810,7 +7811,7 @@ static int test_ic_local_selection_build_needs(void)
     int failures = 0;
     TEST("local build needs: a selection lists exactly its groups' BUILD "
          "targets once; an ordinary selection lists none") {
-        struct zcl_test_group_host_need needs[16];
+        struct zcl_test_group_host_need needs[17];
         size_t n = 99;
 #if defined(_WIN32)
         /* The ensure target is a no-op where no verifier is qualified. */
@@ -7827,11 +7828,11 @@ static int test_ic_local_selection_build_needs(void)
             "test_zcode_swarm_net_shard_01"
         };
         ASSERT(zcl_test_selection_build_needs("test_zcode_store", true, NULL,
-                                              needs, 16, &n));
+                                              needs, 17, &n));
         ASSERT(n == 0);
         for (size_t i = 0; i < sizeof(verifier_groups) / sizeof(verifier_groups[0]); i++) {
             ASSERT(zcl_test_selection_build_needs(verifier_groups[i], true,
-                                                  NULL, needs, 16, &n));
+                                                  NULL, needs, 17, &n));
             ASSERT(n == verifier_needs);
             ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
                                  "build/bin/zclassic23-package-verify-dev") ==
@@ -7839,18 +7840,18 @@ static int test_ic_local_selection_build_needs(void)
         }
         ASSERT(zcl_test_selection_build_needs(
             "test_zcode_store,test_zcode_verify,test_zcode_add", true, NULL,
-            needs, 16, &n));
+            needs, 17, &n));
         ASSERT(n == verifier_needs);
 
         /* Static partition assigns the lifecycle builder to shard_01. */
         ASSERT(zcl_test_selection_build_needs(
             "test_zcode_swarm_net_shard_02,test_zcode_swarm_net_shard_03,"
             "test_zcode_swarm_net_shard_04,test_zcode_swarm_net_shard_05",
-            true, NULL, needs, 16, &n));
+            true, NULL, needs, 17, &n));
         ASSERT(n == 0);
 
         ASSERT(zcl_test_selection_build_needs("test_engine", true, NULL,
-                                              needs, 16, &n));
+                                              needs, 17, &n));
         ASSERT(n == 1);
         ASSERT(ic_needs_have(needs, n, "engine-unit",
                              "build/bin/zclassic23-engine-unit"));
@@ -7858,13 +7859,13 @@ static int test_ic_local_selection_build_needs(void)
 
         /* The operator contract exercises the real native claim CLI. */
         ASSERT(zcl_test_selection_build_needs("test_make_lint_gates_realroot",
-                                              true, NULL, needs, 16, &n));
+                                              true, NULL, needs, 17, &n));
         ASSERT(n == 1);
         ASSERT(ic_needs_have(needs, n, "dev-bin", "build/bin/z23-dev"));
         n = 99;
 
         ASSERT(zcl_test_selection_build_needs("test_fleet_gateway_shard_01",
-                                              false, NULL, needs, 16, &n));
+                                              false, NULL, needs, 17, &n));
         ASSERT(n == 2);
         ASSERT(ic_needs_have(needs, n, "fleet-gateway",
                              "build/bin/z23-fleet-gateway"));
@@ -7873,12 +7874,12 @@ static int test_ic_local_selection_build_needs(void)
         /* Six shards and the base group: still two targets, named once. */
         n = 99;
         ASSERT(zcl_test_selection_build_needs("fleet_gateway", false, NULL,
-                                              needs, 16, &n));
+                                              needs, 17, &n));
         ASSERT(n == 2);
 
         n = 99;
         ASSERT(zcl_test_selection_build_needs(
-            "test_semantic_sensor,test_freebsd_sh", true, NULL, needs, 16,
+            "test_semantic_sensor,test_freebsd_sh", true, NULL, needs, 17,
             &n));
         ASSERT(n == 2);
         ASSERT(ic_needs_have(needs, n, "clang-manifest",
@@ -7890,31 +7891,40 @@ static int test_ic_local_selection_build_needs(void)
          * groups already closed. */
         n = 99;
         ASSERT(zcl_test_selection_build_needs("test_semantic_facts_fuzz",
-                                              true, NULL, needs, 16, &n));
+                                              true, NULL, needs, 17, &n));
         ASSERT(n == 1);
         ASSERT(ic_needs_have(needs, n, "clang-manifest",
                              "build/bin/z23-clang-manifest"));
 
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs("test_skycombat_qa_frames",
+                                              true, NULL, needs, 17, &n));
+        ASSERT(n == 1);
+        ASSERT(ic_needs_have(needs, n, "skycombat-qa-entrypoint",
+                             "build/bin/skycombat-qa-entrypoint"));
+
         /* Ordinary selections: nothing to build. */
         n = 99;
         ASSERT(zcl_test_selection_build_needs("test_impact_composition", true,
-                                              NULL, needs, 16, &n));
+                                              NULL, needs, 17, &n));
         ASSERT(n == 0);
         n = 99;
         ASSERT(zcl_test_selection_build_needs("test_fleet_gateway", true,
-                                              NULL, needs, 16, &n));
+                                              NULL, needs, 17, &n));
         ASSERT(n == 0);
         n = 99;
-        ASSERT(zcl_test_selection_build_needs("", false, NULL, needs, 16,
+        ASSERT(zcl_test_selection_build_needs("", false, NULL, needs, 17,
                                               &n));
         ASSERT(n == 0);
 
         /* The whole catalog lists every declared target once; a gate that
          * leaves every group out lists none. */
         n = 99;
-        ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
+        ASSERT(!zcl_test_selection_build_needs(NULL, false, NULL, needs,
+                                               15 + verifier_needs, &n));
+        ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 17,
                                               &n));
-        ASSERT(n == 15 + verifier_needs);
+        ASSERT(n == 16 + verifier_needs);
         ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
                              "build/bin/zclassic23-package-verify-dev") ==
                (verifier_needs != 0));
@@ -7937,30 +7947,30 @@ static int test_ic_local_selection_build_needs(void)
         ASSERT(ic_needs_have(needs, n, "sqlq", "build/bin/sqlq"));
         n = 99;
         ASSERT(zcl_test_selection_build_needs("test_export_snapshot", true,
-                                              NULL, needs, 16, &n));
+                                              NULL, needs, 17, &n));
         ASSERT(n == 1);
         ASSERT(ic_needs_have(needs, n, "export_snapshot",
                              "build/bin/export_snapshot"));
         n = 99;
         ASSERT(zcl_test_selection_build_needs("test_sqlq", true, NULL,
-                                              needs, 16, &n));
+                                              needs, 17, &n));
         ASSERT(n == 1);
         ASSERT(ic_needs_have(needs, n, "sqlq", "build/bin/sqlq"));
         n = 99;
         ASSERT(zcl_test_selection_build_needs("test_rpc", true, NULL,
-                                              needs, 16, &n));
+                                              needs, 17, &n));
         ASSERT(n == 2);
         ASSERT(ic_needs_have(needs, n, "zclassic-cli", "build/bin/zclassic-cli"));
         ASSERT(ic_needs_have(needs, n, "zclassic23", "build/bin/zclassic23"));
         n = 99;
         ASSERT(zcl_test_selection_build_needs("test_utxo_root_ladder", true,
-                                              NULL, needs, 16, &n));
+                                              NULL, needs, 17, &n));
         ASSERT(n == 1);
         ASSERT(ic_needs_have(needs, n, "tools/gen_utxo_root_ladder",
                              "build/bin/gen_utxo_root_ladder"));
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, ic_gate_everything,
-                                              needs, 16, &n));
+                                              needs, 17, &n));
         ASSERT(n == 0);
 
         /* Refused, never truncated, when there is no room. */
