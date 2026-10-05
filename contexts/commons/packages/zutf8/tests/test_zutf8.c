@@ -12,7 +12,14 @@
 /* Exercise the shipped CLI with owned ISO C streams, without redirecting
  * the test runner's standard streams. tmpfile removes only its own fixture. */
 static FILE *cli_input, *cli_output, *cli_error;
+enum { CLI_NO_FAULT, CLI_WRITE_FAULT, CLI_FLUSH_FAULT, CLI_CLOSE_FAULT };
+static int cli_fault;
+static bool cli_write_failed;
 static int cli_printf(const char *format, ...) {
+  if (cli_fault == CLI_WRITE_FAULT) {
+    cli_write_failed = true;
+    return -1;
+  }
   va_list args;
   va_start(args, format);
   int result = vfprintf(cli_output, format, args);
@@ -20,11 +27,21 @@ static int cli_printf(const char *format, ...) {
   return result;
 }
 static int cli_fclose(FILE *stream) {
+  bool fail = stream == cli_output && cli_fault == CLI_CLOSE_FAULT;
   if (stream == cli_output)
     cli_output = NULL;
   if (stream == cli_error)
     cli_error = NULL;
-  return fclose(stream);
+  int result = fclose(stream);
+  return fail ? EOF : result;
+}
+static int cli_ferror(FILE *stream) {
+  return (stream == cli_output && cli_write_failed) || ferror(stream);
+}
+static int cli_fflush(FILE *stream) {
+  if (stream == cli_output && cli_fault == CLI_FLUSH_FAULT)
+    return EOF;
+  return fflush(stream);
 }
 #define ZUTF8_CLI_STDIO 1
 #define ZUTF8_CLI_STDIN cli_input
@@ -32,8 +49,8 @@ static int cli_fclose(FILE *stream) {
 #define ZUTF8_CLI_STDERR cli_error
 #define ZUTF8_CLI_PRINTF cli_printf
 #define ZUTF8_CLI_FCLOSE cli_fclose
-#define ZUTF8_CLI_FERROR ferror
-#define ZUTF8_CLI_FFLUSH fflush
+#define ZUTF8_CLI_FERROR cli_ferror
+#define ZUTF8_CLI_FFLUSH cli_fflush
 #define main zutf8_cli_main
 #include "../app/main.c"
 #undef main
@@ -239,6 +256,8 @@ static void close_cli_streams(void) {
 }
 
 static bool open_cli_streams(void) {
+  cli_fault = CLI_NO_FAULT;
+  cli_write_failed = false;
   cli_input = tmpfile();
   cli_output = tmpfile();
   cli_error = tmpfile();
@@ -282,6 +301,33 @@ static void test_cli_capacity(void) {
   test_cli_capacity_row(MAX_INPUT + 1, 2); /* refusal control */
 }
 
+static void test_cli_output_row(int fault, const char *row, int expected) {
+  if (!open_cli_streams())
+    return;
+  CHECK(cli_fflush(cli_input) == 0); /* successful fixture setup control */
+  cli_fault = fault;
+  char name[] = "zutf8", count[] = "--count";
+  char *args[] = {name, count, NULL};
+  int status = zutf8_cli_main(2, args);
+  if (status != expected) {
+    fprintf(stderr, "FAIL CLI output %s: expected %d, got %d\n",
+            row, expected, status);
+    failures++;
+  }
+  /* Reclaim streams the defective CLI failed to close, without injecting
+   * a second failure into the fixture cleanup. */
+  cli_fault = CLI_NO_FAULT;
+  cli_write_failed = false;
+  close_cli_streams();
+}
+
+static void test_cli_output(void) {
+  test_cli_output_row(CLI_NO_FAULT, "normal", 0); /* positive control */
+  test_cli_output_row(CLI_WRITE_FAULT, "write", 2);
+  test_cli_output_row(CLI_FLUSH_FAULT, "flush", 2);
+  test_cli_output_row(CLI_CLOSE_FAULT, "close", 2);
+}
+
 int main(void) {
   test_valid_kats();
   test_decode_kats();
@@ -291,6 +337,7 @@ int main(void) {
   test_round_trip_sweep();
   test_count();
   test_cli_capacity();
+  test_cli_output();
   if (failures) {
     fprintf(stderr, "test_zutf8: %d failure(s)\n", failures);
     return 1;

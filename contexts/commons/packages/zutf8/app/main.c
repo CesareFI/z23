@@ -4,7 +4,7 @@
  * Usage: zutf8 < data
  *
  * Exit 0 when the whole input is well-formed UTF-8, 1 when it is not
- * (byte offset and reason on stderr), 2 on read error or input over
+ * (byte offset and reason on stderr), 2 on I/O error or input over
  * the 64 MiB bound. With --count, print the code-point count instead
  * of validating silently.
  */
@@ -28,7 +28,7 @@
 
 static char input[MAX_INPUT];
 
-int main(int argc, char **argv) {
+static int validate_input(int argc, char **argv) {
   int count_mode = 0;
   if (argc > 2 || (argc == 2 && strcmp(argv[1], "--count"))) {
     fprintf(ZUTF8_CLI_STDERR, "usage: zutf8 [--count] < data\n");
@@ -62,4 +62,22 @@ int main(int argc, char **argv) {
   if (count_mode)
     ZUTF8_CLI_PRINTF("%zu\n", count);
   return 0;
+}
+
+static int finish_output(FILE *stream, int status) {
+  if (ZUTF8_CLI_FERROR(stream))
+    status = 2;
+  if (ZUTF8_CLI_FFLUSH(stream) == EOF)
+    status = 2;
+  if (ZUTF8_CLI_FCLOSE(stream) == EOF)
+    status = 2;
+  return status;
+}
+
+int main(int argc, char **argv) {
+  int status = validate_input(argc, argv);
+  int result = finish_output(ZUTF8_CLI_STDOUT, status);
+  if (result != status)
+    fputs("zutf8: output error\n", ZUTF8_CLI_STDERR);
+  return finish_output(ZUTF8_CLI_STDERR, result);
 }
