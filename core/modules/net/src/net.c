@@ -994,13 +994,37 @@ static bool inventory_known_contains(struct p2p_node *node,
     return false;
 }
 
+static void inventory_relay_preserve_block(struct p2p_node *node,
+                                           const struct inv_item *inv)
+{
+    if (inv->type != MSG_BLOCK)
+        return;
+    for (size_t i = 0; i < node->inventory_to_send_count; i++) {
+        if (node->inventory_to_send[i].type == MSG_TX) {
+            node->inventory_to_send[i] = *inv;
+            return;
+        }
+    }
+}
+
 void p2p_node_push_inventory(struct p2p_node *node, const struct inv_item *inv)
 {
     zcl_mutex_lock(&node->cs_inventory);
     if (!inventory_known_contains(node, &inv->hash)) {
+        /* Relay announcements are best effort. A slow peer can keep the send
+         * buffer full while every newly accepted transaction fans out here,
+         * so bound deferred work to one protocol-sized inv message. Preserve
+         * chain progress by letting a block replace one queued transaction. */
+        if (node->inventory_to_send_count >= MAX_INV_SZ) {
+            inventory_relay_preserve_block(node, inv);
+            zcl_mutex_unlock(&node->cs_inventory);
+            return;
+        }
         if (node->inventory_to_send_count >= node->inventory_to_send_cap) {
             size_t newcap = node->inventory_to_send_cap ?
                             node->inventory_to_send_cap * 2 : 256;
+            if (newcap > MAX_INV_SZ)
+                newcap = MAX_INV_SZ;
             struct inv_item *tmp = zcl_realloc(node->inventory_to_send,
                                             newcap * sizeof(*tmp), "inv_to_send");
             if (!tmp) { zcl_mutex_unlock(&node->cs_inventory); return; }

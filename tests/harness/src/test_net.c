@@ -5638,6 +5638,55 @@ static int test_net_p2p_node_inventory_known(void)
     return failures;
 }
 
+static int test_net_p2p_node_inventory_relay_queue_is_bounded(void)
+{
+    int failures = 0;
+    printf("p2p_node: deferred inventory relay queue is bounded... ");
+
+    struct p2p_inventory_fixture fx;
+    bool ok = p2p_inventory_fixture_setup(&fx);
+    struct inv_item inv;
+
+    for (uint32_t i = 0; ok && i < MAX_INV_SZ; i++) {
+        struct uint256 hash;
+        memset(&hash, 0, sizeof(hash));
+        memcpy(hash.data, &i, sizeof(i));
+        hash.data[31] = 0x54;
+        inv_item_init_typed(&inv, MSG_TX, &hash);
+        p2p_node_push_inventory(fx.node, &inv);
+    }
+    ok = ok && fx.node->inventory_to_send_count == MAX_INV_SZ;
+    ok = ok && fx.node->inventory_to_send_cap <= MAX_INV_SZ;
+
+    struct uint256 extra_tx;
+    memset(&extra_tx, 0xff, sizeof(extra_tx));
+    inv_item_init_typed(&inv, MSG_TX, &extra_tx);
+    p2p_node_push_inventory(fx.node, &inv);
+    ok = ok && fx.node->inventory_to_send_count == MAX_INV_SZ;
+
+    struct uint256 block_hash;
+    memset(&block_hash, 0xa5, sizeof(block_hash));
+    inv_item_init_typed(&inv, MSG_BLOCK, &block_hash);
+    p2p_node_push_inventory(fx.node, &inv);
+    ok = ok && fx.node->inventory_to_send_count == MAX_INV_SZ;
+    bool block_queued = false;
+    for (size_t i = 0; i < fx.node->inventory_to_send_count; i++) {
+        const struct inv_item *queued = &fx.node->inventory_to_send[i];
+        if (queued->type == MSG_BLOCK &&
+            uint256_eq(&queued->hash, &block_hash)) {
+            block_queued = true;
+            break;
+        }
+    }
+    ok = ok && block_queued;
+
+    p2p_node_free(fx.node);
+    net_manager_free(&fx.nm);
+    if (ok) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    return failures;
+}
+
 /* p2p_node: inventory-index allocation failure */
 struct p2p_inv_index_oom_fixture {
     struct net_manager nm;
@@ -7148,6 +7197,7 @@ int test_net(void)
     failures += test_net_p2p_node_create_and_free();
     failures += test_net_p2p_node_receive_bytes_parses_message();
     failures += test_net_p2p_node_inventory_known();
+    failures += test_net_p2p_node_inventory_relay_queue_is_bounded();
     failures += test_net_p2p_node_inventory_index_allocation_failure();
     failures += test_net_p2p_node_push_address();
     failures += test_net_should_reject_oversized();
