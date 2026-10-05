@@ -72,6 +72,7 @@ void zxoshiro256ss_shuffle(zxoshiro256ss *rng, void *base, size_t n,
 
     if (!base || n < 2 || !elemsize)
         return;
+    if (n > SIZE_MAX / elemsize) return;
     for (size_t i = n - 1; i > 0; i--) {
         uint8_t *a = (uint8_t *)base + i * elemsize;
         uint8_t *b = (uint8_t *)base +

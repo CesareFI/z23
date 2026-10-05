@@ -44,7 +44,9 @@ uint64_t zxoshiro256ss_below(zxoshiro256ss *rng, uint64_t bound);
 /* Uniform double in [0, 1) with 53 bits of precision. */
 double zxoshiro256ss_double(zxoshiro256ss *rng);
 
-/* Fisher-Yates shuffle of n elemsize-byte items using rng. */
+/* Fisher-Yates shuffle of n elemsize-byte items using rng.
+ * NULL base, fewer than two items, zero element size, or an
+ * unrepresentable total byte size leaves both data and rng unchanged. */
 void zxoshiro256ss_shuffle(zxoshiro256ss *rng, void *base, size_t n,
                            size_t elemsize);
 

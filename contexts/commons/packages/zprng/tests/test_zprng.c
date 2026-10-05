@@ -176,8 +176,24 @@ static void test_shuffle_large_items(void)
     }
 }
 
+static void test_shuffle_size_overflow(void)
+{
+    unsigned char bytes[4] = {1, 2, 3, 4};
+    const unsigned char expected[4] = {1, 2, 3, 4};
+    zxoshiro256ss rng, original;
+    zxoshiro256ss_init(&rng, 1234);
+    original = rng;
+    /* Impossible span: reject its arithmetic before deriving pointers. */
+    zxoshiro256ss_shuffle(&rng, bytes, SIZE_MAX / 2 + 1, 2);
+    int ok = memcmp(bytes, expected, sizeof bytes) == 0 &&
+             memcmp(&rng, &original, sizeof rng) == 0;
+    fprintf(stderr, "shuffle_size_overflow_row=0 result=%s\n", ok ? "PASS" : "FAIL");
+    check(ok, "overflowing shuffle span leaves buffer and generator unchanged");
+}
+
 int main(void)
 {
+    test_shuffle_size_overflow();
     test_shuffle_large_items();
     test_splitmix_vectors();
     test_xoshiro_vectors();
