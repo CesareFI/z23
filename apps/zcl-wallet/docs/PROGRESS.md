@@ -8411,3 +8411,29 @@ M=10; 1,853 test functions have none above M=15. No consensus, monetary, PoW,
 upgrade, transparent/shielded validity, custody, storage, network or TLS
 behavior changes. This fake-VM evidence makes no ART, emulator, hardware or
 physical-device claim.
+
+## Production continuation: exact-span sync reply ownership — 2026-10-06
+
+JNI sync replies now admit the immutable Java byte-array length before native
+allocation and own only that exact nonempty span. The prior path allocated and
+cleared 16,384 bytes for every active reply, including the small bounded JSON
+frames used during ordinary synchronization. Empty frames use a local byte only
+to preserve the parser's nonnull input contract. Oversized and null frames fail
+the active attempt with their existing status while allocating and copying no
+frame bytes. Retired or replayed tokens still refuse before any length query,
+allocation or copy.
+
+The instrumented RED observes the fixed 16,384-byte allocation for a frame
+smaller than 512 bytes. GREEN observes one allocation exactly equal to the
+admitted frame length; a fixed-capacity mutation is rejected, and the fixture
+also verifies full-span cleansing before free. Deterministic boundary coverage
+includes null, empty, maximum-plus-one, allocation failure and JNI region
+exception paths. Clang 20 and GCC 14 optimized ASan/UBSan/LSan runs pass.
+
+The complete current-tree TLS-OFF C safety gate passes both static analyzers,
+all 145 Clang and 140 GCC CTest cases, pinned vendor/reference hashes and the
+unchanged frame warnings. Production covers 602 functions with none above
+M=10; 1,855 test functions have none above M=15. Sync parsing, freshness,
+request ordering, failure status, network data, consensus, monetary policy,
+PoW, upgrades, transparent/shielded validity, custody, storage and TLS remain
+unchanged. This fake-VM evidence makes no ART, emulator or device claim.

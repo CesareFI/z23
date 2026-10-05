@@ -5067,3 +5067,28 @@ allocation assertion. Exact restored GREEN, dual-compiler ASan/UBSan/LSan,
 both static analyzers and the complete 145/140 CTest matrix pass. TLS remains
 quarantined. This is host fake-VM evidence, not ART, emulator, device or
 physical-custody proof.
+
+## JNI sync reply exact-span ownership — 2026-10-06
+
+`syncReply` now reads the immutable Java array length after token admission and
+before allocation. `reply_frame` allocates, copies and retires that exact
+nonempty span instead of the fixed 16,384-byte maximum. An empty frame uses a
+zeroed local byte and still reaches the unchanged parser with length zero.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer bounds and copying | The admitted `jsize` must be nonnegative and at most `ZCL_ELECTRUM_FRAME_MAX`. The shared JNI reader rechecks the immutable length and copies exactly that span. |
+| Allocation and retirement | Nonempty active replies have one allocation of exactly the admitted length, which is fully wiped before free. Empty, null, oversized, stale and replayed replies allocate nothing. |
+| Integer conversion and overflow | Conversion to `size_t` follows the nonnegative `jsize` check. No multiplication or addition is introduced. The compile-time frame maximum remains 16,384 bytes. |
+| JNI exceptions | A length-query exception fails the active attempt before allocation. A region exception follows the existing failure path and retires the complete allocated span. No JNI call follows an observed exception. |
+| Ownership and concurrency | The existing registry mutex still covers token admission, length admission, copy and reply parsing. No native pointer or Java reference escapes the call. |
+| Parser and state semantics | Valid bytes, length, timestamp and token reach the same `zcl_sync_watch_reply`. Invalid input still stops the admitted attempt with the same JNI/parser status; rejected tokens leave the current attempt unchanged. |
+| Secrets and logging | Electrum reply frames are public remote data, but their owned copy is still cleansed defensively. No bytes, address, key, seed or wallet state are logged. |
+| Stack and complexity | One byte replaces heap ownership only for an empty frame. Production remains M<=10 across 602 functions and tests remain M<=15 across 1,855 functions without suppression. |
+
+Instrumented RED, an allocation-size mutation and restored GREEN prove that a
+small active reply no longer owns the fixed maximum. Null, empty and oversized
+admission regressions prove no unnecessary allocation/copy and preserved owner
+failure state. Dual-compiler ASan/UBSan/LSan, both static analyzers and the
+complete 145/140 CTest matrix pass. TLS remains quarantined; no Android runtime
+or physical-device claim is made.

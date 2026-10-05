@@ -156,18 +156,32 @@ Java_org_zclassic_wallet_core_NativeCore_syncRequest(JNIEnv *env, jclass type,
     return unlock_registry(ZCL_OK) == ZCL_OK ? packet : NULL;
 }
 
-static zcl_status reply_frame(JNIEnv *env, zcl_sync_watch *watch, uint64_t token,
-    uint64_t now, jbyteArray input)
+static zcl_status reply_length(JNIEnv *env, jbyteArray input, size_t *length)
 {
-    /* One checked, fixed-capacity owner; never place a network frame on stack. */
-    uint8_t *frame = malloc(ZCL_ELECTRUM_FRAME_MAX);
+    if (input == NULL) return ZCL_INVALID_ARGUMENT;
+    const jsize count = (*env)->GetArrayLength(env, input);
+    if ((*env)->ExceptionCheck(env)) return ZCL_INVALID_ARGUMENT;
+    if (count < 0 || (size_t)count > ZCL_ELECTRUM_FRAME_MAX) return ZCL_OUT_OF_RANGE;
+    *length = (size_t)count;
+    return ZCL_OK;
+}
+
+static zcl_status reply_frame(JNIEnv *env, zcl_sync_watch *watch, uint64_t token,
+    uint64_t now, jbyteArray input, size_t length)
+{
+    /* Java array lengths are immutable. Own and retire only the admitted frame
+     * span; an empty frame needs no heap owner but follows the same parser. */
+    uint8_t empty = 0;
+    uint8_t *frame = length == 0 ? &empty : malloc(length);
     if (frame == NULL) return zcl_sync_watch_fail(watch, token, ZCL_RESOURCE_EXHAUSTED);
-    size_t length = 0;
-    zcl_status status = zcl_jni_read_bytes(env, input, frame, ZCL_ELECTRUM_FRAME_MAX, &length);
-    if (status == ZCL_OK) status = zcl_sync_watch_reply(watch, token, now, frame, length);
+    size_t copied = 0;
+    zcl_status status = zcl_jni_read_bytes(env, input, frame, length, &copied);
+    if (status == ZCL_OK) status = zcl_sync_watch_reply(watch, token, now, frame, copied);
     else status = zcl_sync_watch_fail(watch, token, status);
-    zcl_secure_zero(frame, ZCL_ELECTRUM_FRAME_MAX);
-    free(frame);
+    if (length != 0) {
+        zcl_secure_zero(frame, length);
+        free(frame);
+    }
     return status;
 }
 
@@ -186,8 +200,13 @@ Java_org_zclassic_wallet_core_NativeCore_syncReply(JNIEnv *env, jclass type,
     /* The registry lock keeps this token decision stable until reply_frame.
      * Reuse C's check before allocating/copying an already retired reply. */
     status = zcl_sync_watch_check_attempt(watch, (uint64_t)token);
-    if (status == ZCL_OK)
-        status = reply_frame(env, watch, (uint64_t)token, (uint64_t)now, input);
+    size_t length = 0;
+    if (status == ZCL_OK) {
+        status = reply_length(env, input, &length);
+        status = status == ZCL_OK
+            ? reply_frame(env, watch, (uint64_t)token, (uint64_t)now, input, length)
+            : zcl_sync_watch_fail(watch, (uint64_t)token, status);
+    }
     return (jint)unlock_registry(status);
 }
 
