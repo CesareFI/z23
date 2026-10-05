@@ -289,13 +289,19 @@ FIXTURE
     [ "$(git -C "$tmp" rev-parse HEAD)" = "$after" ]
     grep -qx 'test_groups: 2' "$tmp/docs/CODEBASE_MAP.md"
     echo 'COUNTS PASS: no drift leaves HEAD unchanged'
+    # Match the reported old value so an ignored prose row could be repaired.
+    sed 's/test_groups: 2/test_groups: 1/' "$tmp/docs/CODEBASE_MAP.md" > "$tmp/count-doc"
+    mv "$tmp/count-doc" "$tmp/docs/CODEBASE_MAP.md"
+    git -C "$tmp" -c user.name=Fixture -c user.email=fixture@invalid -c commit.gpgSign=false commit --only -qm 'Fixture mixed drift' -- docs/CODEBASE_MAP.md
+    after="$(git -C "$tmp" rev-parse HEAD)"
     touch "$tmp/fail-counts"
     : > "$tmp/order"
     if "${cli[@]}" >"$out" 2>&1; then return 1; fi
     [ "$(cat "$tmp/order")" = $'registry\ncounts' ]
     [ "$(git -C "$tmp" rev-parse HEAD)" = "$after" ]
-    grep -qx 'test_groups: 2' "$tmp/docs/CODEBASE_MAP.md"
+    grep -qx 'test_groups: 1' "$tmp/docs/CODEBASE_MAP.md"
     grep -Fq 'stale prose cannot be repaired as a count' "$out"
+    grep -Fq 'stack-tip-refresh: doc-count failure is not exclusively numeric count drift' "$out"
     echo 'COUNTS PASS: mixed numeric/prose failure refuses without correction or inventory'
     git -C "$tmp" add .
     git -C "$tmp" -c user.name=Fixture -c user.email=fixture@invalid -c commit.gpgSign=false commit --allow-empty -qm complete
