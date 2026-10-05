@@ -9044,6 +9044,201 @@ static int dlx_outcome_escape_cases(void)
     return failures;
 }
 
+/* Independent review witnesses, one TEST per case: an early failure must not
+ * hide the other baseline failures. These touch only private native rigs. */
+static int dlx_string_refusal_case(unsigned index, const char *label,
+                                  const char *needle, const char *replacement)
+{
+    int failures = 0;
+    TEST(label) {
+        struct dlx_rig rig; struct dlx_call c;
+        char tag[64], rig_tag[64], land[1200], queue[1400], original[16384];
+        char changed[16384], after[16384], base[80], remote[80];
+        size_t length = 0, after_length = 0;
+        ASSERT(snprintf(tag, sizeof(tag), "string_refusal_%u", index) < (int)sizeof(tag));
+        dlx_isolate(tag);
+        ASSERT(snprintf(rig_tag, sizeof(rig_tag), "string_refusal_rig_%u", index) < (int)sizeof(rig_tag));
+        ASSERT(dlx_rig_make(&rig, rig_tag));
+        ASSERT(dlx_origin_main(&rig, base));
+        ASSERT(setenv("ZCL_LAND_PROOF_STUB", "manual", 1) == 0);
+        ASSERT(setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1) == 0);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c)); dlx_end(&c);
+        ASSERT(dlx_queue_bytes(original, sizeof(original), &length));
+        dlx_landdir(land, sizeof(land));
+        ASSERT(snprintf(queue, sizeof(queue), "%s/queue.jsonl", land) < (int)sizeof(queue));
+        char *field = strstr(original, needle);
+        ASSERT(field != NULL);
+        int n = snprintf(changed, sizeof(changed), "%.*s%s%s",
+            (int)(field - original), original, replacement, field + strlen(needle));
+        ASSERT(n > 0 && (size_t)n < sizeof(changed));
+        ASSERT(dlx_write(queue, changed));
+        const char *actions[] = { "status", "submit", "step" };
+        for (size_t j = 0; j < sizeof(actions) / sizeof(actions[0]); j++) {
+            if (j == 1) dlx_submit(&c, &rig, rig.tip);
+            else dlx_begin(&c, actions[j]);
+            ASSERT(dlx_run(&c));
+            ASSERT_STR_EQ(dlx_err_code(&c), "QUEUE_READ_FAILED");
+            ASSERT_STR_EQ(dlx_err_evidence(&c), "malformed_queue_record_1");
+            dlx_end(&c);
+            ASSERT(dlx_queue_bytes(after, sizeof(after), &after_length));
+            ASSERT(after_length == (size_t)n && memcmp(after, changed, after_length) == 0);
+        }
+        ASSERT(dlx_origin_main(&rig, remote)); ASSERT_STR_EQ(remote, base);
+        PASS();
+    } _test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int dlx_optional_string_refusal_cases(void)
+{
+    static const struct { const char *label, *needle, *replacement; } cases[] = {
+        { "land: single oversized phase refuses", "\"phase\":\"\"", "\"phase\":\"0123456789abcdef\"" },
+        { "land: duplicate null phase refuses", "\"phase\":\"\"", "\"phase\":null,\"phase\":\"push\"" },
+        { "land: nested phase refuses", "\"phase\":\"\"", "\"extra\":{\"phase\":\"push\"}" },
+        { "land: wrong-type and nested phase refuse", "\"phase\":\"\"", "\"phase\":{},\"extra\":{\"phase\":\"push\"}" },
+        { "land: unique oversized base refuses", "\"base\":\"\"", "\"base\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"" },
+        { "land: displaced publication signature refuses", "\"phase\":\"\"", "\"phase\":\"\",\"extra\":{\"publication_signature\":\"aa\"}" },
+        { "land: duplicate null detail refuses", "\"detail\":\"\"", "\"detail\":null,\"detail\":\"repair\"" },
+        { "land: unique null phase refuses", "\"phase\":\"\"", "\"phase\":null" },
+        { "land: decoded-equivalent duplicate keys refuse", "\"phase\":\"\"", "\"phase\":\"\",\"ph\\u0061se\":\"push\"" }
+    };
+    int failures = 0;
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+        failures += dlx_string_refusal_case(i, cases[i].label, cases[i].needle, cases[i].replacement);
+    return failures;
+}
+
+/* Exercise the native serializer, not a parallel wire encoder. */
+extern bool zcl_native_dev_land_test_encode_detail(const char *, bool, char *, size_t);
+
+static bool dlx_native_detail_matches(struct dlx_call *c, const char *detail,
+                                      bool terminal)
+{
+    const struct json_value *rows = dlx_arr(c, terminal ? "outcomes" : "queued");
+    if (!rows || rows->num_children != 1) return false;
+    if (!terminal) return true; /* Real row reader checked detail in the seam. */
+    const char *observed = json_get_str(json_get(&rows->children[0], "detail"));
+    return observed && strcmp(observed, detail) == 0;
+}
+
+static bool dlx_native_detail_roundtrip(const char *detail, bool terminal)
+{
+    struct dlx_call c;
+    char land[1200], path[1400], body[16384];
+    dlx_isolate("native_detail_boundary");
+    dlx_landdir(land, sizeof(land));
+    bool ok = dlx_mkdir_p(land) &&
+        zcl_native_dev_land_test_encode_detail(detail, terminal, body, sizeof(body));
+    int n = snprintf(path, sizeof(path), "%s/%s.jsonl", land,
+                     terminal ? "outcomes" : "queue");
+    ok = ok && n > 0 && (size_t)n < sizeof(path) && dlx_write(path, body);
+    if (ok) {
+        dlx_begin(&c, "status");
+        ok = dlx_run(&c) && dlx_ok(&c);
+        ok = ok && dlx_native_detail_matches(&c, detail, terminal);
+        dlx_end(&c);
+    }
+    dlx_restore();
+    return ok;
+}
+
+static int dlx_native_detail_boundary_case(unsigned kind)
+{
+    int failures = 0;
+    TEST("land: maximum native detail survives queue and outcome decoding") {
+        char detail[1024];
+        for (size_t i = 0; i < sizeof(detail) - 1; i++)
+            detail[i] = kind == 0 ? 'a' : kind == 1 ? '\001' :
+                i == 1022 ? 'x' : i % 2 == 0 ? (char)0xc3 : (char)0xa9;
+        detail[1023] = '\0';
+        ASSERT(dlx_native_detail_roundtrip(detail, false));
+        ASSERT(dlx_native_detail_roundtrip(detail, true));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool dlx_extended_native_row(char *body, size_t cap, unsigned members)
+{
+    char native[16384];
+    if (!zcl_native_dev_land_test_encode_detail("", false, native, sizeof(native)))
+        return false;
+    struct json_value doc; json_init(&doc);
+    bool ok = json_read(&doc, native, strlen(native)) && doc.type == JSON_OBJ &&
+              doc.num_children == 33;
+    json_free(&doc);
+    char *end = strrchr(native, '}');
+    if (!ok || !end || members < 33) return false;
+    size_t used = (size_t)(end - native);
+    if (used >= cap) return false;
+    memcpy(body, native, used);
+    for (unsigned i = 33; i < members; i++) {
+        int n = snprintf(body + used, cap - used, ",\"extension_%u\":0", i);
+        if (n <= 0 || (size_t)n >= cap - used) return false;
+        used += (size_t)n;
+    }
+    if (cap - used < 3) return false;
+    memcpy(body + used, "}\n", 3);
+    return true;
+}
+
+static int dlx_row_member_boundary_case(unsigned members, bool accepted)
+{
+    int failures = 0;
+    TEST("land: row member bound accepts 64 and refuses larger inventories") {
+        char body[100000], after[100000], land[1200], path[1400];
+        size_t after_length = 0;
+        struct dlx_call c;
+        dlx_isolate("member_boundary");
+        dlx_landdir(land, sizeof(land));
+        ASSERT(dlx_mkdir_p(land));
+        ASSERT(snprintf(path, sizeof(path), "%s/queue.jsonl", land) < (int)sizeof(path));
+        ASSERT(dlx_extended_native_row(body, sizeof(body), members));
+        ASSERT(dlx_write(path, body));
+        dlx_begin(&c, "status"); ASSERT(dlx_run(&c));
+        if (accepted) ASSERT(dlx_ok(&c));
+        else ASSERT_STR_EQ(dlx_err_code(&c), "QUEUE_READ_FAILED");
+        dlx_end(&c);
+        ASSERT(dlx_queue_bytes(after, sizeof(after), &after_length));
+        ASSERT(after_length == strlen(body) && memcmp(after, body, after_length) == 0);
+        PASS();
+    } _test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int dlx_absent_optional_case(void)
+{
+    int failures = 0;
+    TEST("land: absent optional fields remain valid legacy row fields") {
+        struct dlx_call c;
+        char land[1200], path[1400];
+        dlx_isolate("absent_optional"); dlx_landdir(land, sizeof(land));
+        ASSERT(dlx_mkdir_p(land));
+        ASSERT(snprintf(path, sizeof(path), "%s/queue.jsonl", land) < (int)sizeof(path));
+        ASSERT(dlx_write(path, "{\"seq\":1,\"tip\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+                              "\"state\":\"queued\",\"attempt\":1}\n"));
+        dlx_begin(&c, "status"); ASSERT(dlx_run(&c) && dlx_ok(&c));
+        const struct json_value *rows = dlx_arr(&c, "queued");
+        ASSERT(rows && rows->num_children == 1);
+        dlx_end(&c); PASS();
+    } _test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int dlx_string_compatibility_cases(void)
+{
+    int failures = dlx_absent_optional_case();
+    for (unsigned i = 0; i < 3; i++) failures += dlx_native_detail_boundary_case(i);
+    failures += dlx_row_member_boundary_case(64, true);
+    failures += dlx_row_member_boundary_case(65, false);
+    failures += dlx_row_member_boundary_case(4096, false);
+    return failures;
+}
 int test_dev_land(void)
 {
     /* Canonical registered group: private bare origin only, no live queue. */
@@ -11000,6 +11195,8 @@ int test_dev_land(void)
     failures += test_dev_land_rebase_regen_cases();
     failures += test_dev_land_queued_precheck_cases();
     failures += dlx_outcome_escape_cases();
+    failures += dlx_optional_string_refusal_cases();
+    failures += dlx_string_compatibility_cases();
 
 #endif /* !defined(_WIN32) */
 

@@ -418,22 +418,54 @@ static bool dl_line_int(const char *line, const char *key, long long *out)
     return true;
 }
 
-static bool dl_line_str(const char *line, const char *key, char *out,
-                        size_t cap)
+enum dl_string_state { DL_STRING_INVALID, DL_STRING_ABSENT, DL_STRING_FOUND };
+struct dl_string_result {
+    enum dl_string_state state;
+    const char *value;
+    size_t length;
+};
+
+/* Value is copied into caller-owned storage; no JSON allocation is borrowed.
+ * ABSENT has no value, unlike FOUND with an empty string. INVALID never
+ * masquerades as optional absence. Every caller must choose its policy. */
+[[nodiscard]] static struct dl_string_result dl_line_string(
+    const char *line, const char *key, char *out, size_t cap)
 {
+    struct dl_string_result result = { .state = DL_STRING_INVALID };
+    if (out && cap) out[0] = '\0';
     if (!line || !key || !out || cap == 0)
-        return false;
-    out[0] = '\0';
+        return result;
     struct json_value doc;
     json_init(&doc);
-    bool parsed = json_read(&doc, line, strlen(line));
-    const struct json_value *value = parsed && doc.type == JSON_OBJ
-        ? json_get(&doc, key) : NULL;
-    bool ok = value && value->type == JSON_STR && value->val.s &&
-              strlen(value->val.s) < cap;
-    if (ok) memcpy(out, value->val.s, strlen(value->val.s) + 1);
+    if (json_read(&doc, line, strlen(line)) && doc.type == JSON_OBJ) {
+        const struct json_value *value = json_get(&doc, key);
+        if (!value) result.state = DL_STRING_ABSENT;
+        else if (value->type == JSON_STR && value->val.s) {
+            size_t length = strlen(value->val.s);
+            if (length < cap) {
+                memcpy(out, value->val.s, length + 1);
+                result = (struct dl_string_result){ DL_STRING_FOUND, out, length };
+            }
+        }
+    }
     json_free(&doc);
-    return ok;
+    return result;
+}
+
+/* Successful native serialization emits 33 unique scalar members. Reject
+ * foreign ambiguity and displacement; cap extensions before O(n^2) work. */
+static bool dl_row_members_ok(const struct json_value *doc)
+{
+    enum { DL_ROW_MEMBER_MAX = 64 };
+    if (!doc || doc->type != JSON_OBJ || doc->num_children > DL_ROW_MEMBER_MAX)
+        return false;
+    for (size_t i = 0; i < doc->num_children; i++) {
+        if (doc->children[i].type == JSON_OBJ || doc->children[i].type == JSON_ARR)
+            return false;
+        for (size_t j = 0; j < i; j++)
+            if (strcmp(doc->keys[i], doc->keys[j]) == 0) return false;
+    }
+    return true;
 }
 
 /* ── bounded file IO ───────────────────────────────────────────────────── */
@@ -686,12 +718,13 @@ struct dl_row {
     bool publication_hold;
     /* The origin main this queued row was last replayed onto by the
      * queued-row conflict precheck, so a fresh step process does not
-     * replay it again until main moves. A cache, never authority: empty or
-     * malformed only means "not checked yet". */
+     * replay it again until main moves. A cache, never authority: absence, empty or a fitting
+     * non-SHA string only means "not checked yet". */
     char prechecked[80];
     /* Uncertain precheck answers against `uncertain_main`; at
      * DL_PRECHECK_TRIES the check leaves the row alone until main moves.
-     * Also a cache: empty or malformed reads as "no answers yet". */
+     * Also a cache: absence, empty or a fitting non-SHA string
+     * means "no answers yet". */
     char uncertain_main[80];
     long long uncertain_tries;
 };
@@ -716,7 +749,8 @@ static bool dl_row_json_ok(const char *line, long long *priority,
     struct json_value doc;
     const struct json_value *field;
     json_init(&doc);
-    bool ok = json_read(&doc, line, strlen(line)) && doc.type == JSON_OBJ;
+    bool ok = json_read(&doc, line, strlen(line)) && doc.type == JSON_OBJ &&
+              dl_row_members_ok(&doc);
     field = ok ? json_get(&doc, "priority_seq") : NULL;
     *has_priority = field != NULL;
     if (field) {
@@ -839,22 +873,60 @@ static bool dl_priority_parse(struct dl_row *r, long long priority,
     return true;
 }
 
-/* Optional, and a cache: anything but a commit id reads as "not checked",
- * which only costs one more replay. */
-static void dl_prechecked_parse(const char *line, struct dl_row *r)
+/* Optional replay caches: invalid field representations obstruct the row.
+ * A fitting string that is not a commit id still invalidates only the cache;
+ * it never grants authority and costs at most another replay. */
+static bool dl_prechecked_parse(const char *line, struct dl_row *r)
 {
-    if (!dl_line_str(line, "prechecked_main", r->prechecked,
-                     sizeof(r->prechecked)) ||
-        !dl_sha_ok(r->prechecked))
+    struct dl_string_result checked = dl_line_string(line, "prechecked_main",
+        r->prechecked, sizeof(r->prechecked));
+    struct dl_string_result uncertain = dl_line_string(line, "precheck_uncertain_main",
+        r->uncertain_main, sizeof(r->uncertain_main));
+    if (checked.state == DL_STRING_INVALID || uncertain.state == DL_STRING_INVALID)
+        return false;
+    if (checked.state != DL_STRING_FOUND || !dl_sha_ok(r->prechecked))
         r->prechecked[0] = '\0';
-    if (!dl_line_str(line, "precheck_uncertain_main", r->uncertain_main,
-                     sizeof(r->uncertain_main)) ||
+    if (uncertain.state != DL_STRING_FOUND ||
         !dl_sha_ok(r->uncertain_main) ||
         !dl_line_int(line, "precheck_uncertain", &r->uncertain_tries) ||
         r->uncertain_tries < 0) {
         r->uncertain_main[0] = '\0';
         r->uncertain_tries = 0;
     }
+    return true;
+}
+
+static bool dl_optional_row_strings(const char *line, struct dl_row *r)
+{
+    const struct { const char *key; char *out; size_t cap; } fields[] = {
+        { "ts", r->ts, sizeof(r->ts) },
+        { "worktree", r->worktree, sizeof(r->worktree) },
+        { "note", r->note, sizeof(r->note) },
+        { "phase", r->phase, sizeof(r->phase) },
+        { "base", r->base, sizeof(r->base) },
+        { "local", r->local, sizeof(r->local) },
+        { "tree", r->tree, sizeof(r->tree) },
+        { "proof_intent", r->proof_intent, sizeof(r->proof_intent) },
+        { "publication_target", r->publication_target, sizeof(r->publication_target) },
+        { "publication_proof", r->publication_proof, sizeof(r->publication_proof) },
+        { "publication_bundle", r->publication_bundle, sizeof(r->publication_bundle) },
+        { "publication_signer", r->publication_signer, sizeof(r->publication_signer) },
+        { "publication_signature", r->publication_signature, sizeof(r->publication_signature) },
+        { "remote_tip", r->remote_tip, sizeof(r->remote_tip) },
+        { "remote_source", r->remote_source, sizeof(r->remote_source) },
+        { "remote_signer", r->remote_signer, sizeof(r->remote_signer) },
+        { "remote_signature", r->remote_signature, sizeof(r->remote_signature) },
+        { "tip_pushed", r->pushed, sizeof(r->pushed) },
+        { "dimension", r->dimension, sizeof(r->dimension) },
+        { "log_path", r->log_path, sizeof(r->log_path) },
+        { "detail", r->detail, sizeof(r->detail) }
+    };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        struct dl_string_result value = dl_line_string(line, fields[i].key,
+            fields[i].out, fields[i].cap);
+        if (value.state == DL_STRING_INVALID) return false;
+    }
+    return true;
 }
 
 static bool dl_parse_dispatch_fields(const char *line, struct dl_row *r)
@@ -865,6 +937,13 @@ static bool dl_parse_dispatch_fields(const char *line, struct dl_row *r)
     (void)dl_line_int(line, "fence_peer", &r->fence_peer);
     return r->fence_peer >= 0 &&
         (strcmp(r->state, "fenced") != 0 || r->fence_peer > 0);
+}
+
+static bool dl_required_row_strings(const char *line, struct dl_row *r)
+{
+    return dl_line_string(line, "tip", r->tip, sizeof(r->tip)).state == DL_STRING_FOUND &&
+        dl_sha_ok(r->tip) &&
+        dl_line_string(line, "state", r->state, sizeof(r->state)).state == DL_STRING_FOUND;
 }
 
 static bool dl_parse_row(const char *line, struct dl_row *r)
@@ -882,49 +961,16 @@ static bool dl_parse_row(const char *line, struct dl_row *r)
         return false;
     if (!dl_priority_parse(r, priority, has_priority))
         return false;
-    if (!dl_line_str(line, "tip", r->tip, sizeof(r->tip)) ||
-        !dl_sha_ok(r->tip))
+    if (!dl_required_row_strings(line, r))
         return false;
-    if (!dl_line_str(line, "state", r->state, sizeof(r->state)))
-        return false;
-    (void)dl_line_str(line, "ts", r->ts, sizeof(r->ts));
-    (void)dl_line_str(line, "worktree", r->worktree, sizeof(r->worktree));
+    if (!dl_optional_row_strings(line, r)) return false;
     if (!dl_worktree_shape_ok(r->worktree))
         return false;
-    (void)dl_line_str(line, "note", r->note, sizeof(r->note));
-    (void)dl_line_str(line, "phase", r->phase, sizeof(r->phase));
     if (!dl_line_int(line, "attempt", &r->attempt) || r->attempt < 1)
         return false;
     (void)dl_line_int(line, "started", &r->started);
-    (void)dl_line_str(line, "base", r->base, sizeof(r->base));
-    (void)dl_line_str(line, "local", r->local, sizeof(r->local));
-    (void)dl_line_str(line, "tree", r->tree, sizeof(r->tree));
-    (void)dl_line_str(line, "proof_intent", r->proof_intent,
-                      sizeof(r->proof_intent));
-    (void)dl_line_str(line, "publication_target", r->publication_target,
-                      sizeof(r->publication_target));
-    (void)dl_line_str(line, "publication_proof", r->publication_proof,
-                      sizeof(r->publication_proof));
-    (void)dl_line_str(line, "publication_bundle", r->publication_bundle,
-                      sizeof(r->publication_bundle));
-    (void)dl_line_str(line, "publication_signer", r->publication_signer,
-                      sizeof(r->publication_signer));
-    (void)dl_line_str(line, "publication_signature", r->publication_signature,
-                      sizeof(r->publication_signature));
-    (void)dl_line_str(line, "remote_tip", r->remote_tip,
-                      sizeof(r->remote_tip));
-    (void)dl_line_str(line, "remote_source", r->remote_source,
-                      sizeof(r->remote_source));
-    (void)dl_line_str(line, "remote_signer", r->remote_signer,
-                      sizeof(r->remote_signer));
-    (void)dl_line_str(line, "remote_signature", r->remote_signature,
-                      sizeof(r->remote_signature));
-    (void)dl_line_str(line, "tip_pushed", r->pushed, sizeof(r->pushed));
-    (void)dl_line_str(line, "dimension", r->dimension, sizeof(r->dimension));
-    (void)dl_line_str(line, "log_path", r->log_path, sizeof(r->log_path));
-    (void)dl_line_str(line, "detail", r->detail, sizeof(r->detail));
-    dl_prechecked_parse(line, r);
-    return dl_parse_dispatch_fields(line, r) && dl_row_semantics_ok(r);
+    return dl_prechecked_parse(line, r) && dl_parse_dispatch_fields(line, r) &&
+           dl_row_semantics_ok(r);
 }
 
 static bool dl_escape_proof_fields(const struct dl_row *r,
@@ -1040,6 +1086,23 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
         *len_out = (size_t)w;
     return true;
 }
+
+#if defined(ZCL_TESTING)
+/* Fixture-only composition of the real serializer and row reader. The queue
+ * status projection omits detail; this checks decoded bytes before file IO. */
+bool zcl_native_dev_land_test_encode_detail(const char *detail, bool terminal,
+                                           char *out, size_t cap)
+{
+    struct dl_row row = { .seq = 1, .priority_seq = 1, .attempt = 1 };
+    struct dl_row decoded;
+    if (!detail || strlen(detail) >= sizeof(row.detail)) return false;
+    memcpy(row.detail, detail, strlen(detail) + 1);
+    memcpy(row.tip, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 41);
+    (void)snprintf(row.state, sizeof(row.state), "%s", terminal ? "failed" : "queued");
+    return dl_encode_row(&row, out, cap, NULL) && dl_parse_row(out, &decoded) &&
+           strcmp(decoded.detail, detail) == 0;
+}
+#endif
 
 static bool dl_queue_row_ok(const char *line, struct dl_row *r,
                             long long last_seq)
@@ -8223,12 +8286,12 @@ static bool dl_fence_write(const struct dl_dirs *d, const struct dl_fence *f)
 [[maybe_unused]] static bool dl_fence_header_decode(const char *line, struct dl_fence *f)
 {
     char kind[64]; long long dispatched = 0;
-    bool ok = dl_line_str(line, "kind", kind, sizeof(kind)) &&
+    bool ok = dl_line_string(line, "kind", kind, sizeof(kind)).state == DL_STRING_FOUND &&
         strcmp(kind, "zcl.land.fence.v1") == 0 &&
         dl_line_int(line, "stage", &f->stage) && f->stage >= 0 && f->stage <= 2 &&
         dl_line_int(line, "dispatched", &dispatched) && (dispatched == 0 || dispatched == 1) &&
-        dl_line_str(line, "observed", f->observed, sizeof(f->observed)) && dl_sha_ok(f->observed) &&
-        dl_line_str(line, "policy", f->policy, sizeof(f->policy)) && dl_hex_ok(f->policy, 64);
+        dl_line_string(line, "observed", f->observed, sizeof(f->observed)).state == DL_STRING_FOUND && dl_sha_ok(f->observed) &&
+        dl_line_string(line, "policy", f->policy, sizeof(f->policy)).state == DL_STRING_FOUND && dl_hex_ok(f->policy, 64);
     f->dispatched = dispatched != 0;
     return ok;
 }
@@ -8237,8 +8300,8 @@ static bool dl_fence_write(const struct dl_dirs *d, const struct dl_fence *f)
                                                    char signer[65], char signature[129])
 {
     return dl_parse_row(lines[1], &f->anchor) && dl_parse_row(lines[2], &f->old) &&
-        dl_parse_row(lines[3], &f->next) && dl_line_str(lines[4], "signer", signer, 65) &&
-        dl_line_str(lines[4], "signature", signature, 129);
+        dl_parse_row(lines[3], &f->next) && dl_line_string(lines[4], "signer", signer, 65).state == DL_STRING_FOUND &&
+        dl_line_string(lines[4], "signature", signature, 129).state == DL_STRING_FOUND;
 }
 
 [[maybe_unused]] static bool dl_fence_geometry_ok(const struct dl_fence *f)
