@@ -607,8 +607,10 @@ static bool parse_object_r(struct json_value *v, const char **pp,
     while (p < end) {
         char *key = NULL;
         if (!parse_member_key(v ? &key : NULL, &p, end)) return false;
-        struct json_value child;
-        if (!parse_value_r(v ? &child : NULL, &p, end, depth + 1)) { free(key); return false; }
+        struct json_value child = {0};
+        if (!parse_value_r(v ? &child : NULL, &p, end, depth + 1)) {
+            free(key); json_free(&child); return false;
+        }
         if (v && !json_append(v, key, &child)) return false;
         p = skip_ws(p, end);
         if (p < end && *p == ',') { p++; continue; }
@@ -625,8 +627,10 @@ static bool parse_array_r(struct json_value *v, const char **pp,
     const char *p = skip_ws(*pp, end);
     if (p < end && *p == ']') { *pp = p + 1; return true; }
     while (p < end) {
-        struct json_value child;
-        if (!parse_value_r(v ? &child : NULL, &p, end, depth + 1)) return false;
+        struct json_value child = {0};
+        if (!parse_value_r(v ? &child : NULL, &p, end, depth + 1)) {
+            json_free(&child); return false;
+        }
         if (v && !json_append(v, NULL, &child)) return false;
         p = skip_ws(p, end);
         if (p < end && *p == ',') { p++; continue; }

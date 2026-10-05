@@ -182,6 +182,30 @@ static bool json_number_invalid_case(void)
     return ok;
 }
 
+static bool json_number_nested_cleanup_case(void)
+{
+    /* These refuse after an unattached container owns a string and its
+     * child/key arrays. A NULL public root does not establish cleanup;
+     * run this registered test under LeakSanitizer to observe ownership. */
+    static const char *const cases[] = {
+        "[[\"allocated\",1e999]]",
+        "{\"x\":[\"allocated\",1e+]}",
+        "[{\"owned\":\"allocated\",\"bad\":1e+}]",
+        "{\"x\":{\"owned\":\"allocated\",\"bad\":1e999}}",
+        "[[\"allocated\",9223372036854775808]]",
+        "{\"x\":[\"allocated\",-9223372036854775809]}",
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct json_value v = {0};
+        bool parsed = json_read(&v, cases[i], strlen(cases[i]));
+        bool valid = json_valid(cases[i], strlen(cases[i]));
+        ok = !parsed && !valid && v.type == JSON_NULL && ok;
+        json_free(&v);
+    }
+    return ok;
+}
+
 static int json_number_cases(void)
 {
     int failures = 0;
@@ -189,6 +213,8 @@ static int json_number_cases(void)
     if (json_number_valid_case()) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     printf("json malformed and out-of-range numbers refuse and clear ownership... ");
     if (json_number_invalid_case()) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    printf("json rejected nested number containers release all allocations... ");
+    if (json_number_nested_cleanup_case()) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     return failures;
 }
 
