@@ -235,6 +235,8 @@ static size_t utf8_encode_one(uint32_t cp, char *out)
 zpuny_status zpuny_encode_utf8(const char *utf8, size_t utf8_len,
                                char *out, size_t out_cap, size_t *out_len)
 {
+    if (!out_len || (!utf8 && utf8_len > 0)) return ZPUNY_BAD_INPUT;
+
     /* Two-pass: count code points, then encode using a stack buffer
        for small inputs, else stream in chunks. Simpler: bound code
        points by utf8_len and use a VLA-free fixed stack window. */

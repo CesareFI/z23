@@ -190,6 +190,14 @@ static void test_utf8_frontend(void)
           == ZPUNY_OK);
     CHECK(bn == strlen(label) && memcmp(back, label, bn) == 0);
 
+    /* UTF-8 wrappers must reject a NULL nonempty byte span. */
+    CHECK(zpuny_encode_utf8(NULL, 1, out, sizeof out, &n)
+          == ZPUNY_BAD_INPUT);
+    CHECK(zpuny_encode_utf8(NULL, 0, out, sizeof out, &n) == ZPUNY_OK);
+    CHECK(n == 0);
+    CHECK(zpuny_encode_utf8("a", 1, out, sizeof out, NULL)
+          == ZPUNY_BAD_INPUT);
+
     /* invalid UTF-8 rejected */
     const char bad[] = { (char)0xC0, (char)0xAF, 0 };
     CHECK(zpuny_encode_utf8(bad, 2, out, sizeof out, &n)
