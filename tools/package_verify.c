@@ -616,7 +616,8 @@ static bool pv_preview_cancelled(void)
 
 static bool pv_preview_finished_late(int64_t deadline)
 {
-    return g_pv_preview_control && clock_now_monotonic_ns() >= deadline;
+    return (g_pv_preview_control || g_pv_fix_admit) &&
+           clock_now_monotonic_ns() >= deadline;
 }
 
 /* Publish the kernel identity before allowing any candidate instruction. If
