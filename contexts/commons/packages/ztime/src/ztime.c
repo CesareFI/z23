@@ -50,9 +50,11 @@ bool ztime_days_from_civil(int64_t year, unsigned month, unsigned day,
 
 void ztime_civil_from_days(int64_t days, int64_t *year_out,
                            unsigned *month_out, unsigned *day_out) {
-  int64_t z = days + 719468;
-  int64_t era = (z >= 0 ? z : z - 146096) / 146097;
-  unsigned doe = (unsigned)(z - era * 146097); /* [0, 146096] */
+  /* Split before shifting the epoch so every int64_t day is representable. */
+  int64_t era = days / 146097;
+  int64_t shifted = days % 146097 + 719468;
+  era += shifted / 146097;
+  unsigned doe = (unsigned)(shifted % 146097); /* [0, 146096] */
   unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
   int64_t y = (int64_t)yoe + era * 400;
   unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);

@@ -234,7 +234,26 @@ static void test_civil_range_rejection(void) {
 }
 
 
+static void test_civil_from_overflow_days(void) {
+  static const struct {
+    int64_t days, year;
+    unsigned month, day;
+  } rows[] = {
+    {INT64_MAX, INT64_C(25252734927768524), 7, 27},
+    {INT64_MAX - 719467, INT64_C(25252734927766554), 9, 26},
+  };
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    int64_t year;
+    unsigned month, day;
+    ztime_civil_from_days(rows[i].days, &year, &month, &day);
+    bool matches = year == rows[i].year && month == rows[i].month && day == rows[i].day;
+    CHECK(matches);
+    fprintf(stderr, "inverse_civil_row=%zu result=%s\n", i, matches ? "PASS" : "FAIL");
+  }
+}
+
 int main(void) {
+    test_civil_from_overflow_days();
     test_civil_range_rejection();
   test_parse_kats();
   test_parse_errors();
