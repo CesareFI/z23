@@ -4,8 +4,8 @@
  *
  * Two jobs:
  *   1. A small built-in registry mapping the common file extensions to
- *      media types and back (text/html, engine/application/json, image/png,
- *      ...).  Unknown inputs return "engine/application/octet-stream" on the
+ *      media types and back (text/html, application/json, image/png,
+ *      ...).  Unknown inputs return "application/octet-stream" on the
  *      extension lookup and 0 on the reverse lookup.
  *   2. A strict parser for Content-Type header values:
  *      "type/subtype; param=value; charset=utf-8".  Type and subtype
@@ -28,7 +28,7 @@ extern "C" {
 
 /* Case-insensitive extension lookup.  ext may start with '.' or not
  * ("html" or ".html").  Returns the media type string, or
- * "engine/application/octet-stream" for NULL/unknown/oversized input. */
+ * "application/octet-stream" for NULL/unknown/oversized input. */
 const char *zmime_from_extension(const char *ext, size_t len);
 
 /* Reverse lookup: first registered extension (no dot) for an exact

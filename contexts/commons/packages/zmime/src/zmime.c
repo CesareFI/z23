@@ -14,14 +14,14 @@ typedef struct {
 static const zmime_entry registry[] = {
     {"aac", "audio/aac"},
     {"avif", "image/avif"},
-    {"bin", "engine/application/octet-stream"},
+    {"bin", "application/octet-stream"},
     {"bmp", "image/bmp"},
     {"c", "text/x-c"},
     {"css", "text/css"},
     {"csv", "text/csv"},
-    {"epub", "engine/application/epub+zip"},
+    {"epub", "application/epub+zip"},
     {"gif", "image/gif"},
-    {"gz", "engine/application/gzip"},
+    {"gz", "application/gzip"},
     {"h", "text/x-c"},
     {"htm", "text/html"},
     {"html", "text/html"},
@@ -29,30 +29,30 @@ static const zmime_entry registry[] = {
     {"jpeg", "image/jpeg"},
     {"jpg", "image/jpeg"},
     {"js", "text/javascript"},
-    {"json", "engine/application/json"},
+    {"json", "application/json"},
     {"mjs", "text/javascript"},
     {"mp3", "audio/mpeg"},
     {"mp4", "video/mp4"},
     {"ogg", "audio/ogg"},
     {"otf", "font/otf"},
-    {"pdf", "engine/application/pdf"},
+    {"pdf", "application/pdf"},
     {"png", "image/png"},
     {"svg", "image/svg+xml"},
-    {"tar", "engine/application/x-tar"},
+    {"tar", "application/x-tar"},
     {"tif", "image/tiff"},
     {"tiff", "image/tiff"},
-    {"toml", "engine/application/toml"},
+    {"toml", "application/toml"},
     {"ttf", "font/ttf"},
     {"txt", "text/plain"},
-    {"wasm", "engine/application/wasm"},
+    {"wasm", "application/wasm"},
     {"webp", "image/webp"},
     {"woff", "font/woff"},
     {"woff2", "font/woff2"},
-    {"xml", "engine/application/xml"},
-    {"yaml", "engine/application/yaml"},
-    {"yml", "engine/application/yaml"},
-    {"zip", "engine/application/zip"},
-    {"zst", "engine/application/zstd"},
+    {"xml", "application/xml"},
+    {"yaml", "application/yaml"},
+    {"yml", "application/yaml"},
+    {"zip", "application/zip"},
+    {"zst", "application/zstd"},
 };
 
 static int ascii_lower(int c) {
@@ -79,7 +79,7 @@ const char *zmime_from_extension(const char *ext, size_t len) {
     for (i = 0; i < sizeof registry / sizeof registry[0]; i++)
       if (eq_ci(ext, len, registry[i].ext)) return registry[i].mime;
   }
-  return "engine/application/octet-stream";
+  return "application/octet-stream";
 }
 
 const char *zmime_to_extension(const char *mime, size_t len) {

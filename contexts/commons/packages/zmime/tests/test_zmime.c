@@ -22,20 +22,20 @@ static void test_registry(void) {
   CHECK(strcmp(zmime_from_extension("html", 4), "text/html") == 0);
   CHECK(strcmp(zmime_from_extension(".html", 5), "text/html") == 0);
   CHECK(strcmp(zmime_from_extension("HTML", 4), "text/html") == 0);
-  CHECK(strcmp(zmime_from_extension("json", 4), "engine/application/json") == 0);
+  CHECK(strcmp(zmime_from_extension("json", 4), "application/json") == 0);
   CHECK(strcmp(zmime_from_extension("png", 3), "image/png") == 0);
   CHECK(strcmp(zmime_from_extension("c", 1), "text/x-c") == 0);
-  CHECK(strcmp(zmime_from_extension("toml", 4), "engine/application/toml") == 0);
-  CHECK(strcmp(zmime_from_extension("wasm", 4), "engine/application/wasm") == 0);
+  CHECK(strcmp(zmime_from_extension("toml", 4), "application/toml") == 0);
+  CHECK(strcmp(zmime_from_extension("wasm", 4), "application/wasm") == 0);
   /* unknown and edge inputs fall back */
   CHECK(strcmp(zmime_from_extension("zzz", 3),
-               "engine/application/octet-stream") == 0);
-  CHECK(strcmp(zmime_from_extension("", 0), "engine/application/octet-stream") == 0);
+               "application/octet-stream") == 0);
+  CHECK(strcmp(zmime_from_extension("", 0), "application/octet-stream") == 0);
   CHECK(strcmp(zmime_from_extension(NULL, 3),
-               "engine/application/octet-stream") == 0);
+               "application/octet-stream") == 0);
   CHECK(strcmp(zmime_from_extension("superlongext", 12),
-               "engine/application/octet-stream") == 0);
-  CHECK(strcmp(zmime_from_extension(".", 1), "engine/application/octet-stream") ==
+               "application/octet-stream") == 0);
+  CHECK(strcmp(zmime_from_extension(".", 1), "application/octet-stream") ==
         0);
   /* reverse */
   {
@@ -43,7 +43,7 @@ static void test_registry(void) {
     CHECK(e && (strcmp(e, "htm") == 0 || strcmp(e, "html") == 0));
   }
   CHECK(strcmp(zmime_to_extension("Application/JSON", 16), "json") == 0);
-  CHECK(zmime_to_extension("engine/application/x-not-registered", 26) == NULL);
+  CHECK(zmime_to_extension("application/x-not-registered", 26) == NULL);
   CHECK(zmime_to_extension(NULL, 5) == NULL);
 }
 
@@ -71,13 +71,13 @@ static void test_parse_kats(void) {
   expect_parse("text/html; charset=utf-8", "text", "html", "utf-8", 1);
   expect_parse("text/html;charset=UTF-8", "text", "html", "utf-8", 1);
   expect_parse("text/html; charset=\"utf-8\"", "text", "html", "utf-8", 1);
-  expect_parse("engine/application/json; charset=utf-8; x-a=b", "application",
+  expect_parse("application/json; charset=utf-8; x-a=b", "application",
                "json", "utf-8", 2);
   expect_parse("multipart/form-data; boundary=something", "multipart",
                "form-data", "", 1);
   expect_parse("text/plain ; charset=iso-8859-1 ; x=1", "text", "plain",
                "iso-8859-1", 2);
-  expect_parse(" engine/application/pdf", "application", "pdf", "", 0);
+  expect_parse(" application/pdf", "application", "pdf", "", 0);
   expect_parse("image/svg+xml", "image", "svg+xml", "", 0);
   /* quoted values with escapes and spaces */
   {
@@ -115,7 +115,7 @@ static void test_format_roundtrip(void) {
   static const char *const vals[] = {
       "text/html",
       "text/html; charset=utf-8",
-      "engine/application/json; charset=utf-8; x-a=b",
+      "application/json; charset=utf-8; x-a=b",
       "multipart/form-data; boundary=something",
       "a/b; x=\"hello world\"",
   };
@@ -215,7 +215,30 @@ static void test_fuzz(void) {
   }
 }
 
+static void test_application_registry(void) {
+  static const struct { const char *ext, *mime; } cases[] = {
+    {"bin", "application/octet-stream"}, {"epub", "application/epub+zip"},
+    {"gz", "application/gzip"}, {"json", "application/json"},
+    {"pdf", "application/pdf"}, {"tar", "application/x-tar"},
+    {"toml", "application/toml"}, {"wasm", "application/wasm"},
+    {"xml", "application/xml"}, {"yaml", "application/yaml"},
+    {"yml", "application/yaml"}, {"zip", "application/zip"},
+    {"zst", "application/zstd"}
+  };
+  for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    const char *got = zmime_from_extension(cases[i].ext, strlen(cases[i].ext));
+    const char *reverse = zmime_to_extension(cases[i].mime, strlen(cases[i].mime));
+    if (strcmp(got, cases[i].mime) != 0 || !reverse) {
+      fprintf(stderr, "FAIL application registry row %zu: %s -> %s, reverse %s\n",
+              i, cases[i].ext, got, reverse ? reverse : "NULL");
+      failures++;
+    }
+  }
+  CHECK(strcmp(zmime_from_extension(NULL, 0), "application/octet-stream") == 0);
+}
+
 int main(void) {
+  test_application_registry();
   test_registry();
   test_parse_kats();
   test_parse_bad();
