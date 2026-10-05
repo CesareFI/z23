@@ -195,6 +195,14 @@ ZCL_TEST_GROUP(simnet_shielded_wallet_e2e)
 ZCL_TEST_GROUP(store_e2e_gate)
 ZCL_TEST_GROUP(store_e2e_shielded)
 ZCL_TEST_GROUP(soak_harness)
+/* crash-recovery harness CLI regressions (tools/crash_recovery_test.c ->
+ * build/bin/crash_recovery_test): an over-long --datadir/--connect is
+ * refused with exit 2 naming the flag instead of silently truncating
+ * into a fixed buffer (the chopped datadir reached sqlite3_open_v2,
+ * popen's stderr redirect and the spawned node's -datadir). Self-skips
+ * when the binary is absent; the proof prefork builds it through the
+ * BUILD_NEED row below. */
+ZCL_TEST_GROUP(crash_recovery)
 ZCL_TEST_GROUP(event)
 ZCL_TEST_GROUP(download)
 ZCL_TEST_GROUP(download_contention)

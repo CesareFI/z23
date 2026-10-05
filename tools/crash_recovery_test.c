@@ -138,8 +138,17 @@ static void cr_defaults(struct cr_config *cfg)
     memset(cfg, 0, sizeof(*cfg));
     const char *env = getenv("ZCL_CRASH_DATADIR");
     const char *home = getenv("HOME");
+    if (env && *env &&
+        snprintf(cfg->datadir, sizeof(cfg->datadir), "%s", env) >=
+            (int)sizeof(cfg->datadir)) {
+        /* Refused, not truncated: the chopped path would reach the
+         * sqlite open and the spawned node's -datadir. */
+        fprintf(stderr, "ZCL_CRASH_DATADIR too long (max %zu characters); "
+                "using the default datadir\n", sizeof(cfg->datadir) - 1);
+        env = NULL;
+    }
     if (env && *env) {
-        snprintf(cfg->datadir, sizeof(cfg->datadir), "%s", env);
+        /* copied above, under the truncation check */
     } else if (home) {
         snprintf(cfg->datadir, sizeof(cfg->datadir),
                  "%s/.zclassic-c23-crashtest", home);
@@ -162,6 +171,37 @@ static void cr_defaults(struct cr_config *cfg)
     cfg->seeded_height = 0;
 }
 
+/* Copy a path argument into its fixed buffer, refusing truncation with
+ * exit status 2. snprintf discards the tail silently when the source
+ * outgrows the buffer; unchecked, the chopped path reached popen's
+ * stderr redirect, sqlite3_open_v2 and the spawned node's -datadir. */
+static int cr_copy_path(const char *flag, char *dst, size_t cap, const char *src)
+{
+    if (snprintf(dst, cap, "%s", src) >= (int)cap) {
+        dst[0] = '\0';
+        fprintf(stderr, "path argument too long: %s (max %zu characters)\n",
+                flag, cap - 1);
+        return 2;
+    }
+    return 0;
+}
+
+/* parse_args records the two path sources; this applies them under
+ * refusal-on-truncation once the loop has seen the last occurrence.
+ * Returns 0, or the process exit status (2). */
+static int cr_apply_paths(struct cr_config *cfg, const char *datadir_src,
+                          const char *connect_src)
+{
+    int rc = 0;
+    if (datadir_src)
+        rc = cr_copy_path("--datadir", cfg->datadir, sizeof(cfg->datadir),
+                          datadir_src);
+    if (rc == 0 && connect_src)
+        rc = cr_copy_path("--connect", cfg->connect, sizeof(cfg->connect),
+                          connect_src);
+    return rc;
+}
+
 static bool parse_long_flag(const char *arg, const char *name, long *out)
 {
     size_t nlen = strlen(name);
@@ -176,10 +216,13 @@ static bool parse_long_flag(const char *arg, const char *name, long *out)
 
 static int parse_args(int argc, char **argv, struct cr_config *cfg)
 {
+    /* The two path arguments are recorded here and copied under
+     * refusal-on-truncation by cr_apply_paths after the loop. */
+    const char *datadir_src = NULL, *connect_src = NULL;
     for (int i = 1; i < argc; i++) {
         long v;
         if (strncmp(argv[i], "--datadir=", 10) == 0) {
-            snprintf(cfg->datadir, sizeof(cfg->datadir), "%s", argv[i] + 10);
+            datadir_src = argv[i] + 10;
         } else if (parse_long_flag(argv[i], "--iterations", &v)) {
             cfg->iterations = (int)v;
         } else if (parse_long_flag(argv[i], "--min-delay-ms", &v)) {
@@ -199,7 +242,7 @@ static int parse_args(int argc, char **argv, struct cr_config *cfg)
         } else if (parse_long_flag(argv[i], "--seed", &v)) {
             cfg->seed = (uint64_t)v;
         } else if (strncmp(argv[i], "--connect=", 10) == 0) {
-            snprintf(cfg->connect, sizeof(cfg->connect), "%s", argv[i] + 10);
+            connect_src = argv[i] + 10;
         } else if (strcmp(argv[i], "--bootstrap-regtest") == 0) {
             cfg->bootstrap = true;
             cfg->regtest   = true;
@@ -226,7 +269,7 @@ static int parse_args(int argc, char **argv, struct cr_config *cfg)
     if (cfg->min_delay_ms < 1)     cfg->min_delay_ms = 1;
     if (cfg->max_delay_ms < cfg->min_delay_ms)
         cfg->max_delay_ms = cfg->min_delay_ms;
-    return 0;
+    return cr_apply_paths(cfg, datadir_src, connect_src);
 }
 
 /* ── Small PRNG ─────────────────────────────────────────────── */
