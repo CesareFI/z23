@@ -127,6 +127,9 @@ static void test_overflow_reports_size(void)
           == ZTEMPLATE_OVERFLOW);
     CHECK(n == 12);
     CHECK(small[4] == '\0'); /* truncated output stays terminated */
+    char boundary[12];
+    CHECK(ztemplate_render(tp, kv_lookup, kvs, boundary, sizeof boundary, &n)
+          == ZTEMPLATE_OVERFLOW);
     char *exact = malloc(need + 1);
     CHECK(exact != NULL);
     CHECK(ztemplate_render(tp, kv_lookup, kvs, exact, need + 1, &n)

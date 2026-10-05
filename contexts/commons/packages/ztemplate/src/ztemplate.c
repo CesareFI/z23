@@ -164,7 +164,7 @@ ztemplate_status ztemplate_render(const ztemplate *tp,
     if (out && out_cap > 0)
         out[o < out_cap ? o : out_cap - 1] = '\0';
     *out_len = o;
-    if (!out || o >= out_cap + 1 || o > out_cap)
+    if (!out || o >= out_cap || o > out_cap)
         return ZTEMPLATE_OVERFLOW;
     return ZTEMPLATE_OK;
 }
