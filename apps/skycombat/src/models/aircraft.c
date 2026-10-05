@@ -13,6 +13,7 @@
 #include <math.h>
 #include <raymath.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 // The proven control values
 #define AIRCRAFT_BASE_SPEED 60.0f
@@ -107,14 +108,35 @@ float aircraft_get_speed_percent(aircraft_t* aircraft) {
 
 // Removed - using the real responsive implementation from aircraft_responsive.c
 
+/* Keep signed arena edges inclusive. Reducing the coordinate itself avoids
+ * overflow when wrapping the largest finite values. */
+static float aircraft_wrap_coordinate(float coordinate) {
+    if (coordinate >= -WORLD_HALF_SIZE && coordinate <= WORLD_HALF_SIZE) return coordinate;
+    float wrapped = fmodf(coordinate, WORLD_SIZE);
+    if (wrapped > WORLD_HALF_SIZE) wrapped -= WORLD_SIZE;
+    if (wrapped < -WORLD_HALF_SIZE) wrapped += WORLD_SIZE;
+    return wrapped;
+}
+
 void aircraft_wrap_position(aircraft_t* aircraft) {
-    if (aircraft->position.x > WORLD_HALF_SIZE) aircraft->position.x -= WORLD_SIZE;
-    if (aircraft->position.x < -WORLD_HALF_SIZE) aircraft->position.x += WORLD_SIZE;
-    if (aircraft->position.z > WORLD_HALF_SIZE) aircraft->position.z -= WORLD_SIZE;
-    if (aircraft->position.z < -WORLD_HALF_SIZE) aircraft->position.z += WORLD_SIZE;
-    
+    /* Recover each invalid component without discarding valid axes. */
+    if (!isfinite(aircraft->position.x)) {
+        fprintf(stderr, "aircraft_wrap_position: nonfinite x; resetting to center\n");
+        aircraft->position.x = 0;
+    }
+    if (!isfinite(aircraft->position.z)) {
+        fprintf(stderr, "aircraft_wrap_position: nonfinite z; resetting to center\n");
+        aircraft->position.z = 0;
+    }
+    if (!isfinite(aircraft->position.y)) {
+        fprintf(stderr, "aircraft_wrap_position: nonfinite height; resetting to minimum\n");
+        aircraft->position.y = WORLD_MIN_HEIGHT;
+    }
+    aircraft->position.x = aircraft_wrap_coordinate(aircraft->position.x);
+    aircraft->position.z = aircraft_wrap_coordinate(aircraft->position.z);
     if (aircraft->position.y < WORLD_MIN_HEIGHT) aircraft->position.y = WORLD_MIN_HEIGHT;
     if (aircraft->position.y > WORLD_MAX_HEIGHT) aircraft->position.y = WORLD_MAX_HEIGHT;
+    aircraft->altitude = aircraft->position.y;
 }
 
 Vector3 aircraft_get_position(aircraft_t* aircraft) {

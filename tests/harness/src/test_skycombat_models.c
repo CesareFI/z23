@@ -303,6 +303,49 @@ _test_next:;
     return failures;
 }
 
+static int skycombat_wrap_tests(void)
+{
+    int failures = 0;
+    const Vector3 input[] = {
+        {3 * WORLD_SIZE + 125, 600, -4 * WORLD_SIZE - 250},
+        {WORLD_HALF_SIZE, 250, -WORLD_HALF_SIZE}, {1001, 9, -1001},
+        {3000, 500, -3000}, {5000, 10, -5000}, {0, 250, 0},
+        {NAN, NAN, INFINITY}, {-INFINITY, INFINITY, NAN},
+        {INFINITY, -INFINITY, -INFINITY}, {NAN, 250, 123}, {123, NAN, -456}
+    };
+    const Vector3 expected[] = {
+        {125, 500, -250}, {WORLD_HALF_SIZE, 250, -WORLD_HALF_SIZE}, {-999, 10, 999},
+        {1000, 500, -1000}, {1000, 10, -1000}, {0, 250, 0},
+        {0, WORLD_MIN_HEIGHT, 0}, {0, WORLD_MIN_HEIGHT, 0},
+        {0, WORLD_MIN_HEIGHT, 0}, {0, 250, 123}, {123, WORLD_MIN_HEIGHT, -456}
+    };
+    TEST("wrap: multiple spans, signed edges, invalid components and altitude") {
+        for (size_t i = 0; i < sizeof(input) / sizeof(input[0]); i++) {
+            aircraft_t a = {.position = input[i], .altitude = -99};
+            aircraft_wrap_position(&a);
+            ASSERT_EQ(a.position.x, expected[i].x); ASSERT_EQ(a.position.y, expected[i].y);
+            ASSERT_EQ(a.position.z, expected[i].z); ASSERT_EQ(a.altitude, expected[i].y);
+            Vector3 before = a.position; aircraft_wrap_position(&a);
+            ASSERT_EQ(a.position.x, before.x); ASSERT_EQ(a.position.y, before.y);
+            ASSERT_EQ(a.position.z, before.z); ASSERT_EQ(a.altitude, before.y);
+        }
+        PASS();
+    }
+    TEST("wrap: finite extremes and immediately outside the boundary remain bounded") {
+        aircraft_t a = {.position = {FLT_MAX, 250, -FLT_MAX}};
+        aircraft_wrap_position(&a);
+        ASSERT(isfinite(a.position.x) && isfinite(a.position.z));
+        ASSERT(fabsf(a.position.x) <= WORLD_HALF_SIZE && fabsf(a.position.z) <= WORLD_HALF_SIZE);
+        ASSERT_EQ(a.altitude, 250.0f);
+        float outside = nextafterf(WORLD_HALF_SIZE, INFINITY);
+        a.position = (Vector3){outside, 250, -outside}; aircraft_wrap_position(&a);
+        ASSERT_EQ(a.position.x, outside - WORLD_SIZE);
+        ASSERT_EQ(a.position.z, WORLD_SIZE - outside); PASS();
+    }
+_test_next:;
+    return failures;
+}
+
 int test_skycombat_models(void);
 int test_skycombat_models(void)
 {
@@ -507,6 +550,7 @@ _test_next:;
     failures += skycombat_match_lifecycle_tests();
     failures += skycombat_match_bounds_tests();
     failures += skycombat_pickup_tests();
+    failures += skycombat_wrap_tests();
     failures += skycombat_document_tests();
     failures += skycombat_gun_pattern_tests();
     if (failures == 0)
