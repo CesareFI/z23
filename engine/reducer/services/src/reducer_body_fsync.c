@@ -60,11 +60,16 @@
 #include "util/stage.h"
 
 #include <stdatomic.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>              /* getenv, strtol */
 
 static _Atomic bool g_body_fsync_hook_registered = false;
 static _Atomic unsigned g_body_fsync_scope_depth = 0;
+/* Serialize the zero-boundary with the mode switches. Otherwise a final exit
+ * can publish depth 0, race a new enter that re-arms both artifacts, and then
+ * disarm that live scope on its way out. */
+static pthread_mutex_t g_body_fsync_scope_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Single-writer: reducer_batched_durability_precommit fires only from
  * stage_batch_end(), which stage.c documents as serialized by the recursive
@@ -286,6 +291,7 @@ bool reducer_body_fsync_test_trigger_precommit(void)
 
 void reducer_enter_batched_body_sync(void)
 {
+    pthread_mutex_lock(&g_body_fsync_scope_lock);
     bool was = atomic_exchange_explicit(&g_body_fsync_hook_registered, true,
                                         memory_order_relaxed);
     if (!was)
@@ -303,22 +309,24 @@ void reducer_enter_batched_body_sync(void)
     event_log_t *log = event_log_singleton();
     if (log)
         event_log_set_deferred_sync(log, true);
+    pthread_mutex_unlock(&g_body_fsync_scope_lock);
 }
 
 void reducer_exit_batched_body_sync(void)
 {
+    pthread_mutex_lock(&g_body_fsync_scope_lock);
     unsigned prior = atomic_load_explicit(&g_body_fsync_scope_depth,
-                                          memory_order_acquire);
-    while (prior > 0 &&
-           !atomic_compare_exchange_weak_explicit(
-               &g_body_fsync_scope_depth, &prior, prior - 1,
-               memory_order_acq_rel, memory_order_acquire)) {
-        /* retry with the observed depth */
+                                          memory_order_relaxed);
+    if (prior == 0) {
+        pthread_mutex_unlock(&g_body_fsync_scope_lock);
+        return;
     }
-    if (prior == 0)
+    atomic_store_explicit(&g_body_fsync_scope_depth, prior - 1,
+                          memory_order_release);
+    if (prior > 1) {
+        pthread_mutex_unlock(&g_body_fsync_scope_lock);
         return;
-    if (prior > 1)
-        return;
+    }
 
     /* Final flush for any body / event written but not yet covered by a stage
      * COMMIT (e.g. a drive that persisted work then advanced nothing this
@@ -332,4 +340,5 @@ void reducer_exit_batched_body_sync(void)
         (void)event_log_flush(log);
         event_log_set_deferred_sync(log, false);
     }
+    pthread_mutex_unlock(&g_body_fsync_scope_lock);
 }
