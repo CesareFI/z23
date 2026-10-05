@@ -40,6 +40,8 @@ bool zfmt_u64(zfmt *f, uint64_t v);
 bool zfmt_i64(zfmt *f, int64_t v);
 bool zfmt_hex64(zfmt *f, uint64_t v);               /* 16 lowercase digits */
 bool zfmt_u64_pad(zfmt *f, uint64_t v, unsigned width); /* zero-padded */
+/* precision clamps to nine. NaN/infinity use nan/inf/-inf; magnitude
+ * above 2^53 or rounded scaled magnitude >= 2^64 emits "huge". */
 bool zfmt_double(zfmt *f, double v, unsigned precision); /* fixed notation */
 bool zfmt_repeat(zfmt *f, char c, size_t count);
 

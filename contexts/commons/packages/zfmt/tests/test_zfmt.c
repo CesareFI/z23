@@ -1,3 +1,6 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ * Purpose: formatter regression tests including scaled floating-point bounds.
+ */
 #include "zfmt/zfmt.h"
 
 #include <stdio.h>
@@ -113,6 +116,43 @@ static void test_double(void)
     expect(&f, "0.300");
 }
 
+static void test_double_scaled_range(void)
+{
+    char buf[64];
+    zfmt f;
+    zfmt_init(&f, buf, sizeof buf);
+    /* Magnitude passes the old 2^53 guard but scaling exceeds uint64_t. */
+    CHECK(zfmt_double(&f, 1e15, 9));
+    expect(&f, "huge");
+    zfmt_reset(&f);
+    CHECK(zfmt_double(&f, -1e15, 9));
+    expect(&f, "huge");
+    zfmt_reset(&f);
+    CHECK(zfmt_double(&f, 1e15, 99)); /* precision still clamps to nine */
+    expect(&f, "huge");
+    zfmt_reset(&f);
+    CHECK(zfmt_double(&f, 0x1p64 / 1e9, 9)); /* exact rounded upper bound */
+    expect(&f, "huge");
+
+    /* Preserve representable large results rather than lowering all ranges. */
+    zfmt_reset(&f);
+    CHECK(zfmt_double(&f, 1e15, 0));
+    expect(&f, "1000000000000000");
+    zfmt_reset(&f);
+    CHECK(zfmt_double(&f, 1e9, 9));
+    expect(&f, "1000000000.000000000");
+    zfmt_reset(&f);
+    CHECK(zfmt_double(&f, 0x1p53, 1));
+    expect(&f, "9007199254740992.0");
+
+    char tiny[4];
+    zfmt_init(&f, tiny, sizeof tiny);
+    CHECK(!zfmt_double(&f, 1e15, 9));
+    CHECK(strcmp(tiny, "hug") == 0 && zfmt_len(&f) == 3);
+    CHECK(!zfmt_ok(&f));
+    CHECK(!zfmt_char(&f, 'x')); /* fallback obeys normal sticky overflow */
+}
+
 static void test_overflow(void)
 {
     char buf[8]; /* holds 7 chars + NUL */
@@ -213,6 +253,7 @@ int main(void)
     test_strings();
     test_integers();
     test_double();
+    test_double_scaled_range();
     test_overflow();
     test_repeat_and_compose();
     test_fuzz_vs_snprintf();

@@ -1,3 +1,6 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ * Purpose: allocation-free formatting with bounded, sticky buffer errors.
+ */
 #include "zfmt/zfmt.h"
 
 #include <string.h>
@@ -124,7 +127,10 @@ bool zfmt_double(zfmt *f, double v, unsigned precision)
 
     uint64_t scale = 1;
     for (unsigned i = 0; i < precision; i++) scale *= 10;
-    uint64_t scaled = (uint64_t)(v * (double)scale + 0.5); /* round half up */
+    double rounded = v * (double)scale + 0.5; /* round half up */
+    /* UINT64_MAX rounds to 2^64 as double: reject at that exact boundary. */
+    if (rounded >= 0x1p64) return append_raw(f, "huge", 4);
+    uint64_t scaled = (uint64_t)rounded;
     uint64_t whole = scaled / scale;
     uint64_t frac = scaled % scale;
 
