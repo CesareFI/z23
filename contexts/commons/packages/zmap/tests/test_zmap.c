@@ -286,16 +286,34 @@ static void test_clear_tombstone_growth(void) {
   zmap_destroy(m, nullptr, nullptr);
 }
 
-static void test_clear_initial_capacity(void) {
-  zmap *m = zmap_create();
+static void test_clear_retains_capacity(void) {
+  int budget = 100;
+  zmap_alloc a = {.ctx = &budget, .alloc = counting_alloc,
+                  .dealloc = counting_dealloc};
+  zmap *m = zmap_create_ex(&a, nullptr);
   if (!m) exit(2);
   char key[32];
   for (int i = 0; i < 40; i++) {
     snprintf(key, sizeof key, "key-%d", i);
     if (!zmap_put(m, key, (void *)1, nullptr)) exit(2);
   }
+  size_t capacity = zmap_capacity(m);
+  CHECK(capacity > 16);
   zmap_clear(m, nullptr, nullptr);
-  CHECK(zmap_capacity(m) == 16);
+  CHECK(zmap_capacity(m) == capacity);
+  CHECK(zmap_size(m) == 0);
+  /* Only key copies may allocate: reuse must not grow the retained table. */
+  budget = 12;
+  for (int i = 0; i < 12; i++) {
+    snprintf(key, sizeof key, "new-%d", i);
+    CHECK(zmap_put(m, key, (void *)1, nullptr));
+  }
+  CHECK(budget == 0);
+  CHECK(zmap_capacity(m) == capacity && zmap_size(m) == 12);
+  for (int i = 0; i < 12; i++) {
+    snprintf(key, sizeof key, "new-%d", i);
+    CHECK(zmap_get(m, key) == (void *)1);
+  }
   zmap_destroy(m, nullptr, nullptr);
 }
 
@@ -318,7 +336,7 @@ static void test_failed_growth_unchanged(void) {
 
 int main(void) {
     test_failed_growth_unchanged();
-    test_clear_initial_capacity();
+    test_clear_retains_capacity();
     test_clear_tombstone_growth();
   test_failed_growth_preserves_capacity();
   test_clear_erased_slots();

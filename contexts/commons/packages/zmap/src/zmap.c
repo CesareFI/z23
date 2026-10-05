@@ -237,7 +237,6 @@ void zmap_clear(zmap *m, zmap_destroy_fn dtor, void *ctx) {
   memset(m->slots, 0, m->cap * sizeof(*m->slots));
   m->size = 0;
   m->tombstones = 0;
-  m->cap = ZMAP_INITIAL_CAP;
 }
 
 void zmap_destroy(zmap *m, zmap_destroy_fn dtor, void *ctx) {
