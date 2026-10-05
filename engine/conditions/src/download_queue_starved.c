@@ -67,7 +67,7 @@ static bool detect_download_queue_starved(void)
     struct connman *cm = sync_monitor_connman();
     struct download_manager *dm =
         sync_monitor_download_manager();
-    int64_t now = platform_time_wall_unix();
+    int64_t now = platform_time_monotonic_us() / INT64_C(1000000);
     /* Defer: never START a new episode while a permanent fold blocker holds
      * H* — see permanent_fold_blocker_active() above. An episode that is
      * ALREADY active when the blocker appears is deferred by the witness

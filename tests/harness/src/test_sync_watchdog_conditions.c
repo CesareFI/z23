@@ -647,13 +647,15 @@ int test_sync_watchdog_conditions(void)
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
 
         condition_engine_tick();
-        fake_clock_set(&clock, 3621);
+        /* Refill recovery is elapsed process time, even if wall time moves
+         * backward while the download queue is starved. */
+        fake_clock_set_split(&clock, 3621, 3000);
         condition_engine_tick();
         ok = ok && download_queue_starved_test_remedy_calls() == 1;
         ok = ok && condition_engine_get_active_count() == 1;
 
         sync_set_state(SYNC_AT_TIP, "test-at-tip");
-        fake_clock_set(&clock, 3622);
+        fake_clock_set_split(&clock, 3622, 3001);
         condition_engine_tick();
         ok = ok && condition_engine_get_active_count() == 0;
 
