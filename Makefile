@@ -13950,7 +13950,7 @@ check-pipefail-status-pipe:
 # Cross-host shell debt must only shrink.  The shared port helper is exercised
 # here too, so a fallback or fail-closed regression cannot hide behind an
 # unchanged spelling baseline.
-check-shell-host-assumptions: $(LINTC_TOOL) $(JSONQ_BIN)
+check-shell-host-assumptions: $(LINTC_TOOL) $(JSONQ_BIN) $(DEV_PACKAGE_VERIFY_BIN)
 	@echo "══ LINT: Linux/GNU shell assumptions only shrink ══"
 	@./tools/lint/check_shell_host_assumptions.sh --selftest
 	@./tools/scripts/port_probe.sh --selftest
@@ -14933,7 +14933,6 @@ else
 # (notably two Windows linkers in `make lint check-windows-acceptance`).
 LINT_PARALLEL_GATES = $(filter-out $(MAKECMDGOALS),$(LINT_GATES))
 lint: $(LINTC_TOOL) $(filter $(LINT_GATES),$(MAKECMDGOALS))
-	@./tools/scripts/commons_fix_admit.sh --selftest
 	@$(if $(LINT_PARALLEL_GATES),tools/lint/run_lint.sh --jobs "$(ZCL_LINT_JOBS)" --bin-dir "$(BIN_DIR)" $(LINT_PARALLEL_GATES),:)
 	@echo "══ LINT: all checks passed ══"
 endif

@@ -558,6 +558,21 @@ static const int g_pv_child_denied[] = {
 static const int g_pv_child_denied[] = { 0 };
 #define PV_CHILD_DENIED_COUNT 0u
 #endif
+/* Fix-admission children may not signal host processes or escape the
+ * executor's process group; compiler subprocess creation remains allowed. */
+static bool g_pv_fix_admit;
+#if defined(__linux__)
+static const int g_pv_fix_admit_denied[] = {
+    __NR_kill, __NR_tkill, __NR_tgkill, __NR_rt_sigqueueinfo,
+    __NR_rt_tgsigqueueinfo, __NR_setsid, __NR_setpgid,
+#ifdef __NR_pidfd_send_signal
+    __NR_pidfd_send_signal,
+#endif
+#ifdef __NR_pidfd_getfd
+    __NR_pidfd_getfd,
+#endif
+};
+#endif
 
 struct pv_run {
     bool launched;     /* fork/pipe machinery worked */
@@ -1090,6 +1105,13 @@ static _Noreturn void pv_run_child_exec(const char *const argv[],
         os_sandbox_seccomp_deny(g_pv_child_denied, PV_CHILD_DENIED_COUNT, false);
     if (!zcl_result_is_ok(sr))
         _exit(PV_CHILD_SECCOMP_FAIL);
+#if defined(__linux__)
+    if (g_pv_fix_admit) {
+        struct zcl_result fr = os_sandbox_seccomp_deny(g_pv_fix_admit_denied,
+            sizeof(g_pv_fix_admit_denied) / sizeof(g_pv_fix_admit_denied[0]), false);
+        if (!zcl_result_is_ok(fr)) _exit(PV_CHILD_SECCOMP_FAIL);
+    }
+#endif
     execvp(argv[0], (char *const *)argv);
     _exit(PV_CHILD_EXEC_FAIL);
 }
@@ -4179,8 +4201,13 @@ static int pv_app_preview_mode(int argc, char **argv)
     return 0;
 }
 
+#include "package_verify_fix_admit.h"
+
 static int pv_main_dispatch_fixed_modes(int argc, char **argv)
 {
+    if (argc > 1 && (strcmp(argv[1], "--fix-admit-compile") == 0 ||
+                     strcmp(argv[1], "--fix-admit-test") == 0))
+        return pv_fix_admit_mode(argc, argv);
     if (argc == 2 && strcmp(argv[1], "--source-record") == 0) {
         printf("%s 1 %s\n", zcl_build_source_id_sha256(),
                zcl_build_source_mutation_sha256());
