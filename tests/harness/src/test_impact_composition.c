@@ -7691,6 +7691,7 @@ static int test_ic_proof_test_needs_whole_catalog(void)
             "zclassic-cli", "tools/gen_utxo_root_ladder", "clang-manifest",
             "fleet-gateway", "export_snapshot", "sqlq", "p2_invariant_check",
             "jsonq", "process-group-exec", "tools/consensus_rule_sweep",
+            "skycombat-fp-contract",
         };
         const size_t expected_count = sizeof(expected) / sizeof(expected[0]);
         ASSERT(zcl_dev_proof_test_needs_argv("-j4", selector, argv,
@@ -7913,7 +7914,7 @@ static int test_ic_local_selection_build_needs(void)
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
                                               &n));
-        ASSERT(n == 14 + verifier_needs);
+        ASSERT(n == 15 + verifier_needs);
         ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
                              "build/bin/zclassic23-package-verify-dev") ==
                (verifier_needs != 0));
