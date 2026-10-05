@@ -4,6 +4,7 @@
 #include "ztemplate/ztemplate.h"
 
 #include <stdint.h>
+#include <stdckdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -280,8 +281,102 @@ static void test_owned_text_allocation(void)
     CHECK(ztemplate_parse("x", SIZE_MAX, NULL) == NULL);
 }
 
+/* Exercise the real parser with deterministic successful zero-size allocation. */
+static unsigned template_allocation_calls;
+static size_t template_allocation_request;
+static unsigned template_realloc_calls;
+static bool template_refuse_realloc;
+
+static void *template_fixture_malloc(size_t bytes) {
+    size_t request = bytes ? bytes : 1;
+    template_allocation_calls++;
+    template_allocation_request = request;
+    return malloc(request);
+}
+
+/* Boundary probes refuse before touching their artificial pointer; the only
+ * successful fixture growth is initial allocation from NULL. */
+static void *template_fixture_realloc(void *ptr, size_t bytes) {
+    template_realloc_calls++;
+    if (template_refuse_realloc) return NULL;
+    CHECK(ptr == NULL);
+    return template_fixture_malloc(bytes);
+}
+
+static void *template_fixture_calloc(size_t count, size_t bytes) {
+    size_t total;
+    if (ckd_mul(&total, count, bytes)) return NULL;
+    void *memory = template_fixture_malloc(total);
+    if (memory) memset(memory, 0, total);
+    return memory;
+}
+
+void fixture_template_free(ztemplate *tp);
+#define ztemplate_parse fixture_template_parse
+#define ztemplate_free fixture_template_free
+#define ztemplate_render fixture_template_render
+#define ztemplate_var_count fixture_template_var_count
+#define ztemplate_foreach_var fixture_template_foreach_var
+#define malloc template_fixture_malloc
+#define calloc template_fixture_calloc
+#define realloc template_fixture_realloc
+#include "../src/ztemplate.c"
+#undef realloc
+#undef calloc
+#undef malloc
+#undef ztemplate_parse
+#undef ztemplate_free
+#undef ztemplate_render
+#undef ztemplate_var_count
+#undef ztemplate_foreach_var
+
+static void test_allocation_free_extent_refusal(void) {
+    template_allocation_calls = 0;
+    size_t position = 17;
+    CHECK(fixture_template_parse("x", SIZE_MAX, &position) == NULL);
+    CHECK(template_allocation_calls == 0);
+    CHECK(position == 17);
+    template_allocation_request = 0;
+    void *zero = template_fixture_malloc(0);
+    CHECK(zero != NULL);
+    CHECK(template_allocation_request == 1);
+    free(zero);
+    template_allocation_calls = 0;
+    ztemplate *empty = fixture_template_parse(NULL, 0, NULL);
+    CHECK(empty != NULL);
+    CHECK(template_allocation_calls == 2);
+    fixture_template_free(empty);
+}
+
+static void test_segment_growth_bounds(void) {
+    static const size_t capacities[] = {
+        SIZE_MAX / 2 + 1, SIZE_MAX / (2 * sizeof(segment)) + 1};
+    for (size_t i = 0; i < sizeof capacities / sizeof capacities[0]; i++) {
+        segment marker = {SEG_VAR, 3, 7};
+        ztemplate tp = {NULL, &marker, capacities[i], capacities[i]};
+        template_realloc_calls = 0;
+        template_refuse_realloc = true;
+        CHECK(!seg_push(&tp, SEG_VAR, 4, 1));
+        template_refuse_realloc = false;
+        CHECK(template_realloc_calls == 0);
+        CHECK(tp.segs == &marker && tp.nsegs == capacities[i] &&
+              tp.cap_segs == capacities[i]);
+        CHECK(marker.kind == SEG_VAR && marker.off == 3 && marker.len == 7);
+    }
+    ztemplate tp = {0};
+    template_realloc_calls = 0;
+    CHECK(seg_push(&tp, SEG_VAR, 3, 7));
+    CHECK(template_realloc_calls == 1 && tp.nsegs == 1 && tp.cap_segs == 16);
+    CHECK(tp.segs != NULL);
+    CHECK(tp.segs[0].kind == SEG_VAR && tp.segs[0].off == 3 && tp.segs[0].len == 7);
+    free(tp.segs);
+}
+
+
 int main(void)
 {
+    test_allocation_free_extent_refusal();
+    test_segment_growth_bounds();
     test_owned_text_allocation();
     test_render_size_overflow();
     test_parse_size_overflow();
