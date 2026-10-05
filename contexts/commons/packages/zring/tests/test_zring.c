@@ -185,7 +185,20 @@ static void test_fuzz(void) {
   }
 }
 
+static void test_large_drop_counter_arithmetic(void) {
+  /* Counter-only synthetic state: drop never reads or writes storage.
+   * This does not qualify a physically backed SIZE_MAX-capacity ring. */
+  unsigned char unused = 0;
+  zring r = {&unused, SIZE_MAX, SIZE_MAX - 2u, 3};
+  CHECK(zring_drop(&r, 3) == 3 && r.head == 1 && r.count == 0);
+  r.head = SIZE_MAX - 1u;
+  r.count = SIZE_MAX;
+  CHECK(zring_drop(&r, SIZE_MAX) == SIZE_MAX &&
+        r.head == SIZE_MAX - 1u && r.count == 0);
+}
+
 int main(void) {
+  test_large_drop_counter_arithmetic();
   test_basic();
   test_wrap();
   test_bulk();

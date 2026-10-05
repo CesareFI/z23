@@ -43,8 +43,8 @@ int zring_is_full(const zring *r) {
 
 /* Tail (write) position. */
 static size_t zring__tail(const zring *r) {
-  size_t t = r->head + r->count;
-  return t >= r->cap ? t - r->cap : t; /* head+count < 2*cap always */
+  size_t to_wrap = r->cap - r->head;
+  return r->count >= to_wrap ? r->count - to_wrap : r->head + r->count;
 }
 
 zring_err zring_put(zring *r, unsigned char b) {
@@ -100,8 +100,8 @@ size_t zring_read(zring *r, void *data, size_t n) {
   if (first > take) first = take;
   memcpy(p, r->buf + r->head, first);
   memcpy(p + first, r->buf, take - first);
-  r->head += take;
-  if (r->head >= r->cap) r->head -= r->cap;
+  if (take >= r->cap - r->head) r->head = take - (r->cap - r->head);
+  else r->head += take;
   r->count -= take;
   return take;
 }
@@ -114,8 +114,9 @@ size_t zring_peek_at(const zring *r, size_t skip, void *data, size_t n) {
   avail = r->count - skip;
   take = n < avail ? n : avail;
   if (take == 0) return 0;
-  pos = r->head + skip;
-  if (pos >= r->cap) pos -= r->cap; /* head+skip < 2*cap */
+  pos = r->cap - r->head;
+  if (skip >= pos) pos = skip - pos;
+  else pos = r->head + skip;
   first = r->cap - pos;
   if (first > take) first = take;
   memcpy(p, r->buf + pos, first);
@@ -127,8 +128,8 @@ size_t zring_drop(zring *r, size_t n) {
   size_t take;
   if (r == NULL || r->buf == NULL) return 0;
   take = n < r->count ? n : r->count;
-  r->head += take;
-  if (r->head >= r->cap) r->head -= r->cap; /* head < 2*cap */
+  if (take >= r->cap - r->head) r->head = take - (r->cap - r->head);
+  else r->head += take;
   r->count -= take;
   return take;
 }
