@@ -1699,6 +1699,11 @@ static int test_sync_service_tip_stale_getheaders_action(void)
         ASSERT(action.should_send);
         ASSERT(action.anchor == SYNC_HEADER_REQUEST_TIP);
         ASSERT(action.should_log);
+
+        syncsvc_plan_tip_stale_getheaders(&action, &snapshot, &node, 4900);
+        ASSERT(action.should_send);
+        ASSERT(action.anchor == SYNC_HEADER_REQUEST_TIP);
+        ASSERT(action.should_log);
         PASS();
     } _test_next:;
 
