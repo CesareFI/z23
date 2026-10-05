@@ -98,6 +98,35 @@ static bool snapshot_swarm_prepare_peer_locked(struct p2p_node *node)
     return false;
 }
 
+/* Caller holds g_swarm_mutex. A response tied to a different validated
+ * manifest is stale session traffic, not evidence that the peer corrupted
+ * the active swarm's chunk. */
+static bool snapshot_swarm_receive_peer_chunk_locked(
+    struct p2p_node *node, const struct utxo_chunk *chunk,
+    bool *foreign_manifest)
+{
+    *foreign_manifest = !snapshot_swarm_prepare_peer_locked(node);
+    if (*foreign_manifest)
+        return false;
+    return swarm_sync_receive_chunk(&g_swarm, chunk, node->id);
+}
+
+static void snapshot_swarm_report_rejected_chunk(
+    struct msg_processor *mp, struct p2p_node *node,
+    uint32_t chunk_index, bool foreign_manifest)
+{
+    if (foreign_manifest) {
+        LOG_INFO("net",
+                 "zchunkdata chunk %u ignored: peer manifest is not the "
+                 "active swarm", chunk_index);
+        return;
+    }
+    fprintf(stderr, "Peer %s: chunk %u failed verification\n",  // obs-ok:helper-context-logged
+            node->addr_name, chunk_index);
+    peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_CHUNK,
+                        "bad chunk hash");
+}
+
 /* Snapshot sync service — global singleton in snapshot_sync_service.c */
 static int64_t g_swarm_last_progress_time = 0;
 
@@ -1419,15 +1448,15 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                             LOG_FAIL("net", "rejecting snapshot chunk: "
                                              "swarm mutex unavailable");
                         }
-                        bool verified = swarm_sync_receive_chunk(
-                            &g_swarm, chunk, node->id);
+                        bool foreign_manifest = false;
+                        bool verified =
+                            snapshot_swarm_receive_peer_chunk_locked(
+                                node, chunk, &foreign_manifest);
 
                         if (!verified) {
                             swarm_mutex_unlock();
-                            fprintf(stderr, "Peer %s: chunk %u failed verification\n",  // obs-ok:helper-context-logged
-                                   node->addr_name, chunk_index);
-                            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_CHUNK,
-                                                "bad chunk hash");
+                            snapshot_swarm_report_rejected_chunk(
+                                mp, node, chunk_index, foreign_manifest);
                         } else if (swarm_sync_is_complete(&g_swarm)) {
                             printf("Swarm sync complete: %u/%u chunks\n",
                                    g_swarm.chunks_complete,

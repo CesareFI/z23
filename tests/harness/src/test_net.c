@@ -6376,7 +6376,14 @@ static int test_net_swarm_completion_clears_reassigned_peer_slot(void)
             .chunk_size = SYNC_CHUNK_SIZE,
             .chunk_hashes = hashes
         };
+        fast_sync_merkle_root(hashes, 1, manifest.merkle_root);
         ok = msgprocessor_test_swarm_seed(&manifest, new_peer->id);
+        old_peer->swarm_manifest_received = true;
+        old_peer->swarm_manifest_num_chunks = 1;
+        memcpy(old_peer->swarm_manifest_root, manifest.merkle_root, 32);
+        new_peer->swarm_manifest_received = true;
+        new_peer->swarm_manifest_num_chunks = 1;
+        memcpy(new_peer->swarm_manifest_root, manifest.merkle_root, 32);
         old_peer->swarm_inflight_chunk = 0;
         old_peer->swarm_chunk_req_time = 111;
         new_peer->swarm_inflight_chunk = 0;
@@ -6429,6 +6436,50 @@ static bool test_write_swarm_manifest(struct byte_stream *wire,
     return true;
 }
 
+static bool test_swarm_foreign_peer_is_ignored(
+    struct msg_processor *mp, struct p2p_node *peer,
+    const struct sync_manifest *manifest,
+    const struct utxo_chunk *chunk)
+{
+    struct byte_stream wire = {0};
+    bool ok = test_write_swarm_manifest(&wire, manifest);
+    if (ok)
+        ok = mp_handle_zcl23_sync(mp, peer, &wire, MSG_MANIFEST);
+    if (ok) {
+        mp_snapshot_send_tick(mp, peer);
+        ok = peer->swarm_manifest_received &&
+             peer->swarm_inflight_chunk == -1;
+    }
+    stream_free(&wire);
+    if (!ok)
+        return false;
+
+    int score_before = atomic_load(&peer->misbehavior);
+    stream_init(&wire, 16);
+    ok = stream_write_u32_le(&wire, chunk->chunk_index) &&
+         stream_write_u32_le(&wire, chunk->num_entries);
+    wire.read_pos = 0;
+    if (ok)
+        ok = mp_handle_zcl23_sync(mp, peer, &wire, MSG_CHUNK_DATA);
+    stream_free(&wire);
+    return ok && atomic_load(&peer->misbehavior) == score_before;
+}
+
+static bool test_swarm_matching_peer_advances(
+    struct msg_processor *mp, struct p2p_node *peer,
+    const struct sync_manifest *manifest)
+{
+    struct byte_stream wire = {0};
+    bool ok = test_write_swarm_manifest(&wire, manifest);
+    if (ok)
+        ok = mp_handle_zcl23_sync(mp, peer, &wire, MSG_MANIFEST);
+    stream_free(&wire);
+    if (!ok)
+        return false;
+    mp_snapshot_send_tick(mp, peer);
+    return peer->swarm_inflight_chunk == 1;
+}
+
 static int test_net_swarm_scheduler_rejects_foreign_manifest_peer(void)
 {
     int failures = 0;
@@ -6441,6 +6492,11 @@ static int test_net_swarm_scheduler_rejects_foreign_manifest_peer(void)
     memset(active_hashes[1], 0xA2, 32);
     memset(foreign_hashes[0], 0xB1, 32);
     memset(foreign_hashes[1], 0xB2, 32);
+    struct utxo_chunk foreign_chunk = {
+        .chunk_index = 0,
+        .num_entries = 0,
+    };
+    fast_sync_chunk_hash(&foreign_chunk, foreign_hashes[0]);
 
     struct sync_manifest active = {
         .height = 500,
@@ -6467,7 +6523,7 @@ static int test_net_swarm_scheduler_rejects_foreign_manifest_peer(void)
     main_state_init(&ms);
     net_manager_init(&nm);
     net_address_init(&addr);
-    unsigned char ip4[4] = {127, 0, 0, 73};
+    unsigned char ip4[4] = {10, 20, 30, 73};
     net_addr_set_ipv4(&addr.svc.addr, ip4);
     addr.svc.port = 8033;
     struct p2p_node *peer = p2p_node_create(
@@ -6490,29 +6546,16 @@ static int test_net_swarm_scheduler_rejects_foreign_manifest_peer(void)
         ok = msgprocessor_test_swarm_seed(&active, 999);
     }
 
-    struct byte_stream wire;
-    memset(&wire, 0, sizeof(wire));
-    if (ok) {
-        ok = test_write_swarm_manifest(&wire, &foreign);
-        ok = ok && mp_handle_zcl23_sync(&mp, peer, &wire, MSG_MANIFEST);
-        mp_snapshot_send_tick(&mp, peer);
-        ok = ok && peer->swarm_manifest_received &&
-             peer->swarm_inflight_chunk == -1;
-        stream_free(&wire);
-        memset(&wire, 0, sizeof(wire));
-
-        ok = ok && test_write_swarm_manifest(&wire, &active);
-        ok = ok && mp_handle_zcl23_sync(
-            &mp, matching_peer, &wire, MSG_MANIFEST);
-        mp_snapshot_send_tick(&mp, matching_peer);
-        ok = ok && matching_peer->swarm_inflight_chunk == 1;
-    }
+    if (ok)
+        ok = test_swarm_foreign_peer_is_ignored(
+            &mp, peer, &foreign, &foreign_chunk);
+    if (ok)
+        ok = test_swarm_matching_peer_advances(&mp, matching_peer, &active);
 
     int32_t foreign_assigned = peer ? peer->swarm_inflight_chunk : -2;
     int32_t matching_assigned = matching_peer
         ? matching_peer->swarm_inflight_chunk : -2;
     msgprocessor_test_swarm_release();
-    stream_free(&wire);
     if (peer)
         p2p_node_free(peer);
     if (matching_peer)
