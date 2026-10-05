@@ -21,7 +21,7 @@ static struct { const uint8_t *bytes; size_t length; } spans[5];
 static size_t span_count;
 static const uint8_t *blinding;
 static uintptr_t record_copy;
-static unsigned failure, calls, work_wipes, random_wipes, record_wipes;
+static unsigned failure, calls, work_wipes, random_wipes, record_wipes, admission_wipes;
 static uint32_t chain;
 static bool output_check;
 static unsigned samples;
@@ -177,6 +177,11 @@ void zcl_review_wallet_test_zero(void *buffer, size_t length)
         blinding = NULL;
         return;
     }
+    if (length == sizeof(zcl_wallet_record)) {
+        CHECK(admission_wipes++ == 0);
+        filled(buffer, length, 0);
+        return;
+    }
     CHECK(record_copy == 0 && work_wipes++ == 0 && length >= 32 + 1024 + 140 + 70);
     CHECK(span_count <= sizeof(spans) / sizeof(spans[0]));
     /* Inspect/retire while the whole work and its subobjects are still live. */
@@ -189,7 +194,7 @@ void zcl_review_wallet_test_zero(void *buffer, size_t length)
 static void reset(unsigned ordinal, uint32_t selected)
 {
     failure = ordinal; chain = selected;
-    calls = 0; work_wipes = 0; random_wipes = 0; record_wipes = 0; span_count = 0;
+    calls = 0; work_wipes = 0; random_wipes = 0; record_wipes = 0; admission_wipes = 0; span_count = 0;
     samples = 0;
     CHECK(blinding == NULL && record_copy == 0);
     memset(spans, 0, sizeof(spans));
@@ -224,7 +229,7 @@ static void run(unsigned ordinal, uint32_t selected)
     reset(ordinal, selected);
     CHECK(checked_operation() == statuses[ordinal]);
     const unsigned expected_calls = chain == 0 ? receive_calls[ordinal] : ordinal == 1 ? 1 : ordinal <= 3 && ordinal != 0 ? 3 : 35;
-    CHECK(calls == expected_calls && work_wipes == 1 && blinding == NULL);
+    CHECK(calls == expected_calls && work_wipes == 1 && admission_wipes == 1 && blinding == NULL);
     CHECK(random_wipes == (chain == 0 && (calls & 8) != 0 ? 1U : 0U));
     CHECK(record_copy == 0 && record_wipes == (chain == 0 && (calls & 4) != 0 ? 1U : 0U));
     CHECK(span_count <= sizeof(spans) / sizeof(spans[0]));
@@ -240,7 +245,20 @@ static void early_refusals(void)
     CHECK(calls == 0 && work_wipes == 0);
     supplied.entropy_len = SIZE_MAX;
     CHECK(zcl_review_input_wallet_check(&fixture.review, fixture.id, 100, 0, &supplied) == ZCL_OUT_OF_RANGE);
-    CHECK(calls == 0 && work_wipes == 1);
+    CHECK(calls == 0 && work_wipes == 1 && admission_wipes == 0);
+    CHECK(memcmp(&fixture.review, &saved, sizeof(saved)) == 0);
+
+    reset(0, 0);
+    record[0] ^= 0xff;
+    CHECK(zcl_review_input_wallet_check(&fixture.review, fixture.id, 100, 0, &supplied)
+        == ZCL_UNSUPPORTED);
+    CHECK(calls == 0 && work_wipes == 1 && admission_wipes == 1);
+
+    reset(0, 0);
+    supplied.entropy_len = supplied.entropy_len == 16 ? 20 : 16;
+    CHECK(zcl_review_input_wallet_check(&fixture.review, fixture.id, 100, 0, &supplied)
+        == ZCL_OUT_OF_RANGE);
+    CHECK(calls == 0 && work_wipes == 1 && admission_wipes == 1);
     CHECK(memcmp(&fixture.review, &saved, sizeof(saved)) == 0);
 }
 

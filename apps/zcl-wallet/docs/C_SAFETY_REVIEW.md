@@ -5189,3 +5189,27 @@ the two header calls, and removing the preflight restores RED. Focused Clang 20
 and GCC 14 ASan/UBSan/LSan tests pass. The complete TLS-OFF gate passes both
 analyzers and all 145/140 tests. TLS remains quarantined; no Android runtime or
 physical-device claim is made.
+
+## Review-claim record admission before entropy ownership — 2026-10-06
+
+Transaction wallet-claim preparation now parses the bounded public wallet
+record and verifies its declared entropy length before copying entropy or the
+storage path into review-owned work. The lower change-custody owner still
+re-parses accepted records and remains authoritative for the wallet profile.
+
+| Hazard | Review |
+| --- | --- |
+| Secret lifetime | Malformed records and valid records with a mismatched entropy length now reach neither the entropy copy nor `zcl_change_custody_prepare`. The enclosing zeroed work object is still fully wiped on every return. |
+| Bounds and parsing | Existing directory, record and entropy bounds run first. Admission uses the existing record parser, and its complete parsed-record scratch is wiped immediately. |
+| Ownership | Accepted entropy and directory spans are copied exactly as before, then rebound inside the private work owner. No caller pointer is retained after the operation. |
+| Failure behavior | Admission performs no filesystem, random-provider, derivation or signing work. Parser-owned statuses are preserved before the lower owner repeats validation. |
+| Signing and review identity | Reviewed inputs, sighash context, review ID/lifetime checks, change ownership, signature generation and final wire verification are unchanged. |
+| Complexity | One bounded helper raises the measured production function count to 605; all production functions remain M<=10 and tests remain M<=15. |
+| Consensus and custody | Record format, 12-word recovery, key derivation, transparent validity, monetary policy, consensus and TLS behavior are unchanged. |
+
+Canonical RED reaches the custody wrapper with copied entropy for a malformed
+record. GREEN refuses malformed and entropy-length-mismatched claims with zero
+custody calls; a vacuous-admission mutant restores failure. The retirement
+observer verifies the new parsed-record wipe. Focused Clang 20 and GCC 14
+ASan/UBSan/LSan tests and the complete 145/140 TLS-OFF matrix pass. This is
+native host evidence, not Android runtime or physical-device proof.

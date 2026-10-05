@@ -8525,3 +8525,24 @@ and 140 GCC tests, vendor/reference hashes, frame warnings, and complexity at
 M<=10 production and M<=15 tests. Record bytes, recovery, storage durability,
 transaction validity, consensus and monetary rules remain unchanged. No ART,
 emulator or physical-device claim is made.
+
+## Production continuation: review records admitted before entropy ownership — 2026-10-06
+
+Transaction review wallet claims now parse their bounded public wallet record
+and compare its declared entropy length before copying entropy or the storage
+path into private work. Malformed records and valid records paired with the
+wrong supported entropy length previously reached the copied secret and lower
+custody owner before refusal. They now stop with zero custody calls. Accepted
+claims retain the lower owner's authoritative reparse and unchanged signing,
+change-detection and exact-review binding.
+
+Canonical RED reaches the custody wrapper with copied entropy. GREEN refuses
+both new cases before that boundary; a callable but vacuous admission mutant
+restores failure. The failure observer verifies immediate retirement of the
+parsed-record scratch and final retirement of the full private work object.
+
+Focused Clang 20 and GCC 14 ASan/UBSan/LSan lanes pass. The exact-tree TLS-OFF
+gate passes both analyzers, all 145 Clang and 140 GCC tests, vendor/reference
+hashes and complexity at M<=10 production and M<=15 tests. Recovery, record
+format, storage, transaction validity, consensus and monetary rules remain
+unchanged. No Android runtime or physical-device claim is made.
