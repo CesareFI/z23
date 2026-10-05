@@ -1176,6 +1176,38 @@ or establish general code safety.
 
 ### Landing a stack of commits
 
+Build a filtered stack from reviewed, locally available commits with
+`devbuild --wait bash tools/scripts/stack_build.sh BASE COMMIT...`. It refuses
+dirty source or an existing Git operation, detaches at `BASE`, and makes
+signed picks in the supplied order. Conflicting, empty and merge picks are
+skipped; a pick failing the base-built canonical complexity checker is also
+skipped. Existing branch refs are not moved or published history rewritten.
+The assembled tip must pass complexity even when every input is skipped.
+The checker measures each candidate's C source and ratchet baseline. Changes
+to checker implementation itself still require the assembled tip's full lint.
+
+For example, reconstruct the existing stack-refresh corrections in order:
+
+```bash
+devbuild --wait bash tools/scripts/stack_build.sh \
+  7a4bc550504fc7a6dfb240fdf07b35373554bbcd \
+  bc540938a5b6aa75bf2c49eaf162a2de6ff5813d \
+  a515f51ce61df51ff8492add11e8ff9442330e72
+```
+
+Standard output has one `PICKED NEW_HASH input=INPUT_HASH` or
+`SKIPPED REASON input=INPUT_HASH` line per input, then `TIP HASH` after refresh
+succeeds. Diagnostics and retained receipt locations go to standard error.
+Other Git, signing or checker failures stop without a success tip; signing
+failure preserves the staged pick and never falls back to an unsigned commit.
+The tool calls the refresh below once. Review its remaining generated changes
+and commit them normally; its content display is not a staging allowlist.
+This command prepares the stack, rather than replacing full landing gates.
+Run `devbuild --wait bash tools/scripts/stack_build.sh --selftest` for isolated
+real-Git fixtures using the existing `build/bin/z23-lint` checker. If missing,
+build that checker with the normal scheduler first. A base checker build that
+changes tracked source stops for inspection before any picks.
+
 Authors leave generated package roots, dependency pins, registry projections,
 and `docs/CAPABILITY_INVENTORY.jsonl` out of their commits. The integrator runs
 `devbuild --wait bash tools/scripts/stack_tip_refresh.sh` once at the assembled stack tip.
