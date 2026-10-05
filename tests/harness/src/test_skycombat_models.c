@@ -55,7 +55,9 @@
 static double skycombat_stub_time = 0.0;
 
 static double skycombat_stub_GetTime(void) { return skycombat_stub_time; }
-static int skycombat_stub_GetRandomValue(int lo, int hi) { return lo + (hi - lo) / 2; }
+static bool skycombat_stub_random_min;
+static int skycombat_stub_GetRandomValue(int lo, int hi)
+{ return skycombat_stub_random_min ? lo : lo + (hi - lo) / 2; }
 static Color skycombat_stub_Fade(Color c, float a) { (void)a; return c; }
 static void skycombat_stub_DrawSphere(Vector3 c, float r, Color t)
 { (void)c; (void)r; (void)t; }
@@ -77,6 +79,78 @@ static void skycombat_stub_DrawLine3D(Vector3 a, Vector3 b, Color t)
 #include "../../../apps/skycombat/src/models/aircraft.c"
 #include "../../../apps/skycombat/src/models/weapons.c"
 #include "../../../apps/skycombat/src/models/match_rules.c"
+#include "../../../apps/skycombat/src/models/powerups.c"
+
+static int skycombat_pickup_active(const powerup_manager_t *m, int point)
+{
+    int count = 0;
+    for (int i = 0; i < m->powerup_count; i++)
+        if (m->powerups[i].active && m->powerups[i].spawn_point_id == point) count++;
+    return count;
+}
+
+static int skycombat_pickup_tests(void)
+{
+    int failures = 0;
+    powerup_manager_t m = {0};
+    m.spawn_check_interval = 5.0f;
+    skycombat_stub_random_min = true;
+    powerup_manager_add_spawn_point(&m, (Vector3){10, 20, 30}, POWERUP_HEALTH, 20.0f);
+    TEST("pickups: periodic, direct and random spawn respect the respawn deadline") {
+        powerup_manager_update(&m, 5.0f);
+        ASSERT_EQ(m.powerup_count, 1); ASSERT_EQ(skycombat_pickup_active(&m, 0), 1);
+        powerup_manager_collect(&m, 0);
+        ASSERT_EQ(m.powerups[0].respawn_timer, 20.0f);
+        powerup_manager_spawn_at_point(&m, 0); powerup_manager_spawn_random(&m);
+        ASSERT(!m.powerups[0].active); ASSERT_EQ(m.powerups[0].respawn_timer, 20.0f);
+        powerup_manager_update(&m, 0.0f); powerup_manager_update(&m, 5.0f);
+        ASSERT(!m.powerups[0].active); ASSERT_EQ(m.powerups[0].respawn_timer, 15.0f);
+        powerup_manager_update(&m, 14.0f);
+        ASSERT(!m.powerups[0].active); ASSERT_EQ(m.powerups[0].respawn_timer, 1.0f);
+        m.spawn_check_timer = m.spawn_check_interval;
+        powerup_manager_update(&m, 1.0f);
+        ASSERT_EQ(m.powerup_count, 1); ASSERT_EQ(skycombat_pickup_active(&m, 0), 1);
+        ASSERT_EQ(m.powerups[0].position.x, 10.0f);
+        ASSERT_EQ(m.powerups[0].position.y, 20.0f); ASSERT_EQ(m.powerups[0].position.z, 30.0f);
+        powerup_manager_spawn_at_point(&m, 0);
+        ASSERT_EQ(m.powerup_count, 1); ASSERT_EQ(skycombat_pickup_active(&m, 0), 1); PASS();
+    }
+    TEST("pickups: an unrelated point cannot steal a pending slot") {
+        memset(&m, 0, sizeof(m)); m.spawn_check_interval = 5.0f;
+        powerup_manager_add_spawn_point(&m, (Vector3){10, 20, 30}, POWERUP_HEALTH, 20.0f);
+        powerup_manager_add_spawn_point(&m, (Vector3){100, 20, 30}, POWERUP_SHIELD, 20.0f);
+        powerup_manager_spawn_at_point(&m, 0); powerup_manager_collect(&m, 0);
+        powerup_manager_update(&m, 5.0f);
+        ASSERT_EQ(m.powerup_count, 2); ASSERT(!m.powerups[0].active);
+        ASSERT_EQ(m.powerups[0].spawn_point_id, 0); ASSERT_EQ(m.powerups[0].respawn_timer, 15.0f);
+        ASSERT_EQ(skycombat_pickup_active(&m, 0), 0); ASSERT_EQ(skycombat_pickup_active(&m, 1), 1);
+        powerup_manager_update(&m, 15.0f);
+        ASSERT_EQ(skycombat_pickup_active(&m, 0), 1); ASSERT_EQ(skycombat_pickup_active(&m, 1), 1); PASS();
+    }
+    TEST("pickups: a full pool refuses reserved slots but reuses a free slot") {
+        memset(&m, 0, sizeof(m)); m.spawn_check_interval = 5.0f;
+        powerup_manager_add_spawn_point(&m, (Vector3){10, 20, 30}, POWERUP_HEALTH, 20.0f);
+        powerup_manager_add_spawn_point(&m, (Vector3){100, 20, 30}, POWERUP_SHIELD, 20.0f);
+        m.powerup_count = 32;
+        for (int i = 0; i < 32; i++) {
+            m.powerups[i].spawn_point_id = -1; m.powerups[i].respawn_timer = 20.0f;
+        }
+        m.powerups[0].spawn_point_id = 0;
+        powerup_manager_update(&m, 5.0f);
+        ASSERT_EQ(m.powerup_count, 32); ASSERT_EQ(skycombat_pickup_active(&m, 1), 0);
+        for (int i = 0; i < 32; i++) {
+            ASSERT(!m.powerups[i].active); ASSERT_EQ(m.powerups[i].respawn_timer, 15.0f);
+        }
+        m.powerups[31].respawn_timer = 0.0f; powerup_manager_spawn_at_point(&m, 1);
+        ASSERT_EQ(m.powerup_count, 32); ASSERT(m.powerups[31].active);
+        ASSERT_EQ(m.powerups[31].spawn_point_id, 1); ASSERT_EQ(m.powerups[0].respawn_timer, 15.0f);
+        powerup_manager_update(&m, 15.0f);
+        ASSERT_EQ(skycombat_pickup_active(&m, 0), 1); ASSERT_EQ(skycombat_pickup_active(&m, 1), 1); PASS();
+    }
+_test_next:;
+    skycombat_stub_random_min = false;
+    return failures;
+}
 
 static int skycombat_match_lifecycle_tests(void)
 {
@@ -347,6 +421,7 @@ int test_skycombat_models(void)
 _test_next:;
     failures += skycombat_match_lifecycle_tests();
     failures += skycombat_match_bounds_tests();
+    failures += skycombat_pickup_tests();
     if (failures == 0)
         printf("test_skycombat_models: all passed\n");
     else

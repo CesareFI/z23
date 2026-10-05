@@ -64,6 +64,14 @@ void powerup_manager_create_default_spawn_points(powerup_manager_t* manager) {
     powerup_manager_add_spawn_point(manager, (Vector3){-diag, height - 50, -diag}, POWERUP_REPAIR_KIT, 60.0f);
 }
 
+static bool powerup_spawn_point_occupied(const powerup_manager_t* manager, int point) {
+    for (int i = 0; i < manager->powerup_count; i++) {
+        const powerup_t* p = &manager->powerups[i];
+        if (p->spawn_point_id == point && (p->active || p->respawn_timer > 0.0f)) return true;
+    }
+    return false;
+}
+
 void powerup_manager_update(powerup_manager_t* manager, float dt) {
     if (!manager) return;
     
@@ -84,16 +92,8 @@ void powerup_manager_update(powerup_manager_t* manager, float dt) {
         
         // Check each spawn point
         for (int i = 0; i < manager->spawn_point_count; i++) {
-            [[maybe_unused]] powerup_spawn_point_t* sp = &manager->spawn_points[i];
-            
-            // Check if this spawn point is occupied
-            bool occupied = false;
-            for (int j = 0; j < manager->powerup_count; j++) {
-                if (manager->powerups[j].active && manager->powerups[j].spawn_point_id == i) {
-                    occupied = true;
-                    break;
-                }
-            }
+            // Active pickups and pending respawns both reserve their point.
+            bool occupied = powerup_spawn_point_occupied(manager, i);
             
             // Spawn if not occupied and random chance
             if (!occupied && GetRandomValue(0, 100) < 30) {  // 30% chance
@@ -123,20 +123,21 @@ void powerup_manager_update(powerup_manager_t* manager, float dt) {
 
 void powerup_manager_spawn_at_point(powerup_manager_t* manager, int spawn_point_id) {
     if (!manager || spawn_point_id < 0 || spawn_point_id >= manager->spawn_point_count) return;
-    if (manager->powerup_count >= 32) return;
+    if (powerup_spawn_point_occupied(manager, spawn_point_id)) return;
     
     powerup_spawn_point_t* sp = &manager->spawn_points[spawn_point_id];
     
-    // Find inactive powerup slot or create new
+    // Reuse only unreserved inactive slots, or append within capacity
     int slot = -1;
     for (int i = 0; i < manager->powerup_count; i++) {
-        if (!manager->powerups[i].active) {
+        if (!manager->powerups[i].active && manager->powerups[i].respawn_timer <= 0.0f) {
             slot = i;
             break;
         }
     }
     
     if (slot == -1) {
+        if (manager->powerup_count >= 32) return;
         slot = manager->powerup_count++;
     }
     
