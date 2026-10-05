@@ -59,7 +59,7 @@ order. All options are validated before window setup.
 `--hud-part=<64-hex-SHA-256>:<file>` selects a HUDX expression part. The game
 reads and admits it once at startup, using the initial screen/player/match
 snapshot. Its assembled recipe replaces the built-in HUD each frame; values
-and layout stay at that startup snapshot. No per-frame file reads or reloads. FPS and input-debug overlays remain
+and layout stay at that snapshot until an explicitly requested reload. No automatic per-frame file reads. FPS and input-debug overlays remain
 owned and drawn by the host.
 Omitting the option preserves the built-in HUD. A file/pin/schema/evaluation/
 drawing refusal prints its reason once and uses the built-in HUD. Malformed
@@ -85,6 +85,39 @@ TEXT uses its anchor/alignment. TEXT_BOX draws only a box in its RGBA colour, us
 integer centre rounding, horizontal padding and height. A following TEXT
 operation supplies the label. Text is copied from
 the counted arena to a bounded NUL-terminated buffer for raylib.
+
+To reload during play, add the second option `--hud-pin-file=<file>` after
+`--hud-part`. Press **F6** to re-read the pin and part and assemble a recipe
+using the current screen/player/match snapshot. The pin file must contain
+exactly 64 hex digits, optionally followed by one LF; filenames or extra
+whitespace are refused. Startup still uses the inline pin. Without the second
+option F6 does nothing. A refused reload prints one typed reason and preserves
+the complete previous HUD; a successful reload can also recover from a refused
+startup. This is a single-thread frame-boundary change, not native code loading.
+
+For the red square above, start a reloadable session:
+
+```sh
+printf '%s\n' "$pin" > /tmp/sky-hud.pin
+./build/bin/z23-skycombat "--hud-part=$pin:/tmp/sky-hud-red.bin" \
+  --hud-pin-file=/tmp/sky-hud.pin
+```
+
+While it runs, the following changes the 136-byte example to a blue square.
+Then press F6:
+
+```sh
+cp /tmp/sky-hud-red.bin /tmp/sky-hud-next.bin
+printf '\377\377\000\000' | dd of=/tmp/sky-hud-next.bin bs=1 seek=104 conv=notrunc status=none
+sha256sum /tmp/sky-hud-next.bin | awk '{print $1}' > /tmp/sky-hud-next.pin
+mv /tmp/sky-hud-next.bin /tmp/sky-hud-red.bin
+mv /tmp/sky-hud-next.pin /tmp/sky-hud.pin
+```
+
+The two replacements are not one atomic filesystem operation. Press F6 after
+both finish; if a concurrent edit exposes a mismatched pair, SHA admission
+refuses it and retains the previous recipe. The captured recipe stays fixed
+between key presses; neither file is reopened for ordinary frames.
 
 ## Controls
 

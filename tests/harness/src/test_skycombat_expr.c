@@ -676,7 +676,23 @@ static void use_text(Font f,const char *text,Vector2 at,float px,float spacing,C
 #define MeasureText use_measure
 #define MeasureTextEx use_measure_ex
 #define DrawTextEx use_text
+static unsigned reload_pin_opens,reload_pin_closes;
+static bool reload_pin_open(struct platform_positioned_file *f,const char *path)
+{ bool ok=platform_positioned_file_open(f,path);if(ok)++reload_pin_opens;return ok; }
+static void reload_pin_close(struct platform_positioned_file *f)
+{ ++reload_pin_closes;platform_positioned_file_close(f); }
+
+#define platform_positioned_file_open reload_pin_open
+#define platform_positioned_file_close reload_pin_close
+#define platform_positioned_file_read admit_probe_read
+#define platform_positioned_file_snapshot(...) admit_probe_snapshot(__VA_ARGS__)
+#define fprintf use_diagnostic
 #include "../../../apps/skycombat/part/expr_use.h"
+#undef fprintf
+#undef platform_positioned_file_open
+#undef platform_positioned_file_close
+#undef platform_positioned_file_read
+#undef platform_positioned_file_snapshot
 #undef DrawRectangleRec
 #undef DrawRectangleLinesEx
 #undef GetFontDefault
@@ -689,7 +705,7 @@ static int use_option_cases(void)
 {
  struct sky_expr_option option,before;memset(&option,0x5a,sizeof option);char good[100];memset(good,'0',sizeof good);
  memcpy(good,"--hud-part=",11);good[75]=':';memcpy(good+76,"hud.bin",8);
- char *args[]={"skycombat",good};int failures=0;
+ char *args[]={"skycombat",good,NULL};int failures=0;
  failures+=!sky_expr_option_parse(1,args,&option) || option.path!=NULL;
  failures+=!sky_expr_option_parse(2,args,&option) || !option.path || strcmp(option.path,"hud.bin");
  const char *bad[]={"--hud-part=","--hud-part=00:file","--bogus","--bad-part=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff:file","--hud-part=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff:","--hud-part=gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg:file"};
@@ -822,6 +838,137 @@ static int use_metric_range_cases(void)
  use_metric_override=false;return failures;
 }
 
+ /* This helper owns isolated regular pin files, not shell or node state. */
+static int reload_write_pin(const char *path,const uint8_t pin[32],bool newline)
+{
+ char hex[66];zcl_hex_encode(pin,32,hex);hex[64]='\n';
+ FILE *f=fopen(path,"wb");if(!f){perror("reload pin fixture");return 1;}
+ bool ok=fwrite(hex,1,newline?65:64,f)==(newline?65:64);
+ return fclose(f)!=0 || !ok;
+}
+static int reload_option_cases(void)
+{
+ char part[100];memset(part,'0',sizeof part);memcpy(part,"--hud-part=",11);
+ part[75]=':';memcpy(part+76,"hud.bin",8);
+ char *args[]={"game",part,"--hud-pin-file=pin.txt","extra"};struct sky_expr_option out={0},before;
+ int failures=!sky_expr_option_parse(3,args,&out) || !out.pin_path || strcmp(out.pin_path,"pin.txt");
+ before=out;failures+=sky_expr_option_parse(4,args,&out) || memcmp(&before,&out,sizeof out);
+ args[2]="--hud-pin-file=";
+ failures+=sky_expr_option_parse(3,args,&out) || memcmp(&before,&out,sizeof out);
+ args[2]="--bogus=pin.txt";failures+=sky_expr_option_parse(3,args,&out);
+ args[1]="--hud-pin-file=pin.txt";failures+=sky_expr_option_parse(2,args,&out);
+ return failures;
+}
+static int reload_bad_pin(const char *path,unsigned mode)
+{
+ FILE *f=fopen(path,"wb");if(!f){perror("bad pin fixture");return 1;}
+ const char *bad=mode==1?"gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg":"short";
+ bool ok=fwrite(bad,1,strlen(bad),f)==strlen(bad);return fclose(f)!=0 || !ok;
+}
+static int reload_refusal_prepare(const char *path,const char *pin_path,unsigned mode)
+{
+ uint8_t bytes[2048]={0},pin[32];size_t n=draw_fixture(bytes,3,1);
+ if(mode==5)bytes[0]=0;if(mode==7)zcl_write_u32_le(bytes+32+16*7+8,0);
+ if(!admit_fixture_write(path,bytes,n,pin))return 1;
+ int failures=reload_write_pin(pin_path,pin,false);
+ if(mode==0)unlink(pin_path);
+ if(mode==1 || mode==2)failures+=reload_bad_pin(pin_path,mode);
+ if(mode==3)unlink(path);
+ if(mode==4){pin[0]^=1;failures+=reload_write_pin(pin_path,pin,false);}
+ return failures;
+}
+static int reload_preserved(const struct sky_expr_option *option,const double fields[XF_COUNT],struct sky_expr_hud *hud,enum expr_admit_status want)
+{
+ struct sky_expr_hud before;memcpy(&before,hud,sizeof before);
+ use_trace_at=0;use_trace[0]=0;sky_expr_render(hud,use_builtin,"BUILTIN\n");
+ char drawing[4096];memcpy(drawing,use_trace,sizeof drawing);unsigned events=use_diag_events;
+ int failures=sky_expr_reload(option,fields,hud)!=want;
+ failures+=memcmp(hud,&before,sizeof before)!=0;failures+=use_diag_events!=events+1;
+ use_trace_at=0;use_trace[0]=0;sky_expr_render(hud,use_builtin,"BUILTIN\n");
+ failures+=strcmp(use_trace,drawing)!=0;failures+=use_diag_events!=events+1;
+ return failures;
+}
+static int reload_thousand(const struct sky_expr_option *option,struct sky_expr_hud *hud)
+{
+ double fields[XF_COUNT]={0};fields[XF_SHIELD]=1;uint8_t bytes[2048]={0},pin[32];int failures=0;
+ unsigned opens=reload_pin_opens,closes=reload_pin_closes,part_closes=admit_probe_closes;
+ for(unsigned i=0;i<1000;i++) {
+  size_t n=draw_fixture(bytes,3,1);zcl_write_u32_le(bytes+32+16*2+8,i%2?25:35);
+  failures+=!admit_fixture_write(option->path,bytes,n,pin);failures+=reload_write_pin(option->pin_path,pin,i%2);
+  failures+=sky_expr_reload(option,fields,hud)!=EX_ADMIT_OK;failures+=hud->part.recipe.ops[0].x!=(i%2?25:35);
+ }
+ failures+=reload_pin_opens-opens!=1000;failures+=reload_pin_closes-closes!=1000;
+ failures+=admit_probe_closes-part_closes!=1000;return failures;
+}
+
+static int reload_pin_faults(const struct sky_expr_option *option,const double fields[XF_COUNT],struct sky_expr_hud *hud)
+{
+ const unsigned modes[]={ADMIT_PROBE_EOF,ADMIT_PROBE_ERROR,ADMIT_PROBE_OVERRUN,ADMIT_PROBE_STAT,ADMIT_PROBE_CHANGED,ADMIT_PROBE_STAT_AFTER};
+ int failures=0;
+ for(unsigned i=0;i<sizeof modes/sizeof *modes;i++) {
+  admit_probe_mode=modes[i];admit_probe_reads=0;admit_probe_stats=0;
+  unsigned closes=reload_pin_closes,part_closes=admit_probe_closes;
+  failures+=reload_preserved(option,fields,hud,EX_ADMIT_READ);
+  failures+=reload_pin_closes!=closes+1;failures+=admit_probe_closes!=part_closes;
+ }
+ admit_probe_mode=ADMIT_PROBE_PARTIAL;admit_probe_reads=0;
+ failures+=sky_expr_reload(option,fields,hud)!=EX_ADMIT_OK;failures+=admit_probe_reads<=2;
+ admit_probe_mode=ADMIT_PROBE_NONE;return failures;
+}
+static int reload_pin_formats(const struct sky_expr_option *option,const uint8_t pin[32],const double fields[XF_COUNT],struct sky_expr_hud *hud)
+{
+ int failures=0;char hex[67];zcl_hex_encode(pin,32,hex);
+ for(unsigned mode=0;mode<4;mode++) {
+  size_t length=mode==3?0:mode==1?66:mode==2?64:65;
+  hex[64]='\r';hex[65]='\n';if(mode==2)hex[0]=0;
+  FILE *f=fopen(option->pin_path,"wb");if(!f){perror("pin format fixture");return failures+1;}
+  bool ok=fwrite(hex,1,length,f)==length;if(fclose(f) || !ok)return failures+1;
+  failures+=reload_preserved(option,fields,hud,EX_ADMIT_PIN);
+ }
+ failures+=reload_write_pin(option->pin_path,pin,true);return failures;
+}
+static int reload_fresh_fields(const struct sky_expr_option *option,struct sky_expr_hud *hud)
+{
+ uint8_t bytes[2048]={0},pin[32];size_t n=draw_fixture(bytes,3,1);
+ eval_leaf(bytes+32+16*2,EX_FIELD,XF_SCREEN_W);
+ if(!admit_fixture_write(option->path,bytes,n,pin))return 1;
+ int failures=reload_write_pin(option->pin_path,pin,true);double fields[XF_COUNT]={0};fields[XF_SHIELD]=1;
+ fields[XF_SCREEN_W]=51;failures+=sky_expr_reload(option,fields,hud)!=EX_ADMIT_OK;
+ failures+=hud->part.recipe.ops[0].x!=51;
+ fields[XF_SCREEN_W]=61;failures+=sky_expr_reload(option,fields,hud)!=EX_ADMIT_OK;
+ failures+=hud->part.recipe.ops[0].x!=61;
+ struct sky_expr_hud empty={0};failures+=sky_expr_reload(option,fields,&empty)!=EX_ADMIT_OK;
+ failures+=!empty.active;failures+=empty.part.recipe.ops[0].x!=61;
+ failures+=reload_pin_formats(option,pin,fields,hud);
+ failures+=reload_pin_faults(option,fields,hud);return failures;
+}
+
+static int reload_cases(void)
+{
+ char path[512],pin_path[512];int fd=test_mkstemp(path,sizeof path,"reload_part");if(fd<0)return 1;
+ if(close(fd)){unlink(path);return 1;}fd=test_mkstemp(pin_path,sizeof pin_path,"reload_pin");
+ if(fd<0){unlink(path);return 1;}if(close(fd)){unlink(path);unlink(pin_path);return 1;}
+ uint8_t bytes[2048]={0},pin[32];double fields[XF_COUNT]={0};fields[XF_SHIELD]=1;
+ size_t n=draw_fixture(bytes,3,1);int failures=0;
+ if(!admit_fixture_write(path,bytes,n,pin)){unlink(path);unlink(pin_path);return 1;}
+ struct sky_expr_option option={.path=path,.pin_path=pin_path};memcpy(option.pin,pin,32);
+ struct sky_expr_hud hud={0};sky_expr_start(&option,fields,&hud);
+ /* A changed valid recipe and fresh pin replace the captured original. */
+ zcl_write_u32_le(bytes+32+16*2+8,25);
+ failures+=!admit_fixture_write(path,bytes,n,pin) || reload_write_pin(pin_path,pin,true);
+ failures+=sky_expr_reload(&option,fields,&hud)!=EX_ADMIT_OK;
+ use_trace_at=0;use_trace[0]=0;sky_expr_render(&hud,use_builtin,"BUILTIN\n");
+ failures+=strcmp(use_trace,"T HUD25 25.0 20.0 12.0\n")!=0;
+ const enum expr_admit_status want[]={EX_ADMIT_READ,EX_ADMIT_PIN,EX_ADMIT_PIN,EX_ADMIT_READ,EX_ADMIT_PIN,EX_ADMIT_VALIDATE,EX_ADMIT_EVALUATE,EX_ADMIT_DRAW};
+ for(unsigned mode=0;mode<8;mode++) {
+  fields[XF_SHIELD]=mode==6?2:1;failures+=reload_refusal_prepare(path,pin_path,mode);
+  failures+=reload_preserved(&option,fields,&hud,want[mode]);
+ }
+ failures+=reload_fresh_fields(&option,&hud);
+ failures+=reload_thousand(&option,&hud);
+ unlink(path);unlink(pin_path);return failures;
+}
+
 int test_skycombat_expr(void);
 int test_skycombat_expr(void)
 {
@@ -829,6 +976,7 @@ int test_skycombat_expr(void)
  failures+=eval_operators()+eval_domains()+eval_bounds()+eval_defensive_bounds();
  failures+=draw_kinds()+draw_refusals()+draw_capacity()+draw_followups()+draw_defensive();
  failures+=use_metric_cases()+use_metric_range_cases();
+ failures+=reload_option_cases()+reload_cases();
  failures+=admit_file_cases();failures+=use_option_cases()+use_file_cases()+use_box_case()+use_refusal_cases()+use_render_cases()+use_multiple_ops();
  printf("test_skycombat_expr: %s (%d failures)\n",failures?"FAILED":"PASS",failures);
  return failures;

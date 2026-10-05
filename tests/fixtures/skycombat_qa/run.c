@@ -8,6 +8,7 @@
 static unsigned qa_windows, qa_frames, qa_closed, qa_destroyed, qa_unloads;
 static unsigned qa_close_after = 64;
 static bool qa_window_failed;
+static bool qa_hud_keys;
 static int sky_qa_entry(int argc, char **argv);
 /* Adapt only the entry signature for the pre-fix main(void) removal witness.
  * The entire production function body, argument admission and loop are used. */
@@ -81,7 +82,10 @@ bool WindowShouldClose(void) { return qa_frames >= qa_close_after; }
 float GetFrameTime(void) { return 1.0f / 60.0f; }
 bool IsKeyDown([[maybe_unused]] int key) { return (bool){0}; }
 void aircraft_update_responsive([[maybe_unused]] aircraft_t* aircraft, [[maybe_unused]] float stick_x, [[maybe_unused]] float stick_y, [[maybe_unused]] float dt) {  }
-bool IsKeyPressed([[maybe_unused]] int key) { return (bool){0}; }
+bool IsKeyPressed(int key) {
+    return qa_hud_keys && ((key == KEY_F6 && qa_frames == 1) ||
+        (key == KEY_F7 && (qa_frames == 2 || qa_frames == 3)));
+}
 void effects_sonic_boom([[maybe_unused]] effects_manager_t* manager, [[maybe_unused]] Vector3 pos, [[maybe_unused]] Vector3 direction) {  }
 Vector3 aircraft_get_forward_vector([[maybe_unused]] aircraft_t* aircraft) { return (Vector3){0}; }
 void effects_screen_shake([[maybe_unused]] effects_manager_t* manager, [[maybe_unused]] float intensity, [[maybe_unused]] float duration) {  }
@@ -114,7 +118,9 @@ bool IsWindowReady(void) { return !qa_window_failed; }
 
 int main(int argc, char **argv)
 {
-    if (argc > 1 && strcmp(argv[1], "--fixture-close=2") == 0) {
+    if (argc > 1 && strcmp(argv[1], "--fixture-hud-keys") == 0) {
+        qa_hud_keys = true; --argc; ++argv;
+    } else if (argc > 1 && strcmp(argv[1], "--fixture-close=2") == 0) {
         qa_close_after = 2; --argc; ++argv;
     } else if (argc > 1 && strcmp(argv[1], "--fixture-window-fails") == 0) {
         qa_window_failed = true; --argc; ++argv;

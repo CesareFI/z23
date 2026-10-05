@@ -328,7 +328,7 @@ static void report_game_input(const multiplayer_game_t *game)
     printf("Joystick: %s\n", game->input_system->model.connected ? "CONNECTED" : "Keyboard Mode");
     if (game->input_system->model.is_astro_c40)printf("ASTRO C40 TR Controller detected!\n");
 }
-static void start_part_hud(const struct sky_expr_option *option,multiplayer_game_t *game,struct sky_expr_hud *hud)
+static void update_part_hud(const struct sky_expr_option *option,multiplayer_game_t *game,struct sky_expr_hud *hud,bool reload)
 {
     const managed_aircraft_t *player=aircraft_manager_get(game->aircraft_mgr,game->local_player_id);
     double fields[XF_COUNT]={0};
@@ -346,7 +346,12 @@ static void start_part_hud(const struct sky_expr_option *option,multiplayer_game
     fields[XF_BOOST_MS]=floor((double)game->boost_timer*1000.0);
     fields[XF_CONNECTED]=game->input_system->model.connected;
     fields[XF_FLASH]=game->damage_flash>0;
-    sky_expr_start(option,fields,hud);
+    if(reload)(void)sky_expr_reload(option,fields,hud);else sky_expr_start(option,fields,hud);
+}
+
+static void poll_part_hud(const struct sky_expr_option *option,multiplayer_game_t *game,struct sky_expr_hud *hud)
+{
+    if(option->pin_path && IsKeyPressed(KEY_F6))update_part_hud(option,game,hud,true);
 }
 
 /* Compose strict option contracts without opening a window on refusal.
@@ -383,7 +388,7 @@ static int prepare_game_window(int argc, char **argv, unsigned *qa_frames,
                                struct sky_expr_option *option)
 {
     if (!parse_game_options(argc, argv, option, qa_frames)) {
-        fprintf(stderr, "Usage: z23-skycombat [--qa-frames=1..%u] [--hud-part=<64 hex SHA-256>:<file>]\n",
+        fprintf(stderr, "Usage: z23-skycombat [--qa-frames=1..%u] [--hud-part=<64 hex SHA-256>:<file> [--hud-pin-file=<file>]]\n",
                 SKY_COMBAT_QA_FRAMES_MAX);
         return 2;
     }
@@ -500,7 +505,7 @@ int main(int argc, char **argv) {
     cyberpunk_world_generate(game.world, 42);
     cyberpunk_set_theme_blade_runner(game.world);
     
-    start_part_hud(&option,&game,&part_hud);
+    update_part_hud(&option,&game,&part_hud,false);
 
     /* Create render texture for post-processing */
     RenderTexture2D screen_buffer = LoadRenderTexture(GetScreenWidth(), GetScreenHeight());
@@ -512,6 +517,7 @@ int main(int argc, char **argv) {
     while (game_frame_pending(qa_frames, rendered_frames)) {
         float dt = GetFrameTime();
         game_time += dt;
+        poll_part_hud(&option,&game,&part_hud);
         
         /* Update input system */
         input_view_fast_t view = input_mvc_fast_update(game.input_system);
