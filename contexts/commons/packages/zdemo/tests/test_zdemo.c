@@ -70,6 +70,11 @@ static int test_seconds_parser(void)
 
 int main(void)
 {
+	const struct zdemo_canvas empty_canvas = {NULL, 0, 0};
+	uint8_t zero_pixel[4] = {0};
+	const struct zdemo_canvas one_pixel = {zero_pixel, 1, 1};
+	CHECK(zdemo_canvas_digest(&empty_canvas) == UINT64_C(14695981039346656037));
+	CHECK(zdemo_canvas_digest(&one_pixel) == UINT64_C(5558979605539197941));
 	static uint8_t pixels_a[TEST_WIDTH * TEST_HEIGHT * ZDEMO_PIXEL_BYTES];
 	static uint8_t pixels_b[TEST_WIDTH * TEST_HEIGHT * ZDEMO_PIXEL_BYTES];
 	struct zdemo_world world_a;
@@ -91,7 +96,7 @@ int main(void)
 	for (size_t i = 3u; i < sizeof pixels_a; i += ZDEMO_PIXEL_BYTES)
 		CHECK(pixels_a[i] == 0xffu);
 	const uint64_t digest = zdemo_canvas_digest(&canvas_a);
-	if (digest != UINT64_C(16732952640180923659)) {
+	if (digest != UINT64_C(7127855221134341213)) {
 		(void)fprintf(stderr, "zdemo KAT digest=%llu\n",
 			      (unsigned long long)digest);
 		return 1;
