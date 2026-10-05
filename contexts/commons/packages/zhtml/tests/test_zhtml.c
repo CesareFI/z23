@@ -164,7 +164,25 @@ static void test_fuzz(void) {
   }
 }
 
+static void test_numeric_leading_zero_range(void) {
+  static const char *rows[] = {"&#000000065;", "&#x000000041;"};
+  char out[8];
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    size_t n = zhtml_unescape(out, sizeof out, rows[i], strlen(rows[i]));
+    CHECK(n == 1 && out[0] == 'A' && out[1] == 0);
+  }
+  static char largest[ZHTML_MAX];
+  largest[0] = '&'; largest[1] = '#';
+  memset(largest + 2, '0', sizeof largest - 5);
+  largest[sizeof largest - 3] = '6';
+  largest[sizeof largest - 2] = '5';
+  largest[sizeof largest - 1] = ';';
+  CHECK(zhtml_unescape(out, sizeof out, largest, sizeof largest) == 1 &&
+        out[0] == 'A' && out[1] == 0);
+}
+
 int main(void) {
+  test_numeric_leading_zero_range();
   test_kat();
   test_roundtrip();
   test_err();

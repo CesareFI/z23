@@ -68,6 +68,11 @@ static int zhtml__hexval(unsigned char c) {
   return -1;
 }
 
+static uint32_t zhtml__numeric_digit(uint32_t cp, unsigned radix, unsigned digit) {
+  if (cp > (0x10FFFFu - digit) / radix) return UINT32_MAX;
+  return cp * radix + digit;
+}
+
 /* Parse one entity starting at p[*i] == '&'. On success emits and
  * advances *i past the ';'. Returns SIZE_MAX on malformed input. */
 static size_t zhtml__entity(char *dst, size_t cap, size_t len,
@@ -93,10 +98,10 @@ static size_t zhtml__entity(char *dst, size_t cap, size_t len,
       int v = hex ? zhtml__hexval(p[k])
                   : (p[k] >= '0' && p[k] <= '9' ? p[k] - '0' : -1);
       if (v < 0) break;
-      cp = cp * (hex ? 16u : 10u) + (uint32_t)v;
-      if (cp > 0x7FFFFFFF) return SIZE_MAX; /* absurd */
+      cp = zhtml__numeric_digit(cp, hex ? 16u : 10u, (unsigned)v);
+      if (cp == UINT32_MAX) return SIZE_MAX;
       digits++;
-      if (digits > 8) return SIZE_MAX;
+      if (digits > ZHTML_MAX) return SIZE_MAX;
     }
     if (digits == 0 || k >= n || p[k] != ';') return SIZE_MAX;
     *i = k + 1;
