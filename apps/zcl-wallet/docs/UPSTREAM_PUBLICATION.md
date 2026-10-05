@@ -1877,8 +1877,31 @@ mbox SHA256 is
 `05983f5e17a73ed5dd0a54f8b89538095dc01f816ea6d3110910e05d74ff940f`.
 The commit contains an SSH signature object; identity verification is
 unobserved because this checkout has no configured allowed-signers file, and
-that trust policy was not changed. Exact independent dev proof remains open;
-the candidate is preserved and no external publication action was attempted.
+that trust policy was not changed.
+
+The final cold exact-proof attempt passes all 215 lint gates (215.587s) and
+1,235 of 1,236 selected runtime groups, with zero skips, cache hits, unobserved
+cases or load-flaky outcomes. Its sole failure is `test_reflex_runner`: the
+fresh proof generation omitted every declared reflex fixture image, so the
+group refused them as missing before exercising candidate behavior. The same
+focused group passes 1/1 with zero skips under the same qualified user-manager
+and private-tmpfs wrapper when the standard build has materialized those
+fixtures. An earlier cold attempt executed `test_reflex_runner` successfully
+and failed only the then-stale Tor provenance/runtime control; rebuilding Tor
+locally from the already-present vendored source made that focused control
+pass. No test or proof policy was changed.
+
+These complementary attempts are not combined into a PASS receipt. Exact
+independent dev proof remains open until the cold proof generation owns its
+reflex fixture prerequisite. The failed attempt status, phases, all-lint PASS,
+runtime log and failure extraction are preserved with a manifest in the
+candidate evidence directory. Their SHA256 values are respectively
+`0d2ee81122b1ea0eead364b647e1747ff104f3e9fcf0790b3952d47924fd3488`,
+`92232d592fe80703318f8c84e1c72fc643e875308b030742e9ca80b234dae069`,
+`f8f9898fef14ed477030bcc56ce83acdc3c6b490a35a6380930789d1395bbecf`,
+`a4b7f8c21e57379865919b2403559ec9ecdae5f7ac37c8757b013718917e9642`
+and `9e009e3f4bf1279e9b7164d07c87b2d582675bb7ad2733677a9570cb8aa7adb3`.
+The candidate is preserved and no external publication action was attempted.
 
 ### Whole-file descriptor candidate exact qualification complete
 
