@@ -21,6 +21,12 @@ static int cmp_sort_entry(const void *a, const void *b)
     return 0;
 }
 
+static bool peer_relay_is_recent(int64_t now, int64_t relay_time)
+{
+    return relay_time > 0 && relay_time <= now &&
+           now - relay_time < PEER_EVICTION_RECENT_RELAY_SECS;
+}
+
 int peer_eviction_select(const struct peer_eviction_candidate *candidates,
                           size_t n, int64_t now)
 {
@@ -54,10 +60,8 @@ int peer_eviction_select(const struct peer_eviction_candidate *candidates,
     for (size_t i = 0; i < inbound_count; i++) {
         size_t idx = entries[i].idx;
         const struct peer_eviction_candidate *c = &candidates[idx];
-        if ((c->last_block_time > 0 &&
-             now - c->last_block_time < PEER_EVICTION_RECENT_RELAY_SECS) ||
-            (c->last_tx_time > 0 &&
-             now - c->last_tx_time < PEER_EVICTION_RECENT_RELAY_SECS))
+        if (peer_relay_is_recent(now, c->last_block_time) ||
+            peer_relay_is_recent(now, c->last_tx_time))
             is_protected[idx] = true;
     }
 

@@ -19,6 +19,20 @@
     else { printf("FAIL\n"); failures++; }                           \
 } while (0)
 
+static int test_peer_eviction_clock_rollback(void)
+{
+    int failures = 0;
+    const int64_t now = 1000000;
+    struct peer_eviction_candidate c[2] = {
+        { .connected_time = now - 50 },
+        { .connected_time = now - 10,
+          .last_block_time = now + 3600 },
+    };
+    PE_CHECK("clock rollback expires future relay protection",
+             peer_eviction_select(c, 2, now) == 1);
+    return failures;
+}
+
 int test_peer_eviction(void)
 {
     printf("\n=== peer_eviction_select tests ===\n");
@@ -170,5 +184,6 @@ int test_peer_eviction(void)
     PE_CHECK("NULL candidates with n>0 returns -1",
              peer_eviction_select(NULL, 5, NOW) == -1);
 
+    failures += test_peer_eviction_clock_rollback();
     return failures;
 }
