@@ -41,6 +41,11 @@ void effects_spawn_explosion([[maybe_unused]] effects_manager_t* manager, [[mayb
 managed_aircraft_t* aircraft_manager_get([[maybe_unused]] aircraft_manager_t* manager, [[maybe_unused]] int id) { return NULL; }
 void DrawFPS([[maybe_unused]] int posX, [[maybe_unused]] int posY) {  }
 void DrawText([[maybe_unused]] const char *text, [[maybe_unused]] int posX, [[maybe_unused]] int posY, [[maybe_unused]] int fontSize, [[maybe_unused]] Color color) {  }
+Font GetFontDefault(void) { return (Font){0}; }
+Vector2 MeasureTextEx([[maybe_unused]] Font font, [[maybe_unused]] const char *text, [[maybe_unused]] float fontSize, [[maybe_unused]] float spacing) { return (Vector2){0}; }
+void DrawTextEx([[maybe_unused]] Font font, const char *text, [[maybe_unused]] Vector2 position, [[maybe_unused]] float fontSize, [[maybe_unused]] float spacing, [[maybe_unused]] Color color) { printf("QA_HUD_TEXT frame=%u text=%s\n", qa_frames, text); }
+void DrawRectangleRec(Rectangle rect, Color color) { printf("QA_HUD_RECT frame=%u rgba=%u,%u,%u,%u rect=%.0f,%.0f,%.0f,%.0f\n", qa_frames, color.r, color.g, color.b, color.a, (double)rect.x, (double)rect.y, (double)rect.width, (double)rect.height); }
+void DrawRectangleLinesEx([[maybe_unused]] Rectangle rect, [[maybe_unused]] float thickness, [[maybe_unused]] Color color) { }
 int MeasureText([[maybe_unused]] const char *text, [[maybe_unused]] int fontSize) { return (int){0}; }
 void DrawRectangle([[maybe_unused]] int posX, [[maybe_unused]] int posY, [[maybe_unused]] int width, [[maybe_unused]] int height, [[maybe_unused]] Color color) {  }
 const char * TextFormat([[maybe_unused]] const char *text, ...) { return ""; }

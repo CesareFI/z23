@@ -2739,7 +2739,9 @@ SKYCOMBAT_CFLAGS := -std=$(ZCL_C_STD) -O2 -Wall -Wextra -Werror -pedantic \
 	$(ZCL_WARN_STRINGOP_OVERFLOW) -D_POSIX_C_SOURCE=200809L \
 	-DRAYMATH_USE_SIMD_INTRINSICS=0 $(Z23RAYLIB_CPPFLAGS) \
 	-I$(SKYCOMBAT_DIR)/include -I$(SKYCOMBAT_DIR)/specifications \
-	-I$(SKYCOMBAT_DIR)/modules/compile_time_gdb_proof/include
+	-I$(SKYCOMBAT_DIR)/modules/compile_time_gdb_proof/include \
+	-Iplatform/modules/base/include -Iplatform/modules/platform/include \
+	-Icontexts/commons/packages/zsha256/include
 
 Z23RAYLIB_SRCS := $(Z23RAYLIB_DIR)/src/rcore.c $(Z23RAYLIB_DIR)/src/rshapes.c \
 	$(Z23RAYLIB_DIR)/src/rtext.c $(Z23RAYLIB_DIR)/src/rtextures.c \
@@ -2750,6 +2752,7 @@ Z23RAYLIB_OBJS := $(patsubst $(Z23RAYLIB_DIR)/src/%.c,$(Z23RAYLIB_OBJ_DIR)/%.o,$
 # under apps/skycombat without being named here does not silently join a build.
 SKYCOMBAT_SRCS := \
 	$(wildcard $(SKYCOMBAT_DIR)/src/*.c) \
+	$(wildcard $(SKYCOMBAT_DIR)/part/expr_*.c) \
 	$(wildcard $(SKYCOMBAT_DIR)/src/controllers/*.c) \
 	$(wildcard $(SKYCOMBAT_DIR)/src/core/*.c) \
 	$(wildcard $(SKYCOMBAT_DIR)/src/models/*.c) \
@@ -2767,6 +2770,7 @@ SKYCOMBAT_OBJS := $(patsubst $(SKYCOMBAT_DIR)/%.c,$(SKYCOMBAT_OBJ_DIR)/%.o,$(SKY
 # every file; only the link is selective.
 SKYCOMBAT_GAME_MAIN := $(SKYCOMBAT_DIR)/src/sky_combat_multiplayer_ultimate.c
 SKYCOMBAT_GAME_SRCS := $(SKYCOMBAT_GAME_MAIN) \
+	$(wildcard $(SKYCOMBAT_DIR)/part/expr_*.c) \
 	$(SKYCOMBAT_DIR)/src/controllers/input_controller_fast.c \
 	$(SKYCOMBAT_DIR)/src/controllers/input_mvc_fast.c \
 	$(SKYCOMBAT_DIR)/src/models/aircraft.c \
@@ -2844,16 +2848,27 @@ $(Z23RAYLIB_LIB): $(Z23RAYLIB_OBJS)
 # One typed refusal, never a wall of "No such file" from the preprocessor.
 game-platform-probe: $(SKYCOMBAT_PLATFORM_STAMP)
 
-game: $(SKYCOMBAT_GAME_OBJS) $(Z23RAYLIB_LIB)
+$(SKYCOMBAT_OBJ_DIR)/src/sky_combat_multiplayer_ultimate.o: $(SKYCOMBAT_DIR)/part/expr_use.h $(SKYCOMBAT_DIR)/part/expr_format.h
+$(patsubst $(SKYCOMBAT_DIR)/%.c,$(SKYCOMBAT_OBJ_DIR)/%.o,$(wildcard $(SKYCOMBAT_DIR)/part/*.c)): $(SKYCOMBAT_DIR)/part/expr_format.h
+
+# Standalone canonical reader/hash support: no core/engine or node link.
+SKYCOMBAT_SUPPORT_SRCS := platform/modules/platform/src/positioned_file.c \
+	platform/modules/base/src/safe_alloc.c contexts/commons/packages/zsha256/src/zsha256.c
+SKYCOMBAT_SUPPORT_OBJS := $(addprefix $(SKYCOMBAT_OBJ_DIR)/support/,$(SKYCOMBAT_SUPPORT_SRCS:.c=.o))
+$(SKYCOMBAT_OBJ_DIR)/support/%.o: %.c | $(SKYCOMBAT_PLATFORM_STAMP)
+	@mkdir -p $(@D)
+	$(CC) $(SKYCOMBAT_CFLAGS) -c $< -o $@
+
+game: $(SKYCOMBAT_SUPPORT_OBJS) $(SKYCOMBAT_GAME_OBJS) $(Z23RAYLIB_LIB)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(SKYCOMBAT_CFLAGS) $(SKYCOMBAT_GAME_OBJS) $(Z23RAYLIB_LIB) \
+	$(CC) $(SKYCOMBAT_CFLAGS) $(SKYCOMBAT_SUPPORT_OBJS) $(SKYCOMBAT_GAME_OBJS) $(Z23RAYLIB_LIB) \
 		$(SKYCOMBAT_HOST_LIBS) -o $(BIN_DIR)/z23-skycombat
 	@echo "game: built $(BIN_DIR)/z23-skycombat (not run: it opens a window)"
 
 # The counts below are a floor, not decoration: an empty object list is exactly
 # how this target would "pass" while compiling nothing (a renamed variable did
 # that once already), so it refuses instead of printing a zero.
-game-check: $(SKYCOMBAT_OBJS) $(Z23RAYLIB_OBJS)
+game-check: $(SKYCOMBAT_SUPPORT_OBJS) $(SKYCOMBAT_OBJS) $(Z23RAYLIB_OBJS)
 	@test $(words $(SKYCOMBAT_SRCS)) -ge 60 || { echo "game_check_scan_floor: only $(words $(SKYCOMBAT_SRCS)) game sources found" >&2; exit 2; }
 	@test $(words $(Z23RAYLIB_SRCS)) -eq 5 || { echo "game_check_scan_floor: expected 5 raylib sources, found $(words $(Z23RAYLIB_SRCS))" >&2; exit 2; }
 	@echo "game-check: compiled $(words $(SKYCOMBAT_SRCS)) game and $(words $(Z23RAYLIB_SRCS)) raylib translation units, no link"
@@ -2861,9 +2876,12 @@ game-check: $(SKYCOMBAT_OBJS) $(Z23RAYLIB_OBJS)
 # Source-bound QA entrypoint fixture: no window-system headers or GPU needed.
 SKYCOMBAT_QA_BIN := $(BIN_DIR)/skycombat-qa-entrypoint
 $(SKYCOMBAT_QA_BIN): tests/fixtures/skycombat_qa/run.c $(SKYCOMBAT_GAME_MAIN) Makefile \
+                   $(wildcard $(SKYCOMBAT_DIR)/part/expr_*.c) $(wildcard $(SKYCOMBAT_DIR)/part/*.h) \
+                   $(SKYCOMBAT_SUPPORT_SRCS) \
                    $(wildcard apps/skycombat/include/sky_combat/*.h) \
                    $(wildcard apps/skycombat/include/sky_combat/*/*.h) | $(BIN_DIR)
-	$(CC) $(SKYCOMBAT_CFLAGS) $(SKYCOMBAT_SIM_FP_FLAGS) $< -o $@ -lm
+	$(CC) $(SKYCOMBAT_CFLAGS) $(SKYCOMBAT_SIM_FP_FLAGS) $< \
+	    $(wildcard $(SKYCOMBAT_DIR)/part/expr_*.c) $(SKYCOMBAT_SUPPORT_SRCS) -o $@ -lm
 .PHONY: skycombat-qa-entrypoint
 skycombat-qa-entrypoint: $(SKYCOMBAT_QA_BIN)
 

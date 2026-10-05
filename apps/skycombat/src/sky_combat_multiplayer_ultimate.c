@@ -26,6 +26,8 @@
 #include "sky_combat/views/combat_effects.h"
 #include "sky_combat/qa_frames.h"
 
+#include "../part/expr_use.h"
+
 #define SCREEN_WIDTH 1920
 #define SCREEN_HEIGHT 1080
 #define TARGET_FPS 60
@@ -179,14 +181,10 @@ static void render_powerup_ultimate(const powerup_t* powerup,[[maybe_unused]] ef
     }
 }
 
-/* Advanced HUD */
-static void render_hud_ultimate(multiplayer_game_t* game) {
-    const managed_aircraft_t* player = aircraft_manager_get(game->aircraft_mgr, game->local_player_id);
-    if (!player) return;
-    
+static void render_host_debug(multiplayer_game_t *game) {
     /* FPS and debug */
     DrawFPS(10, 10);
-    
+
     /* Debug controls - show stick values */
     if (game->input_system->model.connected) {
         char debug[256];
@@ -195,7 +193,17 @@ static void render_hud_ultimate(multiplayer_game_t* game) {
                 game->input_system->model.normalized.move_y);
         DrawText(debug, 10, 40, 16, LIME);
     }
+
+}
+
+/* Advanced HUD */
+static void render_hud_ultimate(void *context) {
+    multiplayer_game_t *game=context;
+    const managed_aircraft_t* player = aircraft_manager_get(game->aircraft_mgr, game->local_player_id);
+    if (!player) return;
     
+    render_host_debug(game);
+
     /* Match timer with style */
     int minutes = (int)(game->match->elapsed_time / 60.0f);
     int seconds = (int)game->match->elapsed_time % 60;
@@ -265,6 +273,12 @@ static void render_hud_ultimate(multiplayer_game_t* game) {
     }
 }
 
+static void render_game_hud(const struct sky_expr_hud *hud,multiplayer_game_t *game)
+{
+    if(hud->active)render_host_debug(game);
+    sky_expr_render(hud,render_hud_ultimate,game);
+}
+
 /* Update camera with smooth following */
 static void update_camera_ultimate(multiplayer_game_t* game, float dt) {
     const managed_aircraft_t* player = aircraft_manager_get(game->aircraft_mgr, game->local_player_id);
@@ -308,11 +322,68 @@ static void update_match_ledger(multiplayer_game_t *game, float dt) {
     if (match_state_set_team_scores(game->match, scores)) match_state_update(game->match, dt);
 }
 
-/* Keep admission and completion checks separate from the gameplay loop. */
-static int prepare_game_window(int argc, char **argv, unsigned *qa_frames)
+static void report_game_input(const multiplayer_game_t *game)
 {
-    if (!sky_combat_qa_frames_parse(argc, argv, qa_frames)) {
-        fprintf(stderr, "Usage: z23-skycombat [--qa-frames=1..%u]\n",
+    printf("Sky Combat Multiplayer Ultimate\n");
+    printf("Joystick: %s\n", game->input_system->model.connected ? "CONNECTED" : "Keyboard Mode");
+    if (game->input_system->model.is_astro_c40)printf("ASTRO C40 TR Controller detected!\n");
+}
+static void start_part_hud(const struct sky_expr_option *option,multiplayer_game_t *game,struct sky_expr_hud *hud)
+{
+    const managed_aircraft_t *player=aircraft_manager_get(game->aircraft_mgr,game->local_player_id);
+    double fields[XF_COUNT]={0};
+    fields[XF_SCREEN_W]=GetScreenWidth();fields[XF_SCREEN_H]=GetScreenHeight();
+    fields[XF_ELAPSED_SECONDS]=floor((double)game->match->elapsed_time);
+    fields[XF_TEAM_COUNT]=game->match->rules.team_count;
+    for(unsigned i=0;i<4;i++)fields[XF_SCORE_0+i]=game->match->team_scores[i];
+    fields[XF_SCORE_LIMIT]=game->match->rules.score_limit;
+    if(player) {
+        fields[XF_HEALTH_MILLI]=floor((double)player->health*1000.0);
+        fields[XF_MAX_HEALTH_MILLI]=floor((double)player->max_health*1000.0);
+        fields[XF_SHIELD]=player->powerup_effects.shield_active;
+        if(player->weapons)fields[XF_WEAPON_INDEX]=player->weapons->current_weapon;
+    }
+    fields[XF_BOOST_MS]=floor((double)game->boost_timer*1000.0);
+    fields[XF_CONNECTED]=game->input_system->model.connected;
+    fields[XF_FLASH]=game->damage_flash>0;
+    sky_expr_start(option,fields,hud);
+}
+
+/* Compose strict option contracts without opening a window on refusal.
+ * The two outputs change only when both parsers have accepted their input. */
+static bool parse_game_options(int argc, char **argv,
+                               struct sky_expr_option *option, unsigned *frames)
+{
+    if (!option || !frames || !argv || argc < 1) return false;
+    char *hud_argv[3] = {argv[0]};
+    int hud_argc = 1;
+    unsigned count = 0;
+    bool seen_frames = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!argv[i]) return false;
+        if (strncmp(argv[i], "--qa-frames=", 12) == 0) {
+            char *qa_argv[2] = {argv[0], argv[i]};
+            if (seen_frames || !sky_combat_qa_frames_parse(2, qa_argv, &count))
+                return false;
+            seen_frames = true;
+        } else {
+            if (hud_argc == 3) return false;
+            hud_argv[hud_argc++] = argv[i];
+        }
+    }
+    struct sky_expr_option candidate;
+    if (!sky_expr_option_parse(hud_argc, hud_argv, &candidate)) return false;
+    *option = candidate;
+    *frames = count;
+    return true;
+}
+
+/* Keep admission and completion checks separate from the gameplay loop. */
+static int prepare_game_window(int argc, char **argv, unsigned *qa_frames,
+                               struct sky_expr_option *option)
+{
+    if (!parse_game_options(argc, argv, option, qa_frames)) {
+        fprintf(stderr, "Usage: z23-skycombat [--qa-frames=1..%u] [--hud-part=<64 hex SHA-256>:<file>]\n",
                 SKY_COMBAT_QA_FRAMES_MAX);
         return 2;
     }
@@ -347,7 +418,9 @@ static int game_frame_result(unsigned limit, unsigned rendered)
 
 int main(int argc, char **argv) {
     unsigned qa_frames;
-    int launch = prepare_game_window(argc, argv, &qa_frames);
+    struct sky_expr_option option;
+    static struct sky_expr_hud part_hud;
+    int launch = prepare_game_window(argc, argv, &qa_frames, &option);
     if (launch) return launch;
     
     /* Create game state */
@@ -367,11 +440,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     
-    printf("Sky Combat Multiplayer Ultimate\n");
-    printf("Joystick: %s\n", game.input_system->model.connected ? "CONNECTED" : "Keyboard Mode");
-    if (game.input_system->model.is_astro_c40) {
-        printf("ASTRO C40 TR Controller detected!\n");
-    }
+    report_game_input(&game);
     
     /* Configure match */
     game.match->rules.score_limit = 30;
@@ -431,6 +500,8 @@ int main(int argc, char **argv) {
     cyberpunk_world_generate(game.world, 42);
     cyberpunk_set_theme_blade_runner(game.world);
     
+    start_part_hud(&option,&game,&part_hud);
+
     /* Create render texture for post-processing */
     RenderTexture2D screen_buffer = LoadRenderTexture(GetScreenWidth(), GetScreenHeight());
     
@@ -621,7 +692,7 @@ int main(int argc, char **argv) {
         
         /* UI and effects */
         effects_draw_ui(game.effects, GetScreenWidth(), GetScreenHeight());
-        render_hud_ultimate(&game);
+        render_game_hud(&part_hud,&game);
         
         /* Damage flash */
         if (game.damage_flash > 0) {

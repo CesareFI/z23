@@ -1,6 +1,14 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
  * purpose: Reject malformed HUD byte arrays and alternate literal encodings. */
 #include "test/test_core.h"
+#include <stdarg.h>
+static unsigned use_diag_events;
+static int use_diagnostic(FILE *stream,const char *format,...)
+{
+ if(stream==stderr)++use_diag_events;va_list args;va_start(args,format);
+ int result=vfprintf(stream,format,args);va_end(args);return result;
+}
+#define fprintf use_diagnostic
 #include "../../../apps/skycombat/part/expr_validate.c"
 #include "../../../apps/skycombat/part/expr_eval.c"
 #include "../../../apps/skycombat/part/expr_draw.c"
@@ -36,6 +44,7 @@ static void admit_probe_close(struct platform_positioned_file *f)
 #undef platform_positioned_file_read
 #undef platform_positioned_file_snapshot
 #undef platform_positioned_file_close
+#undef fprintf
 
 #include "crypto/sha256.h"
 #include <math.h>
@@ -631,13 +640,139 @@ static int admit_file_cases(void)
  return failures;
 }
 
+/* Trace only the raylib calls made by the production recipe renderer. */
+#include <raylib.h>
+static char use_trace[4096];static size_t use_trace_at;
+static void use_shape(char kind,Rectangle r,Color c)
+{ use_trace_at+=(size_t)snprintf(use_trace+use_trace_at,sizeof use_trace-use_trace_at,"%c %.1f %.1f %.1f %.1f %u %u %u %u\n",kind,(double)r.x,(double)r.y,(double)r.width,(double)r.height,(unsigned)c.r,(unsigned)c.g,(unsigned)c.b,(unsigned)c.a); }
+static void use_rect(Rectangle r,Color c){use_shape('R',r,c);}
+static void use_lines(Rectangle r,float thick,Color c){(void)thick;use_shape('L',r,c);}
+static Font use_font(void) {return (Font){0};}
+static int use_measure(const char *text,int px) {return (int)strlen(text)*px;}
+static void use_text(Font f,const char *text,Vector2 at,float px,float spacing,Color c)
+{ (void)f;(void)spacing;(void)c;use_trace_at+=(size_t)snprintf(use_trace+use_trace_at,sizeof use_trace-use_trace_at,"T %s %.1f %.1f %.1f\n",text,(double)at.x,(double)at.y,(double)px); }
+#define DrawRectangleRec use_rect
+#define DrawRectangleLinesEx use_lines
+#define GetFontDefault use_font
+#define MeasureText use_measure
+#define DrawTextEx use_text
+#include "../../../apps/skycombat/part/expr_use.h"
+#undef DrawRectangleRec
+#undef DrawRectangleLinesEx
+#undef GetFontDefault
+#undef MeasureText
+#undef DrawTextEx
+static void use_builtin(void *context)
+{ const char *s=context;use_trace_at+=(size_t)snprintf(use_trace+use_trace_at,sizeof use_trace-use_trace_at,"%s",s); }
+static int use_option_cases(void)
+{
+ struct sky_expr_option option,before;memset(&option,0x5a,sizeof option);char good[100];memset(good,'0',sizeof good);
+ memcpy(good,"--hud-part=",11);good[75]=':';memcpy(good+76,"hud.bin",8);
+ char *args[]={"skycombat",good};int failures=0;
+ failures+=!sky_expr_option_parse(1,args,&option) || option.path!=NULL;
+ failures+=!sky_expr_option_parse(2,args,&option) || !option.path || strcmp(option.path,"hud.bin");
+ const char *bad[]={"--hud-part=","--hud-part=00:file","--bogus","--bad-part=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff:file","--hud-part=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff:","--hud-part=gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg:file"};
+ for(unsigned i=0;i<sizeof bad/sizeof *bad;i++) {
+  before=option;args[1]=(char *)bad[i];
+  failures+=sky_expr_option_parse(2,args,&option) || memcmp(&before,&option,sizeof option)!=0;
+ }
+ args[1]=good;before=option;
+ failures+=sky_expr_option_parse(3,args,&option) || memcmp(&before,&option,sizeof option)!=0;
+ good[75]='!';failures+=sky_expr_option_parse(2,args,&option) || memcmp(&before,&option,sizeof option)!=0;good[75]=':';
+ memset(good+11,'A',64);args[1]=good;
+ failures+=!sky_expr_option_parse(2,args,&option) || option.pin[0]!=0xaa || option.pin[31]!=0xaa;
+ return failures;
+}
+static int use_file_cases(void)
+{
+ char path[512];int fd=test_mkstemp(path,sizeof path,"use_hud");if(fd<0)return 1;
+ if(close(fd)){unlink(path);return 1;}
+ uint8_t b[2048]={0},pin[32];size_t n=draw_fixture(b,3,1);
+ if(!admit_fixture_write(path,b,n,pin)){unlink(path);return 1;}
+ struct sky_expr_option option={.path=path};memcpy(option.pin,pin,32);
+ double fields[XF_COUNT]={0};fields[XF_SHIELD]=1;struct sky_expr_hud hud={0};int failures=0;
+ sky_expr_start(&option,fields,&hud);failures+=!hud.active;
+ use_trace_at=0;use_trace[0]=0;sky_expr_render(&hud,use_builtin,"BUILTIN\n");
+ failures+=strcmp(use_trace,"T HUD10 10.0 20.0 12.0\n")!=0;
+ /* A frame does not reopen the path or re-admit; captured recipe remains. */
+ unlink(path);use_trace_at=0;use_trace[0]=0;sky_expr_render(&hud,use_builtin,"BUILTIN\n");
+ failures+=strcmp(use_trace,"T HUD10 10.0 20.0 12.0\n")!=0;
+ if(!admit_fixture_write(path,b,n,pin))return 1;option.pin[0]^=1;sky_expr_start(&option,fields,&hud);failures+=hud.active;
+ use_trace_at=0;use_trace[0]=0;sky_expr_render(&hud,use_builtin,"BUILTIN\n");
+ failures+=strcmp(use_trace,"BUILTIN\n")!=0;unlink(path);
+ return failures;
+}
+
+static int use_box_case(void)
+{
+ char path[512];int fd=test_mkstemp(path,sizeof path,"use_box");if(fd<0)return 1;
+ if(close(fd)){unlink(path);return 1;}
+ uint8_t b[2048]={0},pin[32];size_t n=draw_fixture(b,4,1);
+ zcl_write_u32_le(b+32+16*6+8,0x11223344);
+ if(!admit_fixture_write(path,b,n,pin)){unlink(path);return 1;}
+ struct sky_expr_option option={.path=path};memcpy(option.pin,pin,32);
+ double fields[XF_COUNT]={0};fields[XF_SHIELD]=1;struct sky_expr_hud hud={0};
+ sky_expr_start(&option,fields,&hud);int failures=!hud.active;
+ use_trace_at=0;use_trace[0]=0;sky_expr_render(&hud,use_builtin,"BUILTIN\n");
+ failures+=strcmp(use_trace,"R -50.0 20.0 120.0 40.0 17 34 51 68\n")!=0;
+ unlink(path);return failures;
+}
+
+static int use_refusal_cases(void)
+{
+ char path[512];int fd=test_mkstemp(path,sizeof path,"use_refusal");if(fd<0)return 1;
+ if(close(fd)){unlink(path);return 1;}
+ int failures=0;uint8_t b[2048]={0},pin[32];
+ for(unsigned mode=0;mode<5;mode++) {
+  size_t n=draw_fixture(b,3,1);double fields[XF_COUNT]={0};fields[XF_SHIELD]=mode==2?2:1;
+  if(mode==1)b[0]=0;if(mode==3)zcl_write_u32_le(b+32+16*7+8,0);
+  if(!admit_fixture_write(path,b,n,pin)){unlink(path);return 1;}
+  struct sky_expr_option option={.path=path};memcpy(option.pin,pin,32);
+  if(mode==0)option.pin[0]^=1;if(mode==4)unlink(path);
+  struct sky_expr_hud hud={0};unsigned before=use_diag_events;sky_expr_start(&option,fields,&hud);
+  failures+=hud.active || use_diag_events!=before+1;
+  use_trace_at=0;use_trace[0]=0;sky_expr_render(&hud,use_builtin,"BUILTIN\n");
+  failures+=strcmp(use_trace,"BUILTIN\n")!=0 || use_diag_events!=before+1;
+ }
+ unlink(path);return failures;
+}
+static int use_render_cases(void)
+{
+ struct sky_hud_recipe_v1 recipe={.op_count=1,.text_used=5};memcpy(recipe.text,"HUD10",5);
+ struct sky_hud_op_v1 *op=recipe.ops;
+ *op=(struct sky_hud_op_v1){.kind=SKY_HUD_OP_TEXT,.x=10,.y=20,.rgba=0x11223344,.font_px=13,.text_len=5};
+ int failures=0;
+ const char *expected[]={"T HUD10 10.0 20.0 13.0\n","T HUD10 -22.0 20.0 13.0\n","T HUD10 -55.0 20.0 13.0\n"};
+ for(unsigned align=0;align<3;align++) {
+  op->align=align;use_trace_at=0;use_trace[0]=0;sky_expr_draw_op(&recipe,op);
+  failures+=strcmp(use_trace,expected[align])!=0;
+ }
+ op->align=0;op->kind=SKY_HUD_OP_TEXT_BOX;op->w=30;op->h=40;
+ use_trace_at=0;use_trace[0]=0;sky_expr_draw_op(&recipe,op);
+ failures+=strcmp(use_trace,"R -52.0 20.0 125.0 40.0 17 34 51 68\n")!=0;
+ op->text_len=0;op->font_px=0;op->kind=SKY_HUD_OP_RECT;use_trace_at=0;use_trace[0]=0;sky_expr_draw_op(&recipe,op);
+ failures+=strcmp(use_trace,"R 10.0 20.0 30.0 40.0 17 34 51 68\n")!=0;
+ op->kind=SKY_HUD_OP_RECT_LINES;use_trace_at=0;use_trace[0]=0;sky_expr_draw_op(&recipe,op);
+ failures+=strcmp(use_trace,"L 10.0 20.0 30.0 40.0 17 34 51 68\n")!=0;
+ return failures;
+}
+
+static int use_multiple_ops(void)
+{
+ struct sky_expr_hud hud={.active=true};struct sky_hud_recipe_v1 *r=&hud.part.recipe;r->op_count=2;
+ r->ops[0]=(struct sky_hud_op_v1){.kind=SKY_HUD_OP_RECT,.x=1,.y=2,.w=3,.h=4,.rgba=0x11223344};
+ r->ops[1]=(struct sky_hud_op_v1){.kind=SKY_HUD_OP_RECT_LINES,.x=5,.y=6,.w=7,.h=8,.rgba=0x55667788};
+ use_trace_at=0;use_trace[0]=0;sky_expr_render(&hud,use_builtin,"BUILTIN\n");
+ return strcmp(use_trace,"R 1.0 2.0 3.0 4.0 17 34 51 68\nL 5.0 6.0 7.0 8.0 85 102 119 136\n")!=0;
+}
+
 int test_skycombat_expr(void);
 int test_skycombat_expr(void)
 {
  int failures=expr_headers()+expr_records()+expr_text_cases()+expr_limits();
  failures+=eval_operators()+eval_domains()+eval_bounds()+eval_defensive_bounds();
  failures+=draw_kinds()+draw_refusals()+draw_capacity()+draw_followups()+draw_defensive();
- failures+=admit_file_cases();
+ failures+=admit_file_cases();failures+=use_option_cases()+use_file_cases()+use_box_case()+use_refusal_cases()+use_render_cases()+use_multiple_ops();
  printf("test_skycombat_expr: %s (%d failures)\n",failures?"FAILED":"PASS",failures);
  return failures;
 }

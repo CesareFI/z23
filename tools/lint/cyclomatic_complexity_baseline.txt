@@ -22,7 +22,7 @@ apps/skycombat/src/models/test_team_battles.c:main:22
 apps/skycombat/src/models/weapons.c:weapons_draw:21
 apps/skycombat/src/models/weapons.c:weapons_update:25
 apps/skycombat/src/sky_combat_multiplayer.c:main:64
-apps/skycombat/src/sky_combat_multiplayer_ultimate.c:main:46
+apps/skycombat/src/sky_combat_multiplayer_ultimate.c:main:44
 apps/skycombat/src/views/combat_effects.c:effects_update:26
 cognition/controllers/src/agent_anchor_status_controller.c:anchor_meta_blob:17
 cognition/controllers/src/agent_anchor_status_controller.c:anchor_next_diagnosis:16

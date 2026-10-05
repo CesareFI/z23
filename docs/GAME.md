@@ -28,7 +28,7 @@ native game binary with a frame count:
 On Windows use `build/bin/z23-skycombat.exe --qa-frames=120`. This opens the
 normal game window, completes exactly 120 rendered frames, cleans up and exits
 0. `N` must be canonical decimal in `--qa-frames=N`, from 1 through 3600;
-zero, negative, nonnumeric, overflowing, leading-zero and extra arguments
+zero, negative, nonnumeric, overflowing, leading-zero and unknown or duplicate arguments
 exit 2 before any window opens. Window initialization failure or closing the
 window before the requested frames complete exits 1. With no argument the
 game remains interactive. A health check still needs a working native display
@@ -50,6 +50,41 @@ objects, so rendering's external helpers cannot change their rounding.
 Dedicated view sources, cosmetic world generation and raylib keep their
 existing floating-point policy. This removes contraction as a replay
 difference; native math-library results can still differ between platforms.
+
+QA frame limits can be combined with the pinned HUD option in either argument
+order. All options are validated before window setup.
+
+## Pinned data-only HUD
+
+`--hud-part=<64-hex-SHA-256>:<file>` selects a HUDX expression part. The game
+reads and admits it once at startup, using the initial screen/player/match
+snapshot. Its assembled recipe replaces the built-in HUD each frame; values
+and layout stay at that startup snapshot. No per-frame file reads or reloads. FPS and input-debug overlays remain
+owned and drawn by the host.
+Omitting the option preserves the built-in HUD. A file/pin/schema/evaluation/
+drawing refusal prints its reason once and uses the built-in HUD. Malformed
+options exit 2 before opening a window. This admits inert data, never native code.
+
+This complete example creates a red 320-pixel square HUD part:
+
+```sh
+printf '%b' \
+ 'HUDX\000\000\040\000\001\000\000\000\005\000\001\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' \
+ '\001\000\377\377\377\377\377\377\000\000\000\000\000\000\000\000' \
+ '\001\000\377\377\377\377\377\377\001\000\000\000\000\000\000\000' \
+ '\011\000\000\000\001\000\377\377\000\000\000\000\000\000\000\000' \
+ '\001\000\377\377\377\377\377\377\100\001\000\000\000\000\000\000' \
+ '\001\000\377\377\377\377\377\377\377\000\000\377\000\000\000\000' \
+ '\001\000\002\000\000\000\000\000\003\000\003\000\004\000\000\000\000\000\377\377\000\000\000\000' > /tmp/sky-hud-red.bin
+pin=$(sha256sum /tmp/sky-hud-red.bin | awk '{print $1}')
+./build/bin/z23-skycombat "--hud-part=$pin:/tmp/sky-hud-red.bin"
+```
+
+The file is 136 bytes. RECT/RECT_LINES use recipe geometry and RGBA colour;
+TEXT uses its anchor/alignment. TEXT_BOX draws only a box in its RGBA colour, using the measured text width,
+integer centre rounding, horizontal padding and height. A following TEXT
+operation supplies the label. Text is copied from
+the counted arena to a bounded NUL-terminated buffer for raylib.
 
 ## Controls
 
@@ -100,6 +135,10 @@ fixture. It proves pre-window refusal, exact frame termination, early-close
 failure and the unchanged interactive selection. The fixture does not qualify
 GPU rendering, input devices or a real window; the bounded command above is
 the native launch check.
+
+The `skycombat_expr` group also captures recipe drawing calls and verifies
+startup admission, option refusals and fallback selection without a window.
+Input devices, GPU pixels and the window itself have no automatic test.
 
 `make t-fast-exact ONLY=skycombat_fp_contract` builds and tests the actual
 game aircraft object without window-system headers. Its known-answer yaw
