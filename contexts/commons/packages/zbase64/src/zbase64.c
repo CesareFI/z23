@@ -76,6 +76,61 @@ static void build_table(const char *alpha, uint8_t tab[256]) {
   tab[(uint8_t)'='] = B64_PAD;
 }
 
+static bool decode_padding_matches(size_t rem, size_t pad) {
+  if (!pad) return true;
+  switch (rem) {
+  case 2: return pad == 2;
+  case 3: return pad == 1;
+  default: return false;
+  }
+}
+
+static bool decode_shape_valid(size_t len, size_t pad,
+                               bool padding_required) {
+  if (pad > 2u) return false;
+  if ((padding_required || pad) && len % 4u != 0) return false;
+  size_t rem = (len - pad) % 4u;
+  return rem != 1u && decode_padding_matches(rem, pad);
+}
+
+static size_t decode_tail_size(size_t rem) {
+  return rem == 2u ? 1u : rem == 3u ? 2u : 0u;
+}
+
+static bool decode_tail_canonical(size_t rem, uint8_t last) {
+  switch (rem) {
+  case 2: return (last & 15u) == 0;
+  case 3: return (last & 3u) == 0;
+  default: return true;
+  }
+}
+
+static bool decode_symbols_valid(const char *alpha, const char *in,
+                                 size_t body, size_t rem) {
+  uint8_t tab[256];
+  build_table(alpha, tab);
+  uint8_t last = 0;
+  for (size_t i = 0; i < body; i++) {
+    last = tab[(uint8_t)in[i]];
+    if (last >= B64_PAD) return false;
+  }
+  return decode_tail_canonical(rem, last);
+}
+
+/* Reject before any writes: a failed decode reports out_len=0. */
+static bool decode_input_valid(const char *alpha, bool padding_required,
+                               const char *in, size_t len, size_t cap) {
+  if (!in) return false;
+  size_t pad = 0;
+  while (pad < len && in[len - 1u - pad] == '=') pad++;
+  if (!decode_shape_valid(len, pad, padding_required)) return false;
+  size_t body = len - pad;
+  size_t rem = body % 4u;
+  size_t need = body / 4u * 3u + decode_tail_size(rem);
+  if (need > cap) return false;
+  return decode_symbols_valid(alpha, in, body, rem);
+}
+
 static bool decode_with(const char *alpha, bool padding_required,
                         const char *in, size_t len, uint8_t *out,
                         size_t cap, size_t *out_len) {
@@ -83,7 +138,7 @@ static bool decode_with(const char *alpha, bool padding_required,
     *out_len = 0;
   if (!out || !out_len)
     return false;
-  if (len && !in)
+  if (len && !decode_input_valid(alpha, padding_required, in, len, cap))
     return false;
   uint8_t tab[256];
   build_table(alpha, tab);

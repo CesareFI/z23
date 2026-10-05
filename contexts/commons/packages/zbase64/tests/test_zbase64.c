@@ -167,7 +167,26 @@ static void test_size_arithmetic(void) {
   CHECK(enc[0] == '\0');
 }
 
+static void test_rejected_output_canaries(void) {
+  static const struct { const char *in; size_t cap; bool url; } rows[] = {
+    {"Zh==", 8, false}, {"Zm9=", 8, false}, {"Zm?=", 8, false},
+    {"Zm9v", 2, false}, {"Zh", 8, true}, {"Zm?", 8, true},
+    {"Zm9v", 2, true},
+  };
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    uint8_t out[8], saved[8];
+    memset(saved, '!', sizeof saved);
+    memcpy(out, saved, sizeof out);
+    size_t n = 123;
+    bool ok = rows[i].url
+      ? zbase64url_decode(rows[i].in, strlen(rows[i].in), out, rows[i].cap, &n)
+      : zbase64_decode(rows[i].in, strlen(rows[i].in), out, rows[i].cap, &n);
+    CHECK(!ok && n == 0 && memcmp(out, saved, sizeof out) == 0);
+  }
+}
+
 int main(void) {
+  test_rejected_output_canaries();
   test_rfc4648_vectors();
   test_urlsafe();
   test_strict_rejections();
