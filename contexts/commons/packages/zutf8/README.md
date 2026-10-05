@@ -42,6 +42,8 @@ zutf8: invalid byte sequence at byte 0
 
 Exit 0 on well-formed input, 1 on malformed (byte offset and reason on
 stderr), 2 on misuse or input over the 64 MiB bound.
+The bound is inclusive: `app/main.c:39–42` reads one extra byte after a full
+buffer to distinguish exactly 64 MiB from oversized input.
 
 ## Build and test
 

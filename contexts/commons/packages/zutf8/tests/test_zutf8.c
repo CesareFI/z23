@@ -6,7 +6,46 @@
 #include "zutf8/zutf8.h"
 
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
+
+/* Exercise the shipped CLI with owned ISO C streams, without redirecting
+ * the test runner's standard streams. tmpfile removes only its own fixture. */
+static FILE *cli_input, *cli_output, *cli_error;
+static int cli_printf(const char *format, ...) {
+  va_list args;
+  va_start(args, format);
+  int result = vfprintf(cli_output, format, args);
+  va_end(args);
+  return result;
+}
+static int cli_fclose(FILE *stream) {
+  if (stream == cli_output)
+    cli_output = NULL;
+  if (stream == cli_error)
+    cli_error = NULL;
+  return fclose(stream);
+}
+#define ZUTF8_CLI_STDIO 1
+#define ZUTF8_CLI_STDIN cli_input
+#define ZUTF8_CLI_STDOUT cli_output
+#define ZUTF8_CLI_STDERR cli_error
+#define ZUTF8_CLI_PRINTF cli_printf
+#define ZUTF8_CLI_FCLOSE cli_fclose
+#define ZUTF8_CLI_FERROR ferror
+#define ZUTF8_CLI_FFLUSH fflush
+#define main zutf8_cli_main
+#include "../app/main.c"
+#undef main
+#undef ZUTF8_CLI_STDIO
+#undef ZUTF8_CLI_STDIN
+#undef ZUTF8_CLI_STDOUT
+#undef ZUTF8_CLI_STDERR
+#undef ZUTF8_CLI_PRINTF
+#undef ZUTF8_CLI_FERROR
+#undef ZUTF8_CLI_FFLUSH
+#undef ZUTF8_CLI_FCLOSE
+/* CHECK diagnostics keep using the actual runner stream. */
 
 static int failures = 0;
 
@@ -189,6 +228,60 @@ static void test_count(void) {
   CHECK(!zutf8_validate("\xC2")); /* truncated */
 }
 
+static void close_cli_streams(void) {
+  if (cli_output)
+    CHECK(cli_fclose(cli_output) == 0);
+  if (cli_error)
+    CHECK(cli_fclose(cli_error) == 0);
+  if (cli_input)
+    CHECK(fclose(cli_input) == 0);
+  cli_input = NULL;
+}
+
+static bool open_cli_streams(void) {
+  cli_input = tmpfile();
+  cli_output = tmpfile();
+  cli_error = tmpfile();
+  if (cli_input && cli_output && cli_error)
+    return true;
+  CHECK(false);
+  close_cli_streams();
+  return false;
+}
+
+static void test_cli_capacity_row(size_t length, int expected) {
+  if (!open_cli_streams())
+    return;
+  static const char chunk[65536] = {0};
+  size_t remaining = length;
+  while (remaining) {
+    size_t n = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+    if (fwrite(chunk, 1, n, cli_input) != n) {
+      CHECK(false);
+      close_cli_streams();
+      return;
+    }
+    remaining -= n;
+  }
+  CHECK(fflush(cli_input) == 0);
+  rewind(cli_input);
+  char name[] = "zutf8";
+  char *args[] = {name, NULL};
+  int status = zutf8_cli_main(1, args);
+  if (status != expected) {
+    fprintf(stderr, "FAIL CLI capacity %zu: expected %d, got %d\n",
+            length, expected, status);
+    failures++;
+  }
+  close_cli_streams();
+}
+
+static void test_cli_capacity(void) {
+  test_cli_capacity_row(MAX_INPUT - 1, 0); /* positive control */
+  test_cli_capacity_row(MAX_INPUT, 0);     /* exact-limit regression */
+  test_cli_capacity_row(MAX_INPUT + 1, 2); /* refusal control */
+}
+
 int main(void) {
   test_valid_kats();
   test_decode_kats();
@@ -197,6 +290,7 @@ int main(void) {
   test_encode_kats();
   test_round_trip_sweep();
   test_count();
+  test_cli_capacity();
   if (failures) {
     fprintf(stderr, "test_zutf8: %d failure(s)\n", failures);
     return 1;
