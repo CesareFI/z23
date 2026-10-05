@@ -2716,6 +2716,9 @@ static int test_dev_land_publisher_death(void)
         ASSERT(row && row->type == JSON_OBJ);
         ASSERT_STR_EQ(json_get_str(json_get(row, "tip")), rig.tip);
         ASSERT_STR_EQ(json_get_str(json_get(row, "base")), before);
+        const struct json_value *pending_outcomes = dlx_arr(&c, "outcomes");
+        ASSERT(pending_outcomes);
+        ASSERT_EQ(pending_outcomes->num_children, 0);
         dlx_end(&c);
         char land[1200], queue_path[1400], wire[8192];
         size_t wire_len;
@@ -2726,6 +2729,10 @@ static int test_dev_land_publisher_death(void)
         json_init(&retained);
         ASSERT(json_read(&retained, wire, wire_len));
         ASSERT_STR_EQ(json_get_str(json_get(&retained, "local")), rig.tip);
+        ASSERT_STR_EQ(json_get_str(json_get(&retained, "state")), "inflight");
+        ASSERT_STR_EQ(json_get_str(json_get(&retained, "phase")), "push");
+        ASSERT_STR_EQ(json_get_str(json_get(&retained, "tip_pushed")), "");
+        ASSERT(json_get_int(json_get(&retained, "push_diagnostic_pending")) == 1);
         json_free(&retained);
         pid_t receiver = fork();
         ASSERT(receiver >= 0);
@@ -5757,12 +5764,85 @@ static void dlx_pick_barrier_close(int ready[2], int release[2], pid_t child)
     if (child > 0) (void)waitpid(child, NULL, 0);
 }
 
-static int test_dev_land_competing_publish(void)
+static int dlx_competing_blocked(const struct dlx_rig *rig,
+                                 const struct dlx_adopt_fix *count,
+                                 const char *loser, const char *expected)
+{
+    int failures = 0;
+    struct dlx_call c;
+    char base[64], observed[64], before_wire[8192], after_wire[8192];
+    size_t before_len, after_len;
+    ASSERT(dlx_origin_main(rig, base));
+    ASSERT(dlx_queue_bytes(before_wire, sizeof(before_wire), &before_len));
+    struct json_value partial;
+    json_init(&partial);
+    ASSERT(json_read(&partial, before_wire, before_len));
+    ASSERT_STR_EQ(json_get_str(json_get(&partial, "state")), expected);
+    json_free(&partial);
+    dlx_begin(&c, loser);
+    ASSERT(dlx_run(&c) && !dlx_ok(&c));
+    ASSERT_STR_EQ(dlx_err_code(&c), "STEP_BUSY");
+    dlx_end(&c);
+    ASSERT(dlx_queue_bytes(after_wire, sizeof(after_wire), &after_len));
+    ASSERT_EQ(before_len, after_len);
+    ASSERT(memcmp(before_wire, after_wire, before_len) == 0);
+    ASSERT(dlx_origin_main(rig, observed));
+    ASSERT_STR_EQ(observed, base);
+    ASSERT(access(count->marker, F_OK) != 0 && errno == ENOENT);
+    dlx_begin(&c, "status");
+    ASSERT(dlx_run(&c) && dlx_ok(&c));
+    const struct json_value *pending = dlx_arr(&c, "outcomes");
+    ASSERT(pending && pending->num_children == 0);
+    dlx_end(&c);
+_test_next:;
+    return failures;
+}
+
+static void dlx_competing_child(const char *winner, bool prepared,
+                                int ready[2], int release[2])
+{
+    (void)alarm(60);
+    (void)close(ready[0]);
+    (void)close(release[1]);
+    struct dlx_call other;
+    dlx_begin(&other, winner);
+    const char *expected = prepared || strcmp(winner, "drive") == 0
+                           ? "landed" : "started";
+    bool landed = dlx_run(&other) && dlx_ok(&other) &&
+                  strcmp(dlx_str(&other, "state"), expected) == 0;
+    dlx_end(&other);
+    _exit(landed ? 0 : 1);
+}
+
+static int dlx_competing_beats(const struct dlx_rig *rig,
+                              const struct dlx_adopt_fix *count,
+                              const char *winner, const char *loser,
+                              bool prepared, int ready, int release)
+{
+    int failures = 0;
+    int beats = !prepared && strcmp(winner, "drive") == 0 ? 2 : 1;
+    for (int beat = 0; beat < beats; beat++) {
+        char marker = 0;
+        ASSERT(read(ready, &marker, 1) == 1 && marker == 'R');
+        ASSERT(dlx_competing_blocked(rig, count, loser,
+                   !prepared && beat == 0 ? "queued" : "inflight") == 0);
+        ASSERT(write(release, "G", 1) == 1);
+    }
+_test_next:;
+    return failures;
+}
+
+static int test_dev_land_competing_publish(const char *winner, const char *loser,
+                                           bool prepared)
 {
     int failures = 0;
     int ready[2] = {-1, -1}, release[2] = {-1, -1};
     pid_t child = -1;
-    TEST("land: competing integrators publish one passed pair once") {
+    char label[160];
+    (void)snprintf(label, sizeof(label),
+                   "land: %s versus %s %s row is singleflight", winner, loser,
+                   prepared ? "in-flight" : "queued");
+    TEST(label) {
         struct dlx_rig rig;
         struct dlx_call c;
         int status = 0;
@@ -5773,41 +5853,39 @@ static int test_dev_land_competing_publish(void)
         dlx_submit(&c, &rig, rig.tip);
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         dlx_end(&c);
-        dlx_begin(&c, "step");
-        ASSERT(dlx_run(&c) && dlx_ok(&c));
-        dlx_end(&c);
+        if (prepared) {
+            dlx_begin(&c, "step");
+            ASSERT(dlx_run(&c) && dlx_ok(&c));
+            dlx_end(&c);
+        }
+        struct dlx_adopt_fix count = {.rig = rig};
+        ASSERT(dlx_arm_receive_count(&count));
         setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
         ASSERT(dlx_pick_barrier_open(ready, release));
         zcl_native_dev_land_test_pick_barrier(ready[1], release[0]);
         child = fork();
         ASSERT(child >= 0);
-        if (child == 0) {
-            (void)close(ready[0]);
-            (void)close(release[1]);
-            struct dlx_call other;
-            dlx_begin(&other, "step");
-            bool landed = dlx_run(&other) && dlx_ok(&other) &&
-                          strcmp(dlx_str(&other, "state"), "landed") == 0;
-            dlx_end(&other);
-            _exit(landed ? 0 : 1);
-        }
+        if (child == 0)
+            dlx_competing_child(winner, prepared, ready, release);
         ASSERT(close(ready[1]) == 0);
         ready[1] = -1;
         ASSERT(close(release[0]) == 0);
         release[0] = -1;
-        char marker = 0;
-        ASSERT(read(ready[0], &marker, 1) == 1 && marker == 'R');
-        dlx_begin(&c, "step");
-        ASSERT(dlx_run(&c) && !dlx_ok(&c));
-        ASSERT_STR_EQ(dlx_err_code(&c), "STEP_BUSY");
-        dlx_end(&c);
-        ASSERT(write(release[1], "G", 1) == 1);
+        ASSERT(dlx_competing_beats(&rig, &count, winner, loser, prepared,
+                                   ready[0], release[1]) == 0);
         ASSERT(close(release[1]) == 0);
         release[1] = -1;
         ASSERT(waitpid(child, &status, 0) == child);
         child = -1;
         ASSERT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
         zcl_native_dev_land_test_pick_barrier(-1, -1);
+        if (!prepared && strcmp(winner, "step") == 0) {
+            dlx_begin(&c, "drive");
+            ASSERT(dlx_run(&c) && dlx_ok(&c));
+            ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+            dlx_end(&c);
+        }
+        ASSERT(dlx_receive_once(&count));
         dlx_begin(&c, "step");
         ASSERT(dlx_run(&c) && dlx_ok(&c));
         ASSERT_STR_EQ(dlx_str(&c, "state"), "empty");
@@ -9237,7 +9315,11 @@ int test_dev_land(void)
     failures += test_dev_land_drive_base_watch();
 #endif
 
-    failures += test_dev_land_competing_publish();
+    failures += test_dev_land_competing_publish("step", "step", true);
+    failures += test_dev_land_competing_publish("step", "drive", true);
+    failures += test_dev_land_competing_publish("drive", "step", true);
+    failures += test_dev_land_competing_publish("step", "drive", false);
+    failures += test_dev_land_competing_publish("drive", "step", false);
 
     failures += test_dev_land_bounded_drive();
 
