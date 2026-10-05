@@ -359,7 +359,27 @@ static void test_comment_tail(void) {
   }
 }
 
+/* These scalars are valid UTF-8 but outside XML 1.0's Char production. */
+static void test_xml_scalar_edges(void) {
+  static const char *const rows[] = {"\xEF\xBF\xBE", "\xEF\xBF\xBF"};
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    for (unsigned operation = 0; operation < 3; operation++) {
+      SINK(s);
+      zxml x;
+      zxml_open(&x, sink_write, &s, ZXML_COMPACT);
+      zxml_status opened = zxml_elem_open(&x, "r");
+      zxml_status result = operation == 0 ? zxml_text(&x, rows[i]) :
+                           operation == 1 ? zxml_attr(&x, "v", rows[i]) :
+                                            zxml_comment(&x, rows[i]);
+      CHECK(opened == ZXML_OK && result == ZXML_ERR_TEXT &&
+            zxml_elem_close(&x) == ZXML_ERR_TEXT &&
+            s.len == 2 && memcmp(s.buf, "<r", 2) == 0);
+    }
+  }
+}
+
 int main(void) {
+  test_xml_scalar_edges();
   test_comment_tail();
   test_nesting();
   test_attributes();

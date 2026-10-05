@@ -14,7 +14,7 @@
  *    ZXML_MAX_NAME bytes
  *  - text, attribute values, and comments must be well-formed UTF-8
  *    (checked with zutf8) and free of control bytes other than
- *    '\t' '\n' '\r'; "--" and a trailing '-' are rejected in comments
+ *    '\t' '\n' '\r' and exclude U+FFFE/U+FFFF; "--" and a trailing '-' are rejected in comments
  *  - escaping by context: '&' '<' '>' in text, plus '"' and '\'' in
  *    attribute values
  *

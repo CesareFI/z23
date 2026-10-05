@@ -53,14 +53,31 @@ static bool name_valid(const char *name) {
 
 /* Reject control bytes (other than tab/newline/return) and ill-formed
  * UTF-8 before anything is emitted. */
+/* XML 1.0 allows Unicode scalars except U+FFFE/U+FFFF (C0 controls
+ * are checked separately). Decode also retains the UTF-8 error category. */
+static zxml_status check_scalars(const char *s, size_t len) {
+  size_t at = 0;
+  while (at < len) {
+    uint32_t cp;
+    size_t consumed = 0;
+    if (zutf8_decode_n(s + at, len - at, &cp, &consumed) != ZUTF8_OK)
+      return ZXML_ERR_UTF8;
+    if (cp == 0xFFFE || cp == 0xFFFF)
+      return ZXML_ERR_TEXT;
+    at += consumed;
+  }
+  return ZXML_OK;
+}
+
 static zxml_status check_text(const char *s, size_t len) {
   for (size_t i = 0; i < len; i++) {
     unsigned char c = (unsigned char)s[i];
     if (c < 0x20 && c != '\t' && c != '\n' && c != '\r')
       return ZXML_ERR_TEXT;
   }
-  if (!zutf8_validate_n(s, len))
-    return ZXML_ERR_UTF8;
+  zxml_status st = check_scalars(s, len);
+  if (st != ZXML_OK)
+    return st;
   return ZXML_OK;
 }
 
