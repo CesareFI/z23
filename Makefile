@@ -4313,7 +4313,10 @@ zcode-package-asan: $(ZCODE_PACKAGE_BASE_ASAN_BIN) \
 	  ASAN_CI_GROUPS='$(ZCODE_PACKAGE_ASAN_GROUPS)'
 	@echo "zcode-package-asan: OK (isolated base/sha3/codec + signed package lifecycle)"
 
-.PHONY: check-zcode-package-registry print-zcode-monolith-lib-sources
+.PHONY: docs-zcode-package-registry check-zcode-package-registry print-zcode-monolith-lib-sources
+docs-zcode-package-registry: $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN)
+	@tools/scripts/zcode_registry_rederive.sh
+
 check-zcode-package-registry: $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN) $(BIN_DIR)/z23-lint
 	@tools/lint/check_zcode_package_registry.sh
 .PHONY: check-zcode-package-standalone

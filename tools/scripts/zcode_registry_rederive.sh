@@ -30,6 +30,8 @@
 #  * Discovers every contexts/commons/packages/*/zcode-package.json, whether
 #    or not that package has a registry .def row. A tracked manifest omitted
 #    from the scan is a coverage failure, never a clean result.
+#  * Includes every package directory named by the existing registry .def
+#    declarations, including monolith libraries and their application consumers.
 #  * Derives from actual on-disk content. It cannot manufacture a pass: every
 #    root written here is one the C23 checker independently recomputes.
 #  * Converges or FAILS LOUD. A non-converging registry exits non-zero and says
@@ -63,6 +65,13 @@ MISMATCH_PINNED=()
 MISMATCH_EXPECTED=()
 declare -A ROOT_BY_NAME MANIFEST_BY_NAME
 
+registry_package_manifests() { # $1 = repository root
+    local root="$1" def
+    while IFS= read -r def; do
+        awk -F '"' '/^ZCODE_PACKAGE\(/ { print $4 "/zcode-package.json" }' "$root/$def"
+    done < <(git -C "$root" ls-files -- 'engine/composition/*.def')
+}
+
 # The filesystem glob is the working-tree discovery. Git's tracked list is an
 # independent coverage oracle: if discovery ever skips a checked-in manifest,
 # the script refuses before it can print CLEAN. Untracked package manifests are
@@ -71,7 +80,8 @@ require_manifest_coverage() { # $1 = repository root, remaining = discovered
     local root="$1"; shift
     local tracked candidate found
     mapfile -t tracked < <(
-        git -C "$root" ls-files -- "$CORPUS_MANIFEST_ROOT/*/zcode-package.json" |
+        { git -C "$root" ls-files -- "$CORPUS_MANIFEST_ROOT/*/zcode-package.json";
+          registry_package_manifests "$root"; } |
             LC_ALL=C sort
     )
     [ "${#tracked[@]}" -gt 0 ] || {
@@ -95,6 +105,9 @@ require_manifest_coverage() { # $1 = repository root, remaining = discovered
 discover_package_manifests() { # $1 = repository root
     local root="$1" path
     local found=("$root"/$CORPUS_MANIFEST_ROOT/*/zcode-package.json)
+    while IFS= read -r path; do
+        found+=("$root/$path")
+    done < <(registry_package_manifests "$root")
     PACKAGE_MANIFESTS=()
     for path in "${found[@]}"; do
         [ -f "$path" ] || continue
@@ -265,21 +278,24 @@ fixture_derive() { # selftest-only deterministic stand-in for --derive-dir
 
 run_selftest() {
     local tmp rounds i old_leaf old_consumer new_leaf new_consumer
+    local top_dir=contexts/commons/modules/top
     tmp=$(mktemp -d)
     trap "rm -rf '$tmp'" EXIT
     old_leaf=$(printf '%064d' 0 | tr '0' 'a')
     old_consumer=$(printf '%064d' 0 | tr '0' 'b')
     new_leaf=$(printf '%064d' 0 | tr '0' '1')
     new_consumer=$(printf '%064d' 0 | tr '0' '2')
-    mkdir -p "$tmp/$CORPUS_MANIFEST_ROOT"/{zprng,consumer,top}
+    mkdir -p "$tmp/$CORPUS_MANIFEST_ROOT"/{zprng,consumer} "$tmp/$top_dir" "$tmp/engine/composition"
+    printf 'ZCODE_PACKAGE("fixture/top", "%s", 1,\n)\n' "$top_dir" \
+        > "$tmp/engine/composition/fixture.def"
     printf '{\n  "schema": 1,\n  "name": "zprng/zprng",\n  "dependencies": []\n}\n' \
         > "$tmp/$CORPUS_MANIFEST_ROOT/zprng/zcode-package.json"
     printf '{\n  "schema": 1,\n  "name": "fixture/consumer",\n  "dependencies": [\n    {\n      "name": "zprng/zprng",\n      "root": "%s"\n    }\n  ]\n}\n' \
         "$old_leaf" > "$tmp/$CORPUS_MANIFEST_ROOT/consumer/zcode-package.json"
     printf '{\n  "schema": 1,\n  "name": "fixture/top",\n  "dependencies": [\n    {\n      "root": "%s",\n      "name": "fixture/consumer"\n    }\n  ]\n}\n' \
-        "$old_consumer" > "$tmp/$CORPUS_MANIFEST_ROOT/top/zcode-package.json"
+        "$old_consumer" > "$tmp/$top_dir/zcode-package.json"
     git -C "$tmp" init -q
-    git -C "$tmp" add "$CORPUS_MANIFEST_ROOT"
+    git -C "$tmp" add "$CORPUS_MANIFEST_ROOT" "$top_dir" engine/composition
 
     discover_package_manifests "$tmp"
     [ "${#PACKAGE_MANIFESTS[@]}" -eq 3 ] || return 1
@@ -292,6 +308,15 @@ run_selftest() {
         return 1
     fi
     echo "  selftest ok: an omitted non-registry zprng manifest fails coverage"
+    incomplete=()
+    for i in "${PACKAGE_MANIFESTS[@]}"; do
+        [[ "$i" == "$top_dir/zcode-package.json" ]] || incomplete+=("$i")
+    done
+    if require_manifest_coverage "$tmp" "${incomplete[@]}" >/dev/null 2>&1; then
+        echo "SELFTEST FAILED: omitted registered consumer reported complete coverage" >&2
+        return 1
+    fi
+    echo "  selftest ok: an omitted registered consumer outside the corpus fails coverage"
 
     rounds=0
     while :; do
@@ -309,8 +334,8 @@ run_selftest() {
         return 1
     }
     grep -q "$new_leaf" "$tmp/$CORPUS_MANIFEST_ROOT/consumer/zcode-package.json"
-    grep -q "$new_consumer" "$tmp/$CORPUS_MANIFEST_ROOT/top/zcode-package.json"
-    if grep -qr -e "$old_leaf" -e "$old_consumer" "$tmp/$CORPUS_MANIFEST_ROOT"; then
+    grep -q "$new_consumer" "$tmp/$top_dir/zcode-package.json"
+    if grep -qr -e "$old_leaf" -e "$old_consumer" "$tmp/$CORPUS_MANIFEST_ROOT" "$tmp/$top_dir"; then
         echo "SELFTEST FAILED: an old dependency root survived the fixpoint" >&2
         return 1
     fi
