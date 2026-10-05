@@ -3,6 +3,8 @@
 #include "zjson/zjson.h"
 
 #include <math.h>
+#include <locale.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +16,70 @@
       return 1;                                                              \
     }                                                                        \
   } while (0)
+
+#ifdef ZJSON_TEST_FORMATTER
+static int expect(zjson *w, const char *want);
+/* Controlled libc fixture: no locale installation or global locale change. */
+static const char *test_radix = ".";
+static int format_fault;
+struct lconv *zjson_test_localeconv(void) {
+  static struct lconv info;
+  info.decimal_point = (char *)test_radix;
+  return &info;
+}
+int zjson_test_snprintf(char *out, size_t cap, const char *fmt, ...) {
+  if (format_fault) {
+    if (cap) out[0] = '\0';
+    return format_fault < 0 ? -1 : (int)cap;
+  }
+  char tmp[64];
+  va_list args;
+  va_start(args, fmt);
+  int n = vsnprintf(tmp, sizeof tmp, fmt, args);
+  va_end(args);
+  if (n < 0 || (size_t)n >= sizeof tmp) return -1;
+  char *point = strchr(tmp, '.');
+  if (point) {
+    size_t r = strlen(test_radix);
+    if ((size_t)n + r >= sizeof tmp) return -1;
+    memmove(point + r, point + 1, strlen(point + 1) + 1);
+    memcpy(point, test_radix, r);
+    n += (int)r - 1;
+  }
+  if (cap) {
+    size_t copy = (size_t)n < cap - 1 ? (size_t)n : cap - 1;
+    memcpy(out, tmp, copy);
+    out[copy] = '\0';
+  }
+  return n;
+}
+static int test_locale_formatter(void) {
+  const char *radices[] = {",", "\xd9\xab"};
+  for (size_t i = 0; i < sizeof radices / sizeof radices[0]; ++i) {
+    char buf[64]; zjson w;
+    zjson_init(&w, buf, sizeof buf);
+    test_radix = radices[i];
+    zjson_status st = zjson_f64(&w, 1.5);
+    test_radix = ".";
+    CHECK(st == ZJSON_OK);
+    CHECK(expect(&w, "1.5") == 0);
+  }
+  for (int fault = -1; fault <= 1; fault += 2) {
+    for (int kind = 0; kind < 3; ++kind) {
+      char buf[64]; zjson w;
+      zjson_init(&w, buf, sizeof buf);
+      format_fault = fault;
+      zjson_status st = kind == 0 ? zjson_i64(&w, -23) :
+                        kind == 1 ? zjson_u64(&w, 23) : zjson_f64(&w, 1.5);
+      format_fault = 0;
+      CHECK(st == ZJSON_ENCODING);
+      CHECK(zjson_len(&w) == 0);
+      CHECK(zjson_bool(&w, true) == ZJSON_ENCODING);
+    }
+  }
+  return 0;
+}
+#endif
 
 /* Build a document with a generous buffer and compare to expected. */
 static int expect(zjson *w, const char *want) {
@@ -462,6 +528,9 @@ int main(void) {
     const char *name;
     int (*fn)(void);
   } tests[] = {
+#ifdef ZJSON_TEST_FORMATTER
+      {"locale_formatter", test_locale_formatter},
+#endif
       {"kat_basics", test_kat_basics},   {"escapes", test_escapes},
       {"numbers", test_numbers},         {"state_errors", test_state_errors},
       {"depth", test_depth},             {"overflow", test_overflow},

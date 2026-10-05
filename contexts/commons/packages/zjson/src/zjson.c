@@ -3,11 +3,19 @@
 #include "zjson/zjson.h"
 
 #include <inttypes.h>
+#include <locale.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "zutf8/zutf8.h"
+
+#ifdef ZJSON_TEST_FORMATTER
+int zjson_test_snprintf(char *, size_t, const char *, ...);
+struct lconv *zjson_test_localeconv(void);
+#define snprintf zjson_test_snprintf
+#define localeconv zjson_test_localeconv
+#endif
 
 void zjson_init(zjson *w, char *buf, size_t cap) {
   if (!w)
@@ -215,6 +223,12 @@ static zjson_status emit_scalar(zjson *w, const char *tmp, size_t n) {
   return w->status;
 }
 
+static zjson_status emit_number(zjson *w, const char *tmp, size_t cap, int n) {
+  if (n <= 0 || (size_t)n >= cap)
+    return fail(w, ZJSON_ENCODING);
+  return emit_scalar(w, tmp, (size_t)n);
+}
+
 zjson_status zjson_i64(zjson *w, int64_t v) {
   if (!w)
     return ZJSON_STATE;
@@ -222,7 +236,7 @@ zjson_status zjson_i64(zjson *w, int64_t v) {
     return w->status;
   char tmp[24];
   int n = snprintf(tmp, sizeof tmp, "%" PRId64, v);
-  return emit_scalar(w, tmp, (size_t)n);
+  return emit_number(w, tmp, sizeof tmp, n);
 }
 
 zjson_status zjson_u64(zjson *w, uint64_t v) {
@@ -232,7 +246,26 @@ zjson_status zjson_u64(zjson *w, uint64_t v) {
     return w->status;
   char tmp[24];
   int n = snprintf(tmp, sizeof tmp, "%" PRIu64, v);
-  return emit_scalar(w, tmp, (size_t)n);
+  return emit_number(w, tmp, sizeof tmp, n);
+}
+
+static int normalize_radix(char *tmp, int n) {
+  /* localeconv follows the calling thread's numeric locale where supported.
+   * Only the mantissa radix is replaced; never mutate the global locale. */
+  struct lconv *info = localeconv();
+  if (!info || !info->decimal_point || !info->decimal_point[0])
+    return -1;
+  size_t at = tmp[0] == '-' ? 1 : 0;
+  while (at < (size_t)n && tmp[at] >= '0' && tmp[at] <= '9') ++at;
+  size_t radix = strlen(info->decimal_point);
+  if (radix < (size_t)n - at &&
+      memcmp(tmp + at, info->decimal_point, radix) == 0 &&
+      tmp[at + radix] >= '0' && tmp[at + radix] <= '9') {
+    tmp[at] = '.';
+    memmove(tmp + at + 1, tmp + at + radix, (size_t)n - at - radix + 1);
+    n -= (int)radix - 1;
+  }
+  return n;
 }
 
 zjson_status zjson_f64(zjson *w, double v) {
@@ -244,7 +277,9 @@ zjson_status zjson_f64(zjson *w, double v) {
     return fail(w, ZJSON_ENCODING); /* JSON has no NaN/Inf */
   char tmp[32];
   int n = snprintf(tmp, sizeof tmp, "%.17g", v);
-  return emit_scalar(w, tmp, (size_t)n);
+  if (n <= 0 || (size_t)n >= sizeof tmp)
+    return fail(w, ZJSON_ENCODING);
+  return emit_number(w, tmp, sizeof tmp, normalize_radix(tmp, n));
 }
 
 zjson_status zjson_bool(zjson *w, bool v) {
