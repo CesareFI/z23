@@ -379,7 +379,9 @@ static void test_comment_tail(void) {
 
 /* These scalars are valid UTF-8 but outside XML 1.0's Char production. */
 static void test_xml_scalar_edges(void) {
-  static const char *const rows[] = {"\xEF\xBF\xBE", "\xEF\xBF\xBF"};
+  static const char *const rows[] = {"\xEF\xBF\xBE", "\xEF\xBF\xBF",
+      "a\xEF\xBF\xBE", "a\xEF\xBF\xBF",
+      "\xC3\xA9\xEF\xBF\xBE", "\xC3\xA9\xEF\xBF\xBF"};
   for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
     for (unsigned operation = 0; operation < 3; operation++) {
       SINK(s);
@@ -396,7 +398,36 @@ static void test_xml_scalar_edges(void) {
   }
 }
 
+/* Adjacent permitted scalar values remain valid in all XML text contexts. */
+static void test_xml_scalar_controls(void) {
+  static const char *const rows[] = {"\xEF\xBF\xBD", "\xF0\x90\x80\x80"};
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    for (unsigned operation = 0; operation < 3; operation++) {
+      SINK(s);
+      zxml x;
+      zxml_open(&x, sink_write, &s, ZXML_COMPACT);
+      OK(zxml_elem_open(&x, "r"));
+      zxml_status result = operation == 0 ? zxml_text(&x, rows[i]) :
+                           operation == 1 ? zxml_attr(&x, "v", rows[i]) :
+                                            zxml_comment(&x, rows[i]);
+      CHECK(result == ZXML_OK);
+      OK(zxml_elem_close(&x));
+      OK(zxml_close(&x));
+      const char *prefix = operation == 0 ? "<r>" :
+                           operation == 1 ? "<r v=\"" : "<r><!--";
+      const char *suffix = operation == 0 ? "</r>" :
+                           operation == 1 ? "\"/>" : "--></r>";
+      CHECK(s.len == strlen(prefix) + strlen(rows[i]) + strlen(suffix));
+      CHECK(memcmp(s.buf, prefix, strlen(prefix)) == 0);
+      CHECK(memcmp(s.buf + strlen(prefix), rows[i], strlen(rows[i])) == 0);
+      CHECK(memcmp(s.buf + strlen(prefix) + strlen(rows[i]), suffix,
+                   strlen(suffix)) == 0);
+    }
+  }
+}
+
 int main(void) {
+  test_xml_scalar_controls();
   test_comment_tail_controls();
   test_xml_scalar_edges();
   test_comment_tail();
