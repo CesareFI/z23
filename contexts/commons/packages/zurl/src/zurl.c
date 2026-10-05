@@ -41,7 +41,7 @@ static size_t scan_chars(const char *text, size_t i, size_t end,
       continue;
     }
     if (is_unreserved(c) || is_sub_delim(c) ||
-        (extra && strchr(extra, c))) {
+        (c != 0 && extra && strchr(extra, c))) {
       i++;
       continue;
     }

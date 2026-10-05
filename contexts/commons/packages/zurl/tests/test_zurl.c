@@ -166,6 +166,30 @@ static int test_invalid(void) {
   return 0;
 }
 
+static int test_embedded_nul(void) {
+  zurl u;
+  /* Explicit byte spans: strlen would hide the bytes after NUL. */
+  const char path[] = {'x', ':', 'a', 0, 'b'};
+  const char query[] = {'x', ':', '?', 'a', 0, 'b'};
+  const char fragment[] = {'x', ':', '#', 'a', 0, 'b'};
+  const char userinfo[] = {'x', ':', '/', '/', 'a', 0, 'b', '@', 'h'};
+  CHECK(!zurl_parse_n(path, sizeof path, &u));
+  CHECK(!zurl_parse_n(query, sizeof query, &u));
+  CHECK(!zurl_parse_n(fragment, sizeof fragment, &u));
+  CHECK(!zurl_parse_n(userinfo, sizeof userinfo, &u));
+  /* A NUL outside the bounded input is not part of the URI. */
+  CHECK(zurl_parse_n(path, 3, &u));
+  CHECK(span_eq(path, u.path, "a"));
+  /* Encoded zero remains legal syntax, preserved in every component. */
+  const char encoded[] = "x://a%00b@h/a%00b?a%00b#a%00b";
+  CHECK(zurl_parse_n(encoded, sizeof encoded - 1, &u));
+  CHECK(u.has_userinfo && span_eq(encoded, u.userinfo, "a%00b"));
+  CHECK(span_eq(encoded, u.path, "/a%00b"));
+  CHECK(u.has_query && span_eq(encoded, u.query, "a%00b"));
+  CHECK(u.has_fragment && span_eq(encoded, u.fragment, "a%00b"));
+  return 0;
+}
+
 static int test_copy_and_null(void) {
   zurl u;
   const char *t = "https://example.com/path";
@@ -233,6 +257,7 @@ int main(void) {
   } tests[] = {
       {"kat_valid", test_kat_valid},
       {"invalid", test_invalid},
+      {"embedded_nul", test_embedded_nul},
       {"copy_and_null", test_copy_and_null},
       {"fuzz", test_fuzz},
   };
