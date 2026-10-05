@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0 */
 /* zstats — streaming statistics (C23).
  *
  * Welford online mean/variance, min/max, exact integer sums, and
@@ -34,7 +35,24 @@ void zstats_add(zstats *s, double x);
 void zstats_add_repeated(zstats *s, double x, uint64_t k);
 
 /* Merge another accumulator into s (Chan's algorithm).
- * No-op if the combined sample count would exceed UINT64_MAX. */
+ * NULL arguments or count overflow are no-ops: every destination field
+ * remains unchanged. Negative M2 (including -infinity) in a nonempty
+ * operand is also refused without mutation. Empty payloads are ignored;
+ * one empty operand is an identity, and two empty operands reset s.
+ * For two nonempty operands, the following mean and M2 policies apply.
+ * Equal finite means are exact, including identical signed zeros; mixed
+ * signed zeros give +0. NaN from a nonempty mean propagates; same-sign
+ * infinities stay that infinity; infinity with a finite mean stays that
+ * infinity; opposite-sign infinities give NaN.
+ * For finite means, the exact count-weighted mean is rounded once to
+ * binary64, nearest with ties to even, without intermediate overflow or
+ * loss of a minority contribution before final rounding. It lies between
+ * the input means and cannot be infinite or NaN.
+ * For finite means, NaN M2 propagates before +infinity M2; otherwise M2 is
+ * M2a + M2b + (b-a)^2*nA*nB/(nA+nB), with floating-point rounding and
+ * possible +infinity. A non-finite nonempty mean makes M2 NaN (undefined
+ * variance). These policies apply to merge; add/add_repeated are separate.
+ * Requires IEEE binary64 double and default round-to-nearest arithmetic. */
 void zstats_merge(zstats *s, const zstats *other);
 
 uint64_t zstats_count(const zstats *s);
