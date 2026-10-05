@@ -174,10 +174,10 @@ static void test_format_kats(void) {
   char buf[128];
   CHECK(zcron_parse("* * * * *", 9, &c, NULL, 0));
   zcron_format(&c, buf, sizeof buf);
-  CHECK(strcmp(buf, "0-59 0-23 1-31 1-12 0-6") == 0);
+  CHECK(strcmp(buf, "0-59 0-23 * 1-12 *") == 0);
   CHECK(zcron_parse("*/15 1,3 * * 0", 14, &c, NULL, 0));
   zcron_format(&c, buf, sizeof buf);
-  CHECK(strcmp(buf, "0,15,30,45 1,3 1-31 1-12 0") == 0);
+  CHECK(strcmp(buf, "0,15,30,45 1,3 * 1-12 0") == 0);
   CHECK(zcron_parse("0 0 1 * 7", 9, &c, NULL, 0));
   zcron_format(&c, buf, sizeof buf);
   CHECK(strcmp(buf, "0 0 1 1-12 0") == 0); /* 7 folded to 0 */
@@ -239,8 +239,48 @@ static void test_next_monotonic(void) {
   }
 }
 
+static void test_format_preserves_day_semantics(void) {
+  static const struct {
+    const char *expr;
+    const char *canon;
+  } rows[] = {
+      {"0 0 13 * *", "0 0 13 1-12 *"},
+      {"0 0 * * 5", "0 0 * 1-12 5"},
+      {"0 0 * * *", "0 0 * 1-12 *"},
+      {"0 0 1-31 * *", "0 0 1-31 1-12 *"},
+      {"0 0 * * 0-6", "0 0 * 1-12 0-6"},
+  };
+  size_t i;
+  for (i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    int before_failures = failures;
+    zcron before = {0}, after = {0};
+    char text[64], small[2];
+    size_t expect_n = strlen(rows[i].canon);
+    size_t n;
+    small[0] = 'X';
+    small[1] = 'X';
+    CHECK(zcron_parse(rows[i].expr, strlen(rows[i].expr), &before, NULL, 0));
+    n = zcron_format(&before, text, sizeof text);
+    CHECK(n == expect_n);
+    CHECK(n < sizeof text);
+    CHECK(memcmp(text, rows[i].canon, expect_n) == 0);
+    CHECK(zcron_parse(text, n, &after, NULL, 0));
+    CHECK(before.dom_star == after.dom_star);
+    CHECK(before.dow_star == after.dow_star);
+    CHECK(zcron_next(&before, 1786752000LL) ==
+          zcron_next(&after, 1786752000LL));
+    CHECK(zcron_format(&before, NULL, 0) == expect_n);
+    CHECK(zcron_format(&before, small, sizeof small) == expect_n);
+    CHECK(small[0] == rows[i].canon[0]);
+    CHECK(small[1] == '\0');
+    fprintf(stderr, "cron_format_row=%zu result=%s\n", i,
+            failures == before_failures ? "PASS" : "FAIL");
+  }
+}
+
 int main(void) {
   expect_next("* * * * *", LLONG_MAX, -1);
+  test_format_preserves_day_semantics();
   test_parse_ok();
   test_parse_bad();
   test_next_basic();

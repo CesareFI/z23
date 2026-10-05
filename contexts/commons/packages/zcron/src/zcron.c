@@ -355,11 +355,13 @@ size_t zcron_format(const zcron *c, char *out, size_t cap) {
   femit(&f, " ");
   fmt_field(&f, c->hour, 0, 23);
   femit(&f, " ");
-  fmt_field(&f, c->dom, 1, 31);
+  if (c->dom_star) femit(&f, "*");
+  else fmt_field(&f, c->dom, 1, 31);
   femit(&f, " ");
   fmt_field(&f, c->month, 1, 12);
   femit(&f, " ");
-  fmt_field(&f, c->dow, 0, 6);
+  if (c->dow_star) femit(&f, "*");
+  else fmt_field(&f, c->dow, 0, 6);
   if (out && cap > 0) out[f.len < cap ? f.len : cap - 1] = '\0';
   return f.len;
 }
