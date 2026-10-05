@@ -64,11 +64,13 @@ static bool ext_key_bytes_equal(const struct ext_key *a, const struct ext_key *b
 
 int wallet_key_retirement_cases(void);
 int wallet_ext_key_failure_retirement_cases(void);
+int wallet_pubkey_verify_failure_cases(void);
 
 int test_domain_wallet_key_derivation(void)
 {
     int failures = wallet_key_retirement_cases();
     failures += wallet_ext_key_failure_retirement_cases();
+    failures += wallet_pubkey_verify_failure_cases();
 
     /* ── Layer 1: contract / null-edge ────────────────────────────── */
 
