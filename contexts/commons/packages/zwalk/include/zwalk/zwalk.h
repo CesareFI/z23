@@ -7,12 +7,18 @@
  *    byte-wise name comparison before visiting (readdir order is
  *    unspecified), so a walk is reproducible across runs, filesystems,
  *    and machines. This is a feature: callers may diff walk output.
- *  - Symlinks are NEVER followed by default. Following links turns a tree
+ *  - In a stable tree, observed final-component symlinks are not followed
+ *    by default. Following links turns a tree
  *    walk into a graph walk: cycles, escaped subtrees, and surprising
  *    duplicate work. With follow_symlinks=false a symlink is reported
  *    once as ZWALK_SYMLINK and never descended. Opt in with
  *    follow_symlinks=true only with a modest max_depth — depth is the
  *    ONLY cycle guard, and a dangling link fails the walk.
+ *    Root ancestors still resolve normally. Pathname inspection and opening
+ *    are separate operations; concurrent replacement can change the object
+ *    opened after classification. This API does not confine traversal within
+ *    an adversarial filesystem. Callers needing confinement must enforce it
+ *    independently rather than rely on follow_symlinks=false.
  *  - Bounded: recursion is capped at max_depth (default
  *    ZWALK_DEFAULT_MAX_DEPTH), joined paths at PATH_MAX bytes, and
  *    directory fan-out at ZWALK_MAX_ENTRIES per directory.

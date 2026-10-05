@@ -378,10 +378,22 @@ static void test_root_slash_controls(void) {
   }
 }
 
+/* Root ancestors resolve normally: no-follow is not path confinement. */
+static void test_root_symlink_ancestor(void) {
+  char path[512], expected[600];
+  path_to(path, sizeof path, "dlink/b.txt");
+  snprintf(expected, sizeof expected, "F 0 2 %s", path);
+  nvisits = 0;
+  CHECK(zwalk(path, NULL, record, NULL));
+  CHECK(nvisits == 1);
+  CHECK(nvisits == 1 && strcmp(visits[0], expected) == 0);
+}
+
 int main(void) {
   build_fixture();
   test_symlink_root_slashes();
   test_root_slash_controls();
+  test_root_symlink_ancestor();
   test_default_walk();
   test_depth_limit();
   test_skip_hidden();
