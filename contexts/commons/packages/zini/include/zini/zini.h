@@ -21,6 +21,9 @@
  *  - Duplicate keys: last wins, both within a section and across repeated
  *    sections of the same name.
  *  - No value quoting, no line continuation, no nesting.
+ *  - Non-comment lines must not contain NUL bytes, even after an inline
+ *    comment marker. Full-line comments are ignored without this restriction.
+ *    Stored section/key/value text is NUL-terminated; embedded NUL is an error.
  *
  * Iteration order: zini_foreach() visits entries in a deterministic sorted
  * order — sections lexicographically (the global section "" sorts first),

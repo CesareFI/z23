@@ -172,6 +172,52 @@ static void test_iteration_sorted_deterministic(void) {
   zini_destroy(ib);
 }
 
+static void test_embedded_nul(void) {
+  /* Explicit spans: strlen would hide the byte and cannot qualify this test. */
+  static const char key[] = "a\0b=1\na=2\n";
+  static const char section[] = "[s\0x]\nk=v\n";
+  static const char value[] = "k=v\0x\n";
+  static const char partial[] = "ok=1\nbad=v\0x\n";
+  static const char nested[] = "[s]\nok=1\nbad\0key=2\r\n";
+  static const char inline_comment[] = "k=v # ignored\0bytes\n";
+  static const char blank_nul[] = " \t\0 \t\n";
+  const struct {
+    const char *text;
+    size_t len;
+    size_t line;
+  } cases[] = {
+      {key, sizeof key - 1, 1},
+      {section, sizeof section - 1, 1},
+      {value, sizeof value - 1, 1},
+      {partial, sizeof partial - 1, 2},
+      {nested, sizeof nested - 1, 3},
+      {inline_comment, sizeof inline_comment - 1, 1},
+      {blank_nul, sizeof blank_nul - 1, 1},
+  };
+  for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    zini_error err = {0, nullptr};
+    zini *ini = zini_parse(cases[i].text, cases[i].len, &err);
+    CHECK(ini == nullptr);
+    CHECK(err.line == cases[i].line);
+    CHECK(err.message && strcmp(err.message, "embedded NUL byte") == 0);
+    zini_destroy(ini); /* clean up the unexpected base result on RED */
+  }
+  zini *ini = zini_parse(nested, sizeof nested - 1, nullptr);
+  CHECK(ini == nullptr); /* cleanup must not depend on a diagnostic pointer */
+  zini_destroy(ini);
+
+  /* Ignored full-line comments retain their byte-span behavior. */
+  static const char comments[] = " # ignored\0bytes\n; ignored\0bytes\nk=v\n";
+  ini = zini_parse(comments, sizeof comments - 1, nullptr);
+  CHECK(ini != nullptr);
+  if (ini) {
+    CHECK(zini_count(ini) == 1);
+    const char *v = zini_get(ini, "", "k");
+    CHECK(v && strcmp(v, "v") == 0);
+  }
+  zini_destroy(ini);
+}
+
 int main(void) {
   test_sections_and_keys();
   test_global_section();
@@ -180,6 +226,7 @@ int main(void) {
   test_empty_values_and_whitespace();
   test_crlf();
   test_malformed_lines();
+  test_embedded_nul();
   test_empty_section_name_and_header_whitespace();
   test_empty_input();
   test_iteration_sorted_deterministic();

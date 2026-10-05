@@ -178,6 +178,9 @@ static const char *parse_line(struct parser *p, const char *line,
     body--;
   if (i == body || line[i] == '#' || line[i] == ';')
     return nullptr; /* blank line or full-line comment */
+  /* Stored text is NUL-terminated; reject unrepresentable line bytes. */
+  if (memchr(line + i, '\0', body - i))
+    return "embedded NUL byte";
   if (line[i] == '[')
     return parse_section(p, line, i, body);
   return parse_key_value(p, line, i, body);
