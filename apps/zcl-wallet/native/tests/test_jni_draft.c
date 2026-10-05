@@ -427,7 +427,8 @@ static void exact_and_maximum_inputs(void)
 
 static unsigned failure_frees(size_t kind, unsigned ordinal)
 {
-    if (kind == 3 || (kind == 0 && ordinal <= 3)) return 0;
+    if (kind == 3 || (kind == 0 && ordinal <= 5) ||
+        ((kind == 1 || kind == 2) && ordinal <= 2)) return 0;
     return 1;
 }
 
@@ -450,7 +451,8 @@ static void read_failures(void)
         const java_inputs inputs = prepare_fixture(false, ZCL_MAINNET);
         fail_element = ordinal;
         element_with_exception = true;
-        CHECK(run(&inputs) == NULL && pending && borrowed == 0 && frees == 1);
+        CHECK(run(&inputs) == NULL && pending && borrowed == 0 &&
+            frees == failure_frees(1, ordinal));
         release_references();
     }
 }
@@ -563,6 +565,16 @@ static void malformed_byte_arrays(void)
     release_references();
 }
 
+static void destination_admission_precedes_source_ownership(void)
+{
+    const java_inputs inputs = prepare_fixture(false, ZCL_MAINNET);
+    inputs.destinations->data.objects[0]->data.bytes[0] = 0xff;
+    expect_status(&inputs, ZCL_INVALID_ENCODING);
+    CHECK(destination_reads == 1 && element_calls == 1 && byte_calls == 1);
+    CHECK(frees == 0 && owned_inputs == NULL);
+    release_references();
+}
+
 static void bounded_wire_helper(void)
 {
     CHECK(draft_fixture_init(&fixture_request, &fixture, ZCL_MAINNET));
@@ -593,6 +605,7 @@ int main(void)
     invalid_array_counts();
     parameter_shapes_and_widths();
     malformed_byte_arrays();
+    destination_admission_precedes_source_ownership();
     bounded_wire_helper();
     puts("JNI draft checks passed");
     return 0;

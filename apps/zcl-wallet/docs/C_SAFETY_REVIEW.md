@@ -5092,3 +5092,29 @@ admission regressions prove no unnecessary allocation/copy and preserved owner
 failure state. Dual-compiler ASan/UBSan/LSan, both static analyzers and the
 complete 145/140 CTest matrix pass. TLS remains quarantined; no Android runtime
 or physical-device claim is made.
+
+## JNI draft destination admission before source ownership — 2026-10-06
+
+`build_copied` now runs its existing bounded destination parser after count and
+scalar admission but before allocating the copied-input owner. Parsed addresses
+remain in the zeroed local request and are copied by value into the same owner
+on success. Previous transactions, construction, assessment and serialization
+then follow their existing paths.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer bounds and copying | Each address still uses the existing 35-byte scratch and network-aware parser. The refusal regression reads exactly the first malformed destination and no previous-transaction bytes. |
+| Allocation and ownership | Malformed destinations allocate none of the fixed 16,272-byte owner and borrow no source reference. Accepted requests retain one zero-initialized owner and its complete wipe-before-free path. |
+| Integer conversion and overflow | No arithmetic or conversion changed. Counts and scalar fields are admitted first under the existing input/output, unsigned-width, fee and amount bounds. |
+| Initialization and retirement | The local request starts zeroed and is wiped on destination refusal, allocation refusal and after its admitted fields are copied. Each address scratch is wiped after parsing. |
+| JNI exceptions and references | Destination element, length and region exceptions are observed and their local reference is retired before allocation or source access. Source failures after admission retain their existing cleanup. |
+| Error precedence | A malformed destination now refuses before an unrelated malformed source. Successful requests and each underlying status code are unchanged. This ordering is the resource-admission contract under test. |
+| Stack and complexity | No frame or helper was added. Production remains M<=10 across 602 functions; tests remain M<=15 across 1,856 functions without suppression. |
+| Transaction and custody semantics | The same parsed address values reach the same draft constructor. Monetary limits, transaction validity, signing authority, keys, seeds, storage and network behavior are unchanged. |
+
+Canonical RED observes source ownership before destination refusal. GREEN
+observes one destination read, no source read and no aggregate allocation; a
+late-admission mutation restores failure. Focused Clang 20 and GCC 14
+ASan/UBSan/LSan lanes pass, as do both static analyzers and the complete
+145/140 CTest matrix. TLS remains quarantined. This fake-VM evidence makes no
+ART, emulator, hardware or physical-device claim.

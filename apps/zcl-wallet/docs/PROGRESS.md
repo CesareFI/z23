@@ -8437,3 +8437,27 @@ M=10; 1,855 test functions have none above M=15. Sync parsing, freshness,
 request ordering, failure status, network data, consensus, monetary policy,
 PoW, upgrades, transparent/shielded validity, custody, storage and TLS remain
 unchanged. This fake-VM evidence makes no ART, emulator or device claim.
+
+## Production continuation: draft destinations admitted before ownership — 2026-10-06
+
+JNI `buildDraft` now validates every bounded destination address after count
+and scalar admission but before allocating its 16,272-byte copied-input owner
+or reading a previous transaction. A malformed first destination previously
+allocated the owner and copied both fixture sources before refusal. It now
+reads and retires only that destination scratch, with zero owner allocation or
+source references. Accepted addresses are copied by value into the same owner
+before the unchanged construction, assessment and serialization paths.
+
+Canonical RED fails the exact no-source/no-allocation assertion. GREEN observes
+one destination element and byte-region read, no source read and no owner to
+free. Moving destination admission back after source capture makes the fault
+ordering and regression fail; restoring the saved production source returns
+GREEN. Clang 20 and GCC 14 optimized ASan/UBSan/LSan focused runs pass.
+
+The complete current-tree TLS-OFF C safety gate passes both static analyzers,
+all 145 Clang and 140 GCC CTest cases, pinned vendor/reference hashes and the
+unchanged frame warnings. Production covers 602 functions with none above
+M=10; 1,856 test functions have none above M=15. Fee/amount limits,
+transaction validity, signing authority, secrets, storage, synchronization,
+network behavior and TLS remain unchanged. This fake-VM evidence makes no ART,
+emulator or physical-device claim.

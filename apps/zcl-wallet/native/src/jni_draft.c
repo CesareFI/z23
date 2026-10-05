@@ -82,6 +82,7 @@ static zcl_status build_copied(JNIEnv *env, jobjectArray previous, jobjectArray 
     request.input_count = input_count;
     request.output_count = output_count;
     status = zcl_jni_draft_parameters(env, parameters, &request);
+    if (status == ZCL_OK) status = zcl_jni_draft_destinations(env, destinations, &request);
     if (status != ZCL_OK) {
         zcl_secure_zero(&request, sizeof(request));
         return status;
@@ -95,7 +96,6 @@ static zcl_status build_copied(JNIEnv *env, jobjectArray previous, jobjectArray 
     inputs->request = request;
     zcl_secure_zero(&request, sizeof(request));
     if (status == ZCL_OK) status = copy_previous(env, previous, inputs);
-    if (status == ZCL_OK) status = zcl_jni_draft_destinations(env, destinations, &inputs->request);
     if (status == ZCL_OK) status = zcl_jni_draft_wire(&inputs->request, wire, capacity, length);
     zcl_secure_zero(inputs, sizeof(*inputs));
     free(inputs);
