@@ -12,10 +12,6 @@
 #include <stdio.h>
 #include <math.h>
 
-// Include joystick after raylib to avoid conflicts
-#define KEY_RESERVED 0
-#include <linux/joystick.h>
-
 // Private structure to wrap MVC controller
 struct joystick_s {
     input_controller_t* controller;  // MVC controller

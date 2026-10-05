@@ -5,7 +5,6 @@
 # Shrink-only ratchet: an exact pin passes; a function that grew or shrank past its pin,
 # or a pin whose function no longer exists, fails the gate.
 apps/skycombat/src/controllers/input_controller.c:input_controller_update:19
-apps/skycombat/src/controllers/input_controller_fast.c:input_controller_fast_update:20
 apps/skycombat/src/controllers/sky_combat.c:sky_combat_run:24
 apps/skycombat/src/controllers/sky_combat_multiplayer_incremental.c:main:74
 apps/skycombat/src/controllers/sky_combat_ultimate_5player.c:main:22

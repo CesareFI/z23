@@ -5,11 +5,13 @@
 
 #include "../../specifications/joystick_control_specs.h"
 #include <raylib.h>
+#ifdef __linux__
 #include <linux/joystick.h>
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 #include <string.h>
-#include <errno.h>
+#include <stdio.h>
 #include <time.h>
 
 /* Model: Pure data and business logic for aircraft input */
@@ -54,6 +56,7 @@ bool aircraft_input_model_init_joystick(void) {
     /* Enforce specifications at compile time */
     ENFORCE_JOYSTICK_CONTROLS();
     
+#ifdef __linux__
     /* Try to open joystick */
     g_input_model.joystick_fd = open("/dev/input/js0", O_RDONLY | O_NONBLOCK);
     
@@ -72,9 +75,17 @@ bool aircraft_input_model_init_joystick(void) {
     g_input_model.joystick_connected = false;
     g_input_model.keyboard_active = true;
     return false;
+#else
+    g_input_model.joystick_fd = -1;
+    g_input_model.joystick_connected = false;
+    g_input_model.keyboard_active = true;
+    fprintf(stderr, "aircraft input: Linux joystick backend unavailable; keyboard fallback active\n");
+    return false;
+#endif
 }
 
 /* Read joystick events */
+#ifdef __linux__
 static void read_joystick_events(void) {
     if (g_input_model.joystick_fd < 0) return;
     
@@ -87,6 +98,7 @@ static void read_joystick_events(void) {
         }
     }
 }
+#endif
 
 /* Read keyboard as joystick emulation */
 static void read_keyboard_as_joystick(void) {
@@ -131,11 +143,15 @@ void aircraft_input_model_update(void) {
     }
     
     /* Read input based on active device */
+#ifdef __linux__
     if (g_input_model.joystick_connected) {
         read_joystick_events();
     } else {
+#endif
         read_keyboard_as_joystick();
+#ifdef __linux__
     }
+#endif
     
     /* Validate input */
     g_input_model.validated_input = validate_joystick_input(
@@ -167,9 +183,14 @@ void aircraft_input_model_get_stats(uint32_t* total_updates, uint32_t* failed_va
 
 /* Cleanup */
 void aircraft_input_model_cleanup(void) {
+#ifdef __linux__
     if (g_input_model.joystick_fd >= 0) {
         close(g_input_model.joystick_fd);
         g_input_model.joystick_fd = -1;
     }
+#else
+    g_input_model.joystick_fd = -1;
+    g_input_model.keyboard_active = true;
+#endif
     g_input_model.joystick_connected = false;
 }

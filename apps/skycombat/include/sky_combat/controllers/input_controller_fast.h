@@ -15,10 +15,13 @@ typedef struct {
     
     // Performance optimization
     bool use_event_batching;       // Read multiple events at once
-    struct js_event* event_buffer; // Pre-allocated event buffer
+    struct js_event* event_buffer; // Linux-private incomplete type; NULL off Linux
     int buffer_size;
 } input_controller_fast_t;
 
+// Linux joystick backend only. Other platforms create a disconnected inert
+// controller (fd=-1, no event buffer); update/batching cannot claim a device.
+// This does not affect the application's separate keyboard/game input path.
 // Controller functions
 input_controller_fast_t* input_controller_fast_create(input_model_fast_t* model);
 void input_controller_fast_destroy(input_controller_fast_t* controller);

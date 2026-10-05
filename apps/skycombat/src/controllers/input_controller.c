@@ -4,9 +4,11 @@
  */
 
 #include "sky_combat/controllers/input_controller.h"
+#ifdef __linux__
 #include <linux/joystick.h>
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -56,9 +58,11 @@ input_controller_t* input_controller_create(void) {
 void input_controller_destroy(input_controller_t* controller) {
     if (!controller) return;
     
+#ifdef __linux__
     if (controller->joystick_fd >= 0) {
         close(controller->joystick_fd);
     }
+#endif
     
     input_view_destroy(controller->view);
     input_model_destroy(controller->model);
@@ -66,6 +70,7 @@ void input_controller_destroy(input_controller_t* controller) {
 }
 
 bool input_controller_init_joystick(input_controller_t* controller) {
+#ifdef __linux__
     // Try to open joystick
     controller->joystick_fd = open("/dev/input/js0", O_RDONLY | O_NONBLOCK);
     
@@ -82,9 +87,18 @@ bool input_controller_init_joystick(input_controller_t* controller) {
     controller->connected = false;
     printf("No controller found. Keyboard controls active.\n");
     return false;
+#else
+    controller->joystick_fd = -1;
+    controller->connected = false;
+    fprintf(stderr, "input MVC: Linux joystick backend unavailable; keyboard active\n");
+    return false;
+#endif
 }
 
 void input_controller_update(input_controller_t* controller) {
+#ifndef __linux__
+    controller->connected = false;
+#endif
     if (!controller->connected) {
         // Handle keyboard input
         memset(controller->axes, 0, sizeof(controller->axes));
@@ -123,6 +137,7 @@ void input_controller_update(input_controller_t* controller) {
         if (IsKeyDown(KEY_Z)) {
             controller->buttons[BUTTON_BRAKE] = 1;
         }
+#ifdef __linux__
     } else {
         // Read joystick events
         struct js_event event;
@@ -133,6 +148,7 @@ void input_controller_update(input_controller_t* controller) {
                 controller->buttons[event.number] = event.value;
             }
         }
+#endif
     }
     
     // Validate input through model

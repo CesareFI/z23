@@ -9,14 +9,16 @@
 #endif
 
 #include "sky_combat/controllers/input_controller_fast.h"
+#ifdef __linux__
 #include <fcntl.h>
 #include <unistd.h>
 #include <linux/joystick.h>
 #include <sys/ioctl.h>
+#include <errno.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <errno.h>
 
 #define DEFAULT_BUFFER_SIZE 64
 
@@ -27,7 +29,9 @@ input_controller_fast_t* input_controller_fast_create(input_model_fast_t* model)
     if (!controller) return NULL;
     
     controller->model = model;
+    controller->fd = -1;
     
+#ifdef __linux__
     // Open joystick with non-blocking I/O
     controller->fd = open("/dev/input/js0", O_RDONLY | O_NONBLOCK);
     if (controller->fd < 0) {
@@ -53,7 +57,17 @@ input_controller_fast_t* input_controller_fast_create(input_model_fast_t* model)
         controller->use_event_batching = true;
         controller->buffer_size = DEFAULT_BUFFER_SIZE;
         controller->event_buffer = malloc(sizeof(struct js_event) * controller->buffer_size);
+        if (!controller->event_buffer) {
+            fprintf(stderr, "input controller: event buffer allocation failed; using single events\n");
+            controller->use_event_batching = false;
+            controller->buffer_size = 0;
+        }
     }
+#else
+    model->connected = false;
+    model->is_astro_c40 = false;
+    fprintf(stderr, "input controller: Linux joystick backend unavailable on this platform\n");
+#endif
     
     return controller;
 }
@@ -61,15 +75,15 @@ input_controller_fast_t* input_controller_fast_create(input_model_fast_t* model)
 void input_controller_fast_destroy(input_controller_fast_t* controller) {
     if (!controller) return;
     
+#ifdef __linux__
     if (controller->fd >= 0) close(controller->fd);
+#endif
     free(controller->event_buffer);
     free(controller);
 }
 
-void input_controller_fast_update(input_controller_fast_t* controller) {
-    if (!controller || !controller->model->connected || controller->fd < 0) return;
-    
-    if (controller->use_event_batching && controller->event_buffer) {
+#ifdef __linux__
+static void input_controller_fast_read_batch(input_controller_fast_t* controller) {
         // Batch read for efficiency
         while (1) {
             ssize_t bytes = read(controller->fd, controller->event_buffer, 
@@ -103,7 +117,9 @@ void input_controller_fast_update(input_controller_fast_t* controller) {
                 }
             }
         }
-    } else {
+}
+
+static void input_controller_fast_read_single(input_controller_fast_t* controller) {
         // Single event read fallback
         struct js_event event;
         while (read(controller->fd, &event, sizeof(event)) > 0) {
@@ -117,14 +133,27 @@ void input_controller_fast_update(input_controller_fast_t* controller) {
                 }
             }
         }
-    }
+}
+#endif
+
+void input_controller_fast_update(input_controller_fast_t* controller) {
+#ifdef __linux__
+    if (!controller || !controller->model->connected || controller->fd < 0) return;
+    if (controller->use_event_batching && controller->event_buffer)
+        input_controller_fast_read_batch(controller);
+    else
+        input_controller_fast_read_single(controller);
     
     // Process raw input into normalized values
     input_model_fast_process(controller->model);
+#else
+    if (controller && controller->model) controller->model->connected = false;
+#endif
 }
 
 void input_controller_fast_set_batching(input_controller_fast_t* controller, bool enable, int buffer_size) {
     if (!controller) return;
+#ifdef __linux__
     
     controller->use_event_batching = enable;
     
@@ -139,4 +168,10 @@ void input_controller_fast_set_batching(input_controller_fast_t* controller, boo
             controller->buffer_size = 0;
         }
     }
+#else
+    (void)enable;
+    (void)buffer_size;
+    controller->use_event_batching = false;
+    controller->buffer_size = 0;
+#endif
 }

@@ -6,9 +6,12 @@
 #include "sky_combat/controllers/input_direct.h"
 #include <stdlib.h>
 #include <string.h>
+#ifdef __linux__
 #include <fcntl.h>
 #include <unistd.h>
 #include <linux/joystick.h>
+#include <sys/ioctl.h>
+#endif
 #include <math.h>
 #include <stdio.h>
 
@@ -31,7 +34,9 @@ struct input_system_s {
 input_system_t* input_direct_create(void) {
     input_system_t* input = calloc(1, sizeof(input_system_t));
     if (!input) return NULL;
+    input->fd = -1;
     
+#ifdef __linux__
     // Try to open joystick
     input->fd = open("/dev/input/js0", O_RDONLY | O_NONBLOCK);
     if (input->fd < 0) {
@@ -49,6 +54,9 @@ input_system_t* input_direct_create(void) {
             }
         }
     }
+#else
+    fprintf(stderr, "direct input: Linux joystick backend unavailable\n");
+#endif
     
     // Default configuration
     input->deadzone = 0.15f;      // 15% dead zone
@@ -59,11 +67,14 @@ input_system_t* input_direct_create(void) {
 
 void input_direct_destroy(input_system_t* input) {
     if (!input) return;
+#ifdef __linux__
     if (input->fd >= 0) close(input->fd);
+#endif
     free(input);
 }
 
 // Smooth dead zone function - no sudden jumps
+#ifdef __linux__
 static float apply_deadzone(float value, float deadzone) {
     float abs_value = fabsf(value);
     if (abs_value < deadzone) return 0.0f;
@@ -78,10 +89,12 @@ static float apply_curve(float value, float curve) {
     float sign = value < 0 ? -1.0f : 1.0f;
     return sign * powf(fabsf(value), curve);
 }
+#endif
 
 input_direct_t input_direct_update(input_system_t* input, float dt) {
     input_direct_t state = {0};
     state.dt = dt;
+#ifdef __linux__
     
     if (!input || !input->connected) {
         state.connected = false;
@@ -141,6 +154,10 @@ input_direct_t input_direct_update(input_system_t* input, float dt) {
     state.brake = input->buttons[3];         // Button 3 (UR paddle)
     
     return state;
+#else
+    (void)input;
+    return state;
+#endif
 }
 
 void input_direct_set_deadzone(input_system_t* input, float deadzone) {

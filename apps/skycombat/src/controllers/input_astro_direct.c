@@ -4,9 +4,12 @@
  */
 
 #include "sky_combat/controllers/input_astro_direct.h"
+#ifdef __linux__
 #include <fcntl.h>
 #include <unistd.h>
 #include <linux/joystick.h>
+#include <sys/ioctl.h>
+#endif
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -16,8 +19,11 @@
 
 // Initialize controller
 int input_astro_init(input_astro_state_t *state) {
+    if (!state) return -1;
     memset(state, 0, sizeof(input_astro_state_t));
+    state->fd = -1;
     
+#ifdef __linux__
     // Try to open joystick device
     state->fd = open("/dev/input/js0", O_RDONLY | O_NONBLOCK);
     if (state->fd < 0) {
@@ -30,10 +36,15 @@ int input_astro_init(input_astro_state_t *state) {
     ioctl(state->fd, JSIOCGNAME(256), state->name);
     
     return 0;
+#else
+    fprintf(stderr, "ASTRO input: Linux joystick backend unavailable\n");
+    return -1;
+#endif
 }
 
 // Update controller state
 void input_astro_update(input_astro_state_t *state) {
+#ifdef __linux__
     if (state->fd < 0) return;
     
     struct js_event e;
@@ -56,19 +67,31 @@ void input_astro_update(input_astro_state_t *state) {
     // ASTRO C40 specific: triggers use different ranges
     state->left_trigger = (state->axes[3] + 32767) / 65534.0f;
     state->right_trigger = (state->axes[4] + 32767) / 32767.0f;  // R2 goes to 0 when pressed
+#else
+    (void)state;
+#endif
 }
 
 // Close controller
 void input_astro_close(input_astro_state_t *state) {
+    if (!state) return;
+#ifdef __linux__
     if (state->fd >= 0) {
         close(state->fd);
         state->fd = -1;
     }
+#else
+    state->fd = -1;
+#endif
 }
 
 // Convert to game input
 input_state_fast_t input_astro_to_game_input(const input_astro_state_t *state) {
     input_state_fast_t input = {0};
+#ifndef __linux__
+    (void)state;
+    return input;
+#else
     
     // Movement
     input.move_x = fabsf(state->left_stick_x) > 0.1f ? state->left_stick_x : 0;
@@ -91,4 +114,5 @@ input_state_fast_t input_astro_to_game_input(const input_astro_state_t *state) {
     input.brake = state->buttons[2];  // Square (UL paddle) - now boost
     
     return input;
+#endif
 }
