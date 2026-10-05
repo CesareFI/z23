@@ -1,3 +1,5 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+
 #include "zvec/zvec.h"
 
 #include <stdint.h>
@@ -32,6 +34,7 @@ static zvec_alloc normalize(zvec_alloc a)
 
 zvec *zvec_with_capacity(size_t initial_capacity, zvec_alloc alloc)
 {
+    if (initial_capacity > SIZE_MAX / sizeof(void *)) return NULL;
     alloc = normalize(alloc);
     zvec *v = alloc.malloc_fn(alloc.ctx, sizeof *v);
     if (!v) return NULL;

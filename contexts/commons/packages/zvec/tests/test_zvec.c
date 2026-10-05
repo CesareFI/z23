@@ -1,3 +1,5 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+
 #include "zvec/zvec.h"
 
 #include <stdint.h>
@@ -15,11 +17,14 @@
 /* Counting allocator with a failure switch for failure-path tests. */
 struct test_alloc {
     size_t mallocs, frees;
+    size_t attempts, requested_sizes[2];
     size_t fail_after; /* fail when mallocs reaches this; SIZE_MAX = never */
 };
 static void *ta_malloc(void *ctx, size_t size)
 {
     struct test_alloc *t = ctx;
+    if (t->attempts < 2) t->requested_sizes[t->attempts] = size;
+    t->attempts++;
     if (t->mallocs >= t->fail_after) return NULL;
     t->mallocs++;
     return malloc(size);
@@ -32,9 +37,35 @@ static void ta_free(void *ctx, void *ptr)
 }
 static zvec_alloc ta(struct test_alloc *t, size_t fail_after)
 {
-    t->mallocs = t->frees = 0;
-    t->fail_after = fail_after;
+    *t = (struct test_alloc){ .fail_after = fail_after };
     return (zvec_alloc){ ta_malloc, ta_free, t };
+}
+
+static void test_initial_capacity(void)
+{
+    struct test_alloc t;
+    const size_t limit = SIZE_MAX / sizeof(void *);
+
+    CHECK(zvec_with_capacity(limit + 1, ta(&t, 1)) == NULL);
+    CHECK(t.attempts == 0);
+    CHECK(t.mallocs == 0 && t.frees == 0);
+
+    CHECK(zvec_with_capacity(limit, ta(&t, 1)) == NULL);
+    CHECK(t.attempts == 2);
+    CHECK(t.requested_sizes[1] == limit * sizeof(void *));
+    CHECK(t.mallocs == 1 && t.frees == 1);
+
+    CHECK(zvec_with_capacity(4, ta(&t, 0)) == NULL);
+    CHECK(t.attempts == 1);
+    CHECK(t.mallocs == 0 && t.frees == 0);
+
+    zvec *v = zvec_with_capacity(4, ta(&t, SIZE_MAX));
+    CHECK(v != NULL);
+    CHECK(zvec_len(v) == 0 && zvec_capacity(v) == 4);
+    CHECK(t.attempts == 2);
+    CHECK(t.requested_sizes[1] == 4 * sizeof(void *));
+    zvec_destroy(v);
+    CHECK(t.mallocs == 2 && t.frees == 2);
 }
 
 static void test_basic(void)
@@ -232,12 +263,13 @@ static void test_stress_vs_model(void)
 
 int main(void)
 {
+    test_initial_capacity();
     test_basic();
     test_insert_remove();
     test_index_of();
     test_alloc_failure();
     test_growth_and_balance();
     test_stress_vs_model();
-    puts("test_zvec: all groups passed (basic insert index allocfail growth stress)");
+    puts("test_zvec: all groups passed (capacity basic insert index allocfail growth stress)");
     return 0;
 }
