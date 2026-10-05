@@ -5,13 +5,9 @@ z23 is licensed under the **Apache License, Version 2.0** (see
 and vendored dependencies are preserved in [`NOTICE`](../NOTICE) as
 required by Apache 2.0 §4(d).
 
-This file documents **concepts and architectural patterns** (not
-verbatim source code) that z23 has adopted from other
-projects. We credit them here because it is the right thing to do —
-all ideas listed below are re-implemented in C23 from scratch and do
-not link against the original code. Apache 2.0 is compatible with
-the licenses of every project listed here per the Free Software
-Foundation's compatibility matrix.
+This file credits design references alongside vendored code and assets.
+The presentation canvas compiles the vendored font rasterizer and embeds
+the font bytes; the QR backend compiles the vendored encoder.
 
 If you are reading this and recognize a pattern we've ported without
 naming you here, open a PR or ping the maintainers and we'll add you.
@@ -28,20 +24,20 @@ Concepts we've adopted:
 
 | z23 feature | Erigon source referenced | Notes |
 |---|---|---|
-| `struct zcl_stage` + staged sync runner | [`execution/stagedsync/stage.go`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/stage.go), [`sync.go`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/sync.go) | Forward/Unwind/Prune triad per stage |
+| `struct stage` + staged sync runner | [`execution/stagedsync/stage.go`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/stage.go), [`sync.go`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/sync.go) | Cursor-owning steps in Z23 |
 | Stage pipeline ordering | [`default_stages.go`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/default_stages.go) | Explicit forward vs unwind order |
 | Per-stage `Cfg` struct pattern | `HeadersCfg` / `ExecuteBlockCfg` | One config struct per stage |
 | ETL (Extract-Transform-Load) for bulk writes | [`db/etl/README.md`](https://github.com/erigontech/erigon/blob/main/db/etl/README.md) | Temp-file sort before bulk load to minimize write amplification |
 | Temporal DB interface (hot mutable + cold immutable) | [`db/kv/kv_interface.go`](https://github.com/erigontech/erigon/blob/main/db/kv/kv_interface.go), [`db/agents.md`](https://github.com/erigontech/erigon/blob/main/db/agents.md) | `get_latest(k)` + `get_as_of(k, ts)` |
 | Stream vs Cursor split | `db/kv/stream/`, cursor interfaces in `kv_interface.go` | High-level iterator over low-level cursor |
-| Per-subsystem `agents.md` files | [`execution/stagedsync/agents.md`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/agents.md), `cl/agents.md`, `p2p/agents.md`, `db/agents.md` | Localized AI guidance close to code | <!-- doc-path-ok: upstream erigon paths, not this tree -->
+| Root `AGENTS.md` guidance | [`execution/stagedsync/agents.md`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/agents.md), `cl/agents.md`, `p2p/agents.md`, `db/agents.md` | Repository-wide operating contract | <!-- doc-path-ok: upstream erigon paths, not this tree -->
 | Explicit naming discipline at the top of storage headers | [`kv_interface.go:30-50`](https://github.com/erigontech/erigon/blob/main/db/kv/kv_interface.go) naming block | `tx` vs `txn`, `blockNum` vs `blockID`, etc. |
 | Per-stage timing table | `sync.go::timings` | Wall-clock per stage, dumped on cycle end |
 | Ruleguard-style antipattern lint | Erigon `CLAUDE.md` ("defer tx.Rollback after error check") | Pattern-level grep gates per recurring issue |
 | Consensus spectest harness | [`cl/spectest/`](https://github.com/erigontech/erigon/tree/main/cl/spectest) | Reference corpus → replay → diff state |
 
-These patterns are cited inline in the per-subsystem `agents.md`
-files as they land.
+Root `AGENTS.md` is the Z23 agent entry point; this table records the
+Erigon concept references.
 
 ---
 
@@ -120,7 +116,7 @@ headless host with no system `-dev` packages still builds the full binary.
 **Vendored path:** `vendor/qrcodegen/`
 **Attribution:** Copyright © Project Nayuki
 
-The dependency-free QR Model 2 encoder behind `platform/modules/encoding/qr`.
+The dependency-free QR Model 2 encoder behind `platform/modules/encoding/src/qr.c`.
 
 ## System Reference Document 5.1 — CC BY 4.0
 
@@ -163,25 +159,23 @@ of the official mark. The shape and canonical `#C87035` color are unchanged.
 
 The private antialiased font rasterizer behind the presentation canvas.
 
-## Noto Sans Basic Latin subset — SIL OFL 1.1
+## Inter Basic Latin subsets — SIL OFL 1.1
 
-**Repository:** https://github.com/notofonts/noto-fonts
-**Pinned revision:** `ffebf8c1ee449e544955a7e813c54f9b73848eac`
-**Attribution:** Copyright 2018 The Noto Project Authors
+**Repository:** https://github.com/rsms/inter
+**Pinned revision:** `v4.1`
+**Attribution:** Copyright 2016 The Inter Project Authors
 
-The embedded Basic Latin font bytes behind dependency-free presentation text.
-The full upstream font is subset during vendoring; the exact recipe and both
-source/subset hashes are recorded in `vendor/typography/SOURCE`.
+The embedded Medium and SemiBold Basic Latin font bytes behind dependency-free
+presentation text. The full upstream fonts are subset during vendoring; the exact
+recipe and source/subset hashes are recorded in `vendor/typography/SOURCE`.
 
 ## AGENTS.md portable-standard (community convention) — no license
 
 **Reference:** https://www.augmentcode.com/guides/how-to-build-agents-md,
 https://github.com/0xdevalias/some-notes-on-ai-rule-files
 
-Emerging 2026 convention for AI coding agents: `AGENTS.md` at repo
-root is the portable successor to per-tool files (`.cursorrules`,
-`CLAUDE.md`, etc.). z23 adopts the convention with a dual-link
-to `CLAUDE.md` for Claude Code compatibility.
+Z23 uses root `AGENTS.md` for its agent contract. `CLAUDE.md` is a
+compatibility entry point that links to `AGENTS.md`.
 
 ## Codified Context Infrastructure (arxiv 2602.20478)
 
