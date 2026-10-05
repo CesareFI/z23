@@ -294,18 +294,11 @@ static struct zcl_result blf_append(void *self_v,
     return idx_append_and_fsync(h, height, hash, (uint64_t)end);
 }
 
-static struct zcl_result blf_read_by_hash(void *self_v,
-                                          const struct block_hash *hash,
-                                          const uint8_t **bytes_out,
-                                          size_t *len_out)
+static struct zcl_result blf_read_entry(struct block_log_file *h,
+                                        const struct idx_entry *e,
+                                        const uint8_t **bytes_out,
+                                        size_t *len_out)
 {
-    struct block_log_file *h = self_v;
-    if (!h || !hash || !bytes_out || !len_out)
-        return ZCL_ERR(BLOCK_LOG_ERR_IO, "blf_read_by_hash: null arg(s)");
-    const struct idx_entry *e = find_by_hash(h, hash);
-    if (!e)
-        return ZCL_ERR(BLOCK_LOG_ERR_NOT_FOUND, "blf_read_by_hash: miss");
-
     uint32_t len;
     struct block_hash stored_hash;
     struct zcl_result r = read_log_record_header(
@@ -325,6 +318,20 @@ static struct zcl_result blf_read_by_hash(void *self_v,
     return ZCL_OK;
 }
 
+static struct zcl_result blf_read_by_hash(void *self_v,
+                                          const struct block_hash *hash,
+                                          const uint8_t **bytes_out,
+                                          size_t *len_out)
+{
+    struct block_log_file *h = self_v;
+    if (!h || !hash || !bytes_out || !len_out)
+        return ZCL_ERR(BLOCK_LOG_ERR_IO, "blf_read_by_hash: null arg(s)");
+    const struct idx_entry *e = find_by_hash(h, hash);
+    if (!e)
+        return ZCL_ERR(BLOCK_LOG_ERR_NOT_FOUND, "blf_read_by_hash: miss");
+    return blf_read_entry(h, e, bytes_out, len_out);
+}
+
 static struct zcl_result blf_read_at_height(void *self_v,
                                             uint32_t height,
                                             const uint8_t **bytes_out,
@@ -341,6 +348,51 @@ static struct zcl_result blf_read_at_height(void *self_v,
     }
     return ZCL_ERR(BLOCK_LOG_ERR_NOT_FOUND,
                    "blf_read_at_height: no record at height=%u", height);
+}
+
+static int compare_entry_ptrs(const void *a_v, const void *b_v)
+{
+    const struct idx_entry *a = *(const struct idx_entry * const *)a_v;
+    const struct idx_entry *b = *(const struct idx_entry * const *)b_v;
+    if (a->height < b->height) return -1;
+    if (a->height > b->height) return 1;
+    if (a < b) return -1;
+    return a > b;
+}
+
+static struct zcl_result collect_ordered_entries(
+        struct block_log_file *h,
+        uint32_t start_height,
+        const struct idx_entry ***ordered_out,
+        size_t *count_out)
+{
+    size_t eligible = 0;
+    for (size_t i = 0; i < h->count; i++) {
+        if (h->entries[i].height == UINT32_MAX) continue;
+        if (h->entries[i].height < start_height) continue;
+        eligible++;
+    }
+    if (eligible == 0) {
+        *ordered_out = NULL;
+        *count_out = 0;
+        return ZCL_OK;
+    }
+
+    const struct idx_entry **ordered = malloc(eligible * sizeof(*ordered));
+    if (!ordered)
+        return ZCL_ERR(BLOCK_LOG_ERR_IO,
+                       "blf_iter_from: allocate %zu entries", eligible);
+
+    size_t used = 0;
+    for (size_t i = 0; i < h->count; i++) {
+        if (h->entries[i].height == UINT32_MAX) continue;
+        if (h->entries[i].height < start_height) continue;
+        ordered[used++] = &h->entries[i];
+    }
+    qsort(ordered, used, sizeof(*ordered), compare_entry_ptrs);
+    *ordered_out = ordered;
+    *count_out = used;
+    return ZCL_OK;
 }
 
 static uint32_t blf_tip_height(void *self_v)
@@ -367,19 +419,27 @@ static struct zcl_result blf_iter_from(void *self_v,
     struct block_log_file *h = self_v;
     if (!h || !cb)
         return ZCL_ERR(BLOCK_LOG_ERR_IO, "blf_iter_from: null arg(s)");
-    /* Append-order traversal: skip below start_height, deliver the rest. */
-    for (size_t i = 0; i < h->count; i++) {
-        if (h->entries[i].height == UINT32_MAX) continue;
-        if (h->entries[i].height < start_height) continue;
+
+    const struct idx_entry **ordered = NULL;
+    size_t used = 0;
+    struct zcl_result result = collect_ordered_entries(
+            h, start_height, &ordered, &used);
+    if (!result.ok) return result;
+
+    for (size_t i = 0; i < used; i++) {
+        /* For a reorg, the last appended entry at a height is active. */
+        if (i + 1 < used && ordered[i + 1]->height == ordered[i]->height)
+            continue;
         const uint8_t *bytes = NULL;
         size_t len = 0;
-        struct zcl_result r = blf_read_by_hash(
-                h, &h->entries[i].hash, &bytes, &len);
-        if (!r.ok) return r;
-        if (!cb(h->entries[i].height, &h->entries[i].hash, bytes, len, user_data))
+        result = blf_read_entry(h, ordered[i], &bytes, &len);
+        if (!result.ok) break;
+        if (!cb(ordered[i]->height, &ordered[i]->hash,
+                bytes, len, user_data))
             break;
     }
-    return ZCL_OK;
+    free(ordered);
+    return result;
 }
 
 /* ---- open / recovery / close ------------------------------------ */

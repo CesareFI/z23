@@ -58,6 +58,7 @@ static void fill_hash(struct block_hash *h, uint8_t seed)
  * fixed buffer. Stops after 16 entries to bound buffer growth. */
 struct iter_collect_state {
     char buf[256];
+    uint8_t hash_seed[16];
     size_t count;
 };
 
@@ -67,13 +68,14 @@ static bool iter_collect(uint32_t height,
                          size_t len,
                          void *user_data)
 {
-    (void)hash; (void)bytes; (void)len;
+    (void)bytes; (void)len;
     struct iter_collect_state *s = user_data;
     char tail[32];
     snprintf(tail, sizeof tail, "%s%u",
              s->count == 0 ? "" : ",", height);
     if (strlen(s->buf) + strlen(tail) + 1 < sizeof s->buf)
         strcat(s->buf, tail);
+    s->hash_seed[s->count] = hash->bytes[0];
     s->count++;
     return s->count < 16;
 }
@@ -332,8 +334,8 @@ int test_block_log_file(void)
         struct block_log_port p = {0};
         ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
 
-        struct block_hash hs[4];
-        for (int i = 0; i < 4; i++) fill_hash(&hs[i], (uint8_t)(0xa0 + i));
+        struct block_hash hs[5];
+        for (int i = 0; i < 5; i++) fill_hash(&hs[i], (uint8_t)(0xa0 + i));
         uint8_t blob[2] = {0xde, 0xad};
 
         /* Append out-of-order heights: 0, 2, 1, 3. tip_height must be 3. */
@@ -343,6 +345,21 @@ int test_block_log_file(void)
         ZCL_TEST_SETUP(p.append(p.self, 3, &hs[3], blob, sizeof blob));
         BLF_CHECK("tip = max(height) across out-of-order appends",
                   p.tip_height(p.self) == 3);
+
+        struct iter_collect_state ordered = {0};
+        struct zcl_result r = p.iter_from(p.self, 0, iter_collect, &ordered);
+        BLF_CHECK("out-of-order append iterates successfully", r.ok);
+        BLF_CHECK("iteration follows active-chain height order",
+                  strcmp(ordered.buf, "0,1,2,3") == 0);
+
+        ZCL_TEST_SETUP(p.append(p.self, 2, &hs[4], blob, sizeof blob));
+        memset(&ordered, 0, sizeof ordered);
+        r = p.iter_from(p.self, 0, iter_collect, &ordered);
+        BLF_CHECK("same-height replacement iterates successfully", r.ok);
+        BLF_CHECK("iteration emits only latest block at each height",
+                  strcmp(ordered.buf, "0,1,2,3") == 0);
+        BLF_CHECK("iteration selects latest same-height block",
+                  ordered.hash_seed[2] == 0xa4);
 
         block_log_file_close(h);
         test_rm_rf(dir);
