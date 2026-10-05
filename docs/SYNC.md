@@ -167,9 +167,14 @@ The worker attempts block-piece publication on its default path, without a
 file-service profile check (`engine/composition/src/boot_snapshot_offer.c:411-425`).
 Publication requires enough bodies, header lag within the swarm limit, a
 non-empty datadir, and a successful active-chain manifest build
-(`engine/composition/src/boot_snapshot_offer.c:119-163`). Real-Tor builds start
-onion hosting regardless of profile unless `-no-tor` is passed; that flag is
-refused on canonical, soak, and standby lanes.
+(`engine/composition/src/boot_snapshot_offer.c:119-163`). For service-enabled
+boot, the Tor startup policy is independent of runtime profile: a real-Tor
+build requests onion hosting unless `-no-tor` is set
+(`engine/composition/src/app_context.c:132-148`;
+`engine/composition/src/boot.c:1561,3590-3609`). That flag is refused on
+canonical, soak, and standby lanes
+(`engine/composition/src/app_context.c:116-122,167-172`;
+`engine/composition/src/args.c:1112-1117`).
 
 Full, onion-node, and legacy-compat profiles keep the broader app surfaces. The
 explorer profile keeps explorer APIs and cache prewarming but still avoids store
