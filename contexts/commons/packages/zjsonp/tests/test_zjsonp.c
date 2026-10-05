@@ -194,6 +194,47 @@ static int test_decode(void) {
   return 0;
 }
 
+static int test_decode_raw_utf8(void) {
+  static const struct {
+    const char *doc;
+    const char *want;
+  } cases[] = {
+      {"\"\xc3\xa9\"", "\xc3\xa9"},
+      {"\"\xe2\x82\xac\"", "\xe2\x82\xac"},
+      {"\"\xf0\x9f\x98\x80\"", "\xf0\x9f\x98\x80"},
+      {"\"A\xc3\xa9\\n\\u20ac\xf0\x9f\x98\x80\"",
+       "A\xc3\xa9\n\xe2\x82\xac\xf0\x9f\x98\x80"},
+      {"\"\\u00e9\\u20ac\\ud83d\\ude00\"",
+       "\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80"},
+  };
+  for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    zjsonp_event evs[4];
+    size_t n = 0, want_len = strlen(cases[i].want);
+    CHECK(slurp(cases[i].doc, evs, 4, &n) == ZJRP_DONE && n == 1);
+    /* Measurement alone fails on the base: e.g. raw U+00E9 becomes 4 bytes. */
+    CHECK(zjsonp_str_decode(cases[i].doc, &evs[0], NULL, 0) == want_len);
+    for (size_t cap = 0; cap <= want_len + 1; cap++) {
+      char out[32];
+      memset(out, 0x5a, sizeof out);
+      CHECK(zjsonp_str_decode(cases[i].doc, &evs[0], out, cap) == want_len);
+      size_t written = cap < want_len ? cap : want_len;
+      CHECK(memcmp(out, cases[i].want, written) == 0);
+      for (size_t k = written; k < sizeof out; k++)
+        CHECK(out[k] == 0x5a); /* no terminator or write past the byte prefix */
+    }
+  }
+  /* The same decoding path applies to raw UTF-8 object keys. */
+  const char *doc = "{\"\xc3\xa9\":0}";
+  zjsonp_event evs[4];
+  size_t n = 0;
+  char out[4] = {0};
+  CHECK(slurp(doc, evs, 4, &n) == ZJRP_DONE && n == 4);
+  CHECK(evs[1].kind == ZJRP_KEY);
+  CHECK(zjsonp_str_decode(doc, &evs[1], out, sizeof out) == 2);
+  CHECK(memcmp(out, "\xc3\xa9", 2) == 0);
+  return 0;
+}
+
 static int test_numbers(void) {
   zjsonp_event evs[4];
   size_t n = 0;
@@ -388,6 +429,7 @@ int main(void) {
   } tests[] = {
       {"kat", test_kat},       {"syntax_errors", test_syntax_errors},
       {"utf8", test_utf8},     {"decode", test_decode},
+      {"decode_raw_utf8", test_decode_raw_utf8},
       {"numbers", test_numbers}, {"depth", test_depth},
       {"pos_and_null", test_pos_and_null}, {"fuzz", test_fuzz},
   };

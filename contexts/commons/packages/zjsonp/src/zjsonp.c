@@ -293,6 +293,16 @@ zjsonp_status zjsonp_next(zjsonp *p, zjsonp_event *ev) {
   }
 }
 
+/* Raw UTF-8 is one scalar, not one scalar per byte. Escapes enter with
+ * their resolved scalar and an ASCII backslash at text[0]. */
+static size_t encode_string_scalar(const char *text, size_t remaining,
+                                   uint32_t cp, size_t *advance, char enc[4]) {
+  if ((unsigned char)text[0] >= 0x80 &&
+      zutf8_decode_n(text, remaining, &cp, advance) != ZUTF8_OK)
+    return 0;
+  return zutf8_encode(cp, enc);
+}
+
 size_t zjsonp_str_decode(const char *text, const zjsonp_event *ev,
                          char *out, size_t cap) {
   if (!text || !ev || (ev->kind != ZJRP_KEY && ev->kind != ZJRP_STR))
@@ -358,7 +368,7 @@ size_t zjsonp_str_decode(const char *text, const zjsonp_event *ev,
       }
     }
     char enc[4];
-    size_t en = zutf8_encode(cp, enc);
+    size_t en = encode_string_scalar(text + i, end - i, cp, &adv, enc);
     if (en == 0)
       return SIZE_MAX;
     for (size_t k = 0; k < en; k++) {
