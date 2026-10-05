@@ -444,6 +444,129 @@ static int test_tmpdir_recursive_cleanup(void)
     return failures;
 }
 
+static bool exact_suggestions_valid(const char *out)
+{
+    size_t count = 0;
+    const char *next = out;
+    while ((next = strstr(next, "\n  ")) != NULL) {
+        next += 3;
+        size_t len = strcspn(next, "\n");
+        char name[ZCL_TEST_GROUP_FULL_MAX];
+        if (len == 0 || len >= sizeof(name)) return false;
+        memcpy(name, next, len);
+        name[len] = '\0';
+        if (!zcl_test_group_catalog_contains(name) || ++count > 3)
+            return false;
+    }
+    return count > 0;
+}
+
+static int test_exact_set_diagnostics(void)
+{
+    int failures = 0;
+    TEST("exact set: unknown token explains separator and closest names") {
+        char out[4096];
+        int rc = capture_command(
+            "tools/dev/test-group-list.sh --resolve-exact-set zvec 2>&1",
+            out, sizeof(out));
+        ASSERT_EQ(rc, 1);
+        ASSERT(strstr(out, "unknown exact group 'zvec'") != NULL);
+        ASSERT(strstr(out, "comma-separated") != NULL);
+        ASSERT(strstr(out, "closest registered names:") != NULL);
+        ASSERT(exact_suggestions_valid(out));
+        rc = capture_command(
+            "tools/dev/test-group-list.sh --resolve-exact-set test_dev_landd 2>&1",
+            out, sizeof(out));
+        ASSERT_EQ(rc, 1);
+        ASSERT(strstr(out, "closest registered names:\n  test_dev_land\n") != NULL);
+        ASSERT(exact_suggestions_valid(out));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_exact_set_mixed(void)
+{
+    int failures = 0;
+    TEST("exact set: every unknown token is named without admitting prefix") {
+        char out[4096];
+        int rc = capture_command(
+            "tools/dev/test-group-list.sh --resolve-exact-set api,zvec,api_missing 2>&1",
+            out, sizeof(out));
+        ASSERT_EQ(rc, 1);
+        ASSERT(strstr(out, "unknown exact group 'zvec'") != NULL);
+        ASSERT(strstr(out, "unknown exact group 'api_missing'") != NULL);
+        ASSERT(strstr(out, "unknown exact group 'api'") == NULL);
+        rc = capture_command(
+            "tools/dev/test-group-list.sh --resolve-exact-set api,zvec,api_missing 2>/dev/null",
+            out, sizeof(out));
+        ASSERT_EQ(rc, 1);
+        ASSERT(out[0] == '\0');
+        rc = capture_command(
+            "tools/dev/test-group-list.sh --resolve-exact-set api,zvec,,api_missing 2>&1",
+            out, sizeof(out));
+        ASSERT_EQ(rc, 1);
+        ASSERT(strstr(out, "empty exact group token") != NULL);
+        ASSERT(strstr(out, "unknown exact group 'zvec'") != NULL);
+        ASSERT(strstr(out, "unknown exact group 'api_missing'") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_exact_set_empty(void)
+{
+    int failures = 0;
+    TEST("exact set: empty selection explains accepted syntax") {
+        char out[4096];
+        int rc = capture_command(
+            "tools/dev/test-group-list.sh --resolve-exact-set '' 2>&1",
+            out, sizeof(out));
+        ASSERT_EQ(rc, 2);
+        ASSERT(strstr(out, "empty") != NULL);
+        ASSERT(strstr(out, "comma-separated") != NULL);
+        rc = capture_command(
+            "tools/dev/test-group-list.sh --resolve-exact-set api,,impact_composition 2>&1",
+            out, sizeof(out));
+        ASSERT_EQ(rc, 1);
+        ASSERT(strstr(out, "empty exact group token") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_exact_set_valid(void)
+{
+    int failures = 0;
+    TEST("exact set: comma sets remain ordered and deduplicated") {
+        char out[4096];
+        int rc = capture_command(
+            "tools/dev/test-group-list.sh --resolve-exact-set api,impact_composition,api 2>&1",
+            out, sizeof(out));
+        ASSERT_EQ(rc, 0);
+        ASSERT(strcmp(out, "test_api,test_impact_composition\n") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_exact_set_space_separator(void)
+{
+    int failures = 0;
+    TEST("exact set: spaces remain invalid and comma multi-set is explained") {
+        char out[4096];
+        int rc = capture_command(
+            "tools/dev/test-group-list.sh --resolve-exact-set 'dev_land impact_composition' 2>&1",
+            out, sizeof(out));
+        ASSERT_EQ(rc, 1);
+        ASSERT(strstr(out, "unknown exact group 'dev_land impact_composition'") != NULL);
+        ASSERT(strstr(out, "comma-separated") != NULL);
+        ASSERT(strstr(out, "ONLY=dev_land,impact_composition") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_registry_exact_resolution(void)
 {
     int failures = 0;
@@ -1696,6 +1819,11 @@ int test_test_group_selector(void)
     failures += test_tmpdir_recursive_cleanup();
     failures += test_selector_predicate();
     failures += test_registry_exact_resolution();
+    failures += test_exact_set_diagnostics();
+    failures += test_exact_set_mixed();
+    failures += test_exact_set_empty();
+    failures += test_exact_set_valid();
+    failures += test_exact_set_space_separator();
     failures += test_declared_family_expansion();
     failures += test_umbrella_groups();
     failures += test_umbrella_runner_fold();

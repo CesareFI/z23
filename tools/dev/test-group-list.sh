@@ -292,23 +292,67 @@ resolve_proof() {
     printf '%s' "$resolved"
 }
 
+exact_set_help() {
+    echo 'test-group-list: use comma-separated exact groups (not spaces), e.g. ONLY=dev_land,impact_composition; full test_/spec_ names are also accepted.' >&2
+}
+
+exact_set_unknown() {
+    local token="$1" name kind=unknown
+    for name in "$token" "test_$token" "spec_$token"; do
+        if is_registered "$name"; then kind=ambiguous; fi
+    done
+    printf "test-group-list: %s exact group '%s'\n" "$kind" "$token" >&2
+    echo 'closest registered names:' >&2
+    # Rank whole names and accepted prefixless aliases by edit distance.
+    # Keep stdout exclusively for a completely valid canonical selection.
+    printf '%s\n' "$REGISTERED_CACHE" | LC_ALL=C awk -v needle="$token" '
+        function distance(a,b, i,j,old,diag,cost,x,y) {
+            for (j=0; j<=length(b); j++) row[j]=j
+            for (i=1; i<=length(a); i++) {
+                diag=row[0]; row[0]=i
+                for (j=1; j<=length(b); j++) {
+                    old=row[j]; cost=(substr(a,i,1)!=substr(b,j,1))
+                    x=row[j]+1; y=row[j-1]+1; if (y<x) x=y
+                    y=diag+cost; if (y<x) x=y
+                    row[j]=x; diag=old
+                }
+            }
+            return row[length(b)]
+        }
+        { full=$0; alias=full; sub(/^(test_|spec_)/,"",alias)
+          d=distance(needle,full); e=distance(needle,alias)
+          if(e<d) d=e; printf "%d %s\n",d,full }
+    ' | LC_ALL=C sort -k1,1n -k2,2 | awk 'NR<=3 {print "  " $2}' >&2
+}
+
 resolve_exact_set() {
-    local csv="$1" token canonical out="" old_ifs="$IFS"
+    local csv="$1" token canonical out="" old_ifs="$IFS" invalid=0
     case "$csv" in
-        ,*|*,|*,,*) return 1 ;;
+        ,*|*,|*,,*) echo 'test-group-list: empty exact group token' >&2
+                    invalid=1 ;;
     esac
     IFS=','
     read -r -a tokens <<<"$csv"
     IFS="$old_ifs"
-    [ "${#tokens[@]}" -gt 0 ] || return 1
+    if [ "${#tokens[@]}" -eq 0 ]; then
+        echo 'test-group-list: empty exact group selection' >&2
+        exact_set_help
+        return 1
+    fi
+    load_registered_cache
     for token in "${tokens[@]}"; do
-        [ -n "$token" ] || return 1
-        canonical="$(resolve_exact "$token")" || return 1
+        [ -n "$token" ] || continue
+        if ! canonical="$(resolve_exact "$token")"; then
+            exact_set_unknown "$token"
+            invalid=1
+            continue
+        fi
         case ",$out," in
             *,"$canonical",*) ;;
             *) out="${out:+$out,}$canonical" ;;
         esac
     done
+    if [ "$invalid" = 1 ]; then exact_set_help; return 1; fi
     [ -n "$out" ] || return 1
     printf '%s\n' "$out"
 }
@@ -360,7 +404,8 @@ case "$mode" in
     --resolve-exact-set)
         needle="${2:-}"
         [ -n "$needle" ] || {
-            echo "test-group-list: --resolve-exact-set needs CSV ids" >&2
+            echo "test-group-list: empty exact group selection" >&2
+            exact_set_help
             exit 2
         }
         resolve_exact_set "$needle"

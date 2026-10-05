@@ -4091,14 +4091,14 @@ endif
 EXACT_ONLY_ACTIVE_GOALS := $(filter t-fast-exact,$(MAKECMDGOALS))
 ifneq ($(EXACT_ONLY_ACTIVE_GOALS),)
   ifeq ($(strip $(ONLY)),)
-    $(error make t-fast-exact: ONLY= is required and must name one or more exact test groups)
+    $(error make t-fast-exact: ONLY= is required: use comma-separated exact registered groups, e.g. ONLY=dev_land,impact_composition; spaces are not separators)
   endif
   ifneq ($(findstring ',$(ONLY)),)
     $(error make t-fast-exact: ONLY= must not contain a single quote)
   endif
-  override EXACT_ONLY_MATCHED := $(shell $(T_LIST_TOOL) --resolve-exact-set '$(ONLY)' 2>/dev/null)
+  override EXACT_ONLY_MATCHED := $(shell $(T_LIST_TOOL) --resolve-exact-set '$(ONLY)')
   ifeq ($(strip $(EXACT_ONLY_MATCHED)),)
-    $(error make t-fast-exact: ONLY='$(ONLY)' is not a valid exact registered group set)
+    $(error make t-fast-exact: ONLY='$(ONLY)' is not a valid exact registered group set; use comma-separated names, e.g. ONLY=dev_land,impact_composition)
   endif
   $(info t-fast-exact: ONLY='$(ONLY)' resolves to exact set $(EXACT_ONLY_MATCHED))
 endif
