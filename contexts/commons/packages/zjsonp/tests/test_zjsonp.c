@@ -433,12 +433,24 @@ static int test_terminal_syntax(void) {
   return 0;
 }
 
+static int test_negative_zero_integer(void) {
+  const char doc[] = "-0";
+  zjsonp p;
+  zjsonp_event ev;
+  int64_t value = 123;
+  zjsonp_init(&p, doc, sizeof doc - 1);
+  if (zjsonp_next(&p, &ev) != ZJRP_OK) return 1;
+  CHECK(zjsonp_num_i64(doc, &ev, &value) && value == 0);
+  return 0;
+}
+
 int main(void) {
   struct {
     const char *name;
     int (*fn)(void);
   } tests[] = {
       {"terminal_syntax", test_terminal_syntax},
+      {"negative_zero_integer", test_negative_zero_integer},
       {"kat", test_kat},       {"syntax_errors", test_syntax_errors},
       {"utf8", test_utf8},     {"decode", test_decode},
       {"decode_raw_utf8", test_decode_raw_utf8},

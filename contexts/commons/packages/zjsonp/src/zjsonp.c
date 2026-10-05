@@ -391,6 +391,11 @@ size_t zjsonp_str_decode(const char *text, const zjsonp_event *ev,
   return n;
 }
 
+/* JSON permits negative zero; strtoll formats it back as positive zero. */
+static bool integer_spelling_matches(const char *input, const char *back) {
+  return strcmp(input, back) == 0 || strcmp(input, "-0") == 0;
+}
+
 bool zjsonp_num_i64(const char *text, const zjsonp_event *ev,
                     int64_t *out) {
   if (!text || !ev || ev->kind != ZJRP_NUM || !out)
@@ -411,7 +416,7 @@ bool zjsonp_num_i64(const char *text, const zjsonp_event *ev,
   /* range check: strtoll clamps on overflow; reformat to detect it */
   char back[24];
   snprintf(back, sizeof back, "%lld", v);
-  if (strcmp(back, tmp) != 0)
+  if (!integer_spelling_matches(tmp, back))
     return false;
   *out = (int64_t)v;
   return true;
