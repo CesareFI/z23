@@ -62,6 +62,18 @@ static int ci_equal(const char *a, const char *b)
     return *a == *b;
 }
 
+/* Unit multipliers are at most 2^60 and frac is a single decimal digit. */
+static zhuman_err scaled_bytes(uint64_t whole, uint64_t frac,
+                               uint64_t mult, uint64_t *out)
+{
+    if (whole > UINT64_MAX / mult) return ZHUMAN_ERR_OVERFLOW;
+    uint64_t value = whole * mult;
+    uint64_t fraction = frac * mult / 10;
+    if (value > UINT64_MAX - fraction) return ZHUMAN_ERR_OVERFLOW;
+    *out = value + fraction;
+    return ZHUMAN_OK;
+}
+
 zhuman_err zhuman_parse_bytes(const char *str, uint64_t *out)
 {
     if (!str || !out) return ZHUMAN_ERR_NULL;
@@ -104,11 +116,7 @@ zhuman_err zhuman_parse_bytes(const char *str, uint64_t *out)
     };
     for (size_t i = 0; i < sizeof UNITS / sizeof UNITS[0]; i++) {
         if (ci_equal(str, UNITS[i].name)) {
-            uint64_t m = UNITS[i].mult;
-            if (whole > UINT64_MAX / m) return ZHUMAN_ERR_OVERFLOW;
-            uint64_t v = whole * m + frac * m / 10;
-            *out = v;
-            return ZHUMAN_OK;
+            return scaled_bytes(whole, frac, UNITS[i].mult, out);
         }
     }
     return ZHUMAN_ERR_FORMAT;

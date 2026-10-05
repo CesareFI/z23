@@ -93,6 +93,18 @@ static void test_parse_bytes(void)
     expect_parse_bytes("1.5 MB", 1500000);
     expect_parse_bytes("1 TB", 1000000000000ull);
     expect_parse_bytes("1 EiB", 1ull << 60);
+    /* A representable whole part may overflow when its fraction is added. */
+    uint64_t limit_value = 123;
+    CHECK(zhuman_parse_bytes("18.5 EB", &limit_value) == ZHUMAN_ERR_OVERFLOW);
+    CHECK(limit_value == 123);
+    CHECK(zhuman_parse_bytes("18.9 EB", &limit_value) == ZHUMAN_ERR_OVERFLOW);
+    CHECK(limit_value == 123);
+    CHECK(zhuman_parse_bytes("18.4 EB", &limit_value) == ZHUMAN_OK);
+    CHECK(limit_value == UINT64_C(18400000000000000000));
+    CHECK(zhuman_parse_bytes("15.9 EiB", &limit_value) == ZHUMAN_OK);
+    CHECK(limit_value == 15 * (UINT64_C(1) << 60) +
+                         9 * (UINT64_C(1) << 60) / 10);
+
     /* Case-insensitive. */
     expect_parse_bytes("1 kib", 1024);
     expect_parse_bytes("1 KIB", 1024);

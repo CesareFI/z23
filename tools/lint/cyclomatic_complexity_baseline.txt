@@ -750,7 +750,7 @@ contexts/commons/packages/zglob/src/zglob.c:zglob_match_n:18
 contexts/commons/packages/zhtml/src/zhtml.c:zhtml__entity:26
 contexts/commons/packages/zhuman/app/main.c:main:17
 contexts/commons/packages/zhuman/src/zhuman.c:zhuman_format_duration:20
-contexts/commons/packages/zhuman/src/zhuman.c:zhuman_parse_bytes:18
+contexts/commons/packages/zhuman/src/zhuman.c:zhuman_parse_bytes:17
 contexts/commons/packages/zhuman/src/zhuman.c:zhuman_parse_duration:32
 contexts/commons/packages/zintern/src/zintern.c:zintern_put:18
 contexts/commons/packages/zjson/tests/test_zjson.c:balanced:17
