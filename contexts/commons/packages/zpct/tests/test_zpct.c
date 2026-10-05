@@ -176,7 +176,30 @@ static void test_fuzz(void) {
   }
 }
 
+static void test_error_termination(void) {
+  static const struct { const char *s; size_t n; } bad[] = {
+    {NULL, 1}, {"x", ZPCT_MAX + 1u}, {"%", 1}, {"%GG", 3},
+    {"ab%", 3}, {"ab%GG", 5},
+  };
+  for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+    char out[4];
+    memset(out, 'x', sizeof(out));
+    CHECK(zpct_decode(out, sizeof(out), bad[i].s, bad[i].n, NULL) == SIZE_MAX &&
+          memchr(out, 0, sizeof(out)) != NULL);
+  }
+  for (int i = 0; i < 3; i++) {
+    char out[4];
+    memset(out, 'x', sizeof(out));
+    const void *s = i == 0 ? NULL : "x";
+    size_t n = i == 1 ? ZPCT_MAX + 1u : 1u;
+    zpct_set set = i == 2 ? (zpct_set)9 : ZPCT_UNRESERVED;
+    CHECK(zpct_encode(out, sizeof(out), s, n, set) == SIZE_MAX &&
+          memchr(out, 0, sizeof(out)) != NULL);
+  }
+}
+
 int main(void) {
+  test_error_termination();
   test_kat();
   test_roundtrip();
   test_err();
