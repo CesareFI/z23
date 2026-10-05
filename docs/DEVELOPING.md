@@ -1179,10 +1179,17 @@ or establish general code safety.
 Authors leave generated package roots, dependency pins, registry projections,
 and `docs/CAPABILITY_INVENTORY.jsonl` out of their commits. The integrator runs
 `devbuild --wait bash tools/scripts/stack_tip_refresh.sh` once at the assembled stack tip.
-It rederives the registry and dependent pins, regenerates the capability
-inventory, then checks documented counts, in that order. It prints the files
-it changed and fails if any step fails. Commit the generated changes once at
-the tip. Source-owned count updates still belong to the author commit.
+It rederives the registry and dependent pins, then runs the canonical
+documented-count gate. If its only failures are numeric count mismatches,
+it updates only those values in `docs/CODEBASE_MAP.md` and makes a signed
+document-only commit naming each count and its old and measured values.
+Other count failures stop with the gate output; a failed correction or
+signature stops before inventory. It then regenerates the capability
+inventory and checks counts again. It prints content changes and fails if
+any step fails. Review and commit the remaining generated changes at the tip.
+Source-owned count updates still belong to the author commit; the correction
+handles residual assembled-stack drift. Check mode never repairs or commits
+counts.
 
 Both modes refuse a dirty checkout before invoking generators, including
 ignored untracked package manifests discovered by the registry.
@@ -1192,7 +1199,7 @@ Helper builds may regenerate tracked view headers before checking; inspect
 `git status` and `git diff` afterwards, including after a refusal. Check mode
 does not report these prerequisite changes. The refresh display compares
 content only; it is not a staging allowlist or a report of mode/link changes.
-The script also provides `bash tools/scripts/stack_tip_refresh.sh --selftest`.
+The script also provides `devbuild --wait bash tools/scripts/stack_tip_refresh.sh --selftest`.
 
 Before committing:
 
