@@ -153,6 +153,41 @@ static void test_roundtrip_fuzz(void)
     CHECK(zbase58_decoded_max(45) >= 33);
 }
 
+static void test_sizing_boundaries(void)
+{
+    char ones[64];
+    uint8_t zeros[64];
+    memset(ones, '1', sizeof ones);
+    memset(zeros, 0xa5, sizeof zeros);
+    size_t cap = zbase58_decoded_max(sizeof ones);
+    CHECK(cap >= sizeof ones);
+    CHECK(cap <= sizeof zeros);
+    size_t n = 0;
+    CHECK(zbase58_decode(ones, sizeof ones, zeros, cap, &n, NULL)
+          == ZBASE58_OK);
+    CHECK(n == sizeof ones);
+    for (size_t i = 0; i < n; i++) CHECK(zeros[i] == 0);
+    CHECK(zbase58_decoded_max(SIZE_MAX) == SIZE_MAX);
+    /* A safe bound cannot shrink when the multiplication would wrap. */
+    size_t boundary = SIZE_MAX / 138;
+    CHECK(zbase58_encoded_max(boundary + 1)
+          > zbase58_encoded_max(boundary));
+    CHECK(zbase58_encoded_max(boundary + 1) >= boundary + 2);
+    CHECK(zbase58_encoded_max(SIZE_MAX) == SIZE_MAX);
+    /* Preserve the existing decoder work-buffer acceptance independently
+     * of the public worst-case bound for leading zero bytes. */
+    uint8_t input[4500], back[4500];
+    char encoded[6212];
+    memset(input, 0xff, sizeof input);
+    size_t en = 0;
+    CHECK(zbase58_encode(input, sizeof input, encoded, sizeof encoded, &en)
+          == ZBASE58_OK);
+    CHECK(en > 6144);
+    CHECK(zbase58_decode(encoded, en, back, sizeof back, &n, NULL)
+          == ZBASE58_OK);
+    CHECK(n == sizeof input && memcmp(input, back, n) == 0);
+}
+
 static void test_err_str(void)
 {
     CHECK(strcmp(zbase58_err_str(ZBASE58_OK), "ok") == 0);
@@ -165,6 +200,7 @@ int main(void)
     test_known_vectors();
     test_errors();
     test_roundtrip_fuzz();
+    test_sizing_boundaries();
     test_err_str();
     puts("test_zbase58: all groups passed (vectors errors fuzz errstr)");
     return 0;

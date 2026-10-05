@@ -23,11 +23,11 @@ typedef enum {
     ZBASE58_ERR_BAD_CHAR   /* character outside the alphabet */
 } zbase58_err;
 
-/* Exact maximum encoded size for n input bytes (ceil(n * 138/100) + 1
- * is the classic bound; we return the safe upper bound). */
+/* Safe encoded capacity, including NUL. Returns SIZE_MAX when the bound
+ * cannot be represented. */
 size_t zbase58_encoded_max(size_t bin_len);
 
-/* Exact maximum decoded size for n input characters. */
+/* Maximum decoded bytes: n, reached by n leading ones. */
 size_t zbase58_decoded_max(size_t b58_len);
 
 /* Encode bin[0..bin_len) into out (capacity cap), NUL-terminated on

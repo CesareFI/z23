@@ -9,14 +9,17 @@ static const char ALPHABET[] =
 
 size_t zbase58_encoded_max(size_t bin_len)
 {
-    /* log(256)/log(58) ≈ 1.366; +2 covers rounding and terminator. */
-    return bin_len * 138 / 100 + 2;
+    /* Divide before multiplying; saturate an unrepresentable bound. */
+    size_t whole = bin_len / 100;
+    size_t tail = (bin_len % 100) * 138 / 100 + 2;
+    if (whole > (SIZE_MAX - tail) / 138) return SIZE_MAX;
+    return whole * 138 + tail;
 }
 
 size_t zbase58_decoded_max(size_t b58_len)
 {
-    /* log(58)/log(256) ≈ 0.733. */
-    return b58_len * 733 / 1000 + 1;
+    /* Every leading one emits a byte, so the worst case is n bytes. */
+    return b58_len;
 }
 
 int zbase58_char_value(char c)
@@ -87,7 +90,11 @@ zbase58_err zbase58_decode(const char *b58, size_t b58_len,
     while (ones < b58_len && b58[ones] == '1') ones++;
 
     uint8_t bytes[1024 * 6];
-    if (zbase58_decoded_max(b58_len) > sizeof bytes)
+    /* Only non-leading digits use the base-conversion work buffer. */
+    size_t digits = b58_len - ones;
+    size_t max_bytes = (digits / 1000) * 733
+                     + (digits % 1000) * 733 / 1000 + 1;
+    if (max_bytes > sizeof bytes)
         return ZBASE58_ERR_SMALL;
 
     size_t nbytes = 0;
