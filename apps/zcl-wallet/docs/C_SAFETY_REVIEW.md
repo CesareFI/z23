@@ -5020,3 +5020,26 @@ sensitivity. Focused, Clang 20 and GCC 14 sanitizer lanes pass. The complete
 TLS-OFF safety gate passes both analyzers and all 145/140 CTest cases;
 vendor hashes and reference vectors are intact. This is host fake-VM evidence,
 not ART, emulator, hardware, chain-sync or physical-custody proof.
+
+## JNI draft scalar admission before allocation — 2026-10-06
+
+`build_copied` now places the existing `zcl_jni_draft_parameters` call before
+the fixed copied-input allocation. A zeroed local request holds only admitted
+public counts and scalar fields, is copied by value into the existing owner on
+success, and is wiped before any source JNI call. The downstream construction,
+assessment and serialization code is unchanged.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer bounds and pointer arithmetic | Parameter count remains exactly `3 + 2 * inputs + outputs` under existing input/output maxima. Existing indexed field loops and source/destination bounds are unchanged. |
+| Signed/unsigned conversion and monetary bounds | The existing parser rejects negative and oversized `jlong` values before each cast. Fee/output values remain bounded by `ZCL_MAX_MONEY`; lock time, sequence, index and expiry retain their prior limits. |
+| Allocation and resource use | Invalid parameters allocate none of the fixed 16,272-byte copied-input owner and borrow no object element. Valid requests allocate exactly once as before. |
+| Initialization and retirement | The 872-byte request starts zeroed and is fully wiped on parser refusal, allocation refusal and after its admitted value is copied. The heap owner retains wipe-before-free. |
+| JNI exceptions and references | Parameter length/region exceptions are observed before allocation and before object-element calls. The local `jlong` scratch already wipes on all parser exits. No local reference is added or retained. |
+| Stack and complexity | The request frame fits the unchanged 4,096-byte warning gate. A test helper reduced the initially rejected M=16 fixture to the repository cap; production remains M<=10 and tests M<=15 without suppression. |
+| Transaction semantics | Successful scalar bytes flow through the same request fields and unchanged draft constructor. No acceptance predicate, fee rule, output sum, serialization byte, network rule or signing authority changes. |
+| Secrets and concurrency | Draft fields and transaction sources are public data. No seed/key material, shared state, thread, lock or logging path is added. |
+
+RED, final late-admission mutation and restored GREEN prove the allocation-order
+assertion. Focused dual-compiler sanitizers and the complete TLS-OFF analyzer and
+145/140 CTest matrix pass. No Android runtime or physical-device claim is made.

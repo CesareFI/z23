@@ -8362,3 +8362,27 @@ analyzers, all 145 Clang and 140 GCC CTest cases, vendor/reference hashes,
 and complexity: 601 production functions with none above M=10 and 1,851 test
 functions with none above M=15. TLS remains quarantined. Emulator and physical
 device execution are not claimed by this native fake-VM slice.
+
+## Production continuation: draft parameters admitted before allocation — 2026-10-06
+
+JNI `buildDraft` now validates the exact scalar packet before allocating its
+16,272-byte copied-input owner or borrowing source/destination elements. The
+existing field parser still owns packet shape, unsigned 32-bit conversions,
+expiry limit, maximum fee and output-money bounds. Accepted values are copied
+into the same owner before the unchanged previous-transaction, destination and
+wire construction paths. The 872-byte automatic request scratch is wiped after
+copy and on parameter or allocation refusal.
+
+Canonical RED shows an extreme signed parameter reaches the owner allocation.
+GREEN refuses all tested shape, region, signed-width, fee and amount failures
+with zero owner frees because no allocation occurred. Moving parameter admission
+back after allocation makes the final regression fail; restoring the exact
+production source returns GREEN. Clang 20 and GCC 14 ASan/UBSan/LSan focused
+runs pass.
+
+The complete current-tree TLS-OFF C safety gate passes both static analyzers,
+all 145 Clang and 140 GCC CTest cases, pinned vendor/reference hashes and the
+unchanged frame warnings. Production covers 601 functions with none above M=10;
+after helper extraction, 1,852 test functions have none above M=15. No
+consensus, monetary, PoW, upgrade, transparent/shielded validity, custody,
+storage, network or TLS behavior changes.

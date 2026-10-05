@@ -77,6 +77,8 @@ void zcl_jni_draft_test_zero(void *buffer, size_t length)
         CHECK(length == ZCL_DRAFT_PARAMETER_MAX * sizeof(jlong));
         numbers_identity = 0;
         ++number_clears;
+    } else if (length == sizeof(zcl_draft_request)) {
+        /* Admission scratch is public but must not survive its last use. */
     } else if (length == 35) {
         ++destination_clears;
     } else {
@@ -423,6 +425,12 @@ static void exact_and_maximum_inputs(void)
     }
 }
 
+static unsigned failure_frees(size_t kind, unsigned ordinal)
+{
+    if (kind == 3 || (kind == 0 && ordinal <= 3)) return 0;
+    return 1;
+}
+
 static void read_failures(void)
 {
     const unsigned counts[] = {7, 4, 4, 1};
@@ -435,7 +443,7 @@ static void read_failures(void)
         const fake_array *result = run(&inputs);
         verify_result(&inputs, result);
         CHECK(result == NULL && pending && new_calls == 0);
-        CHECK(frees == ((kind == 0 && ordinal <= 2) ? 0U : 1U));
+        CHECK(frees == failure_frees(kind, ordinal));
         release_references();
     }
     for (unsigned ordinal = 1; ordinal <= 4; ++ordinal) {
@@ -521,7 +529,7 @@ static void parameter_shapes_and_widths(void)
         const java_inputs inputs = prepare_fixture(false, ZCL_MAINNET);
         inputs.parameters->data.numbers[field] = high == 0 ? INT64_MIN : INT64_MAX;
         expect_status(&inputs, ZCL_OUT_OF_RANGE);
-        CHECK(element_calls == 0 && frees == 1);
+        CHECK(element_calls == 0 && frees == 0);
         release_references();
     }
 }

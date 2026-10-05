@@ -77,13 +77,23 @@ static zcl_status build_copied(JNIEnv *env, jobjectArray previous, jobjectArray 
     if (status != ZCL_OK) return status;
     status = zcl_jni_draft_count(env, destinations, ZCL_TX_OUTPUT_MAX, &output_count);
     if (status != ZCL_OK) return status;
+    zcl_draft_request request = {0};
+    request.network = network;
+    request.input_count = input_count;
+    request.output_count = output_count;
+    status = zcl_jni_draft_parameters(env, parameters, &request);
+    if (status != ZCL_OK) {
+        zcl_secure_zero(&request, sizeof(request));
+        return status;
+    }
     zcl_jni_draft_inputs *inputs = malloc(sizeof(*inputs));
-    if (inputs == NULL) return ZCL_RESOURCE_EXHAUSTED;
+    if (inputs == NULL) {
+        zcl_secure_zero(&request, sizeof(request));
+        return ZCL_RESOURCE_EXHAUSTED;
+    }
     memset(inputs, 0, sizeof(*inputs));
-    inputs->request.network = network;
-    inputs->request.input_count = input_count;
-    inputs->request.output_count = output_count;
-    status = zcl_jni_draft_parameters(env, parameters, &inputs->request);
+    inputs->request = request;
+    zcl_secure_zero(&request, sizeof(request));
     if (status == ZCL_OK) status = copy_previous(env, previous, inputs);
     if (status == ZCL_OK) status = zcl_jni_draft_destinations(env, destinations, &inputs->request);
     if (status == ZCL_OK) status = zcl_jni_draft_wire(&inputs->request, wire, capacity, length);
