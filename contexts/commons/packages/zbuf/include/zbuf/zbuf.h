@@ -47,7 +47,9 @@ void zbuf_free(zbuf *b);
 /* Drop content, keep storage and max; clears the sticky error. */
 void zbuf_clear(zbuf *b);
 
-/* Append operations. Return ZBUF_OK or the (now sticky) error. */
+/* Append operations. Allocation/bound errors stick; invalid arguments
+ * return ZBUF_ERR_ARG without changing a healthy buffer. An existing
+ * sticky error takes precedence and is returned by every later write. */
 zbuf_err zbuf_put(zbuf *b, unsigned char byte);
 zbuf_err zbuf_write(zbuf *b, const void *data, size_t n);
 zbuf_err zbuf_str(zbuf *b, const char *cstr);
@@ -57,8 +59,8 @@ zbuf_err zbuf_str(zbuf *b, const char *cstr);
 zbuf_err zbuf_printf(zbuf *b, const char *fmt, ...);
 zbuf_err zbuf_vprintf(zbuf *b, const char *fmt, va_list ap);
 
-/* NUL-terminated view (buf may be empty; never NULL after init when
- * err == ZBUF_OK... in practice returns "" for empty/errored). The
+/* NUL-terminated view of retained content, including after a sticky
+ * error. Returns "" for a NULL buffer or one without storage. The
  * pointer is valid until the next mutation. */
 const char *zbuf_cstr(zbuf *b);
 

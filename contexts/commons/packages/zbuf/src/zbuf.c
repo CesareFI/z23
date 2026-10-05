@@ -17,6 +17,11 @@ const char *zbuf_err_str(zbuf_err e) {
   return "unknown error";
 }
 
+static zbuf_err zbuf__invalid(zbuf *b) {
+  if (b != NULL && b->err != ZBUF_OK) return b->err;
+  return ZBUF_ERR_ARG;
+}
+
 zbuf_err zbuf_init(zbuf *b, size_t max) {
   if (b == NULL || max == SIZE_MAX) return ZBUF_ERR_ARG;
   b->data = NULL;
@@ -76,7 +81,7 @@ static zbuf_err zbuf__reserve(zbuf *b, size_t extra) {
 
 zbuf_err zbuf_write(zbuf *b, const void *data, size_t n) {
   zbuf_err e;
-  if (b == NULL || (data == NULL && n != 0)) return ZBUF_ERR_ARG;
+  if (b == NULL || (data == NULL && n != 0)) return zbuf__invalid(b);
   e = zbuf__reserve(b, n);
   if (e != ZBUF_OK) return e;
   if (n != 0) memcpy(b->data + b->len, data, n);
@@ -90,7 +95,7 @@ zbuf_err zbuf_put(zbuf *b, unsigned char byte) {
 }
 
 zbuf_err zbuf_str(zbuf *b, const char *cstr) {
-  if (cstr == NULL) return ZBUF_ERR_ARG;
+  if (cstr == NULL) return zbuf__invalid(b);
   return zbuf_write(b, cstr, strlen(cstr));
 }
 
@@ -98,7 +103,7 @@ zbuf_err zbuf_vprintf(zbuf *b, const char *fmt, va_list ap) {
   va_list aq;
   int need;
   zbuf_err e;
-  if (b == NULL || fmt == NULL) return ZBUF_ERR_ARG;
+  if (b == NULL || fmt == NULL) return zbuf__invalid(b);
   if (b->err != ZBUF_OK) return b->err;
   va_copy(aq, ap);
   need = vsnprintf(NULL, 0, fmt, aq);

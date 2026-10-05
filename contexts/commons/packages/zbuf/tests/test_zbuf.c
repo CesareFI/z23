@@ -184,7 +184,32 @@ static void test_fuzz(void) {
   }
 }
 
+static void test_sticky_invalid_arguments(void) {
+  int failed = 0;
+  for (int row = 0; row < 3; row++) {
+    zbuf b;
+    CHECK(zbuf_init(&b, 1) == ZBUF_OK);
+    CHECK(zbuf_str(&b, "x") == ZBUF_OK);
+    CHECK(zbuf_put(&b, 'y') == ZBUF_ERR_FULL);
+    zbuf_err e;
+    switch (row) {
+    case 0: e = zbuf_write(&b, NULL, 1); break;
+    case 1: e = zbuf_str(&b, NULL); break;
+    default: e = zbuf_printf(&b, NULL); break;
+    }
+    if (e != ZBUF_ERR_FULL || zbuf_len(&b) != 1 ||
+        strcmp(zbuf_cstr(&b), "x") != 0) {
+      fprintf(stderr, "FAIL sticky_invalid row=%d err=%d\n", row, e);
+      failed = 1;
+    }
+    zbuf_free(&b);
+  }
+  CHECK(!failed);
+}
+
 int main(void) {
+    test_sticky_invalid_arguments();
+
   test_maximum();
   test_invalid_init_preserves();
   test_zero_maximum();
