@@ -191,8 +191,24 @@ static void test_escaped_size_overflow(void)
     CHECK(!failed);
 }
 
+static void test_read_error(void)
+{
+#if !defined(_WIN32)
+    FILE *in = fopen("/dev/null", "w");
+    CHECK(in != NULL);
+    size_t len = 123;
+    uint8_t *data = read_all(in, &len);
+    int failed = data != NULL || len != 123;
+    free(data);
+    CHECK(fclose(in) == 0);
+    CHECK(!failed);
+#endif
+}
+
 int main(void)
 {
+    test_read_error();
+
     test_escaped_size_overflow();
 
     test_escape_basics();
