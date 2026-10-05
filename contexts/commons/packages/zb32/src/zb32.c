@@ -52,11 +52,28 @@ static int zb32__val(char c) {
 
 /* Padding count for a block that decoded `have` source bytes:
  * have 1->6 pads, 2->4, 3->3, 4->1, 5->0. */
+/* Check the decoded size without adding branches to the decoder body. */
+static int encoded_span_fits(const char *src, size_t n) {
+  if (n > (ZB32_MAX / 5 + 1) * 8 || n % 8 != 0) return 0;
+  if (n == 0) return 1;
+  size_t bytes = n / 8 * 5;
+  size_t pads = 0;
+  while (pads < 8 && src[n - pads - 1] == '=') pads++;
+  switch (pads) {
+  case 6: bytes -= 4; break;
+  case 4: bytes -= 3; break;
+  case 3: bytes -= 2; break;
+  case 1: bytes -= 1; break;
+  default: break; /* malformed shapes are rejected by the decoder */
+  }
+  return bytes <= ZB32_MAX;
+}
+
 size_t zb32_decode(void *dst, size_t cap, const char *src, size_t n) {
   unsigned char *d = dst;
   size_t i = 0, len = 0;
   if (src == NULL && n != 0) return SIZE_MAX;
-  if (n > (ZB32_MAX / 5 + 1) * 8) return SIZE_MAX;
+  if (!encoded_span_fits(src, n)) return SIZE_MAX;
   if (n % 8 != 0) return SIZE_MAX;
   while (i < n) {
     uint64_t acc = 0;

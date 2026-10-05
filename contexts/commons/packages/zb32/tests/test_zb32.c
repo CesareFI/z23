@@ -138,7 +138,14 @@ static void test_fuzz(void) {
   }
 }
 
+static void test_decoded_bound(void) {
+  static char wire[(ZB32_MAX / 5 + 1) * 8];
+  memset(wire, 'A', sizeof wire);
+  CHECK(zb32_decoded_len(wire, sizeof wire) == SIZE_MAX);
+}
+
 int main(void) {
+  test_decoded_bound();
   test_kat();
   test_err();
   test_roundtrip();
