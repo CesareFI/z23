@@ -61,11 +61,12 @@ void *zpool_alloc(zpool *pool) {
 
 static bool block_index_of(const zpool *pool, const void *ptr,
                            size_t *index_out) {
-  const unsigned char *p = ptr;
-  if (p < pool->arena ||
-      (size_t)(p - pool->arena) >= pool->block_count * pool->block_size)
+  uintptr_t address = (uintptr_t)ptr;
+  uintptr_t base = (uintptr_t)pool->arena;
+  if (address < base ||
+      address - base >= pool->block_count * pool->block_size)
     return false;
-  size_t off = (size_t)(p - pool->arena);
+  size_t off = (size_t)(address - base);
   if (off % pool->block_size)
     return false;
   *index_out = off / pool->block_size;

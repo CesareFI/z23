@@ -163,7 +163,17 @@ static void test_small_blocks(void) {
   CHECK(zpool_available(&p) == 4);
 }
 
+static void test_foreign_pointer_ownership(void) {
+  unsigned char foreign[64] = {0};
+  zpool p;
+  CHECK(zpool_init(&p, arena, sizeof(arena), 64));
+  /* Separate objects may not be compared or subtracted as C pointers. */
+  CHECK(!zpool_owns(&p, foreign));
+  CHECK(zpool_available(&p) == 16);
+}
+
 int main(void) {
+  test_foreign_pointer_ownership();
   test_init_validation();
   test_alloc_exhaustion();
   test_reuse_and_lifo();
