@@ -101,12 +101,12 @@ bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow);
 struct fast_sync_rate_limiter {
     struct {
         uint8_t ip[16];
-        int64_t window_start;
+        int64_t window_start;  /* process-monotonic seconds */
         uint32_t chunks_sent;
     } entries[1024];
     size_t num_entries;
     /* Global rate tracking */
-    int64_t global_window_start;
+    int64_t global_window_start;  /* process-monotonic seconds */
     uint64_t global_chunks_sent;
 };
 

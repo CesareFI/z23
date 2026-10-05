@@ -657,15 +657,27 @@ bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
                                   FAST_SYNC_MAX_GLOBAL_CHUNKS_PER_HOUR);
 }
 
+static bool rate_window_expired(int64_t window_start,
+                                uint64_t chunks_sent,
+                                int64_t now)
+{
+    if (window_start == 0 && chunks_sent == 0) {
+        return true;
+    }
+    return now > window_start && now - window_start > 3600;
+}
+
 bool fast_sync_rate_check_n(struct fast_sync_rate_limiter *rl,
                             const uint8_t ip[16],
                             uint32_t max_per_ip_per_hour,
                             uint64_t max_global_per_hour)
 {
-    int64_t now = (int64_t)platform_time_wall_time_t();
+    int64_t now = platform_time_monotonic_us() / INT64_C(1000000);
 
     /* Global rate limit — prevents distributed DoS from many IPs */
-    if (now - rl->global_window_start > 3600) {
+    if (rate_window_expired(rl->global_window_start,
+                            rl->global_chunks_sent,
+                            now)) {
         rl->global_window_start = now;
         rl->global_chunks_sent = 0;
     }
@@ -676,7 +688,9 @@ bool fast_sync_rate_check_n(struct fast_sync_rate_limiter *rl,
     /* Per-IP rate limit */
     for (size_t i = 0; i < rl->num_entries; i++) {
         if (memcmp(rl->entries[i].ip, ip, 16) == 0) {
-            if (now - rl->entries[i].window_start > 3600) {
+            if (rate_window_expired(rl->entries[i].window_start,
+                                    rl->entries[i].chunks_sent,
+                                    now)) {
                 rl->entries[i].window_start = now;
                 rl->entries[i].chunks_sent = 0;
             }

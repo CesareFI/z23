@@ -334,8 +334,13 @@ static int test_rate_limiter(void)
         uint8_t ip2[16] = {0};
         ip2[0] = 2;
 
-        /* First request OK */
+        /* First request OK, and its process-local window uses the monotonic
+         * clock: wall corrections must neither strand nor refresh budgets. */
+        int64_t before = platform_time_monotonic_us() / INT64_C(1000000);
         ASSERT(fast_sync_rate_check(&rl, ip1));
+        int64_t after = platform_time_monotonic_us() / INT64_C(1000000);
+        ASSERT(rl.global_window_start >= before &&
+               rl.global_window_start <= after);
         ASSERT(fast_sync_rate_check(&rl, ip2));
         ASSERT(rl.num_entries == 2);
 
