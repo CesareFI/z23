@@ -365,7 +365,7 @@ static void test_fuzz(void) {
   }
 }
 
-int main(void) {
+static int baseline_main(void) {
   test_kat();
   test_types();
   test_arr();
@@ -379,4 +379,12 @@ int main(void) {
   }
   printf("test_ztoml: all groups passed (kat types arr err decode null fuzz)\n");
   return 0;
+}
+static void test_escaped_physical_newline(void) {
+  evlog log;
+  CHECK(parse_all("k=\"a\\\nb\"", &log) == ZTOML_ERR_SYNTAX);
+}
+int main(void) {
+  test_escaped_physical_newline();
+  return baseline_main() || g_fail;
 }

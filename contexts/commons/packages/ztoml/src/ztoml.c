@@ -120,7 +120,7 @@ static ztoml_err ztoml__basic_string(ztoml *t, ztoml_ev *ev) {
     if (c == '\n') return ztoml__fail(t, ZTOML_ERR_SYNTAX, i);
     if (c == '\\') {
       i++;
-      if (i >= t->len) break;
+      if (i >= t->len || t->doc[i] == '\n') break;
       continue;
     }
     if (c == '"') {
