@@ -431,6 +431,9 @@ static int test_sync_service_reject_probe_rate_limit(void)
         ASSERT(!syncsvc_should_probe_after_reject(
             1000, 1000 - SYNC_REJECT_PROBE_INTERVAL_SECS + 1));
         ASSERT(!syncsvc_should_probe_after_reject(1000, 1000));
+        /* A backward wall-clock step starts a new probe epoch instead of
+         * suppressing recovery until the old future stamp is reached. */
+        ASSERT(syncsvc_should_probe_after_reject(900, 1000));
         /* At and past the interval → allowed. */
         ASSERT(syncsvc_should_probe_after_reject(
             1000, 1000 - SYNC_REJECT_PROBE_INTERVAL_SECS));

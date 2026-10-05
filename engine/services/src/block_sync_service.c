@@ -609,8 +609,8 @@ void syncsvc_plan_recovery_getheaders(struct sync_getheaders_action *action,
 bool syncsvc_should_probe_after_reject(int64_t now_seconds,
                                        int64_t last_probe_seconds)
 {
-    if (last_probe_seconds <= 0)
-        return true;  // raw-return-ok:never-probed-is-not-an-error
+    if (last_probe_seconds <= 0 || now_seconds < last_probe_seconds)
+        return true;  // raw-return-ok:probe-epoch-open
     return (now_seconds - last_probe_seconds) >=
            SYNC_REJECT_PROBE_INTERVAL_SECS;
 }
