@@ -166,15 +166,35 @@ static int parse_field(parser *ps, int lo, int hi, unsigned bit_base,
     if (star && first && step == 1 &&
         (ps->p >= ps->end || *ps->p != ','))
       *is_star = 1;
+    const char *field_end = ps->p;
     skip_ws(ps);
     if (ps->p < ps->end && *ps->p == ',') {
       ps->p++;
       first = 0;
       continue;
     }
+    ps->p = field_end;
     break;
   }
   return 1;
+}
+
+static int field_separator(parser *ps) {
+  if (ps->p >= ps->end || (*ps->p != ' ' && *ps->p != '\t')) {
+    perr(ps, "expected whitespace between fields");
+    return 0;
+  }
+  return 1;
+}
+
+/* A following field must have a separator before its own parser skips it. */
+static int parse_next_field(parser *ps, int lo, int hi, unsigned bit_base,
+                            const char *const names[], int nnames,
+                            uint64_t *bits, int *is_star, const char *fname,
+                            int fold_7_to_0) {
+  if (!field_separator(ps)) return 0;
+  return parse_field(ps, lo, hi, bit_base, names, nnames, bits, is_star,
+                     fname, fold_7_to_0);
 }
 
 int zcron_parse(const char *s, size_t len, zcron *out, char *err,
@@ -199,14 +219,14 @@ int zcron_parse(const char *s, size_t len, zcron *out, char *err,
 
   if (!parse_field(&ps, 0, 59, 0, NULL, 0, &minute, &mstar, "bad minute", 0))
     return 0;
-  if (!parse_field(&ps, 0, 23, 0, NULL, 0, &hour, &hstar, "bad hour", 0))
+  if (!parse_next_field(&ps, 0, 23, 0, NULL, 0, &hour, &hstar, "bad hour", 0))
     return 0;
-  if (!parse_field(&ps, 1, 31, 0, NULL, 0, &dom, &domstar, "bad dom", 0))
+  if (!parse_next_field(&ps, 1, 31, 0, NULL, 0, &dom, &domstar, "bad dom", 0))
     return 0;
-  if (!parse_field(&ps, 1, 12, 0, month_names, 12, &month, &mostar,
+  if (!parse_next_field(&ps, 1, 12, 0, month_names, 12, &month, &mostar,
                    "bad month", 0))
     return 0;
-  if (!parse_field(&ps, 0, 7, 0, dow_names, 7, &dow, &dowstar, "bad dow", 1))
+  if (!parse_next_field(&ps, 0, 7, 0, dow_names, 7, &dow, &dowstar, "bad dow", 1))
     return 0;
   skip_ws(&ps);
   if (ps.p != ps.end) {

@@ -295,8 +295,24 @@ static void test_sunday_range_alias(void) {
   expect_parse_bad("0 0 * * 7-0");
 }
 
+static void test_required_field_separators(void) {
+  const char *bad[] = {"*****", "0 0** *", "0 0 *jan mon", "0 0 * janmon"};
+  for (size_t i = 0; i < sizeof bad / sizeof bad[0]; ++i) {
+    int before_failures = failures;
+    zcron c = {0};
+    char err[64];
+    CHECK(!zcron_parse(bad[i], strlen(bad[i]), &c, err, sizeof err));
+    CHECK(err[0] != '\0');
+    fprintf(stderr, "cron_separator_row=%zu result=%s\n", i,
+            failures == before_failures ? "PASS" : "FAIL");
+  }
+  expect_parse_ok("\t0\t0\t*\tjan\tmon\t");
+  expect_parse_ok(" 0, 30 0 * jan mon ");
+}
+
 int main(void) {
   expect_next("* * * * *", LLONG_MAX, -1);
+    test_required_field_separators();
     test_sunday_range_alias();
   test_format_preserves_day_semantics();
   test_parse_ok();
