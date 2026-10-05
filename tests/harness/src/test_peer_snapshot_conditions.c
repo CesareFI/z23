@@ -27,12 +27,14 @@
 
 struct fake_clock_peer_snapshot {
     _Atomic int64_t wall_ms;
+    _Atomic int64_t monotonic_ns;
 };
 
 static int64_t fake_now_mono(void *self)
 {
-    (void)self;
-    return 1;
+    struct fake_clock_peer_snapshot *c =
+        (struct fake_clock_peer_snapshot *)self;
+    return atomic_load(&c->monotonic_ns);
 }
 
 static int64_t fake_now_wall(void *self)
@@ -46,6 +48,8 @@ static void fake_clock_install(struct fake_clock_peer_snapshot *c,
                                int64_t unix_s)
 {
     atomic_store(&c->wall_ms, unix_s * 1000);
+    atomic_store(&c->monotonic_ns,
+                 unix_s * INT64_C(1000000000));
     static clock_iface_t iface;
     iface.now_monotonic_ns = fake_now_mono;
     iface.now_wall_ms = fake_now_wall;
@@ -56,6 +60,16 @@ static void fake_clock_install(struct fake_clock_peer_snapshot *c,
 static void fake_clock_set(struct fake_clock_peer_snapshot *c, int64_t unix_s)
 {
     atomic_store(&c->wall_ms, unix_s * 1000);
+    atomic_store(&c->monotonic_ns,
+                 unix_s * INT64_C(1000000000));
+}
+
+static void fake_clock_set_split(struct fake_clock_peer_snapshot *c,
+                                 int64_t monotonic_s, int64_t wall_s)
+{
+    atomic_store(&c->monotonic_ns,
+                 monotonic_s * INT64_C(1000000000));
+    atomic_store(&c->wall_ms, wall_s * 1000);
 }
 
 static void reset_peer_snapshot_conditions(struct connman *cm,
@@ -159,7 +173,9 @@ int test_peer_snapshot_conditions(void)
 
         condition_engine_tick();
         ok = ok && peer_floor_violated_test_remedy_calls() == 0;
-        fake_clock_set(&clock, 1061);
+        /* Peer-floor recovery is elapsed process time, even if wall time
+         * moves backward while outbound connectivity remains unhealthy. */
+        fake_clock_set_split(&clock, 1061, 500);
         condition_engine_tick();
         ok = ok && peer_floor_violated_test_remedy_calls() == 1;
         ok = ok && stuck.disconnect;

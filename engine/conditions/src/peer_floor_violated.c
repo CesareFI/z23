@@ -24,7 +24,7 @@
 #define PEER_FLOOR_MIN_HEALTHY ZCL_PEER_FLOOR_HEALTHY
 #define PEER_FLOOR_TRIGGER_SECS 60
 
-static _Atomic int64_t g_first_violation_unix;
+static _Atomic int64_t g_first_violation_time;
 static _Atomic int g_outbound_at_detect;
 static _Atomic int g_inbound_at_detect;
 static _Atomic int g_local_height_at_detect;
@@ -62,7 +62,7 @@ static bool floor_condition_applies(void)
 static bool detect_peer_floor_violated(void)
 {
     if (!floor_condition_applies()) {
-        atomic_store(&g_first_violation_unix, 0);
+        atomic_store(&g_first_violation_time, 0);
         return false;
     }
 
@@ -73,14 +73,14 @@ static bool detect_peer_floor_violated(void)
     struct connman_outbound_health h;
     connman_get_outbound_health(cm, &h);
     if (h.healthy >= PEER_FLOOR_MIN_HEALTHY) {
-        atomic_store(&g_first_violation_unix, 0);
+        atomic_store(&g_first_violation_time, 0);
         return false;
     }
 
-    int64_t now = platform_time_wall_unix();
-    int64_t first = atomic_load(&g_first_violation_unix);
+    int64_t now = platform_time_monotonic_us() / INT64_C(1000000);
+    int64_t first = atomic_load(&g_first_violation_time);
     if (first == 0) {
-        atomic_store(&g_first_violation_unix, now);
+        atomic_store(&g_first_violation_time, now);
         return false;
     }
     if (now - first < PEER_FLOOR_TRIGGER_SECS)
@@ -286,7 +286,7 @@ void register_peer_floor_violated(void)
 #ifdef ZCL_TESTING
 void peer_floor_violated_test_reset(void)
 {
-    atomic_store(&g_first_violation_unix, 0);
+    atomic_store(&g_first_violation_time, 0);
     atomic_store(&g_outbound_at_detect, 0);
     atomic_store(&g_inbound_at_detect, 0);
     atomic_store(&g_local_height_at_detect, -1);
