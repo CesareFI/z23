@@ -1,4 +1,5 @@
-/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ * purpose: bound landing self-observation and launcher-capture consistency contracts. */
 #ifndef ZCL_DEV_LAND_ATTESTATION_H
 #define ZCL_DEV_LAND_ATTESTATION_H
 #include <stdbool.h>
