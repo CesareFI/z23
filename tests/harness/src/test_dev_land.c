@@ -8595,9 +8595,252 @@ _test_next:;
     return failures;
 }
 
-int test_dev_land(void)
+static bool dlx_hold_field_replace(const char *replacement)
+{
+    char body[16384], changed[16384], land[1200], path[1400];
+    size_t len = 0;
+    if (!dlx_queue_bytes(body, sizeof(body), &len)) return false;
+    char *field = strstr(body, ",\"publication_hold\":");
+    char *end = field ? strchr(field, '}') : NULL;
+    if (!end) return false;
+    int n = snprintf(changed, sizeof(changed), "%.*s%s%s",
+                     (int)(field - body), body, replacement, end);
+    dlx_landdir(land, sizeof(land));
+    (void)snprintf(path, sizeof(path), "%s/queue.jsonl", land);
+    return n > 0 && (size_t)n < sizeof(changed) && dlx_write(path, changed);
+}
+
+static int dlx_hold_legacy_case(void)
 {
     int failures = 0;
+    TEST("land: a legacy row without publication_hold retains normal publication") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char before[64], after[64];
+        dlx_isolate("hold_legacy");
+        ASSERT(dlx_rig_make(&rig, "hold_legacy_rig"));
+        ASSERT(dlx_origin_main(&rig, before));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c)); dlx_end(&c);
+        ASSERT(dlx_hold_field_replace(""));
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c)); dlx_end(&c);
+        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+        /* Also remove the field from the reopened in-flight row. */
+        ASSERT(dlx_hold_field_replace(""));
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed"); dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, after));
+        ASSERT(strcmp(before, after) != 0);
+        PASS();
+    }
+_test_next:
+    dlx_restore();
+    return failures;
+}
+
+static int dlx_hold_malformed_case(void)
+{
+    int failures = 0;
+    TEST("land: malformed or duplicate hold refuses without rewriting the queue") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char before[16384], after[16384], origin[64], current[64];
+        size_t first = 0, second = 0;
+        dlx_isolate("hold_malformed");
+        ASSERT(dlx_rig_make(&rig, "hold_malformed_rig"));
+        ASSERT(dlx_origin_main(&rig, origin));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c)); dlx_end(&c);
+        const char *bad[] = {",\"publication_hold\":\"true\"", ",\"publication_hold\":1",
+            ",\"publication_hold\":null", ",\"publication_hold\":true,\"publication_hold\":false"};
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+            ASSERT(dlx_hold_field_replace(bad[i]));
+            ASSERT(dlx_queue_bytes(before, sizeof(before), &first));
+            dlx_begin(&c, "step");
+            ASSERT(dlx_run(&c) && !dlx_ok(&c));
+            ASSERT_STR_EQ(c.reply.error.code, "QUEUE_READ_FAILED"); dlx_end(&c);
+            ASSERT(dlx_queue_bytes(after, sizeof(after), &second));
+            ASSERT(first == second && memcmp(before, after, first) == 0);
+            ASSERT(dlx_origin_main(&rig, current));
+            ASSERT_STR_EQ(origin, current);
+        }
+        PASS();
+    }
+_test_next:
+    dlx_restore();
+    return failures;
+}
+
+static int dlx_hold_sealed_case(void)
+{
+    int failures = 0;
+    TEST("land: hold and release refuse sealed and unknown sequences without changing bytes") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], current[64], before[16384], after[16384];
+        size_t first = 0, second = 0;
+        dlx_isolate("hold_sealed");
+        ASSERT(dlx_attach_proven_pair(&rig, "hold_sealed", base));
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c)); dlx_end(&c);
+        ASSERT(dlx_queue_bytes(before, sizeof(before), &first));
+        const char *actions[] = {"hold", "release"};
+        for (size_t i = 0; i < 2; i++) {
+            for (long long seq = 1; seq <= 2; seq++) {
+                dlx_begin(&c, actions[i]);
+                (void)json_push_kv_int(&c.input, "seq", seq);
+                ASSERT(dlx_run(&c) && !dlx_ok(&c));
+                ASSERT_STR_EQ(c.reply.error.code, seq == 1 ? "PUBLICATION_ALREADY_SEALED" : "UNKNOWN_SEQUENCE");
+                dlx_end(&c);
+                ASSERT(dlx_queue_bytes(after, sizeof(after), &second));
+                ASSERT(first == second && memcmp(before, after, first) == 0);
+                ASSERT(dlx_origin_main(&rig, current));
+                ASSERT_STR_EQ(current, base);
+            }
+        }
+        PASS();
+    }
+_test_next:
+    dlx_restore();
+    return failures;
+}
+
+static int dlx_hold_lock_case(void)
+{
+    int failures = 0;
+    int lock = -1;
+    TEST("land: hold and release serialize against the native step slot") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char land[1200], before[16384], after[16384];
+        size_t first = 0, second = 0;
+        dlx_isolate("hold_lock");
+        ASSERT(dlx_rig_make(&rig, "hold_lock_rig"));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c)); dlx_end(&c);
+        ASSERT(dlx_queue_bytes(before, sizeof(before), &first));
+        dlx_landdir(land, sizeof(land));
+        lock = dlx_step_lock_take(land);
+        ASSERT(lock >= 0);
+        const char *actions[] = {"hold", "release"};
+        for (size_t i = 0; i < 2; i++) {
+            dlx_begin(&c, actions[i]);
+            (void)json_push_kv_int(&c.input, "seq", 1);
+            ASSERT(dlx_run(&c) && !dlx_ok(&c));
+            ASSERT_STR_EQ(c.reply.error.code, "STEP_BUSY"); dlx_end(&c);
+            ASSERT(dlx_queue_bytes(after, sizeof(after), &second));
+            ASSERT(first == second && memcmp(before, after, first) == 0);
+        }
+        PASS();
+    }
+_test_next:
+    if (lock >= 0) { (void)flock(lock, LOCK_UN); (void)close(lock); }
+    dlx_restore();
+    return failures;
+}
+
+static int dlx_publication_hold_cases(void)
+{
+    int failures = 0;
+    TEST("land: retained hold permits proof but refuses step/drive publication; release restores flow") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char before[64], after[64], landed[64];
+        dlx_isolate("publication_hold");
+        ASSERT(dlx_rig_make(&rig, "publication_hold_rig"));
+        ASSERT(dlx_origin_main(&rig, before));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+        dlx_begin(&c, "hold");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT(json_get_bool(json_get(&c.reply.data, "publication_hold")));
+        dlx_end(&c);
+        dlx_begin(&c, "status");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        const struct json_value *queued = dlx_arr(&c, "queued");
+        ASSERT(queued && queued->num_children == 1);
+        ASSERT(json_get_bool(json_get(&queued->children[0], "publication_hold")));
+        ASSERT(strstr(dlx_str(&c, "screen"), "publication HELD") != NULL);
+        dlx_end(&c);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT(strcmp(dlx_str(&c, "state"), "started") == 0);
+        dlx_end(&c);
+        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+        const char *beats[] = {"step", "drive"};
+        for (size_t i = 0; i < 2; i++) {
+            dlx_begin(&c, beats[i]);
+            ASSERT(dlx_run(&c) && !dlx_ok(&c));
+            ASSERT(strcmp(c.reply.error.code, "PUBLICATION_HELD") == 0);
+            dlx_end(&c);
+            ASSERT(dlx_origin_main(&rig, after));
+            ASSERT(strcmp(before, after) == 0);
+        }
+        dlx_begin(&c, "status");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        const struct json_value *flight = json_get(&c.reply.data, "in_flight");
+        ASSERT(flight != NULL);
+        ASSERT(json_get_bool(json_get(flight, "publication_hold")));
+        ASSERT(strstr(dlx_str(&c, "screen"), "publication HELD") != NULL);
+        ASSERT_EQ((long long)dlx_arr(&c, "outcomes")->num_children, 0);
+        dlx_end(&c);
+        const char *attachments[] = {"attach", "attach_publish"};
+        for (size_t i = 0; i < 2; i++) {
+            dlx_begin(&c, attachments[i]);
+            (void)json_push_kv_int(&c.input, "seq", 1);
+            ASSERT(dlx_run(&c) && !dlx_ok(&c));
+            ASSERT(strcmp(c.reply.error.code, "PUBLICATION_HELD") == 0);
+            dlx_end(&c);
+            ASSERT(dlx_origin_main(&rig, after));
+            ASSERT(strcmp(before, after) == 0);
+        }
+        dlx_begin(&c, "release");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT(!json_get_bool(json_get(&c.reply.data, "publication_hold")));
+        dlx_end(&c);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT(strcmp(dlx_str(&c, "state"), "landed") == 0);
+        (void)snprintf(landed, sizeof(landed), "%s", dlx_str(&c, "tip_pushed"));
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, after));
+        ASSERT(strcmp(after, landed) == 0 && strcmp(after, before) != 0);
+        dlx_begin(&c, "hold");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT(strcmp(c.reply.error.code, "UNKNOWN_SEQUENCE") == 0);
+        dlx_end(&c);
+        dlx_restore();
+        PASS();
+    }
+_test_next:
+    dlx_restore();
+    return failures;
+}
+
+int test_dev_land(void)
+{
+    /* Canonical registered group: private bare origin only, no live queue. */
+    int failures = 0;
+    failures += dlx_publication_hold_cases();
+    failures += dlx_hold_legacy_case();
+    failures += dlx_hold_malformed_case();
+    failures += dlx_hold_sealed_case();
+    failures += dlx_hold_lock_case();
     failures += dlx_launcher_join_cases();
     failures += dlx_attest_only_cases();
     failures += dlx_attest_bounded_wire_cases();

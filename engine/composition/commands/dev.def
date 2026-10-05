@@ -1972,10 +1972,12 @@ ZCL_COMMAND_DEV_COMMAND(
     "sequence and releases its lock during proof. attach seals an exact proven "
     "pair; attach_publish seals and performs its current-base publication beat "
     "under one lock. Optional base/head pins refuse changed pairs; wait_ms "
-    "bounds explicit attach_publish proof waiting. cancel refuses unresolved "
+    "bounds explicit attach_publish proof waiting. hold/release retain a per-sequence "
+    "publication hold; held rows may prove but never seal or push. Both refuse "
+    "unknown or sealed rows. status exposes the hold. cancel refuses unresolved "
     "push checkpoints. fence_replace binds an explicit paired successor. "
     "Outcomes retain provenance and normal native mail receipts. No shell.", 65536,
-    "land,submit,attach,attach_publish,step,drive,status,cancel,queue,proof,push,rebase,async",
+    "land,submit,attach,attach_publish,step,drive,status,hold,release,cancel,queue,proof,push,rebase,async",
     "zcl.land_input.v1", "zcl.land.v1",
     "action,tip,worktree,note,seq,base,head,wait_ms,json", "action",
     "z23-dev dev land drive",

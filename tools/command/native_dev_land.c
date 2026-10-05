@@ -698,6 +698,7 @@ struct dl_row {
      * Remote observation remains authoritative, including after a crash. */
     bool push_diagnostic_pending;
     long long fence_peer;
+    bool publication_hold;
     /* The origin main this queued row was last replayed onto by the
      * queued-row conflict precheck, so a fresh step process does not
      * replay it again until main moves. A cache, never authority: empty or
@@ -710,8 +711,22 @@ struct dl_row {
     long long uncertain_tries;
 };
 
+static bool dl_hold_field(const struct json_value *doc, bool *hold)
+{
+    size_t found = 0;
+    *hold = false;
+    for (size_t i = 0; i < doc->num_children; i++) {
+        if (strcmp(doc->keys[i], "publication_hold") != 0)
+            continue;
+        if (++found != 1 || doc->children[i].type != JSON_BOOL)
+            return false;
+        *hold = json_get_bool(&doc->children[i]);
+    }
+    return true;
+}
+
 static bool dl_row_json_ok(const char *line, long long *priority,
-                           bool *has_priority)
+                           bool *has_priority, bool *hold)
 {
     struct json_value doc;
     const struct json_value *field;
@@ -729,6 +744,7 @@ static bool dl_row_json_ok(const char *line, long long *priority,
         ok = field->type == JSON_INT && json_get_int(field) >= 0 && json_get_int(field) <= 1;
     field = ok ? json_get(&doc, "fence_peer") : NULL;
     if (field) ok = field->type == JSON_INT && json_get_int(field) >= 0;
+    if (ok) ok = dl_hold_field(&doc, hold);
     json_free(&doc);
     return ok;
 }
@@ -813,13 +829,19 @@ static void dl_publication_clear(struct dl_row *r)
     r->remote_signature[0] = '\0';
 }
 
+static bool dl_hold_row_ok(const struct dl_row *r)
+{
+    return !r->publication_hold || (!r->publication_signature[0] &&
+        !r->push_diagnostic_pending && !r->fence_peer && strcmp(r->phase, "push") != 0);
+}
+
 static bool dl_row_semantics_ok(const struct dl_row *r)
 {
     if (strcmp(r->state, "fenced") == 0 && (!r->publication_signature[0] ||
         !dl_sha_ok(r->base) || !dl_sha_ok(r->local) || !dl_sha_ok(r->tree)))
         return false;
     return dl_row_state_ok(r) && dl_row_phase_ok(r) && dl_row_pair_ok(r) &&
-           dl_publication_shape_ok(r) && dl_remote_receipt_shape_ok(r);
+           dl_publication_shape_ok(r) && dl_remote_receipt_shape_ok(r) && dl_hold_row_ok(r);
 }
 
 static bool dl_priority_parse(struct dl_row *r, long long priority,
@@ -863,11 +885,13 @@ static bool dl_parse_row(const char *line, struct dl_row *r)
 {
     long long priority = 0;
     bool has_priority = false;
+    bool hold = false;
     if (!line || !line[0] || !r)
         return false;
-    if (!dl_row_json_ok(line, &priority, &has_priority))
+    if (!dl_row_json_ok(line, &priority, &has_priority, &hold))
         return false;
     memset(r, 0, sizeof(*r));
+    r->publication_hold = hold;
     if (!dl_line_int(line, "seq", &r->seq) || r->seq < 1)
         return false;
     if (!dl_priority_parse(r, priority, has_priority))
@@ -963,6 +987,11 @@ static bool dl_escape_publication_fields(const struct dl_row *r,
                   sizeof(e->remote_signature));
 }
 
+static const char *dl_hold_literal(bool hold)
+{
+    return hold ? "true" : "false";
+}
+
 static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
                           size_t *len_out)
 {
@@ -1007,7 +1036,8 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
                  "\"prechecked_main\":\"%s\","
                  "\"precheck_uncertain_main\":\"%s\","
                  "\"precheck_uncertain\":%lld,\"detail\":\"%s\","
-                 "\"push_diagnostic_pending\":%d,\"fence_peer\":%lld}\n",
+                 "\"push_diagnostic_pending\":%d,\"fence_peer\":%lld,"
+                 "\"publication_hold\":%s}\n",
                  r->seq, r->priority_seq, e_ts, e_tip, e_wt, e_note, e_state, e_phase,
                  r->attempt, r->started, e_base, e_local, e_tree, e_intent,
                  e_pushed, p.target, p.proof, p.bundle, p.signer, p.signature,
@@ -1017,7 +1047,7 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
                   * precheck admit only a 40-hex commit id or "". */
                  e_dim, e_log, r->prechecked, r->uncertain_main,
                  r->uncertain_tries, e_detail, r->push_diagnostic_pending ? 1 : 0,
-                 r->fence_peer);
+                 r->fence_peer, dl_hold_literal(r->publication_hold));
     if (w <= 0 || (size_t)w >= cap)
         return false;
     if (len_out)
@@ -3385,6 +3415,11 @@ static void dl_status_attach_steer(struct zcl_command_reply *reply,
 
 /* ── status ────────────────────────────────────────────────────────────── */
 
+static const char *dl_hold_display(const struct dl_row *r)
+{
+    return r->publication_hold ? " publication HELD" : "";
+}
+
 static bool dl_push_queued(struct json_value *arr, const struct dl_row *r)
 {
     struct json_value item;
@@ -3393,6 +3428,7 @@ static bool dl_push_queued(struct json_value *arr, const struct dl_row *r)
     json_set_object(&item);
     ok = json_push_kv_int(&item, "seq", r->seq) &&
          json_push_kv_int(&item, "priority_seq", r->priority_seq) &&
+         json_push_kv_bool(&item, "publication_hold", r->publication_hold) &&
          json_push_kv_str(&item, "tip", r->tip) &&
          json_push_kv_str(&item, "ts", r->ts) &&
          json_push_kv_int(&item, "attempt", r->attempt) &&
@@ -3441,6 +3477,7 @@ static bool dl_push_inflight_evidence(struct json_value *obj,
                                        const struct dl_row *r)
 {
     return json_push_kv_str(obj, "detail", r->detail) &&
+           json_push_kv_bool(obj, "publication_hold", r->publication_hold) &&
            json_push_kv_str(obj, "dispatch_state",
                             strcmp(r->phase, "push") == 0 ? "unknown" :
                             "not_attempted") &&
@@ -3627,9 +3664,9 @@ static void dl_status(const struct zcl_command_request *req,
             if (elapsed < 0)
                 elapsed = 0;
             w = snprintf(screen + used, sizeof(screen) - used,
-                         "  #%lld %.12s %-8s attempt %lld, %llds\n",
+                         "  #%lld %.12s %-8s attempt %lld, %llds%s\n",
                          rows[i].seq, rows[i].tip, rows[i].phase,
-                         rows[i].attempt, elapsed);
+                         rows[i].attempt, elapsed, dl_hold_display(&rows[i]));
             if (w <= 0 || (size_t)w >= sizeof(screen) - used)
                 goto render_done;
             used += (size_t)w;
@@ -3638,8 +3675,8 @@ static void dl_status(const struct zcl_command_request *req,
             if (strcmp(rows[i].state, "queued") != 0)
                 continue;
             w = snprintf(screen + used, sizeof(screen) - used,
-                         "  #%lld %.12s queued priority #%lld\n",
-                         rows[i].seq, rows[i].tip, rows[i].priority_seq);
+                         "  #%lld %.12s queued priority #%lld%s\n",
+                         rows[i].seq, rows[i].tip, rows[i].priority_seq, dl_hold_display(&rows[i]));
             if (w <= 0 || (size_t)w >= sizeof(screen) - used)
                 goto render_done;
             used += (size_t)w;
@@ -3833,6 +3870,7 @@ static void dl_step_reply(struct zcl_command_reply *reply,
     (void)json_push_kv_str(&reply->data, "state", state);
     if (row) {
         (void)json_push_kv_int(&reply->data, "seq", row->seq);
+        (void)json_push_kv_bool(&reply->data, "publication_hold", row->publication_hold);
         (void)json_push_kv_str(&reply->data, "tip", row->tip);
         (void)json_push_kv_str(&reply->data, "phase", row->phase);
         (void)json_push_kv_int(&reply->data, "attempt", row->attempt);
@@ -6327,6 +6365,10 @@ static bool dl_push_proven_pair(const struct dl_dirs *d,
                                 char *out, size_t out_cap, bool *recorded)
 {
     *recorded = false;
+    if (row->publication_hold) {
+        (void)snprintf(out, out_cap, "%s", "publication refused: candidate publication hold");
+        return false;
+    }
     const char *ancestry[] = { "--no-replace-objects", "merge-base",
         "--is-ancestor", row->base, row->local, NULL };
     int rc = dl_git(d->wt, ancestry, out, out_cap, DL_GIT_TIMEOUT_MS);
@@ -6996,6 +7038,24 @@ static bool dl_push_pair_same(const struct dl_row *a, const struct dl_row *b)
            strcmp(a->publication_signature, b->publication_signature) == 0;
 }
 
+static bool dl_publication_held(const struct dl_row *row,
+                                 struct zcl_command_reply *reply)
+{
+    if (!row->publication_hold) return false;
+    dl_fail(reply, "PUBLICATION_HELD", "publication",
+            "candidate may be proven but cannot be sealed or published until released",
+            "retained publication hold");
+    (void)json_push_kv_int(&reply->data, "seq", row->seq);
+    (void)json_push_kv_bool(&reply->data, "publication_hold", true);
+    return true;
+}
+
+static bool dl_push_allowed(const struct dl_dirs *d, const struct dl_row *row,
+                              struct zcl_command_reply *reply)
+{
+    return !dl_publication_held(row, reply) && dl_push_intent_ready(d, row, reply);
+}
+
 static void dl_step_push(const struct dl_dirs *d, struct dl_row *row,
                           struct zcl_command_reply *reply)
 {
@@ -7003,7 +7063,7 @@ static void dl_step_push(const struct dl_dirs *d, struct dl_row *row,
     /* The legacy pair receipt is proof of a build, not publication authority.
      * Keep unsigned landing confined to the existing isolated test fixture;
      * production must wait for a verified, durable canonical intent. */
-    if (!dl_push_intent_ready(d, row, reply))
+    if (!dl_push_allowed(d, row, reply))
         return;
     if (!dl_observe_remote_main(d, row, observed_main, false, reply))
         return;
@@ -9584,7 +9644,7 @@ static void dl_attach_proof_missing(const struct dl_dirs *d,
             "exact signed proof receipt is not PASS", row->proof_intent);
 }
 
-static void dl_attach_seal(const struct dl_dirs *d, struct dl_row *row,
+static void dl_attach_seal_unheld(const struct dl_dirs *d, struct dl_row *row,
                             const char *qpath,
                             struct zcl_command_reply *reply, bool publish,
                             bool waiting)
@@ -9635,6 +9695,14 @@ static void dl_attach_seal(const struct dl_dirs *d, struct dl_row *row,
         dl_step_push(d, row, reply);
     else
         dl_step_reply(reply, row, "attached");
+}
+
+static void dl_attach_seal(const struct dl_dirs *d, struct dl_row *row,
+                            const char *qpath, struct zcl_command_reply *reply,
+                            bool publish, bool waiting)
+{
+    if (!dl_publication_held(row, reply))
+        dl_attach_seal_unheld(d, row, qpath, reply, publish, waiting);
 }
 
 struct dl_attach_target {
@@ -9886,7 +9954,7 @@ static bool dl_fence_old_load(const struct dl_dirs *d, struct dl_row *rows, size
         if (rows[i].seq == seq) old = &rows[i];
         else if (strcmp(rows[i].state, "inflight") == 0) return false;
     }
-    if (!old || strcmp(old->state, "inflight") || strcmp(old->phase, "push") ||
+    if (!old || old->publication_hold || strcmp(old->state, "inflight") || strcmp(old->phase, "push") ||
         strcmp(old->base, base) || strcmp(old->local, head) ||
         !dl_publication_verify(d, old)) {
         dl_fail(reply, "FENCE_OLD_INTENT_CHANGED", "fence_replace",
@@ -10046,6 +10114,100 @@ done:
 #endif
 }
 
+[[maybe_unused]] static struct dl_row *dl_hold_pick(struct dl_row *rows, size_t count,
+                                   long long seq, struct zcl_command_reply *reply)
+{
+    struct dl_row *hit = NULL;
+    for (size_t i = 0; i < count; i++) {
+        if (rows[i].seq != seq) continue;
+        if (hit) {
+            dl_fail(reply, "QUEUE_READ_FAILED", "hold", "duplicate sequence", "locked queue");
+            return NULL;
+        }
+        hit = &rows[i];
+    }
+    if (!hit) {
+        dl_fail(reply, "UNKNOWN_SEQUENCE", "hold", "sequence is not in the active queue", "input.seq");
+        return NULL;
+    }
+    if (hit->publication_signature[0] || hit->publication_bundle[0] ||
+        hit->pushed[0] || hit->push_diagnostic_pending || hit->fence_peer ||
+        strcmp(hit->phase, "push") == 0) {
+        dl_fail(reply, "PUBLICATION_ALREADY_SEALED", "hold",
+                "hold and release refuse sealed or dispatch-checkpoint rows", "locked queue");
+        return NULL;
+    }
+    return hit;
+}
+
+[[maybe_unused]] static void dl_hold_locked(const struct dl_dirs *d, long long seq, bool hold,
+                            struct zcl_command_reply *reply)
+{
+    char path[4192], why[128] = {0};
+    struct dl_row *rows = NULL;
+    size_t count = 0;
+    if (snprintf(path, sizeof(path), "%s/queue.jsonl", d->land) >= (int)sizeof(path)) {
+        dl_fail(reply, "QUEUE_READ_FAILED", "hold", "queue path exceeds capacity", "state root");
+        return;
+    }
+    int lock = dl_rows_lock(d->land);
+    if (lock < 0) {
+        dl_fail(reply, "QUEUE_LOCK_FAILED", "hold", "cannot lock queue", path);
+        return;
+    }
+    if (!dl_load_rows(path, &rows, &count, why, sizeof(why))) {
+        dl_fail(reply, "QUEUE_READ_FAILED", "hold", "cannot read queue", why);
+        goto done;
+    }
+    struct dl_row *hit = dl_hold_pick(rows, count, seq, reply);
+    if (!hit) goto done;
+    hit->publication_hold = hold;
+    if (!dl_rewrite_rows(d->land, path, rows, count)) {
+        dl_fail(reply, "QUEUE_WRITE_FAILED", "hold", "cannot durably retain publication hold", path);
+        goto done;
+    }
+    dl_step_reply(reply, hit, hold ? "held" : "released");
+done:
+    free(rows);
+    dl_unlock(lock);
+}
+
+static void dl_hold(const struct zcl_command_request *request,
+                     struct zcl_command_reply *reply, bool hold)
+{
+#if defined(_WIN32)
+    (void)request; (void)hold;
+    dl_fail(reply, "UNAVAILABLE", "hold", "native queue locks unavailable on this platform", "POSIX flock required");
+#else
+    struct dl_dirs d;
+    long long seq = 0;
+    if (!dl_seq_in(request, &seq)) {
+        dl_fail(reply, "BAD_INPUT", "hold", "hold/release requires a positive sequence", "input.seq");
+        return;
+    }
+    if (!dl_dirs_make(&d)) {
+        dl_fail(reply, "STATE_DIR_FAILED", "hold", "private state root unavailable", "state root");
+        return;
+    }
+    int slot = dl_step_lock(d.land);
+    if (slot < 0) { dl_step_busy(reply, d.land); return; }
+    if (dl_fence_blocks(&d, seq))
+        dl_fail(reply, "PUBLICATION_FENCED", "hold", "sequence is owned by a retained fence", "input.seq");
+    else
+        dl_hold_locked(&d, seq, hold, reply);
+    dl_unlock(slot);
+#endif
+}
+
+static bool dl_hold_action(const char *action,
+                            const struct zcl_command_request *request,
+                            struct zcl_command_reply *reply)
+{
+    if (strcmp(action, "hold") == 0) { dl_hold(request, reply, true); return true; }
+    if (strcmp(action, "release") == 0) { dl_hold(request, reply, false); return true; }
+    return false;
+}
+
 void zcl_native_handle_dev_land(const struct zcl_command_request *request,
                                 struct zcl_command_reply *reply)
 {
@@ -10054,14 +10216,14 @@ void zcl_native_handle_dev_land(const struct zcl_command_request *request,
         return;
     if (!request || !request->input) {
         dl_fail(reply, "BAD_INPUT", "route",
-                "dev land needs an action: submit|attach|attach_publish|status|step|drive|cancel|fence_replace",
+                "dev land needs an action: submit|attach|attach_publish|status|step|drive|hold|release|cancel|fence_replace",
                 "request.input was missing");
         return;
     }
     action = dl_str(request, "action");
     if (!action) {
         dl_fail(reply, "BAD_INPUT", "route",
-                "dev land needs an action: submit|attach|attach_publish|status|step|drive|cancel|fence_replace",
+                "dev land needs an action: submit|attach|attach_publish|status|step|drive|hold|release|cancel|fence_replace",
                 "input.action missing or empty");
         return;
     }
@@ -10069,6 +10231,7 @@ void zcl_native_handle_dev_land(const struct zcl_command_request *request,
         dl_attest_only(reply);
         return;
     }
+    if (dl_hold_action(action, request, reply)) return;
     if (strcmp(action, "submit") == 0) {
         dl_submit(request, reply);
         return;
@@ -10103,6 +10266,6 @@ void zcl_native_handle_dev_land(const struct zcl_command_request *request,
         return;
     }
     dl_fail(reply, "UNKNOWN_ACTION", "route",
-            "action is one of submit|attach|attach_publish|status|step|drive|cancel|fence_replace",
+            "action is one of submit|attach|attach_publish|status|step|drive|hold|release|cancel|fence_replace",
             "input.action unknown");
 }
