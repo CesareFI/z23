@@ -38,6 +38,56 @@ static uint64_t parse_u64(const char *s, int *ok)
     return (uint64_t)v;
 }
 
+static int output_failed(void)
+{
+    fprintf(stderr, "zrand: output write failed\n");
+    return 1;
+}
+
+static int output_status(void)
+{
+    return fflush(stdout) == EOF ? output_failed() : 0;
+}
+
+static int stream_draws(zrand *r, uint64_t count, int is_double)
+{
+    for (uint64_t i = 0; i < count; i++) {
+        int written = is_double ? printf("%.17g\n", zrand_double(r))
+                                : printf("%llu\n", (unsigned long long)zrand_u64(r));
+        if (written < 0) return output_failed();
+    }
+    return output_status();
+}
+
+static int stream_bounded(zrand *r, uint64_t bound, uint64_t count)
+{
+    for (uint64_t i = 0; i < count; i++)
+        if (printf("%llu\n", (unsigned long long)zrand_bounded(r, bound)) < 0)
+            return output_failed();
+    return output_status();
+}
+
+static int stream_bytes(zrand *r, uint64_t n)
+{
+    uint8_t buf[4096];
+    uint64_t left = n;
+    while (left > 0) {
+        size_t chunk = left < sizeof buf ? (size_t)left : sizeof buf;
+        zrand_bytes(r, buf, chunk);
+        if (fwrite(buf, 1, chunk, stdout) != chunk) return output_failed();
+        left -= chunk;
+    }
+    return output_status();
+}
+
+static int stream_shuffle(zrand *r, char **items, int n)
+{
+    zrand_shuffle(r, items, (size_t)n, sizeof items[0]);
+    for (int i = 0; i < n; i++)
+        if (puts(items[i]) == EOF) return output_failed();
+    return output_status();
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) return usage();
@@ -55,12 +105,7 @@ int main(int argc, char **argv)
             count = parse_u64(argv[3], &ok);
             if (!ok || count > 1000000) return usage();
         }
-        int is_double = argv[1][0] == 'd';
-        for (uint64_t i = 0; i < count; i++) {
-            if (is_double) printf("%.17g\n", zrand_double(&r));
-            else printf("%llu\n", (unsigned long long)zrand_u64(&r));
-        }
-        return 0;
+        return stream_draws(&r, count, argv[1][0] == 'd');
     }
 
     if (strcmp(argv[1], "bounded") == 0) {
@@ -72,33 +117,21 @@ int main(int argc, char **argv)
             count = parse_u64(argv[4], &ok);
             if (!ok || count > 1000000) return usage();
         }
-        for (uint64_t i = 0; i < count; i++)
-            printf("%llu\n", (unsigned long long)zrand_bounded(&r, bound));
-        return 0;
+        return stream_bounded(&r, bound, count);
     }
 
     if (strcmp(argv[1], "bytes") == 0) {
         if (argc < 4) return usage();
         uint64_t n = parse_u64(argv[3], &ok);
         if (!ok || n > 1u << 24) return usage();
-        uint8_t buf[4096];
-        uint64_t left = n;
-        while (left > 0) {
-            size_t chunk = left < sizeof buf ? (size_t)left : sizeof buf;
-            zrand_bytes(&r, buf, chunk);
-            fwrite(buf, 1, chunk, stdout);
-            left -= chunk;
-        }
-        return 0;
+        return stream_bytes(&r, n);
     }
 
     if (strcmp(argv[1], "shuffle") == 0) {
         if (argc < 4) return usage();
         int n = argc - 3;
         char **items = argv + 3;
-        zrand_shuffle(&r, items, (size_t)n, sizeof items[0]);
-        for (int i = 0; i < n; i++) puts(items[i]);
-        return 0;
+        return stream_shuffle(&r, items, n);
     }
 
     return usage();

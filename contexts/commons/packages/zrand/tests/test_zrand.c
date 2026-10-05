@@ -1,11 +1,54 @@
 #include "zrand/zrand.h"
 
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+
+static int inject_output_failure;
+static size_t injected_fwrite_result;
+
+static int test_cli_printf(const char *format, ...)
+{
+    if (inject_output_failure == 1) return -1;
+    if (inject_output_failure == 2) return 0;
+    va_list args;
+    va_start(args, format);
+    int result = vprintf(format, args);
+    va_end(args);
+    return result;
+}
+
+static int test_cli_puts(const char *s)
+{
+    if (inject_output_failure == 1) return EOF;
+    if (inject_output_failure == 2) return 0;
+    return puts(s);
+}
+
+static size_t test_cli_fwrite(const void *ptr, size_t size, size_t count, FILE *stream)
+{
+    if (inject_output_failure == 1) return injected_fwrite_result;
+    if (inject_output_failure == 2) return count;
+    return fwrite(ptr, size, count, stream);
+}
+
+static inline int test_cli_fflush(FILE *stream)
+{
+    return inject_output_failure == 2 ? EOF : fflush(stream);
+}
+
+#define fflush test_cli_fflush
+#define printf test_cli_printf
+#define puts test_cli_puts
+#define fwrite test_cli_fwrite
 #define main zrand_cli_main
 #include "../app/main.c"
 #undef main
+#undef printf
+#undef puts
+#undef fwrite
+#undef fflush
 
 #define CHECK(cond) do { \
     if (!(cond)) { \
@@ -271,8 +314,32 @@ static void test_cli_rejects_invalid_unsigned(void)
     CHECK(failures == 0);
 }
 
+static void test_cli_reports_output_failures(void)
+{
+    const char *ops[] = {"u64", "double", "bounded", "shuffle", "bytes", "bytes",
+                         "u64", "double", "bounded", "shuffle", "bytes"};
+    unsigned failures = 0;
+    for (size_t row = 0; row < sizeof ops / sizeof ops[0]; row++) {
+        char *args[] = {"zrand", (char *)ops[row], "42", "1", "1", NULL};
+        size_t mode = row < 6 ? row : row - 6;
+        int argc = 4;
+        if (mode == 2) argc = 5;
+        if (mode == 3) { args[3] = "a"; args[4] = "b"; argc = 5; }
+        if (mode >= 4) args[3] = "4";
+        inject_output_failure = row < 6 ? 1 : 2;
+        injected_fwrite_result = row == 5 ? 2 : 0;
+        int ok = zrand_cli_main(argc, args) == 1;
+        inject_output_failure = 0;
+        fprintf(stderr, "output_failure_row=%zu op=%s result=%s\n", row,
+                ops[row], ok ? "PASS" : "FAIL");
+        if (!ok) failures++;
+    }
+    CHECK(failures == 0);
+}
+
 int main(void)
 {
+    test_cli_reports_output_failures();
     test_cli_rejects_invalid_unsigned();
     test_shuffle_large_items();
     test_shuffle_span_overflow();

@@ -789,7 +789,7 @@ contexts/commons/packages/zpool/app/main.c:main:28
 contexts/commons/packages/zpuny/src/zpuny.c:utf8_decode_all:18
 contexts/commons/packages/zpuny/src/zpuny.c:zpuny_decode:31
 contexts/commons/packages/zpuny/src/zpuny.c:zpuny_encode:33
-contexts/commons/packages/zrand/app/main.c:main:26
+contexts/commons/packages/zrand/app/main.c:main:20
 contexts/commons/packages/zrange/src/zrange.c:parse_into:16
 contexts/commons/packages/zrange/src/zrange.c:push_token:25
 contexts/commons/packages/zre/app/main.c:main:21
