@@ -1324,6 +1324,62 @@ static void bs_fetcher_free(struct bs_fetcher *f)
     main_state_free(&f->ms);
 }
 
+static int test_block_swarm_peer_request_time_is_monotonic(void)
+{
+    int failures = 0;
+    TEST("block swarm: peer pipeline ownership uses monotonic time") {
+        const struct chain_params *params = chain_params_get();
+        const int32_t end = 2 * (int32_t)BLOCKS_PER_PIECE;
+        struct bs_seeder seed;
+        struct bs_fetcher fetcher;
+        bool ok = true;
+
+        ASSERT(!mp_block_swarm_is_active());
+        ASSERT(bs_seeder_build(&seed, end, 18u, "pipeline-clock"));
+        ASSERT(bs_fetcher_init(&fetcher, end));
+        struct p2p_node *seed_peer = bs_make_peer(&seed.nm, 23);
+        struct p2p_node *fetch_peer = bs_make_peer(&fetcher.nm, 24);
+        ASSERT(seed_peer && fetch_peer);
+        struct send_segment *seed_sent = bs_install_sentinel(seed_peer);
+        struct send_segment *fetch_sent = bs_install_sentinel(fetch_peer);
+
+        push_block_manifest(&seed.mp, seed_peer);
+        bs_pump(seed_peer, seed_sent, &fetcher.mp, fetch_peer,
+                params->pchMessageStart, &ok);
+        ASSERT(ok && mp_block_swarm_is_active());
+
+        int64_t before = platform_time_monotonic_us() / 1000000;
+        mp_snapshot_send_tick(&fetcher.mp, fetch_peer);
+        int64_t after = platform_time_monotonic_us() / 1000000;
+
+        int assigned = 0;
+        for (int i = 0; i < PIECE_PIPELINE_DEPTH; i++) {
+            if (fetch_peer->blk_pipeline[i].piece_index < 0)
+                continue;
+            assigned++;
+            ASSERT(fetch_peer->blk_pipeline[i].request_time >= before);
+            ASSERT(fetch_peer->blk_pipeline[i].request_time <= after);
+        }
+        ASSERT(assigned == 2);
+
+        /* Global timeout ownership is already monotonic. Its per-peer mirror
+         * must share that clock or a wall rollback leaves this bounded
+         * pipeline locally full after the global sweep requeues its pieces. */
+        mp_block_swarm_test_seed_stall(0, 0, 0);
+        bs_drop_queue(fetch_peer, fetch_sent);
+        send_segment_free(seed_sent);
+        send_segment_free(fetch_sent);
+        seed_peer->send_head = seed_peer->send_tail = NULL;
+        fetch_peer->send_head = fetch_peer->send_tail = NULL;
+        p2p_node_free(seed_peer);
+        p2p_node_free(fetch_peer);
+        bs_fetcher_free(&fetcher);
+        bs_seeder_free(&seed);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* The seeder publishes the manifest of its chain through `end`. */
 static bool bs_publish_through(struct bs_seeder *s, int32_t end)
 {
@@ -1687,6 +1743,7 @@ int test_block_swarm_loopback(void)
     failures += test_block_swarm_manifest_anchor();
     failures += test_block_swarm_sovereignty_gate();
     failures += test_block_swarm_manifest_republish();
+    failures += test_block_swarm_peer_request_time_is_monotonic();
     failures += test_block_swarm_past_peer_manifest();
     failures += test_block_swarm_rejects_foreign_manifest_peer();
     failures += test_block_swarm_submit_failure_preserves_legacy_owner();

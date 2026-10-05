@@ -556,7 +556,7 @@ struct p2p_node {
     bool blk_manifest_received;   /* true if we received block manifest from peer */
     struct {
         int32_t piece_index;      /* -1 = empty slot */
-        int64_t request_time;
+        int64_t request_time;     /* monotonic seconds; piece timeout owner */
     } blk_pipeline[PIECE_PIPELINE_DEPTH];
     uint8_t *blk_bitmap;          /* peer's piece availability bitmap (heap) */
     uint32_t blk_bitmap_len;      /* bytes in bitmap */

@@ -723,7 +723,7 @@ static void block_swarm_send_tick(struct msg_processor *mp,
         return;
     }
 
-    int64_t now = (int64_t)platform_time_wall_time_t();
+    int64_t now = platform_time_monotonic_us() / 1000000;
     block_swarm_handle_timeouts(&g_block_swarm,
                                 BLOCK_PIECE_TIMEOUT_SECS);
     for (int i = 0; i < PIECE_PIPELINE_DEPTH; i++) {
