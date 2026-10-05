@@ -345,6 +345,24 @@ static void test_rss_item_golden(void) {
 }
 
 /* A comment's last byte cannot join its closing '-->' delimiter. */
+static void test_comment_tail_controls(void) {
+  static const char *const rows[] = {"", "-note", "note-here"};
+  static const char *const expected[] = {
+      "<r><!----></r>", "<r><!---note--></r>", "<r><!--note-here--></r>"};
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    SINK(s);
+    zxml x;
+    zxml_open(&x, sink_write, &s, ZXML_COMPACT);
+    OK(zxml_elem_open(&x, "r"));
+    OK(zxml_comment(&x, rows[i]));
+    OK(zxml_elem_close(&x));
+    OK(zxml_close(&x));
+    CHECK(s.len == strlen(expected[i]));
+    CHECK(s.len <= strlen(expected[i]) &&
+          memcmp(s.buf, expected[i], s.len) == 0);
+  }
+}
+
 static void test_comment_tail(void) {
   static const char *const rows[] = {"-", "note-"};
   for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
@@ -379,6 +397,7 @@ static void test_xml_scalar_edges(void) {
 }
 
 int main(void) {
+  test_comment_tail_controls();
   test_xml_scalar_edges();
   test_comment_tail();
   test_nesting();
