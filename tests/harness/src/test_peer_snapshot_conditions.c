@@ -393,7 +393,9 @@ int test_peer_snapshot_conditions(void)
         /* The same fault persists well past the engine cooldown_secs (600) and
          * the remedy's SYNC_VIOLATION_COOLDOWN_SECS (3600), past max_attempts;
          * without cooldown_secs it would stay latched at operator_needed. */
-        fake_clock_set(&clock, 10202);
+        /* The remedy cooldown measures elapsed process time even when wall
+         * time advances more slowly than the monotonic clock. */
+        fake_clock_set_split(&clock, 10202, 7300);
         condition_engine_tick();
         ok = ok && sync_violation_lag_test_remedy_calls() == 2;
         ok = ok && condition_engine_get_active_count() == 1;

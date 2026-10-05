@@ -20,7 +20,7 @@
 #define SYNC_VIOLATION_COOLDOWN_SECS 3600
 
 static _Atomic int64_t g_first_seen_time;
-static _Atomic int64_t g_last_attempt_unix;
+static _Atomic int64_t g_last_attempt_time;
 static _Atomic int g_last_local_seen;
 static _Atomic int g_local_tip_at_detect;
 static _Atomic int g_peer_max_at_detect;
@@ -75,8 +75,8 @@ static bool detect_sync_violation_lag(void)
 
 static enum condition_remedy_result remedy_sync_violation_lag(void)
 {
-    int64_t now = platform_time_wall_unix();
-    int64_t last = atomic_load(&g_last_attempt_unix);
+    int64_t now = platform_time_monotonic_us() / INT64_C(1000000);
+    int64_t last = atomic_load(&g_last_attempt_time);
     if (last != 0 && now - last < SYNC_VIOLATION_COOLDOWN_SECS)
         return COND_REMEDY_SKIP;
 
@@ -99,7 +99,7 @@ static enum condition_remedy_result remedy_sync_violation_lag(void)
                                  "condition:sync_violation_lag");
     sync_set_state(SYNC_IDLE, "condition sync_violation_lag");
     sync_monitor_kick_local_sync("condition:sync_violation_lag");
-    atomic_store(&g_last_attempt_unix, now);
+    atomic_store(&g_last_attempt_time, now);
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif
@@ -152,7 +152,7 @@ void register_sync_violation_lag(void)
 void sync_violation_lag_test_reset(void)
 {
     atomic_store(&g_first_seen_time, 0);
-    atomic_store(&g_last_attempt_unix, 0);
+    atomic_store(&g_last_attempt_time, 0);
     atomic_store(&g_last_local_seen, -1);
     atomic_store(&g_local_tip_at_detect, -1);
     atomic_store(&g_peer_max_at_detect, -1);
