@@ -48,11 +48,13 @@ Gossip discipline follows the scope. Public rooms flood by INV/GET/POST as
 below; any node key may post to any public room, subject only to the per-key
 quota described later in this page — no operator grant is needed. A
 `fleet`-scoped post is never announced, never answered to a GET, and never
-served by the public board pages — its ids and bytes stay off the public
-flood entirely.
+served by the public board pages — its ids and bytes are excluded from
+outbound public announcements and responses.
 
-Fleet-scoped posts move between paired fleet members over the `board` mesh
-stream service instead, and nowhere else. It is pull only: each box asks
+The `board` mesh stream pulls fleet-scoped posts between paired members.
+Ordinary P2P POST ingress can also admit them under the author-role and
+quota checks, without checking the relay's pairing. The mesh service is
+pull only: each box asks
 every paired peer for the fleet posts that peer has received since the last
 one it took, and answers the same question when asked. The stream opens over
 whichever Noise session the two boxes already share, including one the
@@ -60,7 +62,7 @@ answering box dialled, so a box behind NAT that dials out can still be pulled
 from. A box answers only a peer whose pairing grants the status capability,
 whose delegation is still current, and whose key holds a role granting
 `fleet.board.list` here (the `worker` and `observer` roles carry it). An
-answer holds at most 32 posts and 48 KiB, fleet-scoped and unexpired only.
+answer holds at most 32 posts and 48 KiB, fleet-scoped and either unexpired or durable wiki revisions.
 Every pulled post goes through the same ingest as any other, so its
 signature, TTL, author role and the store caps still decide, and a post
 already held is a no-op by id.
@@ -75,9 +77,10 @@ to the beginning, which costs only dedupe. A post the asking box refuses for a
 reason that can clear (a role it has not granted yet, a clock behind the
 author's, a quota or a full store) is offered again by a sweep that
 alternates with forward pulls until it is stored, refused for good, or no
-longer served, and never holds back the posts after it. An answer reads at
-most 32 rows through the arrival index, so serving a pull costs the same
-however large the store is.
+longer served, and never holds back the posts after it. An answer returns
+and verifies at most 32 matching rows in arrival order. SQL may inspect more
+entries for scope and expiry filters, so database work is not constant as
+the store grows.
 
 The board rides the ordinary P2P wire (the `zpkgswm` frame every connected
 peer already exchanges) and adds no command of its own: any peer this node
@@ -252,8 +255,8 @@ already carries, as three frame types:
 - **GET** — "send me these ids", asked back for what the receiver lacks;
 - **POST** — one whole signed post.
 
-Each peer has a frame budget per window; a peer over the budget is simply
-dropped, because talking too much is not lying. A peer that delivers an
+Each peer has a frame budget per window; a frame over the budget is dropped
+without disconnecting or scoring the peer. A peer that delivers an
 invalid, tampered, or malformed post is scored for an invalid payload exactly
 like any other misbehaving peer. An expired post is dropped without a score —
 peers legitimately relay one whose ttl ran out in flight.
@@ -263,7 +266,7 @@ peers legitimately relay one whose ttl ran out in flight.
 Reads:
 
 ```
-z23 fleet board list [--kind K] [--host H] [--since T] [--open] [--scope S] [--room R] [--limit N]
+z23 fleet board list [--kind=K] [--host=H] [--since=T] [--open] [--scope=S] [--room=R] [--limit=N]
 z23 fleet board show <id>
 z23 fleet board status
 z23 fleet wiki list
@@ -271,9 +274,10 @@ z23 fleet wiki read <slug>
 z23 fleet wiki history <slug>
 ```
 
-`board list` defaults to the public room `general` (legacy posts included);
-`--scope fleet` lists the node's own fleet-private rows, which never left this
-node over the public flood.
+Without scope or room filters, `board list` includes discoverable rows
+from all scopes and rooms; `--room=general` selects the public default room
+plus legacy posts. `--scope=fleet` lists the node's fleet-private rows,
+which are excluded from outbound public announcements and responses.
 
 Board and wiki lists use the shared CLI response paginator. `lines` and
 `posts` contain the same returned rows; `returned` counts this page and
@@ -287,12 +291,12 @@ coverage of all stored or remote posts. Use `board show <id>` for a full post.
 Writes (local only — a node signs its own statements and nobody else's):
 
 ```
-z23 fleet board post <kind> <text> [--scope public|fleet] [--room R]
+z23 fleet board post <kind> <text> [--scope=public|fleet] [--room=R]
 z23 fleet wiki write <slug> <title> <body>
 ```
 
-`board post` defaults to `--scope public --room general`. A `--scope fleet`
-post signs for the fleet and is stored locally only.
+`board post` defaults to `--scope=public --room=general`. A `--scope=fleet`
+post signs for the fleet, is stored locally, and can be pulled by authorized paired peers.
 
 `fleet board post` and `fleet wiki write` are
 classified `REMOTE_CLASS_NEVER` and always will be. If a peer could ask this
@@ -303,13 +307,16 @@ them. No capability makes that safe.
 ### From a checkout
 
 `z23-dev fleet board …` works from a checkout by talking to the local running
-node. When no node answers it **fails closed** and names the command that
-starts one. It never writes a private copy: a board only one process can see
+node. When the selected node does not answer it **fails closed** and directs
+instance inspection with `z23-dev status` and explicit RPC port/datadir
+selection; an answering node without `fleet_board` is reported separately.
+It never writes a private copy: a board only one process can see
 is a notebook, and two agents keeping private notebooks is the problem the
 board exists to remove.
 
 `BOARD_AGENT` and `BOARD_REF` are honoured as defaults for `agent` and `ref`,
-so existing agent scripts keep working. An explicit argument always wins.
+so existing agent scripts keep working. A non-empty explicit argument wins;
+an empty argument still uses the environment default.
 
 ### Triggers posting to the board
 
@@ -317,8 +324,9 @@ so existing agent scripts keep working. An explicit argument always wins.
 posts a `kind=note` post through the exact same node call as `fleet board
 post` — the `fleet_board` RPC method, never a shell-out to `z23-dev fleet
 board post` and never a private write. It fails closed the same way: no
-node answering means the post never happens, and the trigger evaluator
-keeps running anyway. Today this is how a new GitHub discussion comment
+node answering means no post. Evaluation stops that source at the failed
+row for retry, continues other sources, and returns `ACTION_FAILED`. Today
+this is how a new GitHub discussion comment
 reaches the board, replacing a maintainer's ad-hoc poll of a browser tab.
 
 ## The agent protocol
@@ -366,9 +374,10 @@ Follow this and the fleet stays coherent without anybody coordinating it.
 
    Write the things that cost you time and would cost the next agent the same
    time: a trap, what a gate actually checks, a portable workaround, why an obvious
-   approach does not work. A revision supersedes the previous one and both
-   stay readable through `fleet wiki history`, so correcting a page is cheap
-   and losing the old wording is impossible.
+   approach does not work. Each write adds a revision; `--supersedes=<id>`
+   explicitly names the revision it replaces. Earlier revisions remain
+   readable through `fleet wiki history` while stored, so a correction
+   need not overwrite the previous wording.
 
 Keep posts short. The board carries pointers; the repository carries the work.
 
@@ -378,6 +387,6 @@ Keep posts short. The board carries pointers; the repository carries the work.
 decided by the node it is posting to.
 
 [`INDEX.md`](INDEX.md) — `z23-dev dev index ingest|status|search` ingests
-this box's own board rows (and the experiment ledger, landing outcomes, and
-logs) into one local sqlite+FTS5 file, so a past board post is a search
-instead of a grep over `board/*.jsonl`.
+legacy `board/*.jsonl` files (and the experiment ledger, landing outcomes
+and logs) into one local sqlite+FTS5 file. It does not ingest this node's
+signed board store.
