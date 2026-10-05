@@ -9,8 +9,8 @@ static bool json_valid_matches_read(void)
 {
     /* A caller tells malformed input from exhausted memory by asking
      * json_valid first, so the two must never disagree about a byte
-     * string, quirks included: the bare "-" that json_read accepts,
-     * malformed Unicode escapes and the 64-byte number it refuses, and the depth
+     * string, including malformed numbers, malformed Unicode escapes,
+     * the 64-byte number it refuses, and the depth
      * limit on both sides of the line. */
     static const char *const corpus[] = {
         "42", "-", "-7", "1.", "1e", "1.5e+3", "\"\\uZZZZ\"",
@@ -133,9 +133,68 @@ static int json_unicode_cases(void)
     return failures;
 }
 
+static bool json_number_valid_case(void)
+{
+    static const struct {
+        const char *wire;
+        enum json_type type;
+        int64_t integer;
+        double real;
+    } cases[] = {
+        {"0", JSON_INT, 0, 0}, {"-0", JSON_INT, 0, 0},
+        {"-7", JSON_INT, -7, 0},
+        {"9223372036854775807", JSON_INT, INT64_MAX, 0},
+        {"-9223372036854775808", JSON_INT, INT64_MIN, 0},
+        {"0.5", JSON_REAL, 0, 0.5}, {"-1.25", JSON_REAL, 0, -1.25},
+        {"1e+3", JSON_REAL, 0, 1000}, {"1E-2", JSON_REAL, 0, 0.01},
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct json_value v;
+        bool parsed = json_read(&v, cases[i].wire, strlen(cases[i].wire));
+        bool match = parsed && v.type == cases[i].type;
+        if (match) match = v.type == JSON_INT ? v.val.i == cases[i].integer :
+                                               v.val.d == cases[i].real;
+        ok = match && json_valid(cases[i].wire, strlen(cases[i].wire)) && ok;
+        json_free(&v);
+    }
+    return ok;
+}
+
+static bool json_number_invalid_case(void)
+{
+    static const char *const bad[] = {
+        "-", "01", "-01", "1.", "1e", "1e+", "1e-", "1.e2",
+        "9223372036854775808", "-9223372036854775809",
+        "1e999", "1e-999", "1x", "0 1", "+1", ".5",
+        "[1,01]", "{\"owned\":\"allocated\",\"number\":1e+}",
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        struct json_value v;
+        bool parsed = json_read(&v, bad[i], strlen(bad[i]));
+        bool valid = json_valid(bad[i], strlen(bad[i]));
+        bool cleared = v.type == JSON_NULL && v.children == NULL && v.keys == NULL;
+        if (parsed || valid || !cleared) printf("[accepted/retained '%s'] ", bad[i]);
+        ok = !parsed && !valid && cleared && ok;
+        json_free(&v);
+    }
+    return ok;
+}
+
+static int json_number_cases(void)
+{
+    int failures = 0;
+    printf("json bounded numbers preserve exact values... ");
+    if (json_number_valid_case()) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    printf("json malformed and out-of-range numbers refuse and clear ownership... ");
+    if (json_number_invalid_case()) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    return failures;
+}
+
 int test_json(void)
 {
-    int failures = json_unicode_cases();
+    int failures = json_unicode_cases() + json_number_cases();
 
     printf("json parse integer... ");
     {

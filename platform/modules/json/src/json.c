@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <inttypes.h>
+#include <errno.h>
 #include "base/safe_alloc.h"
 #include "base/hex.h"
 
@@ -506,34 +507,65 @@ static bool parse_string(char **out, const char **pp, const char *end)
     return true;
 }
 
-static bool parse_number(struct json_value *v, const char **pp, const char *end)
+static bool json_number_digits(const char **pp, const char *end)
 {
     const char *start = *pp;
-    const char *p = start;
-    bool is_real = false;
-    if (p < end && *p == '-') p++;
-    while (p < end && *p >= '0' && *p <= '9') p++;
-    if (p < end && *p == '.') { is_real = true; p++; }
-    while (p < end && *p >= '0' && *p <= '9') p++;
-    if (p < end && (*p == 'e' || *p == 'E')) {
-        is_real = true;
-        p++;
-        if (p < end && (*p == '+' || *p == '-')) p++;
-        while (p < end && *p >= '0' && *p <= '9') p++;
+    while (*pp < end && **pp >= '0' && **pp <= '9') (*pp)++;
+    return *pp != start;
+}
+
+static bool json_number_tail(const char **pp, const char *end, bool *real)
+{
+    const char *p = *pp;
+    if (p < end && *p == '.') {
+        *real = true; p++;
+        if (!json_number_digits(&p, end)) return false;
     }
-    if (p == start) return false;
+    if (p < end && (*p == 'e' || *p == 'E')) {
+        *real = true; p++;
+        if (p < end && (*p == '+' || *p == '-')) p++;
+        if (!json_number_digits(&p, end)) return false;
+    }
+    *pp = p;
+    return true;
+}
+
+static bool json_number_span(const char **pp, const char *end, bool *real)
+{
+    const char *p = *pp;
+    if (p < end && *p == '-') p++;
+    if (p == end) return false;
+    if (*p == '0') {
+        p++;
+        if (p < end && *p >= '0' && *p <= '9') return false;
+    } else if (!json_number_digits(&p, end)) return false;
+    if (!json_number_tail(&p, end, real)) return false;
+    *pp = p;
+    return true;
+}
+
+static bool parse_number(struct json_value *v, const char **pp, const char *end)
+{
+    const char *start = *pp, *p = start;
+    bool is_real = false;
+    if (!json_number_span(&p, end, &is_real)) return false;
     char tmp[64];
     size_t len = (size_t)(p - start);
     if (len >= sizeof(tmp)) return false;
     memcpy(tmp, start, len);
     tmp[len] = '\0';
+    char *converted_end = NULL;
+    errno = 0;
     if (is_real) {
         v->type = JSON_REAL;
-        v->val.d = strtod(tmp, NULL);
+        v->val.d = strtod(tmp, &converted_end);
+        if (errno == ERANGE || !isfinite(v->val.d)) return false;
     } else {
         v->type = JSON_INT;
-        v->val.i = strtoll(tmp, NULL, 10);
+        v->val.i = strtoll(tmp, &converted_end, 10);
+        if (errno == ERANGE) return false;
     }
+    if (converted_end != tmp + len) return false;
     *pp = p;
     return true;
 }
