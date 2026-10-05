@@ -5167,3 +5167,25 @@ after entropy and random work restores RED. Focused JNI record/key tests pass
 under Clang 20 and GCC 14 ASan/UBSan/LSan. The complete TLS-OFF gate passes both
 analyzers and all 145/140 tests. TLS remains quarantined. This fake-VM evidence
 makes no ART, emulator, hardware or physical-device claim.
+
+## Record-pack header admission before payload copy — 2026-10-06
+
+`packWalletRecord` now parses and retires its bounded public wallet header
+before reading the managed IV or encrypted wallet payload. The lower record
+packer still performs its unchanged authoritative parse and exact
+header/entropy-length consistency checks.
+
+| Hazard | Review |
+| --- | --- |
+| Copy bounds | Header, IV and ciphertext retain their fixed 80-, 12- and at-most-48-byte JNI bounds. A malformed header now stops after its two JNI calls and reads neither later array. |
+| Retirement | Header, IV, ciphertext and record scratch retain full final cleanup. The parsed-info preflight scratch is wiped immediately by the shared admission helper. |
+| JNI exceptions | Header length/region failures and pending-entry exceptions retain their cleanup. IV and ciphertext failures remain covered after header admission. |
+| Failure behavior | Preflight allocates no Java object and has no storage effect. Invalid headers keep the parser-owned refusal; accepted inputs reach the same lower packer. |
+| Complexity | The existing helper is reused, so production remains M<=10 across 604 functions and tests remain M<=15 across 1,857 functions. |
+| Custody and consensus | Record format, encrypted bytes, entropy-length checks, recovery, storage, transaction validity, monetary policy and consensus are unchanged. |
+
+Canonical RED observes six JNI calls for a malformed header. GREEN stops after
+the two header calls, and removing the preflight restores RED. Focused Clang 20
+and GCC 14 ASan/UBSan/LSan tests pass. The complete TLS-OFF gate passes both
+analyzers and all 145/140 tests. TLS remains quarantined; no Android runtime or
+physical-device claim is made.

@@ -71,6 +71,8 @@ Java_org_zclassic_wallet_core_NativeCore_packWalletRecord(JNIEnv *env, jclass ty
     jbyteArray output = NULL;
     if (zcl_jni_read_bytes(env, header_input, header, sizeof(header), &header_len) != ZCL_OK)
         goto cleanup;
+    if (admit_wallet_header(header, header_len) != ZCL_OK)
+        goto cleanup;
     if (zcl_jni_read_bytes(env, iv_input, iv, sizeof(iv), &iv_len) != ZCL_OK)
         goto cleanup;
     if (zcl_jni_read_bytes(env, ciphertext_input, ciphertext, sizeof(ciphertext), &ciphertext_len) != ZCL_OK)

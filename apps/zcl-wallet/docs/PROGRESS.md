@@ -8508,3 +8508,20 @@ covers 604 functions with none above M=10; 1,857 test functions have none above
 M=15. Valid recovery, key derivation, 12-word semantics, address generation,
 storage, transaction validity, consensus and monetary rules remain unchanged.
 No Android runtime or physical-device claim is made.
+
+## Production continuation: malformed record headers refused before payload copy — 2026-10-06
+
+JNI `packWalletRecord` now validates its bounded public header before reading
+the managed IV or encrypted wallet payload. A malformed header previously
+caused all three arrays to be copied before the lower record packer refused it.
+It now stops after the header length and region calls. Accepted input still
+passes through the unchanged authoritative packer and exact entropy-length
+check, and every native scratch span retains full cleanup.
+
+Canonical RED observes six JNI calls. GREEN observes exactly two; removing the
+new admission call restores RED. Focused Clang 20 and GCC 14 sanitizer runs
+pass. The exact-tree TLS-OFF gate passes both static analyzers, all 145 Clang
+and 140 GCC tests, vendor/reference hashes, frame warnings, and complexity at
+M<=10 production and M<=15 tests. Record bytes, recovery, storage durability,
+transaction validity, consensus and monetary rules remain unchanged. No ART,
+emulator or physical-device claim is made.

@@ -359,7 +359,7 @@ static void invalid_inputs(void)
     const size_t offsets[] = {0, 4, 5, 6, 7, 8, 12, 44, 79};
     for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
         prepare(0); inputs[0].bytes[offsets[i]] ^= 0xff;
-        CHECK(!run(false) && !pending && reference_count == 0);
+        CHECK(!run(false) && !pending && reference_count == 0 && vm_calls == 2);
         prepare(0); record_input.bytes[offsets[i]] ^= 0xff;
         CHECK(!run(true) && !pending && reference_count == 0);
     }
