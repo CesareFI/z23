@@ -118,7 +118,7 @@ static int decode_hex(const char *hex, int sign)
     return 0;
 }
 
-int main(int argc, char **argv)
+static int run(int argc, char **argv)
 {
     if (argc < 3) return usage();
     if (strcmp(argv[1], "enc") == 0 || strcmp(argv[1], "encs") == 0) {
@@ -131,4 +131,14 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "dec") == 0 || strcmp(argv[1], "decs") == 0)
         return decode_hex(argv[2], argv[1][3] == 's');
     return usage();
+}
+
+int main(int argc, char **argv)
+{
+    int status = run(argc, argv);
+    if (fflush(stdout) == EOF || ferror(stdout)) status = 1;
+    if (fflush(stderr) == EOF || ferror(stderr)) status = 1;
+    if (fclose(stdout) == EOF) status = 1;
+    if (fclose(stderr) == EOF) status = 1;
+    return status;
 }

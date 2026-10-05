@@ -1,14 +1,33 @@
 #include "zvarint/zvarint.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Exercise the CLI in the package's registered suite without a subprocess. */
+/* ISO C stdio faults, scoped to the embedded CLI; test diagnostics stay real. */
+int test_cli_printf(const char *format, ...);
+int test_cli_fprintf(FILE *stream, const char *format, ...);
+int test_cli_putchar(int c);
+int test_cli_fflush(FILE *stream);
+int test_cli_fclose(FILE *stream);
+int test_cli_ferror(FILE *stream);
+#define printf test_cli_printf
+#define fprintf test_cli_fprintf
+#define putchar test_cli_putchar
+#define fflush test_cli_fflush
+#define fclose test_cli_fclose
+#define ferror test_cli_ferror
 #define main zvarint_cli_main
 #include "../app/main.c"
 #undef main
+#undef printf
+#undef fprintf
+#undef putchar
+#undef fflush
+#undef fclose
+#undef ferror
 
 #define CHECK(cond) do { \
     if (!(cond)) { \
@@ -16,6 +35,100 @@
         exit(1); \
     } \
 } while (0)
+
+enum { IO_NONE, IO_WRITE, IO_PUTCHAR, IO_FLUSH, IO_CLOSE };
+static int io_failure, io_stream;
+static int io_errors[2], io_closes[2], io_flushes[2];
+static char io_text[2][512];
+static size_t io_used[2];
+
+static int io_index(FILE *stream)
+{
+    CHECK(stream == stdout || stream == stderr);
+    return stream == stderr;
+}
+
+static void io_reset(int failure, int stream)
+{
+    io_failure = failure;
+    io_stream = stream;
+    memset(io_errors, 0, sizeof io_errors);
+    memset(io_closes, 0, sizeof io_closes);
+    memset(io_flushes, 0, sizeof io_flushes);
+    memset(io_text, 0, sizeof io_text);
+    memset(io_used, 0, sizeof io_used);
+}
+
+static int io_print(FILE *stream, const char *format, va_list ap)
+{
+    int index = io_index(stream);
+    CHECK(io_closes[index] == 0);
+    if (io_failure == IO_WRITE && io_stream == index) {
+        io_errors[index] = 1;
+        return -1;
+    }
+    size_t space = sizeof io_text[index] - io_used[index];
+    int n = vsnprintf(io_text[index] + io_used[index], space, format, ap);
+    CHECK(n >= 0);
+    CHECK((size_t)n < space);
+    io_used[index] += (size_t)n;
+    return n;
+}
+
+int test_cli_printf(const char *format, ...)
+{
+    va_list ap;
+    va_start(ap, format);
+    int n = io_print(stdout, format, ap);
+    va_end(ap);
+    return n;
+}
+
+int test_cli_fprintf(FILE *stream, const char *format, ...)
+{
+    va_list ap;
+    va_start(ap, format);
+    int n = io_print(stream, format, ap);
+    va_end(ap);
+    return n;
+}
+
+int test_cli_putchar(int c)
+{
+    CHECK(io_closes[0] == 0);
+    if (io_failure == IO_PUTCHAR && io_stream == 0) {
+        io_errors[0] = 1;
+        return EOF;
+    }
+    CHECK(io_used[0] < sizeof io_text[0] - 1);
+    io_text[0][io_used[0]++] = (char)c;
+    io_text[0][io_used[0]] = '\0';
+    return (unsigned char)c;
+}
+
+int test_cli_fflush(FILE *stream)
+{
+    int index = io_index(stream);
+    CHECK(io_closes[index] == 0);
+    ++io_flushes[index];
+    /* A failed earlier write need not make a subsequent flush fail. */
+    return io_failure == IO_FLUSH && io_stream == index ? EOF : 0;
+}
+
+int test_cli_fclose(FILE *stream)
+{
+    int index = io_index(stream);
+    CHECK(io_closes[index] == 0);
+    ++io_closes[index];
+    return io_failure == IO_CLOSE && io_stream == index ? EOF : 0;
+}
+
+int test_cli_ferror(FILE *stream)
+{
+    int index = io_index(stream);
+    CHECK(io_closes[index] == 0);
+    return io_errors[index];
+}
 
 static void test_known_vectors(void)
 {
@@ -197,6 +310,7 @@ static void test_cli_decimal_refusal(void)
     size_t accepted = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
         char *args[] = {"zvarint", cases[i].mode, cases[i].number, NULL};
+        io_reset(IO_NONE, 0);
         int status = zvarint_cli_main(3, args);
         if (status == 0) {
             fprintf(stderr, "accepted invalid decimal: %s [%s]\n",
@@ -223,9 +337,63 @@ static void test_cli_decimal_controls(void)
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
         char *args[] = {"zvarint", cases[i].mode, cases[i].number, NULL};
+        io_reset(IO_NONE, 0);
         errno = ERANGE;
         CHECK((zvarint_cli_main(3, args) == 0) == cases[i].valid);
     }
+}
+
+static void test_cli_output_failures(void)
+{
+    static const struct {
+        char *mode, *input;
+        int failure, stream;
+        const char *name;
+    } cases[] = {
+        {"enc", "42", IO_WRITE, 0, "enc stdout write"},
+        {"encs", "-1", IO_WRITE, 0, "encs stdout write"},
+        {"dec", "2a", IO_WRITE, 0, "dec stdout write"},
+        {"decs", "01", IO_WRITE, 0, "decs stdout write"},
+        {"enc", "42", IO_PUTCHAR, 0, "stdout newline write"},
+        {"enc", "42", IO_FLUSH, 0, "stdout flush"},
+        {"enc", "42", IO_CLOSE, 0, "stdout close"},
+        {"enc", "42", IO_FLUSH, 1, "stderr flush"},
+        {"enc", "42", IO_CLOSE, 1, "stderr close"}
+    };
+    size_t missed = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        char *args[] = {"zvarint", cases[i].mode, cases[i].input, NULL};
+        io_reset(cases[i].failure, cases[i].stream);
+        if (zvarint_cli_main(3, args) == 0) {
+            fprintf(stderr, "ignored output failure: %s\n", cases[i].name);
+            ++missed;
+        } else {
+            CHECK(io_closes[0] == 1 && io_closes[1] == 1);
+        }
+    }
+    CHECK(missed == 0);
+}
+
+/* Output and diagnostic controls: these are not additional defect claims. */
+static void test_cli_output_controls(void)
+{
+    static const struct { char *mode, *input; const char *output; } cases[] = {
+        {"enc", "42", "2a\n"}, {"encs", "-1", "01\n"},
+        {"dec", "2a", "42\n"}, {"decs", "01", "-1\n"}
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        char *args[] = {"zvarint", cases[i].mode, cases[i].input, NULL};
+        io_reset(IO_NONE, 0);
+        CHECK(zvarint_cli_main(3, args) == 0);
+        CHECK(strcmp(io_text[0], cases[i].output) == 0);
+        CHECK(io_flushes[0] == 1 && io_flushes[1] == 1);
+        CHECK(io_closes[0] == 1 && io_closes[1] == 1);
+    }
+    char *bad[] = {"zvarint", "dec", "0g", NULL};
+    io_reset(IO_WRITE, 1);
+    CHECK(zvarint_cli_main(3, bad) != 0);
+    CHECK(io_errors[1] != 0);
+    CHECK(io_closes[0] == 1 && io_closes[1] == 1);
 }
 
 int main(void)
@@ -237,6 +405,8 @@ int main(void)
     test_err_str();
     test_cli_decimal_refusal();
     test_cli_decimal_controls();
+    test_cli_output_failures();
+    test_cli_output_controls();
     puts("test_zvarint: all groups passed (vectors zigzag errors roundtrip errstr cli)");
     return 0;
 }
