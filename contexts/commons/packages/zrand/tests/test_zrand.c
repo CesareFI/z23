@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define main zrand_cli_main
+#include "../app/main.c"
+#undef main
 
 #define CHECK(cond) do { \
     if (!(cond)) { \
@@ -252,8 +255,25 @@ static void test_shuffle_span_overflow(void)
           memcmp(&rng, &original, sizeof rng) == 0);
 }
 
+static void test_cli_rejects_invalid_unsigned(void)
+{
+    const char *rows[] = {"", "-1", "18446744073709551616",
+                          "18446744073709551616000000000"};
+    unsigned failures = 0;
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        int ok = 73;
+        uint64_t value = parse_u64(rows[i], &ok);
+        int rejected = !ok && value == 0;
+        fprintf(stderr, "rand_unsigned_row=%zu result=%s\n", i,
+                rejected ? "PASS" : "FAIL");
+        if (!rejected) failures++;
+    }
+    CHECK(failures == 0);
+}
+
 int main(void)
 {
+    test_cli_rejects_invalid_unsigned();
     test_shuffle_large_items();
     test_shuffle_span_overflow();
     test_reference_vectors();

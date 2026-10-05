@@ -8,6 +8,7 @@
  */
 #include "zrand/zrand.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,10 +25,17 @@ static int usage(void)
 
 static uint64_t parse_u64(const char *s, int *ok)
 {
+    if (!ok) return 0;
+    *ok = 0;
+    if (!s || !*s) return 0;
+    for (const char *p = s; *p; p++)
+        if (*p < '0' || *p > '9') return 0;
     char *end = NULL;
-    uint64_t v = strtoull(s, &end, 10);
-    *ok = end && *end == '\0';
-    return v;
+    errno = 0;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (errno == ERANGE || !end || *end || v > UINT64_MAX) return 0;
+    *ok = 1;
+    return (uint64_t)v;
 }
 
 int main(int argc, char **argv)
