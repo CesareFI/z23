@@ -180,9 +180,9 @@ COFF/PE output, while Windows compile epochs use the shell publisher because
 MSYS does not provide the directory-flush contract required by zcc's native
 publisher. The setup smoke proves this hosted-to-native boundary.
 
-`make setup` records the selected MSYS2 root in this worktree's Git config, so
-a later Git-for-Windows hook re-enters the same UCRT64 installation. The value
-is a path such as `/d/msys64`, not a global Windows `PATH` mutation.
+On Windows, `make setup` installs native receipt hooks in a content-addressed
+generation and removes the obsolete `z23.windowsMsys2Root` worktree setting.
+The native hooks do not re-enter a UCRT64 shell.
 
 For later Make invocations from PowerShell, use the matching courier; it uses
 the same selected root for both `bash.exe` and the UCRT64 `PATH`:
@@ -316,14 +316,15 @@ not by copying generated archives or object trees.
 
 ## Persistent node under WSL2
 
-WSL must have systemd enabled. Install the tracked user service only after the
-Linux build and focused tests pass:
+WSL must have systemd enabled. The tracked service assumes a checkout at
+`~/zclassic23` and requires `build/bin/zcl-nodectl` as well as `build/bin/z23`.
+`platform/deploy/setup.sh` currently derives `platform/` as its repository
+root and cannot install the unit from its constructed path. Inspect the unit
+before configuring a service for the clone above:
 
 ```bash
 cd "$HOME/src/z23"
-sudo bash platform/deploy/setup.sh
-systemctl --user enable --now zclassic23.service
-systemctl --user status zclassic23.service
+sed -n '1,220p' platform/deploy/zclassic23.service
 ```
 
 Use `systemctl --user stop zclassic23.service` before changing its binary or
@@ -367,7 +368,7 @@ the evidence names the missing capability: `missing=job-object`,
 `restricted-token`, `low-integrity`, `write-label`, or `handle-list`. It
 never falls back to an unconfined run.
 
-POSIX forks a child and sets `RLIMIT_CPU` and `RLIMIT_AS`. Windows has no
+POSIX forks a child and sets `RLIMIT_CPU` and `RLIMIT_DATA`. Windows has no
 fork, so the parent writes `executor_job.json` into the run directory and
 starts its own image again as
 `z23.exe --z23-internal-agent-worker-child <rundir>`. Each run gets the
@@ -400,9 +401,8 @@ does next.
 
 What this backend does not enforce, compared with POSIX:
 
-1. The memory cap counts committed memory summed over the whole job, not
-   each process's address space. Reserved but uncommitted address space and
-   mapped file views are not capped, while `RLIMIT_AS` counts both.
+1. The Windows memory cap counts committed memory summed over the whole job.
+   The POSIX worker instead sets a per-process `RLIMIT_DATA` ceiling.
 2. The CPU cap counts user-mode time only, summed over the job. Kernel time
    is not charged, while `RLIMIT_CPU` charges both.
 3. For the length of the run, any other low-integrity process of the same
@@ -414,8 +414,8 @@ What this backend does not enforce, compared with POSIX:
 5. The executor that runs is the one the child image's entry point wires,
    which is the Muse executor in `z23.exe`. The drive's function pointer does
    not cross the process boundary.
-6. A write root that contains a reparse point, or a path longer than
-   `MAX_PATH`, is refused before launch (`write-label`), never relabeled.
+6. A write root that contains a reparse point is refused before launch
+   (`write-label`), never relabeled.
 7. The Muse executor requires a `/`-rooted `muse-workspace`. A native
    `C:\` path is therefore still refused by the executor itself, inside the
    confinement.
@@ -450,12 +450,12 @@ build.
 | Gate | What a compiler actually reads | What it does not do |
 | --- | --- | --- |
 | `make windows-acceptance-compile` | Every active program in the source-derived catalog at `platform/modules/platform/tests/windows_acceptance.mk`; reconciliation requires the active IDs and `_SOURCES` IDs to match exactly | Does not read the rest of the `_WIN32` set or execute a native Windows program |
-| `check-windows-cross-syntax` (`make lint`) | Every `.c` whose text contains `_WIN32` under the maintained scan roots: `platform/adapters/`, `app/`, `engine/application/`, `config/`, `core/`, `domain/`, `lib/`, `platform/ports/`, `src/`, and release-visible `tools/command/` | Syntax-only: no objects, archives, link, Wine run, or native observation |
+| `check-windows-cross-syntax` (`make lint`) | Every release-node translation unit listed by `make -s ZCL_TARGET=windows-x86_64 print-node-c23-srcs` | Syntax-only: no objects, archives, link, Wine run, or native observation |
 
 The syntax sweep uses `x86_64-w64-mingw32-gcc -std=c2x -fsyntax-only` and
-every directory named `include` (plus `-I.` and `-Itools`, so
-`command/native_command.h` is findable). The file set is self-maintaining: a
-file that gains Windows code joins the gate. When mingw is not installed the
+discovered `include` directories outside the script's explicitly pruned directories (plus `-I.` and `-Itools`, so
+`command/native_command.h` is findable). The file set follows the release build: a
+translation unit added to `NODE_C23_SRCS` joins the gate. When mingw is not installed the
 gate prints `SKIP` and exits 0; that is not a pass. The mandatory
 `windows-portability-acceptance`, pre-push, and hosted-CI paths
 set `ZCL_REQUIRE_MINGW=1`, so a missing compiler is a hard failure there. The
