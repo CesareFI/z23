@@ -16,7 +16,7 @@ enum expr_field { XF_SCREEN_W, XF_SCREEN_H, XF_ELAPSED_SECONDS, XF_TEAM_COUNT,
  XF_FLASH, XF_COUNT };
 enum expr_status { EX_OK, EX_ARGUMENT, EX_FORMAT, EX_BOUNDS, EX_LIMIT,
  EX_OPCODE, EX_TYPE, EX_REFERENCE, EX_FIELD_ID, EX_SCHEMA, EX_LITERAL,
- EX_TEXT_BUDGET, EX_DIV_ZERO, EX_RANGE, EX_EVAL_BUDGET, EX_SNAPSHOT, EX_VALUES, EX_OUTPUT };
+ EX_TEXT_BUDGET, EX_DIV_ZERO, EX_RANGE, EX_EVAL_BUDGET, EX_SNAPSHOT, EX_VALUES, EX_OUTPUT, EX_IO };
 struct expr_info { unsigned expressions, draws, texts, pieces, literal_bytes,
  worst_text, worst_draw_text; };
 struct expr_error { enum expr_status code; unsigned index; const char *reason; };
@@ -53,4 +53,18 @@ _Static_assert(sizeof(struct sky_hud_recipe_v1)==3592,"HUD recipe ABI");
 enum expr_status expr_build_draws(const void *bytes, size_t n,
  const struct expr_values *values, unsigned op_capacity, unsigned text_capacity,
  struct sky_hud_recipe_v1 *out, struct expr_error *error);
+enum expr_admit_status { EX_ADMIT_OK, EX_ADMIT_ARGUMENT, EX_ADMIT_READ,
+ EX_ADMIT_PIN, EX_ADMIT_VALIDATE, EX_ADMIT_EVALUATE, EX_ADMIT_DRAW };
+struct expr_part {
+ size_t length; uint8_t sha256[32],bytes[EXPR_MAX_BYTES];
+ struct sky_hud_recipe_v1 recipe;
+};
+struct expr_admit_error {
+ enum expr_admit_status stage; struct expr_error detail;
+};
+/* Caller supplies a raw 32-byte pin and normalized immutable snapshot.
+ * Fixed-size current changes only after every stage succeeds. Error optional. */
+enum expr_admit_status expr_admit_file(const char *path,const uint8_t pin[32],
+ const double fields[XF_COUNT],unsigned budget,unsigned op_capacity,
+ unsigned text_capacity,struct expr_part *current,struct expr_admit_error *error);
 #endif

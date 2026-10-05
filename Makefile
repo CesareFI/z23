@@ -3156,6 +3156,9 @@ ZCL_WINDOWS_ACCEPTANCE_MONOLITH_EXCLUDES = $(if $(ZCL_HOST_WINDOWS),\
 TEST_SRCS_NO_MAIN = $(filter-out tests/harness/src/test.c tests/harness/src/test_parallel.c \
 	$(ZCL_WINDOWS_ACCEPTANCE_MONOLITH_EXCLUDES), $(TEST_SRCS)) \
 	$(TEST_DEV_EXECUTOR_SRCS) $(TEST_LAND_SRCS) $(TEST_LINT_SELECTION_SRCS)
+# Reuse the test loader's embedded SHA when present; otherwise link the package.
+TEST_HUD_SHA_SRCS := $(if $(filter tests/harness/src/test_skycombat_macho_loader.c,$(TEST_SRCS_NO_MAIN)),,contexts/commons/packages/zsha256/src/zsha256.c)
+TEST_SRCS_NO_MAIN += $(TEST_HUD_SHA_SRCS)
 TEST_FAST_OBJ_ROOT = $(BUILD_DIR)/test-obj
 TEST_PARALLEL_FAST_BIN = $(BIN_DIR)/test_parallel_fast
 TEST_PARALLEL_FAST_SRCS = $(TEST_SRCS_NO_MAIN) tests/harness/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS)

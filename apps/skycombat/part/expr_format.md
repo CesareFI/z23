@@ -143,3 +143,32 @@ local recipe plus bounded scalar metadata/11-byte decimal workspace provides
 atomic publication. Success zeroes unused operations/arena bytes; every refusal
 leaves output unchanged and optionally reports a trusted error. Validation's
 conservative 1024-byte text budget includes invisible and repeated uses.
+
+`expr_admit_file(path,pin,fields,budget,op_capacity,text_capacity,current,error)`
+reads one regular file into a fixed 10272-byte candidate, checks its raw 32-byte
+SHA-256 pin, then validates, evaluates and assembles in that order. `expr_part`
+retains the exact admitted bytes, length, computed digest and initial recipe.
+Only complete success replaces the whole current part; every refusal preserves
+it byte-for-byte. Unused candidate byte/recipe storage is zeroed on success.
+No game-loop integration, renderer, executable loader or activation is added.
+
+Top-level typed outcomes distinguish ARGUMENT, READ, PIN, VALIDATE, EVALUATE,
+and DRAW. Optional error carries that stage and the underlying expression
+status/index/trusted reason. READ uses EX_LIMIT for oversize or EX_IO for open,
+metadata, short/error read or changed metadata; PIN uses EX_FORMAT. Empty or
+truncated files with matching pins reach VALIDATE and refuse EX_BOUNDS.
+All outputs/inputs must be valid and disjoint; pin, path and normalized fields
+stay immutable during the call; one externally serialized owner publishes.
+
+The requested base has no ELF file reader: its ELF implementation on staged
+main also accepts memory, with only an allocating private test reader. Admission
+therefore uses existing `platform_positioned_file` regular-file primitives, a
+fixed-buffer read loop, and standalone `zsha256`. It refuses final-component
+symlinks and nonregular objects. Parent-directory confinement is caller policy.
+One opened handle supplies metadata and bytes; before/after snapshots must match.
+Each successful partial read advances, so there are at most 10272 read calls.
+This is a byte/work bound, not an I/O deadline or protection against a hostile
+filesystem blocking a syscall. No heap allocation is performed by admission.
+Concurrent file changes can cause READ/PIN refusals; a matching digest binds
+only the captured candidate, not a guarantee that the path stays unchanged
+later. Publication uses the immutable captured bytes, never rereads the path.

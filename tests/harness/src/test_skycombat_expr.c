@@ -4,6 +4,39 @@
 #include "../../../apps/skycombat/part/expr_validate.c"
 #include "../../../apps/skycombat/part/expr_eval.c"
 #include "../../../apps/skycombat/part/expr_draw.c"
+#include "platform/positioned_file.h"
+enum { ADMIT_PROBE_NONE,ADMIT_PROBE_PARTIAL,ADMIT_PROBE_EOF,ADMIT_PROBE_ERROR,
+ ADMIT_PROBE_OVERRUN,ADMIT_PROBE_STAT,ADMIT_PROBE_CHANGED };
+static unsigned admit_probe_mode,admit_probe_reads,admit_probe_stats,admit_probe_closes;
+static int64_t admit_probe_read(const struct platform_positioned_file *f,void *b,size_t n,uint64_t off)
+{
+ ++admit_probe_reads;
+ if(admit_probe_mode==ADMIT_PROBE_EOF)return 0;
+ if(admit_probe_mode==ADMIT_PROBE_ERROR)return -1;
+ if(admit_probe_mode==ADMIT_PROBE_OVERRUN)return (int64_t)n+1;
+ if(admit_probe_mode==ADMIT_PROBE_PARTIAL && n>3)n=3;
+ return platform_positioned_file_read(f,b,n,off);
+}
+static bool admit_probe_snapshot(const struct platform_positioned_file *f,struct platform_positioned_file_snapshot *s)
+{
+ ++admit_probe_stats;
+ if(admit_probe_mode==ADMIT_PROBE_STAT)return false;
+ bool ok=platform_positioned_file_snapshot(f,s);
+ if(ok && admit_probe_mode==ADMIT_PROBE_CHANGED && admit_probe_stats==2)++s->size;
+ return ok;
+}
+static void admit_probe_close(struct platform_positioned_file *f)
+{ ++admit_probe_closes;platform_positioned_file_close(f); }
+/* Test-only syscall observations/faults; production API has no callbacks. */
+#define platform_positioned_file_read admit_probe_read
+#define platform_positioned_file_snapshot(...) admit_probe_snapshot(__VA_ARGS__)
+#define platform_positioned_file_close admit_probe_close
+#include "../../../apps/skycombat/part/expr_admit.c"
+#undef platform_positioned_file_read
+#undef platform_positioned_file_snapshot
+#undef platform_positioned_file_close
+
+#include "crypto/sha256.h"
 #include <math.h>
 static const uint8_t expr_empty[32]={'H','U','D','X',0,0,32,0,1};
 static const uint8_t expr_rect[88]={
@@ -460,12 +493,149 @@ static int draw_defensive(void)
  return failures;
 }
 
+static int admit_expect(const char *path,const uint8_t pin[32],const double fields[XF_COUNT],
+ unsigned budget,unsigned ops,unsigned text,enum expr_admit_status want,enum expr_status detail)
+{
+ struct expr_part current,before;memset(&current,0x5a,sizeof current);before=current;
+ struct expr_admit_error e={0};enum expr_admit_status got=expr_admit_file(path,pin,fields,budget,ops,text,&current,&e);
+ bool ok=got==want && e.stage==got && e.detail.code==detail && e.detail.reason &&
+  (got==EX_ADMIT_OK?memcmp(&current,&before,sizeof current)!=0:!memcmp(&current,&before,sizeof current));
+ if(!ok)printf("admit expected=%u/%u got=%u/%u atomic=%d\n",(unsigned)want,(unsigned)detail,(unsigned)got,(unsigned)e.detail.code,!memcmp(&before,&current,sizeof current));
+ return !ok;
+}
+static bool admit_fixture_write(const char *path,const void *b,size_t n,uint8_t pin[32])
+{
+ FILE *f=fopen(path,"wb");if(!f){perror("admit fixture open");return false;}
+ size_t got=fwrite(b,1,n,f);int closed=fclose(f);
+ if(got!=n || closed){fprintf(stderr,"admit fixture write/close failure\n");return false;}
+ struct sha256_ctx hash;sha256_init(&hash);sha256_write(&hash,b,n);sha256_finalize(&hash,pin);return true;
+}
+static int admit_success(const char *path,const uint8_t *b,size_t n,const uint8_t pin[32],const double *fields)
+{
+ struct expr_part out;memset(&out,0x5a,sizeof out);struct expr_admit_error e={0};int failures=0;
+ if(expr_admit_file(path,pin,fields,256,64,1024,&out,&e)!=EX_ADMIT_OK)return 1;
+ failures+=out.length!=n;failures+=memcmp(out.bytes,b,n)!=0;failures+=memcmp(out.sha256,pin,32)!=0;
+ failures+=out.recipe.op_count!=1;failures+=out.recipe.text_used!=5;
+ failures+=memcmp(out.recipe.text,"HUD10",5)!=0;
+ for(size_t i=n;i<EXPR_MAX_BYTES;i++)failures+=out.bytes[i]!=0;
+ const struct sky_hud_recipe_v1 zero={0};
+ failures+=memcmp(out.recipe.ops+1,zero.ops+1,sizeof zero.ops-sizeof zero.ops[0])!=0;
+ failures+=memcmp(out.recipe.text+5,zero.text+5,sizeof zero.text-5)!=0;
+ failures+=expr_admit_file(path,pin,fields,256,64,1024,&out,NULL)!=EX_ADMIT_OK;
+ return failures;
+}
+static int admit_stage_cases(const char *path,uint8_t pin[32],double *fields)
+{
+ int failures=0;struct expr_admit_error e={0};
+ pin[0]^=1;failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_PIN,EX_FORMAT);pin[0]^=1;
+ failures+=admit_expect(path,pin,fields,7,64,1024,EX_ADMIT_EVALUATE,EX_EVAL_BUDGET);
+ fields[XF_SHIELD]=2;failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_EVALUATE,EX_SNAPSHOT);fields[XF_SHIELD]=1;
+ failures+=admit_expect(path,pin,fields,256,0,1024,EX_ADMIT_DRAW,EX_OUTPUT);
+ failures+=admit_expect(path,pin,fields,256,64,4,EX_ADMIT_DRAW,EX_OUTPUT);
+ failures+=admit_expect(path,pin,fields,256,65,1024,EX_ADMIT_DRAW,EX_LIMIT);
+ failures+=admit_expect(path,pin,fields,256,64,1025,EX_ADMIT_DRAW,EX_LIMIT);
+ failures+=admit_expect(path,pin,fields,257,64,1024,EX_ADMIT_EVALUATE,EX_LIMIT);
+ failures+=admit_expect(NULL,pin,fields,256,64,1024,EX_ADMIT_ARGUMENT,EX_ARGUMENT);
+ failures+=admit_expect("",pin,fields,256,64,1024,EX_ADMIT_ARGUMENT,EX_ARGUMENT);
+ failures+=admit_expect(path,NULL,fields,256,64,1024,EX_ADMIT_ARGUMENT,EX_ARGUMENT);
+ failures+=admit_expect(path,pin,NULL,256,64,1024,EX_ADMIT_ARGUMENT,EX_ARGUMENT);
+ failures+=expr_admit_file(path,pin,fields,256,64,1024,NULL,&e)!=EX_ADMIT_ARGUMENT;
+ return failures;
+}
+static int admit_probe_cases(const char *path,const uint8_t pin[32],const double *fields,size_t n)
+{
+ int failures=0;
+ admit_probe_mode=ADMIT_PROBE_PARTIAL;admit_probe_reads=admit_probe_closes=admit_probe_stats=0;
+ failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_OK,EX_OK);
+ failures+=admit_probe_reads!=(n+2)/3;failures+=admit_probe_stats!=2;failures+=admit_probe_closes!=1;
+ for(unsigned mode=ADMIT_PROBE_EOF;mode<=ADMIT_PROBE_CHANGED;mode++) {
+  admit_probe_mode=mode;admit_probe_reads=admit_probe_closes=admit_probe_stats=0;
+  failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_READ,EX_IO);
+  failures+=admit_probe_closes!=1;
+ }
+ admit_probe_mode=ADMIT_PROBE_NONE;return failures;
+}
+static int admit_wire_cases(const char *path,uint8_t *b,size_t n,uint8_t pin[32],const double *fields)
+{
+ int failures=0;
+ if(!admit_fixture_write(path,b,n-1,pin))return 1;
+ failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_VALIDATE,EX_BOUNDS);
+ b[0]='X';if(!admit_fixture_write(path,b,n,pin))return failures+1;
+ failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_VALIDATE,EX_FORMAT);
+ if(!admit_fixture_write(path,b,EXPR_MAX_BYTES+1,pin))return failures+1;
+ admit_probe_reads=0;failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_READ,EX_LIMIT);
+ failures+=admit_probe_reads!=0;
+ if(!admit_fixture_write(path,b,0,pin))return failures+1;
+ failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_VALIDATE,EX_BOUNDS);
+ n=draw_fixture(b,1,1);zcl_write_u32_le(b+104,UINT32_MAX);
+ if(!admit_fixture_write(path,b,n,pin))return failures+1;
+ failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_DRAW,EX_RANGE);
+ memset(b,0,80);memcpy(b,expr_empty,32);b[12]=3;
+ eval_leaf(b+32,EX_CONST_I32,10);eval_leaf(b+48,EX_CONST_I32,0);eval_leaf(b+64,EX_MULDIV,0);
+ zcl_write_u16_le(b+66,0);zcl_write_u16_le(b+68,0);zcl_write_u16_le(b+70,1);
+ if(!admit_fixture_write(path,b,80,pin))return failures+1;
+ failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_EVALUATE,EX_DIV_ZERO);
+ return failures;
+}
+static int admit_path_cases(const char *path,uint8_t pin[32],const double *fields)
+{
+ char dir[512],link[520];int failures=0;
+ if(!test_mkdtemp(dir,sizeof dir,"expr_admit_dir"))return 1;
+ failures+=admit_expect(dir,pin,fields,256,64,1024,EX_ADMIT_READ,EX_IO);
+ if(snprintf(link,sizeof link,"%s/link",dir)<0){test_cleanup_tmpdir(dir);return failures+1;}
+#if !defined(_WIN32)
+ if(symlink(path,link)){perror("admit fixture symlink");test_cleanup_tmpdir(dir);return failures+1;}
+ failures+=admit_expect(link,pin,fields,256,64,1024,EX_ADMIT_READ,EX_IO);
+ if(unlink(link)){perror("admit symlink unlink");failures++;}
+#endif
+ test_cleanup_tmpdir(dir);
+ if(unlink(path)){perror("admit fixture unlink");return failures+1;}
+ failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_READ,EX_IO);
+ return failures;
+}
+static int admit_limit_case(const char *path,uint8_t pin[32],const double *fields)
+{
+ uint8_t b[EXPR_MAX_BYTES]={0};memcpy(b,expr_empty,32);
+ zcl_write_u16_le(b+12,256);b[14]=64;b[16]=64;zcl_write_u16_le(b+18,256);
+ zcl_write_u32_le(b+20,1024);size_t at=32;
+ for(unsigned i=0;i<256;i++,at+=16)memcpy(b+at,expr_rect+32,16);
+ b[48]=EX_FIELD;b[56]=XF_SHIELD;
+ for(unsigned i=0;i<64;i++,at+=8){zcl_write_u16_le(b+at,(uint16_t)(4*i));b[at+2]=4;}
+ for(unsigned i=0;i<256;i++,at+=12) {
+  b[at]=1;zcl_write_u16_le(b+at+2,EXPR_NONE);
+  zcl_write_u32_le(b+at+4,16*((i+3)/4));if(i%4==0)b[at+8]=16;
+ }
+ for(unsigned i=0;i<64;i++,at+=24)memcpy(b+at,expr_rect+64,24);
+ memset(b+at,'A',1024);
+ if(!admit_fixture_write(path,b,sizeof b,pin))return 1;
+ struct expr_part out={0};struct expr_admit_error e={0};int failures=0;
+ failures+=admit_expect(path,pin,fields,256,64,1024,EX_ADMIT_OK,EX_OK);
+ if(expr_admit_file(path,pin,fields,256,64,1024,&out,&e)!=EX_ADMIT_OK)return failures+1;
+ failures+=out.length!=EXPR_MAX_BYTES;failures+=memcmp(out.bytes,b,sizeof b)!=0;
+ failures+=out.recipe.op_count!=64;return failures;
+}
+
+static int admit_file_cases(void)
+{
+ char path[512];int fd=test_mkstemp(path,sizeof path,"expr_admit");
+ if(fd<0){perror("admit fixture create");return 1;}
+ if(close(fd)){perror("admit fixture close");unlink(path);return 1;}
+ uint8_t b[EXPR_MAX_BYTES+1]={0},pin[32];double fields[XF_COUNT]={0};fields[XF_SHIELD]=1;
+ size_t n=draw_fixture(b,3,1);int failures=0;
+ if(!admit_fixture_write(path,b,n,pin)){unlink(path);return 1;}
+ failures+=admit_success(path,b,n,pin,fields);failures+=admit_stage_cases(path,pin,fields);
+ failures+=admit_probe_cases(path,pin,fields,n);failures+=admit_wire_cases(path,b,n,pin,fields);
+ failures+=admit_limit_case(path,pin,fields);failures+=admit_path_cases(path,pin,fields);
+ return failures;
+}
+
 int test_skycombat_expr(void);
 int test_skycombat_expr(void)
 {
  int failures=expr_headers()+expr_records()+expr_text_cases()+expr_limits();
  failures+=eval_operators()+eval_domains()+eval_bounds()+eval_defensive_bounds();
  failures+=draw_kinds()+draw_refusals()+draw_capacity()+draw_followups()+draw_defensive();
+ failures+=admit_file_cases();
  printf("test_skycombat_expr: %s (%d failures)\n",failures?"FAILED":"PASS",failures);
  return failures;
 }
