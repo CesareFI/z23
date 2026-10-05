@@ -3,7 +3,7 @@
  *          the zjson writer. Allocation-free, depth-bounded, and
  *          total: the parser reads caller memory, produces one event
  *          per call, and every malformed input ends in a precise
- *          ZJR_SYNTAX at the offending byte, never a crash or a read
+ *          ZJR_SYNTAX at the offending byte (input length when truncated), never a crash or a read
  *          past the end.
  *
  * Rules enforced:
@@ -80,7 +80,7 @@ void zjsonp_init(zjsonp *p, const char *text, size_t len);
 zjsonp_status zjsonp_next(zjsonp *p, zjsonp_event *ev);
 
 /* Current input offset (end of the last consumed token, or the
- * offending byte after ZJRP_SYNTAX). */
+ * offending byte after ZJRP_SYNTAX, or len when truncated). */
 size_t zjsonp_pos(const zjsonp *p);
 
 /* Decode a ZJRP_KEY/ZJRP_STR payload into out[0..cap): escapes are

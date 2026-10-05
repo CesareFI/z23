@@ -35,6 +35,33 @@ static zjsonp_status slurp(const char *doc, zjsonp_event *evs,
   }
 }
 
+static int test_string_error_offsets(void) {
+  static const struct { const char *text; size_t pos; } rows[] = {
+    {"\"a\001b\"", 2},
+    {"\"a\\q\"", 3},
+    {"\"a\\u0X00\"", 5},
+    {"\"abc", 4},
+    {"\"a\x80\"", 2},
+    {"\"a\\u00", 6},
+    {"\"a\\", 3},
+    {"-", 1}, {"1.", 2}, {"1e", 2}, {"1e+", 3},
+    {"1eX", 2}, {"truX", 3}, {"nul", 3}
+  };
+  int failures = 0;
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    zjsonp parser;
+    zjsonp_event event;
+    zjsonp_init(&parser, rows[i].text, strlen(rows[i].text));
+    if (!(zjsonp_next(&parser, &event) == ZJRP_SYNTAX &&
+          zjsonp_pos(&parser) == rows[i].pos)) {
+      fprintf(stderr, "FAIL token offset row %zu: expected %zu, got %zu\n",
+              i, rows[i].pos, zjsonp_pos(&parser));
+      failures++;
+    }
+  }
+  return failures != 0;
+}
+
 static int test_kat(void) {
   zjsonp_event evs[32];
   size_t n = 0;
@@ -463,6 +490,7 @@ int main(void) {
       return 1;
     }
   }
+  if (test_string_error_offsets()) return 1;
   printf("all %zu zjsonp tests passed\n", sizeof tests / sizeof tests[0]);
   return 0;
 }

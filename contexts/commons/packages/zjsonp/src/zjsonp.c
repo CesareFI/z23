@@ -38,6 +38,23 @@ static void skip_ws(zjsonp *p) {
     p->pos++;
 }
 
+static bool string_error(zjsonp *p, size_t pos) {
+  p->pos = pos;
+  return false;
+}
+
+static bool string_payload_valid(zjsonp *p, size_t start, size_t end) {
+  size_t at = start;
+  while (at < end) {
+    uint32_t cp;
+    size_t consumed;
+    if (zutf8_decode_n(p->text + at, end - at, &cp, &consumed) != ZUTF8_OK)
+      return string_error(p, at);
+    at += consumed;
+  }
+  return true;
+}
+
 /* Scan a string whose opening quote is at pos. On success returns
  * true, sets off/len to the raw payload between the quotes, and
  * leaves pos past the closing quote. Raw payload bytes must be
@@ -53,59 +70,72 @@ static bool scan_string(zjsonp *p, size_t *off, size_t *len) {
       *off = start;
       *len = i - start;
       p->pos = i + 1;
-      return zutf8_validate_n(p->text + start, i - start);
+      return string_payload_valid(p, start, i);
     }
     if (c == '\\') {
       if (i + 1 >= p->len)
-        return false;
+        return string_error(p, p->len);
       char e = p->text[i + 1];
       if (e == 'u') {
         if (i + 5 >= p->len)
-          return false;
+          return string_error(p, p->len);
         for (int k = 2; k <= 5; k++) {
           char h = p->text[i + k];
           bool hex = (h >= '0' && h <= '9') || (h >= 'a' && h <= 'f') ||
                      (h >= 'A' && h <= 'F');
           if (!hex)
-            return false;
+            return string_error(p, i + (size_t)k);
         }
         i += 6;
         continue;
       }
       if (e != '"' && e != '\\' && e != '/' && e != 'b' && e != 'f' &&
           e != 'n' && e != 'r' && e != 't')
-        return false;
+        return string_error(p, i + 1);
       i += 2;
       continue;
     }
     if (c < 0x20)
-      return false; /* raw control byte */
+      return string_error(p, i); /* raw control byte */
     i++;
   }
-  return false; /* unterminated */
+  return string_error(p, p->len); /* unterminated */
+}
+
+static size_t number_error(zjsonp *p, size_t pos) {
+  p->pos = pos;
+  return 0;
+}
+
+static bool literal_error(zjsonp *p, const char *lit, size_t n) {
+  size_t i = 0;
+  while (i < n && i < p->len - p->pos && p->text[p->pos + i] == lit[i])
+    i++;
+  p->pos += i;
+  return false;
 }
 
 /* Scan a number per the strict grammar starting at pos. On success
  * advances pos past the number and returns its length, else 0 and
- * pos is unchanged. */
+ * pos identifies the offending byte (len at end of input). */
 static size_t scan_number(zjsonp *p) {
   size_t i = p->pos;
   if (i < p->len && p->text[i] == '-')
     i++;
   if (i >= p->len)
-    return 0;
+    return number_error(p, i);
   if (p->text[i] == '0') {
     i++;
   } else if (p->text[i] >= '1' && p->text[i] <= '9') {
     while (i < p->len && p->text[i] >= '0' && p->text[i] <= '9')
       i++;
   } else {
-    return 0;
+    return number_error(p, i);
   }
   if (i < p->len && p->text[i] == '.') {
     i++;
     if (i >= p->len || p->text[i] < '0' || p->text[i] > '9')
-      return 0;
+      return number_error(p, i);
     while (i < p->len && p->text[i] >= '0' && p->text[i] <= '9')
       i++;
   }
@@ -114,7 +144,7 @@ static size_t scan_number(zjsonp *p) {
     if (i < p->len && (p->text[i] == '+' || p->text[i] == '-'))
       i++;
     if (i >= p->len || p->text[i] < '0' || p->text[i] > '9')
-      return 0;
+      return number_error(p, i);
     while (i < p->len && p->text[i] >= '0' && p->text[i] <= '9')
       i++;
   }
@@ -125,7 +155,7 @@ static size_t scan_number(zjsonp *p) {
 
 static bool match_literal(zjsonp *p, const char *lit, size_t n) {
   if (p->len - p->pos < n || memcmp(p->text + p->pos, lit, n) != 0)
-    return false;
+    return literal_error(p, lit, n);
   p->pos += n;
   return true;
 }
