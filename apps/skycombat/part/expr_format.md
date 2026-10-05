@@ -1,8 +1,9 @@
 <!-- Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0 -->
 # Data-only HUD expression format, version 0
 
-The validator admits inert bounded data. This commit has no evaluator,
-assembler, renderer, loader, activation, or execution authority. Input memory
+The validator admits inert bounded data. The evaluator computes numbers only;
+it has no assembler, renderer, loader, activation, or host execution authority.
+Input memory
 must be valid and immutable for the call. `expr_validate` retains no pointers,
 allocates nothing, and changes the required `expr_info` output only on success.
 Optional `expr_error` receives a fixed trusted reason and record index; refusals
@@ -48,9 +49,8 @@ score_0..score_3, score_limit, health_milli, max_health_milli, boost_ms,
 weapon_index. Fields 13..15 are BOOL: shield, connected, flash. The format does
 not admit other host data, pointers, imports, callbacks, commands or jumps.
 Validation checks structure/types, not numeric domains or evaluation results.
-Division by zero, reversed CLAMP, numeric draw ranges, normalization and eager
-evaluation remain future evaluator duties; successful validation proves none
-of these runtime properties or rendered behavior.
+Successful validation does not establish numeric domains or rendered behavior.
+Numeric draw ranges and raw host snapshot normalization remain outside this API.
 
 Text descriptors are 8 bytes: first/count u16 at0/2, reserved zero u32 at4.
 Counts are nonzero and descriptors exactly partition P in order, with no gaps
@@ -74,3 +74,39 @@ be <=1024, including repetitions and invisible/mutually exclusive draws.
 The bounded scan consumes wire sections once forward; only bounded inferred
 types, structural-zero flags and text budgets are revisited. Canonical literal
 ownership is representation canonicality, not uniqueness of equivalent DAGs.
+
+`expr_evaluate(bytes,n,fields,budget,out,error)` validates the complete immutable
+part before evaluating expressions. `fields` contains exactly 16 readable
+normalized numbers in the field order above. All fields, even unused ones,
+must be finite, integral, in [-2147483648,2147483647]; Boolean fields must be
+exactly 0 or 1. NaN, either infinity, fractions, out-of-range values and other
+Boolean values refuse with EX_SNAPSHOT. Finite/range checks precede conversion;
+exact-integral checks follow the safe cast.
+Negative zero is accepted as integer zero. This is no raw host snapshot ABI or
+conversion of seconds, flags, health units or weapon indices.
+
+Evaluation computes all expressions eagerly in wire order, including unused
+ones and unselected SELECT branches. One expression costs one step. Budget
+0..256 is explicit: insufficient budget refuses EX_EVAL_BUDGET, values above
+256 refuse EX_LIMIT, and the empty part accepts budget zero. Validation is a
+separate bounded scan over at most 10272 bytes; it is not charged as expression
+steps. Every record extent and active operand index is checked against the
+validated expression section before reading a record or cached value.
+
+CONST_I32 preserves the signed immediate. FIELD returns the admitted field.
+ADD_SAT and SUB_SAT use signed 64-bit intermediates and saturate to I32 limits.
+MIN/MAX compare signed values. CLAMP limits a to [b,c], refusing EX_RANGE if
+b>c. MULDIV computes signed 64-bit a*b/c, truncates toward zero, then saturates;
+c=0 refuses EX_DIV_ZERO. Every I32 product fits I64 and cannot be INT64_MIN,
+so even division by -1 is defined. Comparisons and Boolean operators return
+exactly 0 or 1. SELECT returns b if a is true, otherwise c; it is not lazy.
+No non-finite result is possible: expression operations are integer-only.
+
+The evaluator has no recursion, heap allocation, callbacks or input retention.
+Its fixed workspace is 256 I32 result slots plus 16 I32 snapshot slots, metadata
+and scalar temporaries; the validator also uses fixed bounded arrays. Call depth
+is fixed independently of the part. Success reports E results and E steps with
+zeroed unused slots. Required output changes only on complete success; failures
+leave it byte-for-byte unchanged and optionally set/log a trusted error.
+Input storage and the two output objects must not overlap, and input storage
+must remain valid and immutable for the entire call.

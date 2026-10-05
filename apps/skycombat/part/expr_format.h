@@ -16,7 +16,7 @@ enum expr_field { XF_SCREEN_W, XF_SCREEN_H, XF_ELAPSED_SECONDS, XF_TEAM_COUNT,
  XF_FLASH, XF_COUNT };
 enum expr_status { EX_OK, EX_ARGUMENT, EX_FORMAT, EX_BOUNDS, EX_LIMIT,
  EX_OPCODE, EX_TYPE, EX_REFERENCE, EX_FIELD_ID, EX_SCHEMA, EX_LITERAL,
- EX_TEXT_BUDGET };
+ EX_TEXT_BUDGET, EX_DIV_ZERO, EX_RANGE, EX_EVAL_BUDGET, EX_SNAPSHOT };
 struct expr_info { unsigned expressions, draws, texts, pieces, literal_bytes,
  worst_text, worst_draw_text; };
 struct expr_error { enum expr_status code; unsigned index; const char *reason; };
@@ -25,4 +25,11 @@ struct expr_error { enum expr_status code; unsigned index; const char *reason; }
  * NULL; its trusted reason/index describe the rejected record, not an offset. */
 enum expr_status expr_validate(const void *bytes, size_t n,
  struct expr_info *info, struct expr_error *error);
+struct expr_values { unsigned count, steps; int32_t value[256]; };
+/* All inputs stay immutable; fields has XF_COUNT doubles representing exact
+ * I32 values (BOOL fields 0 or 1). out changes only on complete success.
+ * Validation precedes at most 256 eager expression steps; budget is 0..256. */
+enum expr_status expr_evaluate(const void *bytes, size_t n,
+ const double fields[XF_COUNT], unsigned budget, struct expr_values *out,
+ struct expr_error *error);
 #endif
