@@ -2,6 +2,7 @@
  * Purpose: regression tests for token-bucket and sliding-window rate limiting.
  */
 #include "zrate/zrate.h"
+#include <math.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -172,8 +173,33 @@ static void test_disabled_window_wait(void)
     }
 }
 
+static void test_invalid_bucket_numbers(void)
+{
+    const double bad[] = {NAN, INFINITY, -INFINITY, -1.0};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        zrate_bucket b;
+        zrate_bucket_init(&b, 2, 1, 0);
+        CHECK(!zrate_bucket_take(&b, bad[i], 1000));
+        CHECK(b.tokens == 2 && b.last_ms == 0);
+        CHECK(zrate_bucket_wait_ms(&b, bad[i], 1000) == UINT64_MAX);
+        CHECK(b.tokens == 2 && b.last_ms == 0);
+        CHECK(zrate_bucket_take(&b, 2, 0));
+        CHECK(!zrate_bucket_take(&b, 1, 0));
+        CHECK(zrate_bucket_wait_ms(&b, 1, 0) == 1000);
+        zrate_bucket_init(&b, bad[i], 1, 0);
+        CHECK(b.capacity == 0 && b.tokens == 0);
+        CHECK(!zrate_bucket_take(&b, 1, 0));
+        zrate_bucket_init(&b, 2, bad[i], 0);
+        CHECK(b.rate_per_sec == 0);
+        CHECK(zrate_bucket_take(&b, 2, 0));
+        CHECK(zrate_bucket_peek(&b, 1000) == 0);
+        CHECK(zrate_bucket_wait_ms(&b, 1, 1000) == UINT64_MAX);
+    }
+}
+
 int main(void)
 {
+    test_invalid_bucket_numbers();
     test_disabled_window_wait();
     test_bucket_basic();
     test_bucket_wait();

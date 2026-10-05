@@ -30,16 +30,19 @@ typedef struct {
 } zrate_bucket;
 
 /* Initialize full (tokens == capacity). now_ms is the caller's
- * monotonic clock in milliseconds. */
+ * monotonic clock in milliseconds. Negative or non-finite capacity
+ * and refill rate are clamped to zero. */
 void zrate_bucket_init(zrate_bucket *b, double capacity,
                        double rate_per_sec, uint64_t now_ms);
 
 /* Try to take n tokens at now_ms (refilling first). On success the
- * tokens are spent and true returned; on failure nothing is spent. */
+ * tokens are spent and true returned; on failure nothing is spent.
+ * Negative or non-finite requests are refused without changing the bucket. */
 bool zrate_bucket_take(zrate_bucket *b, double n, uint64_t now_ms);
 
 /* Milliseconds until n tokens will be available; 0 if available now.
- * UINT64_MAX when n > capacity (never available). */
+ * UINT64_MAX for invalid requests, n > capacity, or insufficient tokens
+ * with zero refill rate. */
 uint64_t zrate_bucket_wait_ms(zrate_bucket *b, double n, uint64_t now_ms);
 
 /* Current token count after refilling to now_ms (not persisted). */

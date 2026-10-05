@@ -3,6 +3,7 @@
  */
 #include "zrate/zrate.h"
 
+#include <math.h>
 #include <string.h>
 
 /* --- Token bucket ---------------------------------------------------- */
@@ -20,8 +21,8 @@ void zrate_bucket_init(zrate_bucket *b, double capacity,
                        double rate_per_sec, uint64_t now_ms)
 {
     if (!b) return;
-    if (capacity < 0) capacity = 0;
-    if (rate_per_sec < 0) rate_per_sec = 0;
+    if (!isfinite(capacity) || capacity < 0) capacity = 0;
+    if (!isfinite(rate_per_sec) || rate_per_sec < 0) rate_per_sec = 0;
     b->capacity = capacity;
     b->tokens = capacity;
     b->rate_per_sec = rate_per_sec;
@@ -30,7 +31,7 @@ void zrate_bucket_init(zrate_bucket *b, double capacity,
 
 bool zrate_bucket_take(zrate_bucket *b, double n, uint64_t now_ms)
 {
-    if (!b || n < 0) return false;
+    if (!b || !isfinite(n) || n < 0) return false;
     refill(b, now_ms);
     if (n > b->tokens) return false;
     b->tokens -= n;
@@ -39,7 +40,7 @@ bool zrate_bucket_take(zrate_bucket *b, double n, uint64_t now_ms)
 
 uint64_t zrate_bucket_wait_ms(zrate_bucket *b, double n, uint64_t now_ms)
 {
-    if (!b || n > b->capacity) return UINT64_MAX;
+    if (!b || !isfinite(n) || n < 0 || n > b->capacity) return UINT64_MAX;
     refill(b, now_ms);
     if (n <= b->tokens) return 0;
     if (b->rate_per_sec <= 0) return UINT64_MAX;
