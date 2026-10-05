@@ -38,14 +38,37 @@ Domain list (frozen): `platform/modules/util/include/util/telemetry_domains.def`
 
 ## Health is derived, never authored
 
-A field row declares a machine-evaluable rule (`TFR_*`), a threshold, and a
-severity. `telemetry_ontology_annotate()` is the single evaluator — the same
-one behind `ops debug meaning` — and the render layer folds its verdicts into
-one enum:
+A field row declares a rule (`TFR_*`), a threshold, and a severity
+(`platform/modules/util/include/util/telemetry_field_table.h:18-34`).
+The render layer calls `telemetry_field_evaluate()` for each leaf and folds
+the resulting health levels into one enum
+(`platform/modules/util/src/telemetry_render.c:417-442`):
 
 ```
 ok < unknown < degraded < unhealthy
 ```
+
+The `ops state` handler has an annotation branch for a true JSON boolean
+`explain` and a returned `state` for a covered subsystem. That branch calls
+`telemetry_ontology_annotate()` (`tools/command/native_command.c:604-611`),
+which uses the same evaluator
+(`platform/modules/util/src/telemetry_ontology.c:598-604`).
+Current input validation prevents that branch from being reached: `explain`
+falls through to the non-empty string rule
+(`engine/modules/kernel/src/command_registry_input_types.c:411-420,539`);
+it is absent from the boolean key lists
+(`engine/modules/kernel/src/command_registry_input_types.c:67-77`;
+`engine/modules/kernel/src/command_registry_devagent_input.c:185-194,352-364`).
+The CLI converts `explain=true` to a JSON boolean before validation, which
+rejects it as `INVALID_INPUT`
+(`tools/command/native_command.c:2446-2448,4205-4216,4286-4291`).
+A valid string does not satisfy `json_get_bool()`
+(`platform/modules/json/src/json.c`), so the covered-subsystem handler
+reports `meaning_available` instead of annotating
+(`tools/command/native_command.c:613-619`).
+`ops debug meaning` routes questions and reads the static ontology through
+`telemetry_ontology_json`; it does not evaluate a supplied field value
+(`tools/command/native_command.c:1092-1097,1132-1155`).
 
 `unknown` outranks `ok` deliberately: a reply full of unreadable leaves must
 never claim health. It sits below `degraded` because "could not judge" must not
@@ -94,7 +117,7 @@ restart from a stall.
 
 | Gate | Holds |
 |---|---|
-| `check-telemetry-ontology` | every field row carries unit, rule, meaning and next; a table-driven domain is checked structurally, and a provider that hand-writes JSON fails |
+| `check-telemetry-ontology` | the row-content check rejects an empty `means`; for the eight judged rules it also rejects an empty `next`, including when both `implies` and `next` are empty. Empty `implies` with non-empty `next` passes this check; it does not validate the unit or rule column (`tools/lint/check_telemetry_ontology.sh:485-509`; current rules: `platform/modules/util/include/util/telemetry_ontology.h:59-69`). Table-driven domains receive structural checks (`tools/lint/check_telemetry_ontology.sh:629-672`); scanned fill-provider files fail on calls matching `json_push_kv_(int\|str\|bool\|dbl\|uint)` (`tools/lint/check_telemetry_ontology.sh:675-718`). |
 | `check-dumper-never-blocks` | no blocking lock or unbounded scan in a dumper **or** a collector |
 | `check-command-contract` | every leaf states its source and freshness |
 | `check-command-availability-truthful` | a leaf that cannot answer is `PLANNED`, not silently empty |
