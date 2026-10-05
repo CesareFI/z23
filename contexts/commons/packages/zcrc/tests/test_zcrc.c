@@ -7,6 +7,17 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdarg.h>
+
+static int cli_output_failure;
+static int cli_printf(const char *format, ...) {
+  if (cli_output_failure) return -1;
+  va_list args;
+  va_start(args, format);
+  const int result = vprintf(format, args);
+  va_end(args);
+  return result;
+}
 
 static unsigned cli_read_calls;
 static size_t cli_read(void *buffer, size_t size, size_t count, FILE *stream) {
@@ -18,10 +29,12 @@ static size_t cli_read(void *buffer, size_t size, size_t count, FILE *stream) {
   return 0;
 }
 #define fread cli_read
+#define printf cli_printf
 #define main zcrc_cli_main
 #include "../app/main.c"
 #undef main
 #undef fread
+#undef printf
 
 static int failures = 0;
 
@@ -131,6 +144,15 @@ int main(void) {
   cli_read_calls = 0;
   CHECK(zcrc_cli_main(2, missing) == 1);
   CHECK(cli_read_calls == 0);
+  FILE *empty_stream = tmpfile();
+  CHECK(empty_stream != NULL);
+  if (empty_stream) {
+    cli_output_failure = 1;
+    CHECK(crc_stream(empty_stream, "empty", 0) == 1);
+    CHECK(crc_stream(empty_stream, "empty", 1) == 1);
+    cli_output_failure = 0;
+    CHECK(fclose(empty_stream) == 0);
+  }
   test_check_vectors();
   test_reference_oracle();
   test_streaming();

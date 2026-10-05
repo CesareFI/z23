@@ -15,7 +15,11 @@ static int crc_stream(FILE *f, const char *name, int use_c) {
     fprintf(stderr, "zcrc: read error on %s\n", name);
     return 1;
   }
-  printf("%08x  %s\n", use_c ? zcrc32c_final(s) : zcrc32_final(s), name);
+  if (printf("%08x  %s\n", use_c ? zcrc32c_final(s) : zcrc32_final(s), name) < 0 ||
+      fflush(stdout) == EOF || ferror(stdout)) {
+    fprintf(stderr, "zcrc: output error on %s\n", name);
+    return 1;
+  }
   return 0;
 }
 
