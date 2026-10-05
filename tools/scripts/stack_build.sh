@@ -114,7 +114,8 @@ FIXTURE
         before="$(fixture_state)"
         rc=0
         "${cli[@]}" "$base" "$later" > "$tmp/out" 2> "$tmp/err" || rc=$?
-        [ "$rc" -eq 2 ] && [ ! -s "$tmp/out" ]
+        [ "$rc" -eq 2 ]
+        [ ! -s "$tmp/out" ]
         [ "$before" = "$(fixture_state)" ]
         git -C "$tmp" restore --source=HEAD --staged --worktree -- shared
         rm -f "$tmp/new" "$tmp/contexts/commons/packages/fixture/zcode-package.json"
@@ -127,7 +128,8 @@ FIXTURE
     before="$(git -C "$tmp" rev-parse HEAD; git -C "$tmp" hash-object --no-filters -- "$tmp/trace")"
     rc=0
     "${cli[@]}" "$base" "$good" > "$tmp/out" 2> "$tmp/err" || rc=$?
-    [ "$rc" -eq 2 ] && [ ! -s "$tmp/out" ]
+    [ "$rc" -eq 2 ]
+        [ ! -s "$tmp/out" ]
     [ "$before" = "$(git -C "$tmp" rev-parse HEAD; git -C "$tmp" hash-object --no-filters -- "$tmp/trace")" ]
     git -C "$tmp" rev-parse --verify CHERRY_PICK_HEAD >/dev/null
     git -C "$tmp" cherry-pick --abort
@@ -135,7 +137,9 @@ FIXTURE
     before="$(git -C "$tmp" rev-parse HEAD)"
     rc=0
     "${cli[@]}" "$base" nonexistent-commit > "$tmp/out" 2> "$tmp/err" || rc=$?
-    [ "$rc" -eq 2 ] && [ "$before" = "$(git -C "$tmp" rev-parse HEAD)" ]
+    [ "$rc" -eq 2 ]
+    [ ! -s "$tmp/out" ]
+    [ "$before" = "$(git -C "$tmp" rev-parse HEAD)" ]
     touch "$tmp/refresh-fail"
     rc=0
     "${cli[@]}" "$base" "$good" > "$tmp/out" 2> "$tmp/err" || rc=$?
@@ -160,12 +164,47 @@ FIXTURE
     [ "$(git -C "$tmp" rev-list --count "$base..HEAD")" -eq 1 ]
     [ "$(git -C "$tmp" show-ref)" = "$refs" ]
     echo 'SELFTEST PASS: duplicate nonempty pick becomes empty without replay'
+    # Fixture-only checker overrides must never qualify the selected tree.
+    local override
+    override="$(mktemp -d "$tmp/build/override.XXXXXX")"
+    printf 'int unrelated(int x) { return x; }\n' > "$override/fixture.c"
+    : > "$override/baseline"
+    ZCL_CYCLOMATIC_ROOT="$override" ZCL_CYCLOMATIC_BASELINE="$override/baseline" \
+        "${cli[@]}" "$base" "$complex" > "$tmp/out" 2> "$tmp/err"
+    grep -qx "SKIPPED complexity input=$complex" "$tmp/out"
+    grep -qx "TIP $base" "$tmp/out"
+    grep -qx 'int fixture(int x) { return x; }' "$tmp/fixture.c"
+    [ "$(git -C "$tmp" rev-parse HEAD)" = "$base" ]
+    before="$(grep -c '^refresh$' "$tmp/trace")"
+    rc=0
+    ZCL_CYCLOMATIC_ROOT="$override" ZCL_CYCLOMATIC_BASELINE="$override/baseline" \
+        "${cli[@]}" "$complex" "$merge" > "$tmp/out" 2> "$tmp/err" || rc=$?
+    [ "$rc" -eq 2 ]
+    if grep -q '^TIP ' "$tmp/out"; then return 1; fi
+    [ "$before" = "$(grep -c '^refresh$' "$tmp/trace")" ]
+    echo 'SELFTEST PASS: inherited checker overrides cannot admit pick or failing base'
+    # The refresh implementation belongs to the starting tool, not BASE.
+    git -C "$tmp" checkout -q --detach "$base"
+    git -C "$tmp" rm -q tools/scripts/stack_tip_refresh.sh
+    git -C "$tmp" -c commit.gpgSign=false commit -qm 'Fixture base without refresh'
+    local nohelper
+    nohelper="$(git -C "$tmp" rev-parse HEAD)"
+    git -C "$tmp" checkout -q --detach "$base"
+    before="$(grep -c '^refresh$' "$tmp/trace")"
+    "${cli[@]}" "$nohelper" "$merge" > "$tmp/out" 2> "$tmp/err"
+    grep -qx "TIP $nohelper" "$tmp/out"
+    [ "$(grep -c '^refresh$' "$tmp/trace")" -eq "$((before + 1))" ]
+    [ ! -e "$tmp/tools/scripts/stack_tip_refresh.sh" ]
+    [ -z "$(git -C "$tmp" status --porcelain=v1)" ]
+    git -C "$tmp" checkout -q --detach "$base"
+    echo 'SELFTEST PASS: retained refresh runs after selecting base without helper'
     # Fixture-only broken signer: preserve staged input, never label it empty.
     git -C "$tmp" config gpg.ssh.program false
     git -C "$tmp" config gpg.program false
     rc=0
     "${cli[@]}" "$base" "$good" > "$tmp/out" 2> "$tmp/err" || rc=$?
-    [ "$rc" -eq 2 ] && [ ! -s "$tmp/out" ]
+    [ "$rc" -eq 2 ]
+        [ ! -s "$tmp/out" ]
     if git -C "$tmp" diff --cached --quiet; then return 1; fi
     [ "$(git -C "$tmp" show-ref)" = "$refs" ]
     echo 'SELFTEST PASS: signing failure stops with staged state, no skip/fallback'
@@ -183,7 +222,7 @@ build_stack() {
         exec bash tools/dev/checkout-lock.sh foreground build/.checkout.lock -- \
             bash "$ROOT/tools/scripts/stack_build.sh" "$@"
     fi
-    local dirty state manifest base c before rc log scratch
+    local dirty state manifest base c before rc log scratch refresh_source
     local -a commits=() parents=()
     dirty="$(git status --porcelain=v1 --untracked-files=all)" || fail 'cannot inspect cleanliness'
     [ -z "$dirty" ] || fail 'refusing dirty checkout; preserve and resolve owned work first'
@@ -195,12 +234,17 @@ build_stack() {
         [ ! -e "$(git rev-parse --git-path "$state")" ] || fail "refusing existing Git operation: $state"
     done
     [ "${ZCL_LINT_MODE:-RATCHET}" = RATCHET ] || fail 'complexity filtering requires RATCHET mode'
+    # Fixture overrides must not change the source or pins being qualified.
+    unset ZCL_CYCLOMATIC_ROOT ZCL_CYCLOMATIC_BASELINE
     base="$(git rev-parse --verify --end-of-options "$1^{commit}" 2>/dev/null)" || fail 'invalid base commit'
     shift
     for c in "$@"; do
         c="$(git rev-parse --verify --end-of-options "$c^{commit}" 2>/dev/null)" || fail 'invalid input commit'
         commits+=("$c")
     done
+    # Keep the starting tool's helper even when BASE removes its pathname.
+    refresh_source="$(cat "$ROOT/tools/scripts/stack_tip_refresh.sh")" || fail 'cannot retain refresh implementation'
+    [ -n "$refresh_source" ] || fail 'empty refresh implementation'
     mkdir -p build/handoff/stack-build
     scratch="$(mktemp -d build/handoff/stack-build/run.XXXXXX)"
     printf 'stack-build: receipts %s\n' "$scratch" >&2
@@ -261,7 +305,7 @@ build_stack() {
     fi
     # Refresh owns numeric correction signing and leaves other generated changes
     # for ownership/diff review. Its content display is never a staging list.
-    bash tools/scripts/stack_tip_refresh.sh >&2
+    bash -c "$refresh_source" "$ROOT/tools/scripts/stack_tip_refresh.sh" >&2
     printf 'TIP %s\n' "$(git rev-parse HEAD)"
 }
 build_stack "$@"

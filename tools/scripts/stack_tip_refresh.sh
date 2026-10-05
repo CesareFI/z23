@@ -3,7 +3,9 @@
 # Refresh stack-tip projections in dependency order using canonical generators.
 set -Eeuo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# A stack caller may retain this source before checkout removes its pathname.
+# In that case bash -c supplies the original repository pathname as argv[0].
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd)"
 MODE=refresh
 case "${1:-}" in
     '') ;;
