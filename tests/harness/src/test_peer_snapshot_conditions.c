@@ -289,7 +289,9 @@ int test_peer_snapshot_conditions(void)
 
         condition_engine_tick();
         ok = ok && sync_violation_lag_test_remedy_calls() == 0;
-        fake_clock_set(&clock, 3601);
+        /* Sustained-lag recovery is elapsed process time, even if wall time
+         * moves backward while the peer-reported gap remains unchanged. */
+        fake_clock_set_split(&clock, 3601, 2500);
         condition_engine_tick();
         ok = ok && sync_violation_lag_test_remedy_calls() == 1;
         ok = ok && peer.disconnect;

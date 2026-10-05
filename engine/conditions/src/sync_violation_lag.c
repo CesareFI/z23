@@ -19,7 +19,7 @@
 #define SYNC_VIOLATION_SECS 600
 #define SYNC_VIOLATION_COOLDOWN_SECS 3600
 
-static _Atomic int64_t g_first_seen_unix;
+static _Atomic int64_t g_first_seen_time;
 static _Atomic int64_t g_last_attempt_unix;
 static _Atomic int g_last_local_seen;
 static _Atomic int g_local_tip_at_detect;
@@ -36,7 +36,7 @@ static bool detect_sync_violation_lag(void)
     struct connman *cm = sync_monitor_connman();
     struct main_state *ms = sync_monitor_main_state();
     if (!cm || !ms) {
-        atomic_store(&g_first_seen_unix, 0);
+        atomic_store(&g_first_seen_time, 0);
         return false;
     }
 
@@ -44,22 +44,22 @@ static bool detect_sync_violation_lag(void)
     int peer_max = connman_max_peer_height(cm);
     int gap = peer_max - local;
     if (peer_max <= 0 || local < 0 || gap <= SYNC_VIOLATION_GAP) {
-        atomic_store(&g_first_seen_unix, 0);
+        atomic_store(&g_first_seen_time, 0);
         atomic_store(&g_last_local_seen, local);
         return false;
     }
 
-    int64_t now = platform_time_wall_unix();
+    int64_t now = platform_time_monotonic_us() / INT64_C(1000000);
     int last_local = atomic_load(&g_last_local_seen);
     if (last_local != local) {
         atomic_store(&g_last_local_seen, local);
-        atomic_store(&g_first_seen_unix, now);
+        atomic_store(&g_first_seen_time, now);
         return false;
     }
 
-    int64_t first = atomic_load(&g_first_seen_unix);
+    int64_t first = atomic_load(&g_first_seen_time);
     if (first == 0) {
-        atomic_store(&g_first_seen_unix, now);
+        atomic_store(&g_first_seen_time, now);
         return false;
     }
     int64_t age = now - first;
@@ -151,7 +151,7 @@ void register_sync_violation_lag(void)
 #ifdef ZCL_TESTING
 void sync_violation_lag_test_reset(void)
 {
-    atomic_store(&g_first_seen_unix, 0);
+    atomic_store(&g_first_seen_time, 0);
     atomic_store(&g_last_attempt_unix, 0);
     atomic_store(&g_last_local_seen, -1);
     atomic_store(&g_local_tip_at_detect, -1);
