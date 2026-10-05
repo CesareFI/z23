@@ -167,15 +167,25 @@ static void value_done(zjsonp *p) {
   p->expect_key |= 1u << lvl; /* object: back to expecting a key */
 }
 
+/* Keep new state checks outside the existing over-cap parser body. */
+static bool parser_ready(const zjsonp *p, const zjsonp_event *ev) {
+  return ev && !p->failed;
+}
+
+static zjsonp_status syntax_failure(zjsonp *p) {
+  p->failed = true;
+  return ZJRP_SYNTAX;
+}
+
 zjsonp_status zjsonp_next(zjsonp *p, zjsonp_event *ev) {
-  if (!p || !ev)
+  if (!p || !parser_ready(p, ev))
     return ZJRP_SYNTAX;
 
   skip_ws(p);
 
   /* Complete document: only trailing whitespace may follow. */
   if (p->top_done && p->depth == 0)
-    return p->pos == p->len ? ZJRP_DONE : ZJRP_SYNTAX;
+    return p->pos == p->len ? ZJRP_DONE : syntax_failure(p);
 
   /* Container close? */
   if (p->depth > 0 && p->pos < p->len &&
@@ -184,11 +194,11 @@ zjsonp_status zjsonp_next(zjsonp *p, zjsonp_event *ev) {
     bool is_arr = (p->is_array >> lvl) & 1u;
     char c = p->text[p->pos];
     if (is_arr != (c == ']'))
-      return ZJRP_SYNTAX; /* mismatched bracket */
+      return syntax_failure(p); /* mismatched bracket */
     if ((p->after_comma >> lvl) & 1u)
-      return ZJRP_SYNTAX; /* trailing comma */
+      return syntax_failure(p); /* trailing comma */
     if (!is_arr && !((p->expect_key >> lvl) & 1u))
-      return ZJRP_SYNTAX; /* key with no value */
+      return syntax_failure(p); /* key with no value */
     p->pos++;
     p->depth--;
     ev->kind = is_arr ? ZJRP_ARR_CLOSE : ZJRP_OBJ_CLOSE;
@@ -204,16 +214,16 @@ zjsonp_status zjsonp_next(zjsonp *p, zjsonp_event *ev) {
     if (!((p->is_array >> lvl) & 1u) && ((p->expect_key >> lvl) & 1u)) {
       if (!((p->first >> lvl) & 1u)) {
         if (p->pos >= p->len || p->text[p->pos] != ',')
-          return ZJRP_SYNTAX;
+          return syntax_failure(p);
         p->pos++;
         p->after_comma |= 1u << lvl;
         skip_ws(p);
       }
       if (p->pos >= p->len || p->text[p->pos] != '"')
-        return ZJRP_SYNTAX;
+        return syntax_failure(p);
       size_t off = 0, len = 0;
       if (!scan_string(p, &off, &len))
-        return ZJRP_SYNTAX;
+        return syntax_failure(p);
       p->expect_key &= ~(1u << lvl);
       ev->kind = ZJRP_KEY;
       ev->off = off;
@@ -223,9 +233,9 @@ zjsonp_status zjsonp_next(zjsonp *p, zjsonp_event *ev) {
   }
 
   if (!value_preamble(p))
-    return ZJRP_SYNTAX;
+    return syntax_failure(p);
   if (p->pos >= p->len)
-    return ZJRP_SYNTAX; /* truncated input */
+    return syntax_failure(p); /* truncated input */
 
   char c = p->text[p->pos];
   ev->off = p->pos;
@@ -253,7 +263,7 @@ zjsonp_status zjsonp_next(zjsonp *p, zjsonp_event *ev) {
   case '"': {
     size_t off = 0, len = 0;
     if (!scan_string(p, &off, &len))
-      return ZJRP_SYNTAX;
+      return syntax_failure(p);
     ev->kind = ZJRP_STR;
     ev->off = off;
     ev->len = len;
@@ -262,21 +272,21 @@ zjsonp_status zjsonp_next(zjsonp *p, zjsonp_event *ev) {
   }
   case 't':
     if (!match_literal(p, "true", 4))
-      return ZJRP_SYNTAX;
+      return syntax_failure(p);
     ev->kind = ZJRP_BOOL;
     ev->len = 4;
     value_done(p);
     return ZJRP_OK;
   case 'f':
     if (!match_literal(p, "false", 5))
-      return ZJRP_SYNTAX;
+      return syntax_failure(p);
     ev->kind = ZJRP_BOOL;
     ev->len = 5;
     value_done(p);
     return ZJRP_OK;
   case 'n':
     if (!match_literal(p, "null", 4))
-      return ZJRP_SYNTAX;
+      return syntax_failure(p);
     ev->kind = ZJRP_NULL;
     ev->len = 4;
     value_done(p);
@@ -284,7 +294,7 @@ zjsonp_status zjsonp_next(zjsonp *p, zjsonp_event *ev) {
   default: {
     size_t n = scan_number(p);
     if (n == 0)
-      return ZJRP_SYNTAX;
+      return syntax_failure(p);
     ev->kind = ZJRP_NUM;
     ev->len = n;
     value_done(p);

@@ -67,6 +67,7 @@ typedef struct {
   uint32_t after_comma; /* bit i: a separator was consumed but no
                            element followed (trailing-comma trap) */
   bool top_done;
+  bool failed; /* sticky syntax failure; cleared only by init */
 } zjsonp;
 
 /* Initialize a parser over text[0..len). text may be NULL when len

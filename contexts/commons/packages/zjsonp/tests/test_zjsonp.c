@@ -422,11 +422,23 @@ static int test_fuzz(void) {
   return 0;
 }
 
+static int test_terminal_syntax(void) {
+  const char doc[] = "{\"\xff\"\"valid\":1}";
+  zjsonp p;
+  zjsonp_event ev;
+  zjsonp_init(&p, doc, sizeof doc - 1);
+  if (zjsonp_next(&p, &ev) != ZJRP_OK ||
+      zjsonp_next(&p, &ev) != ZJRP_SYNTAX) return 1;
+  CHECK(zjsonp_next(&p, &ev) == ZJRP_SYNTAX);
+  return 0;
+}
+
 int main(void) {
   struct {
     const char *name;
     int (*fn)(void);
   } tests[] = {
+      {"terminal_syntax", test_terminal_syntax},
       {"kat", test_kat},       {"syntax_errors", test_syntax_errors},
       {"utf8", test_utf8},     {"decode", test_decode},
       {"decode_raw_utf8", test_decode_raw_utf8},
