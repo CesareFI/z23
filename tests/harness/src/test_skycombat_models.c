@@ -10,7 +10,7 @@
  *
  * Shape follows tests/harness/src/test_arena_view.c: the model sources are
  * #included into this translation unit rather than linked, so the group needs
- * no new object in the node's link set. That also means these two files are
+ * no new object in the node's link set. The included model sources are
  * compiled at the NODE flag set, -Wdouble-promotion and all, not at the looser
  * application set apps/ uses - which is a stronger bar than `make game-check`
  * holds them to.
@@ -23,7 +23,8 @@
  * draw do nothing. If the models ever start calling an eighth, the link fails
  * and names it, which is the point of stubbing exactly this list.
  *
- * Pure and deterministic: no clock, no RNG, no I/O, no live DB. */
+ * Deterministic models use no live clock, RNG, devices or DB. The document
+ * oracle reads only docs/GAME.md as a bounded public source fixture. */
 
 #include "test/test_core.h"
 
@@ -266,6 +267,42 @@ _test_next:;
     return failures;
 }
 
+/* The launch document is a public source fixture, not a session or live store. */
+static int skycombat_document_tests(void)
+{
+    int failures = 0;
+    FILE *f = fopen("docs/GAME.md", "r");
+    ASSERT(f != NULL);
+    char prose[16384] = {0}, line[512];
+    size_t used = 0;
+    bool fenced = false, bounded = true;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "```", 3) == 0) { fenced = !fenced; continue; }
+        if (fenced) continue;
+        size_t n = strlen(line);
+        if (n >= sizeof(prose) - used) { bounded = false; break; }
+        memcpy(prose + used, line, n); used += n;
+    }
+    bool read_ok = !ferror(f);
+    int close_result = fclose(f); f = NULL;
+    TEST("game documentation: playable topology and match lifecycle are explicit") {
+        ASSERT(bounded && read_ok && close_result == 0);
+        ASSERT(strstr(prose, "one local player") != NULL);
+        ASSERT(strstr(prose, "four AI aircraft") != NULL);
+        ASSERT(strstr(prose, "single view") != NULL);
+        ASSERT(strstr(prose, "The match starts once") != NULL);
+        ASSERT(strstr(prose, "scores freeze") != NULL);
+        ASSERT(strstr(prose, "Building entry is not yet wired") != NULL);
+        ASSERT(strstr(prose, "five-player split-screen") == NULL);
+        ASSERT(strstr(prose, "enterable buildings") == NULL);
+        ASSERT(strstr(prose, "fleetgame1") == NULL);
+        ASSERT(strstr(prose, "never starts the match") == NULL); PASS();
+    }
+_test_next:;
+    if (f) fclose(f);
+    return failures;
+}
+
 int test_skycombat_models(void);
 int test_skycombat_models(void)
 {
@@ -470,6 +507,7 @@ _test_next:;
     failures += skycombat_match_lifecycle_tests();
     failures += skycombat_match_bounds_tests();
     failures += skycombat_pickup_tests();
+    failures += skycombat_document_tests();
     failures += skycombat_gun_pattern_tests();
     if (failures == 0)
         printf("test_skycombat_models: all passed\n");
