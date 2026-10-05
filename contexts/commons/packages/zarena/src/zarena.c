@@ -18,12 +18,14 @@ void *zarena_alloc(zarena *a, size_t size, size_t align)
 
     if (!a->buf || !is_pow2(align))
         return NULL;
+    if (size == 0)
+        size = 1;
     base = (size_t)a->buf + a->used;
     aligned = (base + (align - 1)) & ~(align - 1);
     size_t off = aligned - (size_t)a->buf;
     if (off > a->cap || size > a->cap - off)
         return NULL;
-    a->used = off + (size ? size : 1);
+    a->used = off + size;
     return (void *)aligned;
 }
 

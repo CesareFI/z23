@@ -90,6 +90,41 @@ static void test_zero_size(void)
     check(zarena_used(&a) >= 1, "zero-size advances frontier");
 }
 
+static void test_zero_size_bounds(void)
+{
+    unsigned char byte[1];
+    zarena a;
+    zarena_init(&a, byte, sizeof byte);
+    check(zarena_alloc(&a, 1, 1) == byte, "fill one-byte arena");
+    check(zarena_alloc(&a, 0, 1) == NULL, "zero-size exhausted arena fails");
+    check(zarena_used(&a) == 1, "failed zero-size preserves frontier");
+    check(zarena_remaining(&a) == 0, "failed zero-size preserves remaining");
+
+    zarena_clear(&a);
+    check(zarena_alloc(&a, 0, 1) == byte, "zero-size uses available byte");
+    check(zarena_used(&a) == 1 && zarena_remaining(&a) == 0,
+          "zero-size consumes exactly one byte");
+    check(zarena_alloc(&a, 0, 1) == NULL, "second zero-size allocation fails");
+    check(zarena_used(&a) == 1, "repeated exhaustion preserves frontier");
+
+    _Alignas(16) unsigned char aligned[17];
+    zarena_init(&a, aligned, 16);
+    check(zarena_alloc(&a, 1, 1) == aligned, "alignment prefix allocation");
+    check(zarena_alloc(&a, 0, 16) == NULL,
+          "alignment padding leaves no minimal allocation space");
+    check(zarena_used(&a) == 1 && zarena_remaining(&a) == 15,
+          "alignment exhaustion preserves frontier and remaining");
+    zarena_init(&a, aligned, sizeof aligned);
+    check(zarena_alloc(&a, 1, 1) == aligned, "exact alignment prefix");
+    check(zarena_alloc(&a, 0, 16) == aligned + 16,
+          "aligned zero-size exact fit");
+    check(zarena_used(&a) == 17 && zarena_remaining(&a) == 0,
+          "exact fit includes alignment padding and minimal byte");
+    check(zarena_alloc(&a, 0, 1) == NULL, "aligned arena exhausted");
+    check(zarena_used(&a) == 17 && zarena_remaining(&a) == 0,
+          "aligned exhaustion leaves state unchanged");
+}
+
 int main(void)
 {
     test_basic_and_alignment();
@@ -97,6 +132,7 @@ int main(void)
     test_mark_rewind();
     test_bad_args();
     test_zero_size();
+    test_zero_size_bounds();
     if (failures) {
         fprintf(stderr, "%d failure(s)\n", failures);
         return 1;
