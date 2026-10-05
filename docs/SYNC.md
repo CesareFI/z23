@@ -144,10 +144,32 @@ that limit and makes the transfer resumable across peers.
 `-profile=zclassic-only` is intended for power nodes whose job is to sync other
 nodes quickly. Today it keeps consensus state, P2P, RPC, FlyClient/MMB proof
 serving, and normal block relay; snapshot offer construction and payload serving
-remain contained until the `coins_kv` payload-binding gate exists. It does not start explorer
-cache prewarming, store/market services, onion hosting (which a full build starts
-unless `-no-tor` is passed), or
-file-service snapshot export and chunk/block-piece manifests.
+remain contained until the `coins_kv` payload-binding gate exists. It does not
+start explorer cache prewarming, store/market services, or file-service chunk
+manifests (`engine/composition/src/app_context.c:193-206,214-218`;
+`engine/composition/src/boot_snapshot_offer.c:411-412,583-598`).
+Consensus snapshot export has no file-service profile check. In the offer
+worker, reaching the export block requires a non-empty datadir,
+`ZCL_PUBLISH_FASTSYNC_ON_BOOT` enabled, and a successful
+`snapshot_offer_state_is_sovereign_at` check
+(`engine/composition/src/boot_snapshot_offer.c:406-436`). In non-test builds,
+the payload-authority check returns false, so no profile reaches that block
+(`engine/composition/src/boot_snapshot_offer.c:208-223,325-339`). If reached,
+the block attempts export unless `ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT` is
+exactly `0`; the bound export call also requires reading the sovereign block
+hash (`engine/composition/src/boot_snapshot_offer.c:451-478`). Enabling
+fast-sync publication accepts `1`, `true`, `yes`, or `on`
+(`engine/composition/src/boot_snapshot_offer.c:108-116`). Block-piece swarm
+publication is separate: offer-worker startup has no profile check, but is
+deferred in bootstrap receiver mode or when headers lead the active chain by
+more than 1000 blocks (`engine/composition/src/boot_services.c:1296-1312`).
+The worker attempts block-piece publication on its default path, without a
+file-service profile check (`engine/composition/src/boot_snapshot_offer.c:411-425`).
+Publication requires enough bodies, header lag within the swarm limit, a
+non-empty datadir, and a successful active-chain manifest build
+(`engine/composition/src/boot_snapshot_offer.c:119-163`). Real-Tor builds start
+onion hosting regardless of profile unless `-no-tor` is passed; that flag is
+refused on canonical, soak, and standby lanes.
 
 Full, onion-node, and legacy-compat profiles keep the broader app surfaces. The
 explorer profile keeps explorer APIs and cache prewarming but still avoids store
