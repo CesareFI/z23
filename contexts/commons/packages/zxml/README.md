@@ -20,7 +20,7 @@ and misuse is a named sticky error — never malformed output.
   attribute values, become the five predefined entities.
 - **Input validation:** text, attribute values, and comments must be
   well-formed UTF-8 (checked with [zutf8](../zutf8)) and free of control
-  bytes other than tab/newline/return; `--` is rejected in comments.
+  bytes other than tab/newline/return; `--` and a trailing `-` are rejected in comments.
   Invalid input is rejected (`ZXML_ERR_UTF8` / `ZXML_ERR_TEXT`), never
   emitted.
 - **Names:** `[A-Za-z_][A-Za-z0-9._:-]*`, ≤ 63 bytes (`ZXML_ERR_NAME`).

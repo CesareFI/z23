@@ -218,6 +218,12 @@ zxml_status zxml_text(zxml *x, const char *text) {
   return zxml_text_n(x, text, text ? strlen(text) : 0);
 }
 
+/* The closing delimiter must not form an illegal '--' with the text. */
+static bool comment_invalid(const char *text) {
+  size_t len = strlen(text);
+  return strstr(text, "--") != NULL || (len != 0 && text[len - 1] == '-');
+}
+
 zxml_status zxml_comment(zxml *x, const char *text) {
   if (!x)
     return ZXML_ERR_STATE;
@@ -230,8 +236,8 @@ zxml_status zxml_comment(zxml *x, const char *text) {
   zxml_status st = check_text(text, strlen(text));
   if (st != ZXML_OK)
     return (x->err = st);
-  if (strstr(text, "--"))
-    return (x->err = ZXML_ERR_TEXT); /* "--" is illegal in comments */
+  if (comment_invalid(text))
+    return (x->err = ZXML_ERR_TEXT); /* internal or delimiter-adjacent "--" */
   st = close_tag(x);
   if (st != ZXML_OK)
     return st;

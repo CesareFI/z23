@@ -344,7 +344,23 @@ static void test_rss_item_golden(void) {
          want);
 }
 
+/* A comment's last byte cannot join its closing '-->' delimiter. */
+static void test_comment_tail(void) {
+  static const char *const rows[] = {"-", "note-"};
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    SINK(s);
+    zxml x;
+    zxml_open(&x, sink_write, &s, ZXML_COMPACT);
+    zxml_status opened = zxml_elem_open(&x, "r");
+    zxml_status result = zxml_comment(&x, rows[i]);
+    CHECK(opened == ZXML_OK && result == ZXML_ERR_TEXT &&
+          zxml_elem_close(&x) == ZXML_ERR_TEXT &&
+          s.len == 2 && memcmp(s.buf, "<r", 2) == 0);
+  }
+}
+
 int main(void) {
+  test_comment_tail();
   test_nesting();
   test_attributes();
   test_text_escaping();
