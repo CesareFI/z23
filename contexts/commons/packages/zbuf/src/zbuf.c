@@ -99,10 +99,42 @@ zbuf_err zbuf_str(zbuf *b, const char *cstr) {
   return zbuf_write(b, cstr, strlen(cstr));
 }
 
+static zbuf_err zbuf__append_format(zbuf *b, const char *fmt,
+                                    va_list ap, int need) {
+  zbuf_err e;
+  if (b->max == SIZE_MAX || b->len > b->max ||
+      (size_t)need > b->max - b->len) {
+    b->err = ZBUF_ERR_FULL;
+    return b->err;
+  }
+  /* Render before growing: fmt and string arguments may borrow b->data. */
+  char local[256];
+  char *text = local;
+  if ((size_t)need >= sizeof local) {
+    text = malloc((size_t)need + 1); // raw-alloc-ok:bounded-format-snapshot
+    if (text == NULL) {
+      b->err = ZBUF_ERR_OOM;
+      return b->err;
+    }
+  }
+  int written = vsnprintf(text, (size_t)need + 1, fmt, ap);
+  if (written != need) {
+    if (text != local) free(text);
+    b->err = ZBUF_ERR_FULL;
+    return b->err;
+  }
+  e = zbuf__reserve(b, (size_t)need);
+  if (e == ZBUF_OK) {
+    memcpy(b->data + b->len, text, (size_t)need + 1);
+    b->len += (size_t)need;
+  }
+  if (text != local) free(text);
+  return e;
+
+}
 zbuf_err zbuf_vprintf(zbuf *b, const char *fmt, va_list ap) {
   va_list aq;
   int need;
-  zbuf_err e;
   if (b == NULL || fmt == NULL) return zbuf__invalid(b);
   if (b->err != ZBUF_OK) return b->err;
   va_copy(aq, ap);
@@ -112,11 +144,7 @@ zbuf_err zbuf_vprintf(zbuf *b, const char *fmt, va_list ap) {
     b->err = ZBUF_ERR_FULL;
     return b->err;
   }
-  e = zbuf__reserve(b, (size_t)need);
-  if (e != ZBUF_OK) return e;
-  vsnprintf((char *)b->data + b->len, b->cap - b->len, fmt, ap);
-  b->len += (size_t)need;
-  return ZBUF_OK;
+  return zbuf__append_format(b, fmt, ap, need);
 }
 
 zbuf_err zbuf_printf(zbuf *b, const char *fmt, ...) {

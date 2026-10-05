@@ -55,7 +55,8 @@ zbuf_err zbuf_write(zbuf *b, const void *data, size_t n);
 zbuf_err zbuf_str(zbuf *b, const char *cstr);
 
 /* printf-style append. A format failure or truncation past `max`
- * sticks ZBUF_ERR_FULL. */
+ * sticks ZBUF_ERR_FULL. Format and string arguments may borrow buffer
+ * storage; rendering completes before growth invalidates them. */
 zbuf_err zbuf_printf(zbuf *b, const char *fmt, ...);
 zbuf_err zbuf_vprintf(zbuf *b, const char *fmt, va_list ap);
 

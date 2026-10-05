@@ -207,7 +207,45 @@ static void test_sticky_invalid_arguments(void) {
   CHECK(!failed);
 }
 
+static void test_format_own_string(void) {
+  const size_t sizes[] = {32, 300};
+  for (size_t row = 0; row < sizeof sizes / sizeof sizes[0]; row++) {
+    zbuf b;
+    char seed[300];
+    size_t n = sizes[row] - 1;
+    memset(seed, row ? 'b' : 'c', n);
+    seed[n] = 0;
+    CHECK(zbuf_init(&b, 1024) == ZBUF_OK);
+    CHECK(zbuf_str(&b, seed) == ZBUF_OK);
+    CHECK(b.data != NULL && b.cap >= n + 2);
+    if (!b.data || b.cap < n + 2) { zbuf_free(&b); continue; }
+    zbuf_clear(&b);
+    CHECK(zbuf_printf(&b, "X%s", (const char *)b.data) == ZBUF_OK);
+    CHECK(b.len == n + 1 && b.cap >= n + 2);
+    if (b.len == n + 1 && b.cap >= n + 2) {
+      CHECK(b.data[0] == 'X' && memcmp(b.data + 1, seed, n) == 0);
+      CHECK(b.data[n + 1] == 0);
+    }
+    zbuf_free(&b);
+  }
+}
+
+static void test_refused_borrowed_format(void) {
+  zbuf b;
+  CHECK(zbuf_init(&b, 15) == ZBUF_OK);
+  CHECK(zbuf_str(&b, "123456789012345") == ZBUF_OK);
+  if (!b.data || b.len != 15 || b.cap < 16) { zbuf_free(&b); return; }
+  unsigned char *data = b.data;
+  size_t cap = b.cap;
+  CHECK(zbuf_printf(&b, "%s", (const char *)b.data) == ZBUF_ERR_FULL);
+  CHECK(b.data == data && b.cap == cap && b.len == 15);
+  if (b.data == data && b.cap >= 16 && b.len == 15)
+    CHECK(memcmp(b.data, "123456789012345", 16) == 0);
+  zbuf_free(&b);
+}
 int main(void) {
+  test_format_own_string();
+  test_refused_borrowed_format();
     test_sticky_invalid_arguments();
 
   test_maximum();
@@ -223,6 +261,6 @@ int main(void) {
     fprintf(stderr, "test_zbuf: FAILURES\n");
     return 1;
   }
-  printf("test_zbuf: all groups passed (basic printf bound sticky null fuzz)\n");
+  printf("test_zbuf: all groups passed (basic printf bound sticky null fuzz borrowed_format refusal)\n");
   return 0;
 }
