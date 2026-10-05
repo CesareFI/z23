@@ -64,21 +64,29 @@ static ssize_t fixture_read(int fd,void *out,size_t size) {
 int test_skycombat_input(void);
 int test_skycombat_input(void) {
     int failures = 0;
+    input_controller_fast_t *c=NULL;
     opens=closes=reads=ioctls=0;
 #ifdef __linux__
     fixture_fd=-1; fail_malloc=false; emit_event=false; fixture_event_value=16384;
 #endif
     input_model_fast_t model,before;
     input_model_fast_init(&model);
+#ifndef __linux__
+    model.connected=true;
+    model.is_astro_c40=true;
+#endif
     ASSERT(input_controller_fast_create(NULL)==NULL);
     input_controller_fast_destroy(NULL); input_controller_fast_update(NULL);
     input_controller_fast_set_batching(NULL,true,3);
-    input_controller_fast_t *c=input_controller_fast_create(&model);
+    c=input_controller_fast_create(&model);
     ASSERT(c != NULL); ASSERT_EQ(c->fd,-1);
     ASSERT(!model.connected); ASSERT(!c->event_buffer); ASSERT(!c->use_event_batching);
+#ifndef __linux__
+    ASSERT(!model.is_astro_c40);
+#endif
     memcpy(&before,&model,sizeof(model)); input_controller_fast_update(c);
     ASSERT(!memcmp(&before,&model,sizeof(model)));
-    input_controller_fast_destroy(c);
+    input_controller_fast_destroy(c); c=NULL;
     ASSERT_EQ(closes,0); ASSERT_EQ(reads,0); ASSERT_EQ(ioctls,0);
 #ifdef __linux__
     ASSERT(opens==1);
@@ -95,25 +103,34 @@ int test_skycombat_input(void) {
     ASSERT_EQ(model.frame_count,2); ASSERT(model.connected);
     fail_malloc=true; input_controller_fast_set_batching(c,true,3);
     ASSERT(!c->event_buffer); ASSERT(!c->use_event_batching); ASSERT_EQ(c->buffer_size,0);
-    input_controller_fast_destroy(c); ASSERT(closes==1);
+    input_controller_fast_destroy(c); c=NULL; ASSERT(closes==1);
     c=input_controller_fast_create(&model);
     ASSERT(c != NULL); ASSERT(model.connected);
     ASSERT(!c->event_buffer); ASSERT(!c->use_event_batching); ASSERT_EQ(c->buffer_size,0);
-    input_controller_fast_destroy(c); ASSERT(closes==2);
+    input_controller_fast_destroy(c); c=NULL; ASSERT(closes==2);
     puts("PASS whole Linux controller: null/no-device/fd0/batched/single/allocation-refusal lifecycle; intercepted OS device ports only");
 #else
     ASSERT(opens==0);
+    model.connected=true;
+    model.is_astro_c40=true;
     c=input_controller_fast_create(&model); ASSERT(c != NULL); ASSERT_EQ(c->fd,-1);
     ASSERT(!model.connected); ASSERT(!model.is_astro_c40);
     memcpy(&before,&model,sizeof(model));
-    input_controller_fast_set_batching(c,true,64); input_controller_fast_set_batching(c,false,0);
+    c->use_event_batching=true; c->buffer_size=3;
+    input_controller_fast_set_batching(c,true,64);
+    ASSERT(!c->event_buffer); ASSERT(!c->use_event_batching); ASSERT_EQ(c->buffer_size,0);
+    c->use_event_batching=true; c->buffer_size=3;
+    input_controller_fast_set_batching(c,false,0);
     ASSERT(!c->event_buffer); ASSERT(!c->use_event_batching); ASSERT_EQ(c->buffer_size,0);
     input_controller_fast_update(c); ASSERT(!memcmp(&before,&model,sizeof(model)));
     model.connected=true; input_controller_fast_update(c); ASSERT(!model.connected);
-    input_controller_fast_destroy(c);
+    /* The fixture intercepts this synthetic descriptor; no stdin is closed. */
+    c->fd=0;
+    input_controller_fast_destroy(c); c=NULL;
     ASSERT_EQ(opens,0); ASSERT_EQ(reads,0); ASSERT_EQ(ioctls,0); ASSERT_EQ(closes,0);
     puts("PASS whole unsupported-platform controller: null/no-device/inert-update/batching-refusal/stale-connected-refusal/cleanup; zero device ports");
 #endif
 _test_next:;
+    input_controller_fast_destroy(c);
     return failures;
 }
