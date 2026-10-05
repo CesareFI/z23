@@ -390,18 +390,31 @@ static void ncrawl_on_stall(struct liveness_contract *c)
              (long long)atomic_load(&g_ncrawl.loop_ticks));
 }
 
+static bool ncrawl_round_due(int64_t now_monotonic_us,
+                             int64_t *next_round_monotonic_us,
+                             int interval_secs)
+{
+    if (now_monotonic_us < *next_round_monotonic_us)
+        return false;
+    *next_round_monotonic_us =
+        now_monotonic_us + (int64_t)interval_secs * INT64_C(1000000);
+    return true;
+}
+
 static void *ncrawl_thread_fn(void *arg)
 {
     (void)arg;
-    int64_t next_round_at = 0; /* first round immediately when enabled */
+    int64_t next_round_monotonic_us = 0; /* first round immediately */
     while (!atomic_load(&g_ncrawl.stop_requested)) {
         atomic_fetch_add(&g_ncrawl.loop_ticks, 1);
         ncrawl_heartbeat();
 
-        int64_t now = platform_time_wall_unix();
-        if (g_ncrawl.enabled && now >= next_round_at) {
+        int64_t now_monotonic_us = platform_time_monotonic_us();
+        if (g_ncrawl.enabled &&
+            ncrawl_round_due(now_monotonic_us,
+                             &next_round_monotonic_us,
+                             g_ncrawl.round_interval_secs)) {
             ncrawl_do_round();
-            next_round_at = now + g_ncrawl.round_interval_secs;
         }
         platform_sleep_ms(200); /* responsive stop between rounds */
     }
@@ -649,6 +662,14 @@ bool network_crawler_dump_state_json(struct json_value *out, const char *key)
 }
 
 #ifdef ZCL_TESTING
+bool network_crawler_test_round_due(int64_t now_monotonic_us,
+                                    int64_t *next_round_monotonic_us,
+                                    int interval_secs)
+{
+    return ncrawl_round_due(now_monotonic_us, next_round_monotonic_us,
+                            interval_secs);
+}
+
 void network_crawler_test_reset(void)
 {
     ncrawl_lock();

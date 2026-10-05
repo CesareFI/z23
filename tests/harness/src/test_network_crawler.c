@@ -258,6 +258,22 @@ int test_network_crawler(void)
     int failures = 0;
     printf("network_crawler...\n");
 
+    /* Worker cadence is elapsed-time scheduling. Published census timestamps
+     * remain wall time, but a wall-clock correction must not park the worker. */
+    printf("  round cadence uses a monotonic elapsed-time deadline... ");
+    {
+        int64_t next_us = 0;
+        NC_CHECK(network_crawler_test_round_due(INT64_C(1000000000),
+                                                &next_us, 60));
+        NC_CHECK(next_us == INT64_C(1060000000));
+        NC_CHECK(!network_crawler_test_round_due(INT64_C(1059999999),
+                                                 &next_us, 60));
+        NC_CHECK(network_crawler_test_round_due(INT64_C(1060000000),
+                                                &next_us, 60));
+        NC_CHECK(next_us == INT64_C(1120000000));
+        printf("done\n");
+    }
+
     /* ── 1. pure fold: histograms, splits, height distribution ─────────── */
     printf("  census fold: histogram + split + height distribution... ");
     {

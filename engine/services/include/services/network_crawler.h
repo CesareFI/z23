@@ -234,6 +234,9 @@ bool network_crawler_get_view(struct network_census_view *out);
 bool network_crawler_dump_state_json(struct json_value *out, const char *key);
 
 #ifdef ZCL_TESTING
+bool network_crawler_test_round_due(int64_t now_monotonic_us,
+                                    int64_t *next_round_monotonic_us,
+                                    int interval_secs);
 void network_crawler_test_reset(void);
 void network_crawler_test_set_probe_fn(ncrawl_probe_fn fn);
 void network_crawler_test_set_own_modal(int64_t h);
