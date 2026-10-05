@@ -2,9 +2,10 @@
 # Copyright 2026 Rhett Creighton. Licensed under Apache-2.0.
 # Isolated pre-effect refusal and retained refresh root witnesses.
 set -Eeuo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 for git_env in ${!GIT_@}; do unset "$git_env"; done
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/zcl-stack-git-env.XXXXXX")"
+tmp="$(CDPATH= cd -P -- "$tmp" && pwd -P)"
 trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "Git environment test FAILED exit=$rc" >&2; cat "$tmp/output" >&2 2>/dev/null || true; fi; rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/a/tools/scripts" "$tmp/a/tools/dev" "$tmp/a/tools/lint"
 cp "$ROOT/tools/scripts/stack_build.sh" "$ROOT/tools/scripts/stack_tip_refresh.sh" "$tmp/a/tools/scripts/"
@@ -89,6 +90,30 @@ for entry in stack refresh; do
     printf 'PASS %s on-disk worktree mismatch: exit=2\n' "$entry"
 done
 git --git-dir="$tmp/a/.git" config --unset core.worktree
+# A checkout alias is the same physical tree, for absolute and relative entry
+# paths. Exercise every entry independently so either root fix is necessary.
+ln -s "$tmp/a" "$tmp/link"
+alias_failed=0
+for entry in stack refresh retained; do
+    for spelling in absolute relative; do
+        if [ "$spelling" = absolute ]; then entry_root="$tmp/link"; else entry_root=link; fi
+        case "$entry" in
+            stack) cli=(bash "$entry_root/tools/scripts/stack_build.sh"); expected_rc=2; expected='stack-build: usage: stack_build.sh BASE COMMIT...' ;;
+            refresh) cli=(bash "$entry_root/tools/scripts/stack_tip_refresh.sh" --check); expected_rc=7; expected="registry-root=$tmp/a" ;;
+            retained) cli=(bash -c "$retained" "$entry_root/tools/scripts/stack_tip_refresh.sh" --check); expected_rc=7; expected="registry-root=$tmp/a" ;;
+        esac
+        before="$(state)"
+        rc=0
+        (cd "$tmp"; ZCL_CHECKOUT_LOCK_HELD=1 "${cli[@]}") > "$tmp/output" 2>&1 || rc=$?
+        if [ "$rc" -eq "$expected_rc" ] && grep -Fxq "$expected" "$tmp/output" && [ "$before" = "$(state)" ]; then
+            printf 'PASS %s %s alias: physical root accepted, no recorded state changes\n' "$entry" "$spelling"
+        else
+            printf 'FAIL %s %s alias: expected exit=%s and %s, got exit=%s\n' "$entry" "$spelling" "$expected_rc" "$expected" "$rc" >&2
+            alias_failed=1
+        fi
+    done
+done
+[ "$alias_failed" -eq 0 ]
 # Real retained source must resolve argv[0] back to A and reach A's generator.
 before="$(state)"
 rc=0

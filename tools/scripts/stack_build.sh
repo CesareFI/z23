@@ -2,7 +2,7 @@
 # Copyright 2026 Rhett Creighton. Licensed under Apache-2.0.
 # Build a detached, filtered stack using signed picks and canonical projections.
 set -Eeuo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 cd "$ROOT"
 # Refuse ambient Git routing/configuration before any checkout or index access.
 # Names only: values may contain private paths or configuration.
