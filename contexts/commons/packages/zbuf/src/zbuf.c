@@ -3,6 +3,7 @@
 #include "zbuf/zbuf.h"
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,9 +83,19 @@ static zbuf_err zbuf__reserve(zbuf *b, size_t extra) {
 zbuf_err zbuf_write(zbuf *b, const void *data, size_t n) {
   zbuf_err e;
   if (b == NULL || (data == NULL && n != 0)) return zbuf__invalid(b);
+  size_t offset = 0;
+  bool internal = false;
+  if (n != 0 && b->data != NULL &&
+      (uintptr_t)data >= (uintptr_t)b->data &&
+      (uintptr_t)data - (uintptr_t)b->data < b->cap) {
+    offset = (size_t)((uintptr_t)data - (uintptr_t)b->data);
+    if (n > b->cap - offset) return zbuf__invalid(b);
+    internal = true;
+  }
   e = zbuf__reserve(b, n);
   if (e != ZBUF_OK) return e;
-  if (n != 0) memcpy(b->data + b->len, data, n);
+  if (internal) data = b->data + offset;
+  if (n != 0) memmove(b->data + b->len, data, n);
   b->len += n;
   b->data[b->len] = '\0';
   return ZBUF_OK;

@@ -49,7 +49,8 @@ void zbuf_clear(zbuf *b);
 
 /* Append operations. Allocation/bound errors stick; invalid arguments
  * return ZBUF_ERR_ARG without changing a healthy buffer. An existing
- * sticky error takes precedence and is returned by every later write. */
+ * sticky error takes precedence and is returned by every later write.
+ * write/str may append borrowed buffer bytes, including on growth. */
 zbuf_err zbuf_put(zbuf *b, unsigned char byte);
 zbuf_err zbuf_write(zbuf *b, const void *data, size_t n);
 zbuf_err zbuf_str(zbuf *b, const char *cstr);

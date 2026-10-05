@@ -2,6 +2,8 @@
 /* Tests for zbuf — bounded growable byte buffer.
  * Groups: basic, printf, bound, sticky, null, fuzz. */
 #include "zbuf/zbuf.h"
+#include <stdbool.h>
+#include <stdlib.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -243,7 +245,115 @@ static void test_refused_borrowed_format(void) {
     CHECK(memcmp(b.data, "123456789012345", 16) == 0);
   zbuf_free(&b);
 }
+/* Compile the real implementation under test-local names and an allocator
+ * that uses package-owned storage and retains the poisoned old block. */
+static size_t moving_bytes;
+static zbuf moving_live, moving_retired, format_storage;
+static unsigned moving_relocations;
+
+/* Use the package's ordinary allocation path; each fixture request is bounded. */
+static bool fixture_storage(zbuf *out, size_t bytes) {
+  static const unsigned char zeroes[4096] = {0};
+  if (bytes == 0 || bytes > sizeof zeroes) return false;
+  if (zbuf_init(out, bytes - 1) != ZBUF_OK) return false;
+  if (zbuf_write(out, zeroes, bytes - 1) != ZBUF_OK) {
+    zbuf_free(out);
+    return false;
+  }
+  return out->data != NULL && out->cap >= bytes;
+}
+
+static void *moving_realloc(void *ptr, size_t bytes) {
+  if (ptr != moving_live.data) { CHECK(false); return NULL; }
+  zbuf next = {0};
+  if (!fixture_storage(&next, bytes)) return NULL;
+  if (ptr) {
+    CHECK(next.data != ptr);
+    memcpy(next.data, ptr, moving_bytes < bytes ? moving_bytes : bytes);
+    zbuf_free(&moving_retired);
+    moving_retired = moving_live;
+    /* Keep the old block readable and terminated, but with different bytes. */
+    memset(moving_retired.data, 0xA5, moving_bytes - 1);
+    moving_retired.data[moving_bytes - 1] = 0;
+    moving_relocations++;
+  }
+  moving_live = next;
+  moving_bytes = bytes;
+  return moving_live.data;
+}
+
+static void *fixture_malloc(size_t bytes) {
+  if (format_storage.data) { CHECK(false); return NULL; }
+  return fixture_storage(&format_storage, bytes) ? format_storage.data : NULL;
+}
+
+static void fixture_release(void *ptr) {
+  if (!ptr) return;
+  if (ptr == moving_live.data) {
+    zbuf_free(&moving_live);
+    moving_bytes = 0;
+  } else if (ptr == format_storage.data) {
+    zbuf_free(&format_storage);
+  } else {
+    CHECK(false);
+  }
+}
+
+#define zbuf_err_str fixture_zbuf_err_str
+#define zbuf_init fixture_zbuf_init
+#define zbuf_free fixture_zbuf_free
+#define zbuf_clear fixture_zbuf_clear
+#define zbuf_write fixture_zbuf_write
+#define zbuf_put fixture_zbuf_put
+#define zbuf_str fixture_zbuf_str
+#define zbuf_vprintf fixture_zbuf_vprintf
+#define zbuf_printf fixture_zbuf_printf
+#define zbuf_cstr fixture_zbuf_cstr
+#define zbuf_len fixture_zbuf_len
+#define zbuf_status fixture_zbuf_status
+#define realloc moving_realloc
+#define malloc fixture_malloc
+#define free fixture_release
+#include "../src/zbuf.c"
+#undef free
+#undef malloc
+#undef realloc
+#undef zbuf_err_str
+#undef zbuf_init
+#undef zbuf_free
+#undef zbuf_clear
+#undef zbuf_write
+#undef zbuf_put
+#undef zbuf_str
+#undef zbuf_vprintf
+#undef zbuf_printf
+#undef zbuf_cstr
+#undef zbuf_len
+#undef zbuf_status
+
+static void test_forced_slice_move(void) {
+  zbuf b;
+  unsigned char seed[63];
+  for (size_t i = 0; i < sizeof seed; i++) seed[i] = (unsigned char)('a' + i % 26);
+  moving_relocations = 0;
+  CHECK(fixture_zbuf_init(&b, 256) == ZBUF_OK);
+  CHECK(fixture_zbuf_write(&b, seed, sizeof seed) == ZBUF_OK);
+  if (!b.data) return;
+  CHECK(fixture_zbuf_write(&b, b.data + 13, 50) == ZBUF_OK);
+  CHECK(moving_relocations == 1);
+  if (b.len != 113 || b.cap < 114) {
+    CHECK(b.len == 113 && b.cap >= 114);
+    fixture_zbuf_free(&b);
+    return;
+  }
+  CHECK(b.len == 113 && memcmp(b.data, seed, 63) == 0);
+  CHECK(memcmp(b.data + 63, seed + 13, 50) == 0 && b.data[113] == 0);
+  fixture_zbuf_free(&b);
+}
+
 int main(void) {
+  test_forced_slice_move();
+  zbuf_free(&moving_retired);
   test_format_own_string();
   test_refused_borrowed_format();
     test_sticky_invalid_arguments();
