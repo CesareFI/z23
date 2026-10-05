@@ -2298,6 +2298,75 @@ static bool ic_bytes_equal(const char *path, const void *expected, size_t size)
     return fclose(file) == 0 && ok;
 }
 
+static int test_ic_proof_environment_no_verdict(void)
+{
+    int failures = 0;
+    TEST("proof environment: stale producer has no candidate verdict and preserves attempt") {
+        static const char local[] = "1111111111111111111111111111111111111111";
+        static const char base[] = "2222222222222222222222222222222222222222";
+        static const char candidate[] =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        static const char producer[] =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        char root[4096], state[4096], relative[256], attempt[4096];
+        char archived[4096], reason[128];
+        test_make_tmpdir(root, sizeof(root), "impact_composition", "environment");
+        ASSERT(ic_proof_private_write(root, ".cache/fixture", "isolated producer refusal\n"));
+        ASSERT(!zcl_dev_proof_producer_source_qualified(candidate, producer,
+                                                        reason, sizeof(reason)));
+        ASSERT_STR_EQ(reason, "proof_producer_source_mismatch");
+        ASSERT((size_t)snprintf(state, sizeof(state), "%s/.cache/zcl-dev-proof", root) < sizeof(state));
+        ASSERT((size_t)snprintf(relative, sizeof(relative), "%s-%s.failed", local, base) < sizeof(relative));
+        ASSERT(ic_proof_private_write(state, relative, reason));
+        ASSERT((size_t)snprintf(attempt, sizeof(attempt), "%s/attempts/%s-%s.prior", state, local, base) < sizeof(attempt));
+        ASSERT(ic_proof_private_write(attempt, "logs/failure.txt", reason));
+        ASSERT((size_t)snprintf(archived, sizeof(archived), "%s/logs/failure.txt", attempt) < sizeof(archived));
+        struct zcl_dev_proof_status status = {0};
+        ASSERT(zcl_dev_proof_status_read(root, local, base, &status));
+        ASSERT_STR_EQ(zcl_dev_proof_state_name(status.state), "no_verdict");
+        ASSERT(!zcl_dev_proof_queue_has_pending(root));
+        ASSERT(zcl_dev_proof_ensure(root, local, base, &status));
+        ASSERT(status.state == ZCL_DEV_PROOF_STATE_RUNNING);
+        ASSERT(zcl_dev_proof_queue_has_pending(root));
+        ASSERT(ic_bytes_equal(archived, reason, strlen(reason)));
+        /* Consume only this private request through the actual native worker.
+         * This non-repository refuses before build and cannot admit a receipt. */
+        char why[256] = {0};
+        ASSERT(zcl_dev_proof_queue_run_next(root, why, sizeof(why)) == 1);
+        ASSERT(why[0]);
+        ASSERT(zcl_dev_proof_status_read(root, local, base, &status));
+        ASSERT(status.state != ZCL_DEV_PROOF_STATE_PASSED);
+        ASSERT(strstr(status.log_dir, ".prior/logs") == NULL);
+        ASSERT(ic_bytes_equal(archived, reason, strlen(reason)));
+        ASSERT(access(status.receipt_path, F_OK) != 0);
+        char first_logs[4096];
+        ASSERT((size_t)snprintf(first_logs, sizeof(first_logs), "%s", status.log_dir) < sizeof(first_logs));
+        /* A repeated environmental observation gets another identity; it
+         * never overwrites either earlier native attempt or its archive. */
+        ASSERT(ic_proof_private_write(state, relative, reason));
+        ASSERT(zcl_dev_proof_ensure(root, local, base, &status));
+        ASSERT(zcl_dev_proof_ensure(root, local, base, &status));
+        ASSERT(status.state == ZCL_DEV_PROOF_STATE_RUNNING);
+        ASSERT(zcl_dev_proof_queue_run_next(root, why, sizeof(why)) == 1);
+        ASSERT(zcl_dev_proof_status_read(root, local, base, &status));
+        ASSERT(strcmp(first_logs, status.log_dir) != 0);
+        ASSERT(access(first_logs, F_OK) == 0);
+        ASSERT(ic_bytes_equal(archived, reason, strlen(reason)));
+        ASSERT(access(status.receipt_path, F_OK) != 0);
+        /* Only exact known pre-test tokens qualify, never a prefix or
+         * arbitrary unknown candidate failure. */
+        ASSERT(ic_proof_private_write(state, relative, "proof_producer_source_mismatch:unknown"));
+        ASSERT(zcl_dev_proof_status_read(root, local, base, &status));
+        ASSERT(status.state == ZCL_DEV_PROOF_STATE_FAILED);
+        ASSERT(zcl_dev_proof_ensure(root, local, base, &status));
+        ASSERT(status.state == ZCL_DEV_PROOF_STATE_FAILED);
+        ASSERT(!zcl_dev_proof_queue_has_pending(root));
+        ASSERT(test_rm_rf_recursive(root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_proof_retry(void)
 {
     int failures = 0;
@@ -5025,6 +5094,15 @@ static int test_pw_generation_retire_passed(void)
         ASSERT_STR_EQ(outcome, "kept_interrupted");
         ASSERT(stat(interrupted, &probe) == 0);
 
+        /* Producer refusal also retains the exact generation for a new
+         * attempt, without pretending the candidate was interrupted. */
+        removed = zcl_dev_proof_test_generation_retire(
+            repo, interrupted, ZCL_DEV_PROOF_RETIRE_NO_VERDICT, false,
+            outcome, sizeof(outcome));
+        ASSERT(!removed);
+        ASSERT_STR_EQ(outcome, "kept_no_verdict");
+        ASSERT(stat(interrupted, &probe) == 0);
+
         /* A generation that could donate is left to the pool exactly as
          * before, after a PASS and after a final refusal alike. */
         removed = zcl_dev_proof_test_generation_retire(
@@ -6436,7 +6514,7 @@ static int test_ic_proof_producer_recovery(void)
     int failures = 0;
     TEST("proof producer: stale driver reports exact candidate producer recovery") {
         struct zcl_dev_proof_status status = {0};
-        status.state = ZCL_DEV_PROOF_STATE_FAILED;
+        status.state = ZCL_DEV_PROOF_STATE_NO_VERDICT;
         snprintf(status.root, sizeof(status.root), "/fixture/candidate");
         snprintf(status.local_commit, sizeof(status.local_commit),
                  "1111111111111111111111111111111111111111");
@@ -6447,8 +6525,9 @@ static int test_ic_proof_producer_recovery(void)
         struct zcl_command_reply reply;
         zcl_command_reply_init(&reply, "zcl.dev_proof_status.v1");
         zcl_dev_proof_step_conclude(&reply, 1, &status);
-        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_FAILED);
-        ASSERT_STR_EQ(reply.error.code, "PROOF_FAILED");
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_BLOCKED);
+        ASSERT_STR_EQ(reply.error.code, "PROOF_NO_VERDICT");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "status")), "no_verdict");
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "producer_executable")),
                       "/fixture/candidate/build/bin/z23-dev");
         ASSERT(strstr(reply.error.next_action, "devbuild --wait") != NULL);
@@ -11019,6 +11098,7 @@ int test_impact_composition(void)
     failures += test_ic_landing_proof_defers_preparation();
     failures += test_ic_landing_proof_refuses_unsafe_lock();
     failures += test_ic_landing_proof_holds_lock_through_worker();
+    failures += test_ic_proof_environment_no_verdict();
     failures += test_ic_proof_retry();
     failures += test_ic_proof_next_preserves_root();
 #endif

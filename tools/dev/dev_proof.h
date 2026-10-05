@@ -99,6 +99,8 @@ enum zcl_dev_proof_state {
     ZCL_DEV_PROOF_STATE_RUNNING,
     ZCL_DEV_PROOF_STATE_PASSED,
     ZCL_DEV_PROOF_STATE_FAILED,
+    /* Producer qualification refused before candidate tests: no verdict. */
+    ZCL_DEV_PROOF_STATE_NO_VERDICT,
 };
 
 struct zcl_dev_proof_status {
@@ -630,12 +632,13 @@ enum zcl_dev_proof_retire_verdict {
     ZCL_DEV_PROOF_RETIRE_PASSED = 0,
     ZCL_DEV_PROOF_RETIRE_FAILED,
     ZCL_DEV_PROOF_RETIRE_INTERRUPTED,
+    ZCL_DEV_PROOF_RETIRE_NO_VERDICT,
 };
 /* Seam for the retirement proof_worker() runs on `generation` (a worktree
  * of `repo_root`) once its proof settles: `verdict` is how it settled, and
  * `donor_eligible` stands in an eligible donor verdict for the real
  * same-uid refusal. Writes the outcome name (removed, removed_failed,
- * kept_interrupted, kept_donor, kept_not_clean, remove_failed,
+ * kept_interrupted, kept_no_verdict, kept_donor, kept_not_clean, remove_failed,
  * kept_invalid) and returns true only when the generation was removed. */
 bool zcl_dev_proof_test_generation_retire(
     const char *repo_root, const char *generation,

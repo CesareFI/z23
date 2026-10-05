@@ -149,6 +149,15 @@ static bool proof_source_id_valid(const char *source)
     return nonzero;
 }
 
+/* Exact pre-test producer refusals only. Candidate failures, malformed
+ * source identity, cancellation and unknown failures remain distinct. */
+[[maybe_unused]] static bool dp_failure_no_verdict(const char *detail)
+{
+    return detail &&
+        (strcmp(detail, "proof_producer_source_mismatch") == 0 ||
+         strcmp(detail, "proof_producer_source_id_unavailable") == 0);
+}
+
 bool zcl_dev_proof_producer_source_qualified(const char *candidate_source,
     const char *producer_source, char *why, size_t why_len)
 {
@@ -1177,6 +1186,17 @@ static bool proof_failure_attempt_logs(const struct proof_paths *paths,
     return true;
 }
 
+static bool dp_failure_status_read(const struct proof_paths *paths,
+                                   struct zcl_dev_proof_status *out)
+{
+    if (!dp_failure_record_read(paths->failure, out)) return false;
+    out->state = dp_failure_no_verdict(out->detail)
+        ? ZCL_DEV_PROOF_STATE_NO_VERDICT : ZCL_DEV_PROOF_STATE_FAILED;
+    (void)proof_failure_attempt_logs(paths, out->log_dir,
+                                     sizeof(out->log_dir), NULL);
+    return true;
+}
+
 static bool proof_status_read_platform(const char *repo_root,
                                        const char *local_commit,
                                        const char *remote_base,
@@ -1256,12 +1276,7 @@ static bool proof_status_read_platform(const char *repo_root,
                        "proof_request_invalid");
         return true;
     }
-    if (dp_failure_record_read(paths.failure, out)) {
-        out->state = ZCL_DEV_PROOF_STATE_FAILED;
-        (void)proof_failure_attempt_logs(&paths, out->log_dir,
-                                         sizeof(out->log_dir), NULL);
-        return true;
-    }
+    if (dp_failure_status_read(&paths, out)) return true;
     out->state = ZCL_DEV_PROOF_STATE_MISSING;
     (void)snprintf(out->detail, sizeof(out->detail), "%s",
                    "exact_receipt_missing");
@@ -6078,15 +6093,16 @@ bool zcl_dev_proof_test_docs_fresh_overlapped(const char *generation,
 /* What a settled proof means for its generation. The generation is named by
  * (checkout, local commit), and after a verdict only one thing ever proves
  * that exact commit again from that checkout: a re-run of an INTERRUPTED
- * pair (dev land's dl_resume_interrupted_proof() re-queues it through
- * zcl_dev_proof_retry()). Every other refusal is final for the pair: ensure
- * replays the settled `.failed` record instead of re-proving it, and a
+ * pair or a producer NO_VERDICT. Both retain the generation for a distinct
+ * attempt through the existing locked retry. Candidate failures remain
+ * settled: ensure replays their `.failed` record instead of re-proving it, and a
  * host-load or supersede retry in dev land rebases first and so proves a
  * new local commit in a new generation. */
 enum dp_retire_verdict {
     DP_RETIRE_PASSED = 0,
     DP_RETIRE_FAILED,
     DP_RETIRE_INTERRUPTED,
+    DP_RETIRE_NO_VERDICT,
 };
 
 /* The same predicate dp_failure_settle() applies when it writes the settled
@@ -6094,6 +6110,8 @@ enum dp_retire_verdict {
 static enum dp_retire_verdict dp_retire_verdict_of(bool ok, const char *why)
 {
     if (ok) return DP_RETIRE_PASSED;
+    if (!zcl_devloop_process_cancel_requested() && dp_failure_no_verdict(why))
+        return DP_RETIRE_NO_VERDICT;
     return zcl_devloop_process_cancel_requested() ||
                    zcl_dev_proof_failure_interrupted(why)
                ? DP_RETIRE_INTERRUPTED
@@ -6116,6 +6134,15 @@ static enum dp_retire_verdict dp_retire_verdict_of(bool ok, const char *why)
  * published and nothing here reads back into it. `trust` is
  * dp_donor_trust_verdict() in every proof; only the test seam below passes
  * anything else. */
+static const char *dp_generation_keep_reason(enum dp_retire_verdict verdict)
+{
+    switch (verdict) {
+    case DP_RETIRE_INTERRUPTED: return "kept_interrupted";
+    case DP_RETIRE_NO_VERDICT: return "kept_no_verdict";
+    default: return NULL;
+    }
+}
+
 static const char *dp_generation_retire_with(
     const struct proof_paths *paths, const char *generation,
     enum dp_retire_verdict verdict,
@@ -6124,8 +6151,8 @@ static const char *dp_generation_retire_with(
     if (!paths || !paths->root[0] || !generation || !generation[0] || !trust)
         return "kept_invalid";
     int64_t started_us = platform_time_monotonic_us();
-    const char *outcome = "kept_interrupted";
-    if (verdict == DP_RETIRE_INTERRUPTED) {
+    const char *outcome = dp_generation_keep_reason(verdict);
+    if (outcome) {
         /* Kept for the exact re-run that reuses it; no git call at all. */
     } else if (trust(generation) == DP_DONOR_ELIGIBLE) {
         outcome = "kept_donor";
@@ -6201,6 +6228,7 @@ bool zcl_dev_proof_test_generation_retire(
     enum dp_retire_verdict internal =
         verdict == ZCL_DEV_PROOF_RETIRE_PASSED   ? DP_RETIRE_PASSED
         : verdict == ZCL_DEV_PROOF_RETIRE_FAILED ? DP_RETIRE_FAILED
+        : verdict == ZCL_DEV_PROOF_RETIRE_NO_VERDICT ? DP_RETIRE_NO_VERDICT
                                                  : DP_RETIRE_INTERRUPTED;
     const char *result = dp_generation_retire_with(
         &paths, generation, internal,
@@ -11566,6 +11594,20 @@ static int proof_queue_run_next_platform(const char *repo_root,
     return result;
 }
 
+static bool proof_retry_platform(const char *repo_root,
+                                 const char *local_commit,
+                                 const char *remote_base,
+                                 struct zcl_dev_proof_status *out);
+
+static bool dp_environment_requeue(const char *root, const char *local,
+                                   const char *base,
+                                   struct zcl_dev_proof_status *out)
+{
+    return proof_retry_platform(root, local, base, out) ||
+           out->state == ZCL_DEV_PROOF_STATE_RUNNING ||
+           out->state == ZCL_DEV_PROOF_STATE_PASSED;
+}
+
 static bool proof_ensure_platform(const char *repo_root,
                                   const char *local_commit,
                                   const char *remote_base,
@@ -11588,6 +11630,11 @@ static bool proof_ensure_platform(const char *repo_root,
         return true;
     }
     if (out->state == ZCL_DEV_PROOF_STATE_RUNNING) return true;
+    /* A wrong producer did not test this candidate. The existing locked
+     * retry archives the old observation and queues a distinct attempt;
+     * it cannot manufacture a receipt or overwrite the prior archive. */
+    if (out->state == ZCL_DEV_PROOF_STATE_NO_VERDICT)
+        return dp_environment_requeue(repo_root, local, base, out);
     /* A `.failed` marker settles the latest attempt for this exact pair.
      * Automatic re-enqueueing here would spend a worker slot repeating an
      * unrepaired failure and would leave
@@ -11698,7 +11745,8 @@ static bool dp_retry_locked(const struct proof_paths *paths,
 {
     if (!zcl_dev_proof_status_read(paths->root, local, base, out)) return false;
     const char *refusal = NULL;
-    if (out->state != ZCL_DEV_PROOF_STATE_FAILED)
+    if (out->state != ZCL_DEV_PROOF_STATE_FAILED &&
+        out->state != ZCL_DEV_PROOF_STATE_NO_VERDICT)
         refusal = "proof_retry_requires_settled_failure";
     else if (!dp_retry_absent(paths->receipt))
         refusal = "proof_retry_receipt_present";
@@ -11731,7 +11779,8 @@ static bool proof_retry_platform(const char *repo_root,
     if (!out || !zcl_dev_proof_status_read(repo_root, local_commit,
                                            remote_base, out))
         return false;
-    if (out->state != ZCL_DEV_PROOF_STATE_FAILED) {
+    if (out->state != ZCL_DEV_PROOF_STATE_FAILED &&
+        out->state != ZCL_DEV_PROOF_STATE_NO_VERDICT) {
         proof_why(out->detail, sizeof(out->detail),
                    "proof_retry_requires_settled_failure");
         return false;

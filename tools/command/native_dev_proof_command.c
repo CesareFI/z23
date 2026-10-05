@@ -35,6 +35,7 @@ const char *zcl_dev_proof_state_name(enum zcl_dev_proof_state state)
     case ZCL_DEV_PROOF_STATE_RUNNING: return "running";
     case ZCL_DEV_PROOF_STATE_PASSED: return "passed";
     case ZCL_DEV_PROOF_STATE_FAILED: return "failed";
+    case ZCL_DEV_PROOF_STATE_NO_VERDICT: return "no_verdict";
     case ZCL_DEV_PROOF_STATE_INVALID: return "invalid";
     }
     return "invalid";
@@ -78,7 +79,8 @@ static void proof_emit_route(struct zcl_command_reply *reply,
 static void proof_emit_next(struct zcl_command_reply *reply,
                             const struct zcl_dev_proof_status *status)
 {
-    bool failed = status->state == ZCL_DEV_PROOF_STATE_FAILED;
+    bool failed = status->state == ZCL_DEV_PROOF_STATE_FAILED ||
+                  status->state == ZCL_DEV_PROOF_STATE_NO_VERDICT;
     proof_emit_route(reply, status, failed ? "dev.proof.retry" : "dev.proof.wait",
         failed
             ? "after repairing the reported prerequisite, explicitly request a new full proof"
@@ -87,7 +89,8 @@ static void proof_emit_next(struct zcl_command_reply *reply,
 
 static bool proof_producer_recovery(const struct zcl_dev_proof_status *status)
 {
-    return status->state == ZCL_DEV_PROOF_STATE_FAILED &&
+    return (status->state == ZCL_DEV_PROOF_STATE_FAILED ||
+            status->state == ZCL_DEV_PROOF_STATE_NO_VERDICT) &&
         (strcmp(status->detail, "proof_producer_source_mismatch") == 0 ||
          strcmp(status->detail, "proof_producer_source_id_unavailable") == 0);
 }
@@ -192,6 +195,11 @@ static void proof_wait_failed(struct zcl_command_reply *reply,
 void zcl_dev_proof_wait_conclude(struct zcl_command_reply *reply,
                                  const struct zcl_dev_proof_status *status)
 {
+    if (status->state == ZCL_DEV_PROOF_STATE_NO_VERDICT) {
+        proof_wait_pending(reply, status, "PROOF_NO_VERDICT", "producer");
+        proof_emit_producer_recovery(reply, status);
+        return;
+    }
     if (status->state == ZCL_DEV_PROOF_STATE_FAILED) {
         proof_wait_failed(reply, status);
         return;
@@ -230,7 +238,8 @@ void zcl_dev_proof_step_conclude(struct zcl_command_reply *reply, int result,
         return;
     }
     zcl_dev_proof_wait_conclude(reply, status);
-    if (status->state == ZCL_DEV_PROOF_STATE_FAILED)
+    if (status->state == ZCL_DEV_PROOF_STATE_FAILED ||
+        status->state == ZCL_DEV_PROOF_STATE_NO_VERDICT)
         proof_emit_next(reply, status);
 }
 
@@ -446,7 +455,8 @@ static void proof_retry(
     if (!zcl_dev_proof_status_read(
             root, proof_optional_text(request->input, "local_commit"),
             proof_optional_text(request->input, "remote_base"), &status) ||
-        status.state != ZCL_DEV_PROOF_STATE_FAILED) {
+        (status.state != ZCL_DEV_PROOF_STATE_FAILED &&
+         status.state != ZCL_DEV_PROOF_STATE_NO_VERDICT)) {
         proof_emit_status(reply, &status, false);
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,

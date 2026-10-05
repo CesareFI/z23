@@ -2240,6 +2240,9 @@ static enum dl_proof dl_proof_status_map(
         return DL_PROOF_FAILED;
     case ZCL_DEV_PROOF_STATE_INVALID:
         return DL_PROOF_UNAVAILABLE;
+    case ZCL_DEV_PROOF_STATE_NO_VERDICT:
+        (void)snprintf(dimension, dim_cap, "%s", "proof_no_verdict");
+        return DL_PROOF_PENDING;
     case ZCL_DEV_PROOF_STATE_MISSING:
         return DL_PROOF_MISSING;
     default:
