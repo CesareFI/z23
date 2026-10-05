@@ -3,17 +3,18 @@
 #include "zcron/zcron.h"
 
 #include <string.h>
+#include <limits.h>
 
 /* ---------- civil calendar (UTC), Howard Hinnant's algorithms ------ */
 
-static void civil_from_days(long long z, int *y, unsigned *m, unsigned *d) {
+static void civil_from_days(long long z, long long *y, unsigned *m, unsigned *d) {
   long long era;
   unsigned doe, yoe, doy, mp;
   z += 719468;
   era = (z >= 0 ? z : z - 146096) / 146097;
   doe = (unsigned)(z - era * 146097);
   yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  *y = (int)yoe + (int)era * 400;
+  *y = (long long)yoe + era * 400;
   doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
   mp = (5 * doy + 2) / 153;
   *d = doy - (153 * mp + 2) / 5 + 1;
@@ -21,11 +22,11 @@ static void civil_from_days(long long z, int *y, unsigned *m, unsigned *d) {
   *y += *m <= 2; /* Jan/Feb belong to the following civil year */
 }
 
-static int is_leap(int y) {
+static int is_leap(long long y) {
   return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
 }
 
-static unsigned days_in_month(int y, unsigned m) {
+static unsigned days_in_month(long long y, unsigned m) {
   static const unsigned dim[12] = {31, 28, 31, 30, 31, 30,
                                    31, 31, 30, 31, 30, 31};
   if (m == 2 && is_leap(y)) return 29;
@@ -242,18 +243,24 @@ static int matches(const zcron *c, unsigned mo, unsigned d, unsigned h,
          ((c->minute >> mi) & 1ull);
 }
 
-long long zcron_next(const zcron *c, long long after) {
+static long long next_limit(long long minute0) {
+  long long limit = minute0 + 8LL * 366 * 24 * 60;
+  long long representable = LLONG_MAX / 60 + 1;
+  return limit < representable ? limit : representable;
+}
+
+ long long zcron_next(const zcron *c, long long after) {
   long long minute0;
   long long limit;
   long long t;
   if (!c || after < 0) return -1;
   minute0 = after / 60 + 1; /* first minute strictly after `after` */
   /* search at most 8 years of minutes (covers two Feb-29 cycles) */
-  limit = minute0 + 8LL * 366 * 24 * 60;
+  limit = next_limit(minute0);
   for (t = minute0; t < limit; t++) {
     long long days = t / (24 * 60);
     long long rem = t % (24 * 60);
-    int y;
+    long long y;
     unsigned mo, d;
     unsigned h = (unsigned)(rem / 60);
     unsigned mi = (unsigned)(rem % 60);

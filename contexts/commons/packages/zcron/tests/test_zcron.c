@@ -6,6 +6,7 @@
 #include "zcron/zcron.h"
 
 #include <stdio.h>
+#include <limits.h>
 #include <string.h>
 
 static int failures = 0;
@@ -239,6 +240,7 @@ static void test_next_monotonic(void) {
 }
 
 int main(void) {
+  expect_next("* * * * *", LLONG_MAX, -1);
   test_parse_ok();
   test_parse_bad();
   test_next_basic();

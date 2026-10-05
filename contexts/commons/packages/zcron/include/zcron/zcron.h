@@ -52,7 +52,8 @@ int zcron_parse(const char *s, size_t len, zcron *out, char *err,
  * Compute the next fire time strictly after `after` (Unix epoch,
  * seconds), in UTC.  Returns the epoch of the next matching minute
  * (always a multiple of 60), or -1 if no fire time exists within the
- * next 8 years (e.g. Feb 31) or `after` is negative.
+ * next 8 years (e.g. Feb 31), no later epoch fits in long long,
+ * or `after` is negative.
  */
 long long zcron_next(const zcron *c, long long after);
 
