@@ -250,7 +250,28 @@ static int test_fuzz(void) {
   return 0;
 }
 
+static int test_failure_zeroes_all_fields(void) {
+  const char *bad[] = {"x:%", "http://h:abc", "http://h/space here",
+                       "http://u@h/?%zz", "http://h/#%"};
+  int failed = 0;
+  zurl empty;
+  memset(&empty, 0, sizeof empty);
+  for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+    zurl u;
+    memset(&u, 0xa5, sizeof u);
+    bool ok = zurl_parse(bad[i], &u);
+    if (ok || memcmp(&u, &empty, sizeof u) != 0) {
+      fprintf(stderr, "FAIL zero_on_error row=%zu input=%s\n", i, bad[i]);
+      failed = 1;
+    }
+  }
+  CHECK(!failed);
+  return 0;
+}
+
 int main(void) {
+    if (test_failure_zeroes_all_fields() != 0) return 1;
+
   struct {
     const char *name;
     int (*fn)(void);

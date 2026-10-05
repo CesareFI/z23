@@ -245,7 +245,7 @@ static bool parse_path_query_fragment(const char *text, size_t len,
   return parse_query_fragment(text, len, path_end, out);
 }
 
-bool zurl_parse_n(const char *text, size_t len, zurl *out) {
+static bool parse_uri(const char *text, size_t len, zurl *out) {
   if (!out)
     return false;
   zero(out);
@@ -263,6 +263,17 @@ bool zurl_parse_n(const char *text, size_t len, zurl *out) {
       return false;
   }
   return parse_path_query_fragment(text, len, i, out);
+}
+
+bool zurl_parse_n(const char *text, size_t len, zurl *out) {
+  if (!out)
+    return false;
+  zero(out);
+  zurl parsed;
+  if (!parse_uri(text, len, &parsed))
+    return false;
+  *out = parsed;
+  return true;
 }
 
 bool zurl_parse(const char *text, zurl *out) {
