@@ -340,6 +340,23 @@ static void test_partial_branch_rollback(void) {
     ztrie_destroy(t);
     CHECK(!inserted && unchanged && state.mallocs == state.frees);
 }
+/* Observe rollback callbacks before destroy: recursive release moves this
+ * callback's stack position with chain depth; iterative release stays bounded. */
+static uintptr_t rollback_free_mark, rollback_free_span;
+static void ta_free_span(void *ctx, void *ptr)
+{
+    char marker;
+    uintptr_t here = (uintptr_t)&marker;
+    if (rollback_free_mark == 0) {
+        rollback_free_mark = here;
+    } else {
+        uintptr_t span = here > rollback_free_mark ? here - rollback_free_mark
+                                                  : rollback_free_mark - here;
+        if (span > rollback_free_span) rollback_free_span = span;
+    }
+    ta_free(ctx, ptr);
+}
+
 static void test_long_branch_rollback(void)
 {
     const size_t length = 65536;
@@ -347,7 +364,9 @@ static void test_long_branch_rollback(void)
     CHECK(key != NULL);
     memset(key, 'a', length);
     struct test_alloc state = {0, 0, SIZE_MAX};
-    ztrie *t = ztrie_create((ztrie_alloc){ta_malloc, ta_free, &state});
+    rollback_free_mark = 0;
+    rollback_free_span = 0;
+    ztrie *t = ztrie_create((ztrie_alloc){ta_malloc, ta_free_span, &state});
     CHECK(t != NULL);
     int value = 1, sibling = 2;
     CHECK(cstr_put(t, "a", &value, NULL));
@@ -357,11 +376,17 @@ static void test_long_branch_rollback(void)
     void *old = &value;
     CHECK(!ztrie_put(t, key, length, NULL, &old));
     CHECK(old == NULL && state.mallocs - state.frees == before);
+    CHECK(rollback_free_mark != 0 && rollback_free_span < 4096);
     CHECK(ztrie_len(t) == 2 && cstr_get(t, "a") == &value);
     CHECK(cstr_get(t, "b") == &sibling);
     CHECK(!ztrie_contains(t, key, length));
     CHECK(!ztrie_contains(t, key, 2));
     state.fail_after = SIZE_MAX;
+    /* Membership alone cannot expose linked valueless nodes. A clean
+     * rollback must allocate the abandoned second byte again. */
+    size_t at_short = state.mallocs;
+    CHECK(ztrie_put(t, key, 2, &value, NULL));
+    CHECK(state.mallocs == at_short + 1);
     CHECK(cstr_put(t, "ac", &value, NULL));
     ztrie_destroy(t);
     CHECK(state.mallocs == state.frees);
