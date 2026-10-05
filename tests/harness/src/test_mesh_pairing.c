@@ -411,6 +411,129 @@ static int test_mesh_roster_observation_refusal(bool allocation)
     return failures;
 }
 
+static bool mesh_boundary_fixture(struct node_db *ndb, const char *path,
+                                  char ids[3][MESH_PAIRING_ID_HEX + 1])
+{
+    if (!node_db_open(ndb, path))
+        return false;
+    for (unsigned i = 0; i < 3; i++) {
+        struct db_mesh_pairing row = {0};
+        mesh_fill32(row.network_genesis, 0x11);
+        mesh_fill32(row.peer_master_pubkey, (uint8_t)(0x70u + i));
+        mesh_fill32(row.peer_noise_pubkey, (uint8_t)(0x80u + i));
+        row.capability_mask = MESH_PAIRING_CAP_STATUS_READ;
+        row.delegation_sequence = 1;
+        row.paired_at = 1000;
+        row.expires_at = 4000;
+        if (!db_mesh_pairing_insert(ndb, &row) ||
+            !mesh_pairing_id_derive(row.network_genesis, row.peer_master_pubkey,
+                                   row.peer_noise_pubkey, ids[i]))
+            return false;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        for (unsigned j = i + 1; j < 3; j++) {
+            if (strcmp(ids[i], ids[j]) > 0) {
+                char tmp[MESH_PAIRING_ID_HEX + 1];
+                memcpy(tmp, ids[i], sizeof(tmp));
+                memcpy(ids[i], ids[j], sizeof(tmp));
+                memcpy(ids[j], tmp, sizeof(tmp));
+            }
+        }
+    }
+    return true;
+}
+
+static bool mesh_buffer_is(const void *buffer, size_t size, unsigned char byte)
+{
+    const unsigned char *bytes = buffer;
+    for (size_t i = 0; i < size; i++)
+        if (bytes[i] != byte)
+            return false;
+    return true;
+}
+
+static int mesh_interrupt_after_row(unsigned event, void *arg, void *stmt,
+                                     void *text)
+{
+    (void)stmt;
+    (void)text;
+    struct mesh_read_interrupt *fault = arg;
+    if (event == SQLITE_TRACE_ROW) {
+        fault->calls++;
+        if (fault->calls == 1)
+            sqlite3_interrupt(fault->db);
+    }
+    return 0;
+}
+
+static int test_mesh_observation_boundary(unsigned which)
+{
+    static const char *const names[] = {
+        "mesh observations: INT64_MAX offset is an empty page",
+        "mesh observations: zero capacity preserves output",
+        "mesh observations: invalid time preserves output",
+        "mesh observations: oversized capacity preserves output",
+        "mesh observations: unrepresentable offset preserves output",
+        "mesh observations: null database preserves output",
+        "mesh observations: closed database preserves output",
+        "mesh observations: null output is refused",
+        "mesh observations: timestamp ties order by pairing id",
+        "mesh observations: failure after a returned row refuses a partial count"
+    };
+    int failures = 0;
+    struct node_db ndb = {0};
+    static struct db_mesh_machine_view out[3];
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_pairing", "observation-boundary");
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    TEST(names[which]) {
+        char ids[3][MESH_PAIRING_ID_HEX + 1];
+        ASSERT(mesh_boundary_fixture(&ndb, path, ids));
+        memset(out, 0xa5, sizeof(out));
+        int count = -2;
+        if (which == 0) {
+            size_t huge = SIZE_MAX < (uint64_t)INT64_MAX ? SIZE_MAX
+                                                       : (size_t)INT64_MAX;
+            count = db_mesh_machine_observation_list_after(&ndb, out, 3, 2000, huge);
+            ASSERT_EQ(count, 0);
+        } else if (which < 8) {
+            struct node_db closed = {0};
+            struct node_db *db = which == 5 ? NULL : which == 6 ? &closed : &ndb;
+            size_t max = which == 1 ? 0 : which == 3 ? (size_t)INT_MAX + 1 : 3;
+            int64_t now = which == 2 ? 0 : 2000;
+            size_t skip = which == 4 ? SIZE_MAX : 0;
+            count = db_mesh_machine_observation_list_after(
+                db, which == 7 ? NULL : out, max, now, skip);
+            ASSERT_EQ(count, -1);
+            ASSERT(mesh_buffer_is(out, sizeof(out), 0xa5));
+        } else if (which == 8) {
+            ASSERT_EQ(db_mesh_machine_observation_list_after(&ndb, out, 3, 2000, 0), 3);
+            for (unsigned i = 0; i < 3; i++)
+                ASSERT_STR_EQ(out[i].pairing.pairing_id, ids[i]);
+            ASSERT_EQ(db_mesh_machine_observation_list_after(&ndb, out, 1, 2000, 1), 1);
+            ASSERT_STR_EQ(out[0].pairing.pairing_id, ids[1]);
+        } else {
+            struct mesh_read_interrupt fault = { .db = ndb.db };
+            ASSERT_EQ(sqlite3_trace_v2(ndb.db, SQLITE_TRACE_ROW,
+                                      mesh_interrupt_after_row, &fault), SQLITE_OK);
+            count = db_mesh_machine_observation_list_after(&ndb, out, 3, 2000, 0);
+            ASSERT_EQ(sqlite3_trace_v2(ndb.db, 0, NULL, NULL), SQLITE_OK);
+            printf("[returned-row trace=%u count=%d] ", fault.calls, count);
+            ASSERT_EQ(fault.calls, 1);
+            ASSERT_STR_EQ(out[0].pairing.pairing_id, ids[0]);
+            ASSERT(mesh_buffer_is(&out[1], sizeof(out[1]), 0xa5));
+            ASSERT_EQ(count, -1);
+        }
+        PASS();
+    } _test_next:;
+    if (ndb.open) {
+        (void)sqlite3_trace_v2(ndb.db, 0, NULL, NULL);
+        node_db_close(&ndb);
+    }
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_mesh_pairing(void)
 {
     int failures = 0;
@@ -768,6 +891,13 @@ int test_mesh_pairing(void)
     failures += test_mesh_roster_page();
     failures += test_mesh_roster_observation_refusal(true);
     failures += test_mesh_roster_observation_refusal(false);
+    for (unsigned which = 0; which < 10; which++) {
+        if (which == 4 && SIZE_MAX <= (uint64_t)INT64_MAX) {
+            printf("mesh observations: unrepresentable-offset case unavailable on this size_t\n");
+            continue;
+        }
+        failures += test_mesh_observation_boundary(which);
+    }
 
 _test_next:
     if (ndb.open)
