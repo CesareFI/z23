@@ -6,6 +6,7 @@
 #include <string.h>
 int cgo_decoder_tests(void);
 int cgo_passive_tests(void);
+int cga_goal_tests(void);
 
 static int json_heap_accounting_cases(void)
 {
@@ -248,7 +249,7 @@ static int json_number_cases(void)
 
 int test_json(void)
 {
-    int failures = json_unicode_cases() + json_number_cases() + json_heap_accounting_cases() + cgo_decoder_tests() + cgo_passive_tests();
+    int failures = json_unicode_cases() + json_number_cases() + json_heap_accounting_cases() + cgo_decoder_tests() + cgo_passive_tests() + cga_goal_tests();
 
     printf("json parse integer... ");
     {

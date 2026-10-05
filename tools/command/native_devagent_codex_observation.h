@@ -15,7 +15,7 @@ enum cga_goal_status {
 };
 enum cga_result {
     CGA_OK, CGA_INVALID, CGA_UNSUPPORTED, CGA_AUTHORITY,
-    CGA_STALE = 5, CGA_UNCERTAIN = 7, CGA_LIMIT
+    CGA_STORAGE, CGA_STALE, CGA_CONFLICT, CGA_UNCERTAIN, CGA_LIMIT
 };
 
 #define CGO_SCHEMA "zcl.codex_native_goal_observation.v1"
