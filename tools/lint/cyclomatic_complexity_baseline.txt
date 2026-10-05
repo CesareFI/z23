@@ -822,7 +822,7 @@ contexts/commons/packages/ztoml/src/ztoml.c:ztoml_str_decode:39
 contexts/commons/packages/ztoml/tests/test_ztoml.c:test_fuzz:18
 contexts/commons/packages/ztoml/tests/test_ztoml.c:test_kat:17
 contexts/commons/packages/ztrie/tests/test_ztrie.c:test_stress_vs_model:16
-contexts/commons/packages/zu256/app/main.c:main:21
+contexts/commons/packages/zu256/app/main.c:main:20
 contexts/commons/packages/zutf16/src/zutf16.c:zutf16_decode_cp:19
 contexts/commons/packages/zutf8/src/zutf8.c:zutf8_decode_n:25
 contexts/commons/packages/zutf8/tests/test_zutf8.c:test_encode_kats:23

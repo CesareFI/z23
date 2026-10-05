@@ -68,17 +68,16 @@ int main(int argc, char **argv)
         fprintf(stderr, "zu256: bad number %s\n", argv[3]);
         return 2;
     }
-    char op = argv[1][0];
-    if (op == 'a') show(zu256_add(a, b, NULL));
-    else if (op == 's') show(zu256_sub(a, b, NULL));
-    else if (op == 'm' && argv[1][1] == 'u') show(zu256_mul(a, b, NULL));
-    else if (op == 'd' || op == 'm') {
+    if (strcmp(argv[1], "add") == 0) show(zu256_add(a, b, NULL));
+    else if (strcmp(argv[1], "sub") == 0) show(zu256_sub(a, b, NULL));
+    else if (strcmp(argv[1], "mul") == 0) show(zu256_mul(a, b, NULL));
+    else if (strcmp(argv[1], "div") == 0 || strcmp(argv[1], "mod") == 0) {
         zu256256 q, r;
         if (!zu256_divmod(a, b, &q, &r)) {
             fprintf(stderr, "zu256: division by zero\n");
             return 1;
         }
-        show(op == 'd' ? q : r);
+        show(strcmp(argv[1], "div") == 0 ? q : r);
     } else {
         fprintf(stderr, "zu256: unknown op %s\n", argv[1]);
         return 2;

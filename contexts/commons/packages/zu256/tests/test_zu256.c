@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define main zu256_cli_main
+#include "../app/main.c"
+#undef main
+
 #define CHECK(cond) \
     if (!(cond)) { \
         fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
@@ -160,8 +164,23 @@ static void test_dec(void)
     }
 }
 
+static void test_cli_rejects_unknown_operations(void)
+{
+    const char *ops[] = {"addjunk", "subtract", "multiply", "divide", "modulo"};
+    unsigned failures = 0;
+    for (size_t i = 0; i < sizeof ops / sizeof ops[0]; i++) {
+        char *args[] = {"zu256", (char *)ops[i], "8", "2", NULL};
+        int rc = zu256_cli_main(4, args);
+        fprintf(stderr, "unknown_op_row=%zu op=%s result=%s\n", i, ops[i],
+                rc == 2 ? "PASS" : "FAIL");
+        if (rc != 2) failures++;
+    }
+    CHECK(failures == 0);
+}
+
 int main(void)
 {
+    test_cli_rejects_unknown_operations();
     test_identities();
     test_arith_vectors();
     test_shift_vectors();
