@@ -548,6 +548,13 @@ void aircraft_manager_check_collisions(aircraft_manager_t* manager) {
 
 void aircraft_manager_damage_aircraft(aircraft_manager_t* manager, int id, 
                                     float damage, int attacker_id) {
+    if (!isfinite(damage) || damage < 0.0f) {
+        fprintf(stderr, "aircraft_manager_damage_aircraft: refused damage=%g aircraft=%d attacker=%d\n",
+                (double)damage, id, attacker_id);
+        return;
+    }
+    if (damage == 0.0f) return;
+
     managed_aircraft_t* ma = aircraft_manager_get(manager, id);
     if (!ma || ma->health <= 0) return;
     
@@ -704,3 +711,76 @@ static void reset_aircraft_state(managed_aircraft_t* ma) {
     ma->target_id = -1;
     ma->team_id = -1;
 }
+
+#if defined(SKYCOMBAT_SELFTEST_DAMAGE)
+/* Exercise the real damage path without constructors or a rendering context. */
+static int damage_selftest_unchanged(float damage) {
+    aircraft_manager_t manager = {.aircraft_count = 1};
+    managed_aircraft_t* victim = &manager.aircraft[0];
+    victim->health = victim->max_health = 100.0f;
+    aircraft_manager_damage_aircraft(&manager, 0, damage, -1);
+    if (victim->health != 100.0f || victim->deaths != 0 ||
+        victim->respawn_timer != 0.0f) {
+        fprintf(stderr, "damage selftest: %g changed health=%g deaths=%d respawn=%g\n",
+                (double)damage, (double)victim->health, victim->deaths,
+                (double)victim->respawn_timer);
+        return 1;
+    }
+    return 0;
+}
+
+static int damage_selftest_positive(bool shielded) {
+    aircraft_manager_t manager = {.aircraft_count = 2};
+    managed_aircraft_t* victim = &manager.aircraft[0];
+    managed_aircraft_t* attacker = &manager.aircraft[1];
+    victim->health = victim->max_health = 100.0f;
+    victim->powerup_effects.shield_active = shielded;
+    aircraft_manager_damage_aircraft(&manager, 0, 25.0f, 1);
+    float expected = shielded ? 97.5f : 75.0f;
+    if (victim->health != expected || victim->deaths != 0 ||
+        victim->respawn_timer != 0.0f || attacker->kills != 0) {
+        fprintf(stderr, "damage selftest: shield=%d positive hit changed scoring or health=%g\n",
+                shielded, (double)victim->health);
+        return 1;
+    }
+    return 0;
+}
+
+static int damage_selftest_lethal(void) {
+    aircraft_manager_t manager = {.aircraft_count = 2};
+    managed_aircraft_t* victim = &manager.aircraft[0];
+    managed_aircraft_t* attacker = &manager.aircraft[1];
+    victim->health = victim->max_health = 100.0f;
+    aircraft_manager_damage_aircraft(&manager, 0, 125.0f, 1);
+    if (victim->health != 0.0f || victim->deaths != 1 ||
+        victim->respawn_timer != 3.0f || attacker->kills != 1) {
+        fprintf(stderr, "damage selftest: lethal hit did not credit one kill and schedule respawn\n");
+        return 1;
+    }
+    victim->respawn_timer = 2.0f;
+    aircraft_manager_damage_aircraft(&manager, 0, 125.0f, 1);
+    if (victim->health != 0.0f || victim->deaths != 1 ||
+        victim->respawn_timer != 2.0f || attacker->kills != 1) {
+        fprintf(stderr, "damage selftest: duplicate dead hit changed scoring or respawn\n");
+        return 1;
+    }
+    return 0;
+}
+
+int main(void) {
+    const float refused[] = {-25.0f, NAN, INFINITY, -INFINITY, 0.0f, -0.0f};
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        failures += damage_selftest_unchanged(refused[i]);
+    }
+    failures += damage_selftest_positive(false);
+    failures += damage_selftest_positive(true);
+    failures += damage_selftest_lethal();
+    if (failures != 0) {
+        fprintf(stderr, "damage selftest: FAIL (%d cases)\n", failures);
+        return 1;
+    }
+    puts("damage selftest: PASS (invalid, zero, positive, shield and duplicate kill)");
+    return 0;
+}
+#endif
