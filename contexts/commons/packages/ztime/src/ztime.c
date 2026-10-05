@@ -6,6 +6,7 @@
 #include "ztime/ztime.h"
 
 #include <stdio.h>
+#include <stdckdint.h>
 #include <string.h>
 
 bool ztime_is_leap_year(int64_t year) {
@@ -29,13 +30,21 @@ bool ztime_days_from_civil(int64_t year, unsigned month, unsigned day,
   if (month < 1 || month > 12 || day < 1 ||
       (int64_t)day > ztime_days_in_month(year, month))
     return false;
-  int64_t y = month <= 2 ? year - 1 : year;
-  int64_t era = (y >= 0 ? y : y - 399) / 400;
-  unsigned yoe = (unsigned)(y - era * 400); /* [0, 399] */
+  int64_t y;
+  if (ckd_sub(&y, year, month <= 2)) return false;
+  int64_t era = y / 400 - (y % 400 < 0);
+  unsigned yoe = (unsigned)(y % 400 + (y % 400 < 0 ? 400 : 0)); /* [0, 399] */
   unsigned mp = (month + 9) % 12; /* March = 0 */
   unsigned doy = (153 * mp + 2) / 5 + day - 1;
   unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  *days_out = era * 146097 + (int64_t)doe - 719468;
+  /* Keep product and residual on the same side of zero, so a valid
+   * final day never requires an overflowing intermediate. */
+  int64_t shift = era >= 5 ? 5 : 4;
+  int64_t days;
+  if (ckd_mul(&days, era - shift, 146097) ||
+      ckd_add(&days, days, (int64_t)doe - 719468 + shift * 146097))
+    return false;
+  *days_out = days;
   return true;
 }
 

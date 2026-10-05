@@ -180,6 +180,11 @@ static void test_civil_math(void) {
   CHECK(ztime_days_in_month(1900, 2) == 28);
   CHECK(ztime_days_in_month(1970, 0) == 0);
   CHECK(ztime_days_in_month(1970, 13) == 0);
+  /* Civil years whose epoch day cannot fit must reject without overflow. */
+  const int64_t extremes[] = {INT64_MIN, INT64_MAX};
+  for (size_t i = 0; i < sizeof extremes / sizeof extremes[0]; i++) {
+    CHECK(!ztime_days_from_civil(extremes[i], 1, 1, &days));
+  }
   /* Inverse over a span covering leap centuries both ways. */
   for (int64_t d = -100000; d <= 100000; d += 73) {
     int64_t y;
