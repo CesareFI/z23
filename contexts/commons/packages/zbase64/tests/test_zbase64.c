@@ -103,6 +103,54 @@ static void test_roundtrip_all_bytes(void) {
   CHECK(n == sizeof(raw) && memcmp(dec, raw, n) == 0);
 }
 
+static void test_size_overflow(void) {
+  const size_t groups = SIZE_MAX / 4u;
+  const size_t largest_input = groups * 3u;
+  const size_t largest_output = groups * 4u;
+  CHECK(zbase64_encode_len(SIZE_MAX) == SIZE_MAX);
+  CHECK(zbase64_encode_len(largest_input + 1u) == SIZE_MAX);
+  CHECK(zbase64_encode_len(largest_input) == largest_output);
+  CHECK(zbase64_encode_len(largest_input - 1u) == largest_output);
+  CHECK(zbase64_encode_len(largest_input - 2u) == largest_output);
+  CHECK(largest_output < SIZE_MAX); /* There is room to represent the NUL. */
+
+  /* Baseline size-query assertions fail without touching a purported huge
+   * span. Exercise rejection only once the size query has the new contract. */
+  if (zbase64_encode_len(SIZE_MAX) != SIZE_MAX ||
+      zbase64_encode_len(largest_input + 1u) != SIZE_MAX)
+    return;
+  static const uint8_t byte = 0;
+  const size_t lengths[] = {largest_input + 1u, SIZE_MAX - 1u, SIZE_MAX};
+  bool (*const encoders[])(const uint8_t *, size_t, char *, size_t) = {
+      zbase64_encode, zbase64url_encode};
+  char out[9], saved[9];
+  memset(saved, '!', sizeof(saved));
+  for (size_t e = 0; e < 2; e++) {
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
+      memcpy(out, saved, sizeof(out));
+      CHECK(!encoders[e](&byte, lengths[i], out, sizeof(out)));
+      CHECK(memcmp(out, saved, sizeof(out)) == 0);
+      CHECK(!encoders[e](&byte, lengths[i], out, SIZE_MAX));
+      CHECK(memcmp(out, saved, sizeof(out)) == 0);
+    }
+  }
+}
+
+static void test_encode_capacity_canaries(void) {
+  static const uint8_t four[] = {1, 2, 3, 4};
+  bool (*const encoders[])(const uint8_t *, size_t, char *, size_t) = {
+      zbase64_encode, zbase64url_encode};
+  char out[9], saved[9];
+  memset(saved, '!', sizeof(saved));
+  for (size_t e = 0; e < 2; e++) {
+    memcpy(out, saved, sizeof(out));
+    CHECK(!encoders[e](four, sizeof(four), out, sizeof(out) - 1u));
+    CHECK(memcmp(out, saved, sizeof(out)) == 0);
+    CHECK(encoders[e](four, sizeof(four), out, sizeof(out)));
+    CHECK(memcmp(out, "AQIDBA==", sizeof(out)) == 0);
+  }
+}
+
 static void test_size_arithmetic(void) {
   CHECK(zbase64_encode_len(0) == 0);
   CHECK(zbase64_encode_len(1) == 4);
@@ -125,6 +173,8 @@ int main(void) {
   test_strict_rejections();
   test_roundtrip_all_bytes();
   test_size_arithmetic();
+  test_size_overflow();
+  test_encode_capacity_canaries();
   if (failures) {
     fprintf(stderr, "zbase64: %d failure(s)\n", failures);
     return 1;

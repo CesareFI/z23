@@ -8,7 +8,10 @@ static const char k_url[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 size_t zbase64_encode_len(size_t len) {
-  return ((len + 2u) / 3u) * 4u;
+  size_t groups = len / 3u + (len % 3u != 0);
+  if (groups > SIZE_MAX / 4u)
+    return SIZE_MAX;
+  return groups * 4u;
 }
 
 size_t zbase64_decode_cap(size_t len) {
@@ -20,7 +23,7 @@ static bool encode_with(const char *alpha, const uint8_t *in, size_t len,
   if (!out)
     return false;
   size_t need = zbase64_encode_len(len);
-  if (cap < need + 1u)
+  if (need == SIZE_MAX || cap < need + 1u)
     return false;
   if (len && !in)
     return false;

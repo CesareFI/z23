@@ -19,7 +19,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Exact encoded length (with padding) for len input bytes. */
+/* Exact encoded length (with padding, excluding NUL) for len input bytes.
+ * Returns SIZE_MAX if the padded length cannot be represented by size_t;
+ * callers must reject that sentinel before adding space for a terminator. */
 size_t zbase64_encode_len(size_t len);
 
 /* Worst-case decoded size for an encoded input of len characters
@@ -27,7 +29,10 @@ size_t zbase64_encode_len(size_t len);
 size_t zbase64_decode_cap(size_t len);
 
 /* Encode in[0..len) into out (capacity cap). out is NUL-terminated on
- * success. Returns false only when cap < zbase64_encode_len(len) + 1. */
+ * success. Returns false for NULL out, NULL in with nonzero len, an
+ * unrepresentable encoded length (SIZE_MAX sentinel), or insufficient cap
+ * including the NUL. Size overflow and insufficient cap reject before reading
+ * input or changing output. Both alphabets use the same padded size contract. */
 bool zbase64_encode(const uint8_t *in, size_t len, char *out, size_t cap);
 bool zbase64url_encode(const uint8_t *in, size_t len, char *out,
                        size_t cap);
