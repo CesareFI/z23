@@ -832,7 +832,8 @@ static void dl_publication_clear(struct dl_row *r)
 static bool dl_hold_row_ok(const struct dl_row *r)
 {
     return !r->publication_hold || (!r->publication_signature[0] &&
-        !r->push_diagnostic_pending && !r->fence_peer && strcmp(r->phase, "push") != 0);
+        !r->pushed[0] && !r->push_diagnostic_pending && !r->fence_peer &&
+        strcmp(r->phase, "push") != 0);
 }
 
 static bool dl_row_semantics_ok(const struct dl_row *r)

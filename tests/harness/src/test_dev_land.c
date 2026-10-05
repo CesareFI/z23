@@ -8642,6 +8642,65 @@ _test_next:
     return failures;
 }
 
+/* Change the native fixture's one empty pushed-tip field, without adding
+ * a duplicate key or changing any publication/signature field. */
+static bool dlx_hold_pushed_fixture(const char *tip)
+{
+    static const char empty[] = "\"tip_pushed\":\"\"";
+    char body[16384], changed[16384], land[1200], path[1400];
+    size_t len = 0;
+    if (!dlx_queue_bytes(body, sizeof(body), &len)) return false;
+    char *field = strstr(body, empty);
+    if (!field || strstr(field + sizeof(empty) - 1, "\"tip_pushed\":")) return false;
+    int n = snprintf(changed, sizeof(changed), "%.*s\"tip_pushed\":\"%s\"%s",
+                     (int)(field - body), body, tip,
+                     field + sizeof(empty) - 1);
+    dlx_landdir(land, sizeof(land));
+    (void)snprintf(path, sizeof(path), "%s/queue.jsonl", land);
+    return n > 0 && (size_t)n < sizeof(changed) && dlx_write(path, changed);
+}
+
+static int dlx_hold_pushed_case(void)
+{
+    int failures = 0;
+    TEST("land: held row with a pushed tip refuses as contradictory without effects") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char before[16384], after[16384], origin[64], current[64];
+        size_t first = 0, second = 0;
+        dlx_isolate("hold_pushed");
+        ASSERT(dlx_rig_make(&rig, "hold_pushed_rig"));
+        ASSERT(dlx_origin_main(&rig, origin));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c)); dlx_end(&c);
+        ASSERT(dlx_hold_field_replace(",\"publication_hold\":true"));
+        ASSERT(dlx_hold_pushed_fixture(rig.tip));
+        ASSERT(dlx_queue_bytes(before, sizeof(before), &first));
+        ASSERT(strstr(before, "\"phase\":\"\"") != NULL);
+        ASSERT(strstr(before, "\"publication_signature\":\"\"") != NULL);
+        ASSERT(strstr(before, "\"publication_bundle\":\"\"") != NULL);
+        ASSERT(strstr(before, "\"push_diagnostic_pending\":0") != NULL);
+        ASSERT(strstr(before, "\"fence_peer\":0") != NULL);
+        const char *actions[] = {"status", "step", "hold", "release"};
+        for (size_t i = 0; i < sizeof(actions) / sizeof(actions[0]); i++) {
+            dlx_begin(&c, actions[i]);
+            if (i >= 2) (void)json_push_kv_int(&c.input, "seq", 1);
+            ASSERT(dlx_run(&c) && !dlx_ok(&c));
+            ASSERT_STR_EQ(c.reply.error.code, "QUEUE_READ_FAILED"); dlx_end(&c);
+            ASSERT(dlx_queue_bytes(after, sizeof(after), &second));
+            ASSERT(first == second && memcmp(before, after, first) == 0);
+            ASSERT(dlx_origin_main(&rig, current));
+            ASSERT_STR_EQ(origin, current);
+        }
+        PASS();
+    }
+_test_next:
+    dlx_restore();
+    return failures;
+}
+
 static int dlx_hold_malformed_case(void)
 {
     int failures = 0;
@@ -8658,7 +8717,9 @@ static int dlx_hold_malformed_case(void)
         dlx_submit(&c, &rig, rig.tip);
         ASSERT(dlx_run(&c) && dlx_ok(&c)); dlx_end(&c);
         const char *bad[] = {",\"publication_hold\":\"true\"", ",\"publication_hold\":1",
-            ",\"publication_hold\":null", ",\"publication_hold\":true,\"publication_hold\":false"};
+            ",\"publication_hold\":null", ",\"publication_hold\":true,\"publication_hold\":false",
+            ",\"publication_hold\":true,\"publication_hold\":true",
+            ",\"publication_hold\":true,\"\\u0070ublication_hold\":true"};
         for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
             ASSERT(dlx_hold_field_replace(bad[i]));
             ASSERT(dlx_queue_bytes(before, sizeof(before), &first));
@@ -8838,6 +8899,7 @@ int test_dev_land(void)
     int failures = 0;
     failures += dlx_publication_hold_cases();
     failures += dlx_hold_legacy_case();
+    failures += dlx_hold_pushed_case();
     failures += dlx_hold_malformed_case();
     failures += dlx_hold_sealed_case();
     failures += dlx_hold_lock_case();
