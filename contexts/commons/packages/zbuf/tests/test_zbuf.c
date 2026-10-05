@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /* Tests for zbuf — bounded growable byte buffer.
  * Groups: basic, printf, bound, sticky, null, fuzz. */
 #include "zbuf/zbuf.h"
@@ -14,6 +15,53 @@ static int g_fail = 0;
       g_fail = 1;                                                       \
     }                                                                   \
   } while (0)
+
+static void test_maximum(void) {
+  zbuf b = {0};
+  CHECK(zbuf_init(&b, SIZE_MAX) == ZBUF_ERR_ARG);
+  CHECK(b.data == NULL && b.len == 0 && b.cap == 0 && b.max == 0);
+  CHECK(b.err == ZBUF_OK);
+  CHECK(zbuf_init(&b, SIZE_MAX - 1) == ZBUF_OK);
+  CHECK(zbuf_put(&b, 'x') == ZBUF_OK);
+  if (b.data == NULL) return;
+  unsigned char *data = b.data;
+  size_t cap = b.cap;
+  CHECK(zbuf_write(&b, "x", SIZE_MAX - 1) == ZBUF_ERR_FULL);
+  CHECK(zbuf_put(&b, 'y') == ZBUF_ERR_FULL);
+  CHECK(b.data == data && b.cap == cap && b.len == 1);
+  CHECK(b.data[0] == 'x' && b.data[1] == '\0');
+  zbuf_free(&b);
+}
+
+static void test_invalid_init_preserves(void) {
+  zbuf b;
+  CHECK(zbuf_init(&b, 3) == ZBUF_OK);
+  CHECK(zbuf_str(&b, "abc") == ZBUF_OK);
+  if (b.data == NULL) return;
+  CHECK(zbuf_put(&b, 'd') == ZBUF_ERR_FULL);
+  zbuf saved = b;
+  CHECK(zbuf_init(&b, SIZE_MAX) == ZBUF_ERR_ARG);
+  CHECK(b.data == saved.data && b.len == saved.len && b.cap == saved.cap);
+  CHECK(b.max == saved.max && b.err == ZBUF_ERR_FULL);
+  CHECK(memcmp(saved.data, "abc", 4) == 0);
+  zbuf_free(&saved);
+}
+
+static void test_zero_maximum(void) {
+  zbuf b;
+  CHECK(zbuf_init(&b, 0) == ZBUF_OK);
+  CHECK(zbuf_write(&b, NULL, 0) == ZBUF_OK);
+  CHECK(b.len == 0 && b.cap == 1 && b.data != NULL);
+  CHECK(strcmp(zbuf_cstr(&b), "") == 0);
+  unsigned char *data = b.data;
+  CHECK(zbuf_put(&b, 'x') == ZBUF_ERR_FULL);
+  CHECK(zbuf_write(&b, NULL, 0) == ZBUF_ERR_FULL);
+  CHECK(b.data == data && b.len == 0 && strcmp(zbuf_cstr(&b), "") == 0);
+  zbuf_clear(&b);
+  CHECK(zbuf_status(&b) == ZBUF_OK);
+  CHECK(zbuf_write(&b, NULL, 0) == ZBUF_OK);
+  zbuf_free(&b);
+}
 
 static void test_basic(void) {
   zbuf b;
@@ -137,6 +185,9 @@ static void test_fuzz(void) {
 }
 
 int main(void) {
+  test_maximum();
+  test_invalid_init_preserves();
+  test_zero_maximum();
   test_basic();
   test_printf();
   test_bound();

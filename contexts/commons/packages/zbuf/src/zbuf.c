@@ -1,6 +1,8 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /* zbuf — bounded growable byte buffer. See include/zbuf/zbuf.h. */
 #include "zbuf/zbuf.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +18,7 @@ const char *zbuf_err_str(zbuf_err e) {
 }
 
 zbuf_err zbuf_init(zbuf *b, size_t max) {
-  if (b == NULL) return ZBUF_ERR_ARG;
+  if (b == NULL || max == SIZE_MAX) return ZBUF_ERR_ARG;
   b->data = NULL;
   b->len = 0;
   b->cap = 0;
@@ -45,7 +47,8 @@ static zbuf_err zbuf__reserve(zbuf *b, size_t extra) {
   size_t need, ncap;
   unsigned char *nd;
   if (b->err != ZBUF_OK) return b->err;
-  if (extra > b->max - b->len) { /* also catches len > max */
+  if (b->max == SIZE_MAX || b->len > b->max ||
+      extra > b->max - b->len || extra > SIZE_MAX - b->len - 1) {
     b->err = ZBUF_ERR_FULL;
     return b->err;
   }

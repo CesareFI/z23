@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /* zbuf — bounded growable byte buffer
  *
  * Apache-2.0 licensed. C23, hosted (uses realloc), sticky errors.
@@ -22,7 +23,7 @@ extern "C" {
 
 typedef enum {
   ZBUF_OK = 0,
-  ZBUF_ERR_ARG = 1,  /* NULL argument */
+  ZBUF_ERR_ARG = 1,  /* NULL argument or unrepresentable maximum */
   ZBUF_ERR_FULL = 2, /* would exceed the configured maximum */
   ZBUF_ERR_OOM = 3   /* allocation failed */
 } zbuf_err;
@@ -35,7 +36,9 @@ typedef struct {
   zbuf_err err;    /* sticky */
 } zbuf;
 
-/* Initialize an empty buffer with hard maximum `max` bytes. */
+/* Initialize an empty buffer with hard maximum `max` bytes.
+ * `max` must be at most SIZE_MAX - 1, leaving room for the NUL slot.
+ * Invalid arguments return ZBUF_ERR_ARG without changing the buffer. */
 zbuf_err zbuf_init(zbuf *b, size_t max);
 
 /* Free storage and reset to a fresh empty state (max kept). */
