@@ -28,12 +28,13 @@
 
 struct fake_clock {
     _Atomic int64_t wall_ms;
+    _Atomic int64_t monotonic_ns;
 };
 
 static int64_t fake_now_mono(void *self)
 {
-    (void)self;
-    return 1;
+    struct fake_clock *c = (struct fake_clock *)self;
+    return atomic_load(&c->monotonic_ns);
 }
 
 static int64_t fake_now_wall(void *self)
@@ -45,6 +46,7 @@ static int64_t fake_now_wall(void *self)
 static void fake_clock_install(struct fake_clock *c, int64_t unix_s)
 {
     atomic_store(&c->wall_ms, unix_s * 1000);
+    atomic_store(&c->monotonic_ns, unix_s * INT64_C(1000000000));
     static clock_iface_t iface;
     iface.now_monotonic_ns = fake_now_mono;
     iface.now_wall_ms = fake_now_wall;
@@ -55,6 +57,16 @@ static void fake_clock_install(struct fake_clock *c, int64_t unix_s)
 static void fake_clock_set(struct fake_clock *c, int64_t unix_s)
 {
     atomic_store(&c->wall_ms, unix_s * 1000);
+    atomic_store(&c->monotonic_ns, unix_s * INT64_C(1000000000));
+}
+
+static void fake_clock_set_split(struct fake_clock *c,
+                                 int64_t monotonic_s,
+                                 int64_t wall_s)
+{
+    atomic_store(&c->monotonic_ns,
+                 monotonic_s * INT64_C(1000000000));
+    atomic_store(&c->wall_ms, wall_s * 1000);
 }
 
 static void reset_sync_watchdog(struct connman *cm,
@@ -319,8 +331,10 @@ int test_sync_watchdog_conditions(void)
         tip.nHeight = 100;
         ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
         sync_set_state(SYNC_FINDING_PEERS, "test");
-        sync_state_test_set_entered_unix(2000);
-        fake_clock_set(&clock, 2601);
+        sync_state_test_set_entered_monotonic(2000);
+        /* The stuck-state recovery budget is elapsed process time. A wall
+         * rollback must not hide 601 seconds of monotonic stasis. */
+        fake_clock_set_split(&clock, 2601, 1500);
 
         condition_engine_tick();
         ok = ok && sync_state_stuck_test_remedy_calls() == 1;

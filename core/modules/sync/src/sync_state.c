@@ -21,8 +21,13 @@
 /* ── Sync state machine ──────────────────────────────────── */
 
 static _Atomic int g_sync_state = SYNC_IDLE;
-static _Atomic int64_t g_sync_state_entered_time;
+static _Atomic int64_t g_sync_state_entered_us;
 static _Atomic int g_sync_state_entry_height;
+
+static int64_t sync_state_now_us(void)
+{
+    return platform_time_monotonic_us();
+}
 
 const char *sync_state_name(enum sync_state state)
 {
@@ -112,18 +117,19 @@ enum sync_state sync_get_state(void)
 
 void sync_state_monitor_init(void)
 {
-    atomic_store(&g_sync_state_entered_time,
-                 (int64_t)platform_time_wall_time_t());
+    atomic_store(&g_sync_state_entered_us, sync_state_now_us());
     atomic_store(&g_sync_state_entry_height, 0);
 }
 
 int64_t sync_get_state_duration(void)
 {
-    int64_t entered = atomic_load(&g_sync_state_entered_time);
-    if (entered == 0)
+    int64_t entered_us = atomic_load(&g_sync_state_entered_us);
+    if (entered_us == 0)
         return 0;
-    int64_t now = (int64_t)platform_time_wall_time_t();
-    return (now > entered) ? (now - entered) : 0;
+    int64_t now_us = sync_state_now_us();
+    return (now_us > entered_us)
+        ? (now_us - entered_us) / INT64_C(1000000)
+        : 0;
 }
 
 int sync_get_state_entry_height(void)
@@ -132,9 +138,10 @@ int sync_get_state_entry_height(void)
 }
 
 #ifdef ZCL_TESTING
-void sync_state_test_set_entered_unix(int64_t entered_unix)
+void sync_state_test_set_entered_monotonic(int64_t entered_seconds)
 {
-    atomic_store(&g_sync_state_entered_time, entered_unix);
+    atomic_store(&g_sync_state_entered_us,
+                 entered_seconds * INT64_C(1000000));
 }
 #endif
 
@@ -158,8 +165,7 @@ bool sync_set_state(enum sync_state new_state, const char *reason)
     }
 
     atomic_store(&g_sync_state, (int)new_state);
-    atomic_store(&g_sync_state_entered_time,
-                 (int64_t)platform_time_wall_time_t());
+    atomic_store(&g_sync_state_entered_us, sync_state_now_us());
     atomic_store(&g_sync_state_entry_height, 0);
 
     char buf[EVENT_PAYLOAD_SIZE];
@@ -192,8 +198,7 @@ bool sync_try_transition(enum sync_state expected,
                                         (int)new_state))
         return false;
 
-    atomic_store(&g_sync_state_entered_time,
-                 (int64_t)platform_time_wall_time_t());
+    atomic_store(&g_sync_state_entered_us, sync_state_now_us());
     atomic_store(&g_sync_state_entry_height, 0);
 
     char buf[EVENT_PAYLOAD_SIZE];

@@ -59,7 +59,7 @@ int64_t sync_get_state_duration(void);
  * Do not read it as a live metric until a real height is recorded. */
 int sync_get_state_entry_height(void);
 #ifdef ZCL_TESTING
-void sync_state_test_set_entered_unix(int64_t entered_unix);
+void sync_state_test_set_entered_monotonic(int64_t entered_seconds);
 #endif
 
 /* ── Snapshot sync state machine ──────────────────────── */
