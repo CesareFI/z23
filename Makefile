@@ -13954,6 +13954,7 @@ check-shell-host-assumptions: $(LINTC_TOOL) $(JSONQ_BIN)
 	@echo "══ LINT: Linux/GNU shell assumptions only shrink ══"
 	@./tools/lint/check_shell_host_assumptions.sh --selftest
 	@./tools/scripts/port_probe.sh --selftest
+	@./tools/scripts/commons_fix_admit.sh --selftest
 	@./tools/scripts/isolated_node_env_selftest.sh
 	@./tools/scripts/service_args_selftest.sh
 	@bash tools/scripts/two_node_peer_tip_selftest.sh
@@ -14932,6 +14933,7 @@ else
 # (notably two Windows linkers in `make lint check-windows-acceptance`).
 LINT_PARALLEL_GATES = $(filter-out $(MAKECMDGOALS),$(LINT_GATES))
 lint: $(LINTC_TOOL) $(filter $(LINT_GATES),$(MAKECMDGOALS))
+	@./tools/scripts/commons_fix_admit.sh --selftest
 	@$(if $(LINT_PARALLEL_GATES),tools/lint/run_lint.sh --jobs "$(ZCL_LINT_JOBS)" --bin-dir "$(BIN_DIR)" $(LINT_PARALLEL_GATES),:)
 	@echo "══ LINT: all checks passed ══"
 endif
