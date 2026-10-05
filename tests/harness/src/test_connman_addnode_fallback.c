@@ -78,9 +78,23 @@ bool test_addrman_set_fail(struct connman *cm, uint8_t first_octet,
     }
     return false;
 }
+
+static int test_dial_cadence_after_clock_rollback(void)
+{
+    printf("connman_addnode_fallback: dial cadences recover after clock "
+           "rollback... ");
+    bool ok = connman_dial_interval_elapsed_for_test(900, 1000, 60) &&
+              connman_dial_interval_elapsed_for_test(1060, 1000, 60) &&
+              !connman_dial_interval_elapsed_for_test(1059, 1000, 60);
+    if (ok) printf("OK\n");
+    else printf("FAIL\n");
+    return ok ? 0 : 1;
+}
+
 int test_connman_addnode_fallback(void)
 {
     int failures = 0;
+    failures += test_dial_cadence_after_clock_rollback();
     failures += check_connman_addnode_dht_hint_priority_dial();
     failures += check_connman_addnode_loopback_edges_distinct();
     failures += check_connman_addnode_custom_port_onion_redial();

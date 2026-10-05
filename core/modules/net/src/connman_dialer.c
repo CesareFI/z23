@@ -46,6 +46,16 @@ static bool connect_only_wait_needed(bool connect_only, size_t outbound,
     return connect_only && outbound >= addnode_count && !dht_hint_pending;
 }
 
+static bool dial_interval_elapsed(int64_t now_seconds,
+                                  int64_t last_seconds,
+                                  int64_t interval_seconds)
+{
+    /* A backward wall-clock step starts a new scheduler epoch. Compare first
+     * so extreme skew cannot overflow the elapsed-time subtraction. */
+    return now_seconds < last_seconds ||
+           now_seconds - last_seconds >= interval_seconds;
+}
+
 static bool outbound_rate_allowed(bool below_floor, bool interval_elapsed,
                                   bool dht_hint_pending)
 {
@@ -114,6 +124,13 @@ bool connman_outbound_rate_allowed_for_test(bool below_floor,
 {
     return outbound_rate_allowed(below_floor, interval_elapsed,
                                  dht_hint_pending);
+}
+
+bool connman_dial_interval_elapsed_for_test(int64_t now_seconds,
+                                            int64_t last_seconds,
+                                            int64_t interval_seconds)
+{
+    return dial_interval_elapsed(now_seconds, last_seconds, interval_seconds);
 }
 #endif
 #define ZCL_FEELER_INTERVAL_DEFAULT_SECS 120
@@ -752,7 +769,8 @@ void *thread_open_connections(void *arg)
         const size_t OUTBOUND_HEALTHY_FLOOR = ZCL_PEER_FLOOR_HEALTHY;
         bool below_floor = (outbound_healthy < OUTBOUND_HEALTHY_FLOOR);
         bool rate_ok = outbound_rate_allowed(
-            below_floor, now_oc - s_last_addrman_attempt >= 10,
+            below_floor,
+            dial_interval_elapsed(now_oc, s_last_addrman_attempt, 10),
             connman_dht_hint_pending(cm));
 
         /* HARVEST: below the healthy floor AND addrman itself is running
@@ -763,8 +781,8 @@ void *thread_open_connections(void *arg)
          * necessarily this one. connman doesn't track chain height, so no
          * min_height filter here (-1). */
         if (below_floor &&
-            now_oc - cm->last_census_harvest_ts >=
-                ZCL_ADDNODE_HARVEST_INTERVAL_SECS) {
+            dial_interval_elapsed(now_oc, cm->last_census_harvest_ts,
+                                  ZCL_ADDNODE_HARVEST_INTERVAL_SECS)) {
             zcl_mutex_lock(&cm->manager.addrman.cs);
             size_t am_size = addrman_size(&cm->manager.addrman);
             zcl_mutex_unlock(&cm->manager.addrman.cs);
@@ -792,7 +810,8 @@ void *thread_open_connections(void *arg)
          * outbound slot). Skipped in -connect-only mode. */
         if (!g_connect_only && nbatch == 0) {
             int64_t feeler_interval = connman_feeler_interval_secs();
-            if (now_oc - cm->last_feeler_ts >= feeler_interval &&
+            if (dial_interval_elapsed(now_oc, cm->last_feeler_ts,
+                                      feeler_interval) &&
                 !connman_feeler_in_flight(cm)) {
                 struct net_address ftarget;
                 if (connman_pick_feeler_target(cm, &ftarget)) {
