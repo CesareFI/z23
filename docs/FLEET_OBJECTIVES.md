@@ -60,8 +60,9 @@ tree yet — the row is declared so the gap is visible, not hidden.
   counts the lines.
 - **`lint_families_over_ceiling`** counts the `.c` files under
   `tools/lint/lintc` whose line count exceeds 1500.
-- **`functions_over_complexity_cap`** counts the rows of
-  `tools/lint/cyclomatic_complexity_baseline.txt` when that file exists.
+- **`functions_over_complexity_cap`** counts every line of
+  `tools/lint/cyclomatic_complexity_baseline.txt`, including comments, when
+  the file can be opened; it does not parse function rows.
 - **`fresh_node_sync_eta_s`** and **`tokens_per_landed_commit`** have no
   producer yet: the first needs a fresh-sync timing leaf, the second needs
   the experiment ledger's cost side wired to a landed-commit count. Both
@@ -69,10 +70,10 @@ tree yet — the row is declared so the gap is visible, not hidden.
 
 ## Status
 
-Each row's `status` is `met`, `unmet`, or `unmeasured(<reason>)`. A value
-this tree cannot measure today is never reported as zero — zero is a
-different fact from "the tree cannot say," and this command distinguishes
-them by name.
+Each row's `status` is `met`, `unmet`, or `unmeasured(<reason>)`. Missing
+producer inputs normally yield `unmeasured`, but the lint-family reader
+skips individual unreadable C files and can report a measured zero from
+that partial scan.
 
 ## What it does not do
 
