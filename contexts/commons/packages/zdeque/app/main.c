@@ -7,12 +7,24 @@
  */
 #include "zdeque/zdeque.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define MAX_LINES 4096
 #define MAX_LINE 512
+
+static int parse_rotation(int argc, char **argv, long *rotation)
+{
+    if (argc < 3) return 0;
+    char *end;
+    errno = 0;
+    const long value = strtol(argv[2], &end, 10);
+    if (errno == ERANGE || end == argv[2] || *end != '\0') return 0;
+    *rotation = value;
+    return 1;
+}
 
 int main(int argc, char **argv)
 {
@@ -43,11 +55,11 @@ int main(int argc, char **argv)
     }
 
     /* rotate N */
-    if (argc < 3) {
+    long rot;
+    if (!parse_rotation(argc, argv, &rot)) {
         fprintf(stderr, "usage: zdeque rotate N\n");
         return 2;
     }
-    long rot = strtol(argv[2], NULL, 10);
     size_t sz = zdeque_size(&dq);
     if (sz == 0) return 0;
     long r = ((rot % (long)sz) + (long)sz) % (long)sz;

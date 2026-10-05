@@ -11,6 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define main zdeque_cli_main
+#include "../app/main.c"
+#undef main
+
 static int failures = 0;
 
 #define CHECK(cond)                                                     \
@@ -147,6 +151,8 @@ static void test_errors(void)
 
 int main(void)
 {
+    char *bad_rotation[] = {"zdeque", "rotate", "1x", NULL};
+    CHECK(zdeque_cli_main(3, bad_rotation) == 2);
     test_fifo();
     test_stack_discipline();
     test_wraparound();
