@@ -26,6 +26,14 @@ window and is what a headless gate box proves. These game-only goals build no
 node vendor archive or embedded Tor archive; mixed game and node goals retain
 the node's vendor and Tor prerequisites.
 
+The playable simulation and its mixed update/draw entrypoint compile with
+`-ffp-contract=off`. Their sources also set `STDC FP_CONTRACT OFF` on Clang;
+GCC enforces the build flag. Simulation raymath helpers are local to those
+objects, so rendering's external helpers cannot change their rounding.
+Dedicated view sources, cosmetic world generation and raylib keep their
+existing floating-point policy. This removes contraction as a replay
+difference; native math-library results can still differ between platforms.
+
 ## Controls
 
 Gamepad (ASTRO C40 / PlayStation layout; the mapping is locked in
@@ -50,6 +58,12 @@ directory talks to that service yet, and the binary has no network code.
 weapon cooldown and world bounds, with fixed inputs and a small shim standing
 in for the seven raylib drawing and time calls the models make. Rendering,
 input devices and the window itself have no automatic test.
+
+`make t-fast-exact ONLY=skycombat_fp_contract` builds and tests the actual
+game aircraft object without window-system headers. Its known-answer yaw
+step rounds to zero with separate binary32 operations; contraction preserves
+a nonzero residual. The test also checks the explicit fused reference, so
+the input's ability to distinguish those policies is asserted.
 
 ## Licences
 

@@ -52,6 +52,10 @@
  * parse the fixture language.
  */
 
+/* Exercise the game's actual aircraft object without window-system headers. */
+ZCL_TEST_GROUP_BUILD_NEED("test_skycombat_fp_contract",
+                          "build/bin/skycombat-fp-contract", "skycombat-fp-contract")
+
 /* The operator-contract acceptance runs the public claim command against
  * disposable Git ledgers. Build the candidate-owned dev binary rather than
  * relying on a developer's preexisting tool. It belongs to the real-root

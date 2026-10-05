@@ -3,6 +3,11 @@
  * Sky Combat: match scoring, teams and win conditions.
  */
 
+/* GCC uses the build's -ffp-contract=off; Clang also enforces it here. */
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 #include "sky_combat/models/match_rules.h"
 #include <stdlib.h>
 #include <string.h>

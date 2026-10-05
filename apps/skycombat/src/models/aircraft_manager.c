@@ -8,6 +8,11 @@
  * @brief Implementation of aircraft management system
  */
 
+/* GCC uses the build's -ffp-contract=off; Clang also enforces it here. */
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 #include "sky_combat/models/aircraft_manager.h"
 #include <raymath.h>
 #include <stdlib.h>

@@ -3,6 +3,11 @@
  * Sky Combat: low-latency input controller.
  */
 
+/* GCC uses the build's -ffp-contract=off; Clang also enforces it here. */
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 #include "sky_combat/controllers/input_controller_fast.h"
 #include <fcntl.h>
 #include <unistd.h>

@@ -3,6 +3,11 @@
  * Sky Combat: weapon systems and projectiles.
  */
 
+/* GCC uses the build's -ffp-contract=off; Clang also enforces it here. */
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 #include "sky_combat/models/weapons.h"
 #include "sky_combat/utils/safety_macros.h"
 #include <raylib.h>

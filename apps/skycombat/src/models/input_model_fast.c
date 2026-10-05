@@ -3,6 +3,11 @@
  * Sky Combat: fast input model.
  */
 
+/* GCC uses the build's -ffp-contract=off; Clang also enforces it here. */
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 #include "sky_combat/models/input_model_fast.h"
 #include "sky_combat/controllers/controls_permanent.h"
 #include <math.h>

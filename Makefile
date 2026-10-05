@@ -2734,9 +2734,7 @@ Z23RAYLIB_CFLAGS := -std=$(ZCL_C_STD) -O2 -Wall -Wextra $(Z23RAYLIB_CPPFLAGS)
 # RAYMATH_USE_SIMD_INTRINSICS is the one raymath.h knob the game's own -Wundef
 # would trip over, so it is spelled out rather than left undefined.
 SKYCOMBAT_CFLAGS := -std=$(ZCL_C_STD) -O2 -Wall -Wextra -Werror -pedantic \
-	-Wstrict-prototypes -Wundef -Wshift-overflow=2 -Wattribute-alias=2 \
-	-Walloca -Wvla -Wduplicated-cond -Wduplicated-branches -Wtrampolines \
-	-Wflex-array-member-not-at-end \
+	$(filter-out -Wdouble-promotion,$(ZCL_WARN_EXTRA_GATES)) \
 	$(ZCL_WARN_STRINGOP_OVERFLOW) -D_POSIX_C_SOURCE=200809L \
 	-DRAYMATH_USE_SIMD_INTRINSICS=0 $(Z23RAYLIB_CPPFLAGS) \
 	-I$(SKYCOMBAT_DIR)/include -I$(SKYCOMBAT_DIR)/specifications \
@@ -2782,12 +2780,38 @@ SKYCOMBAT_GAME_SRCS := $(SKYCOMBAT_GAME_MAIN) \
 	$(SKYCOMBAT_DIR)/src/views/combat_effects.c
 SKYCOMBAT_GAME_OBJS := $(patsubst $(SKYCOMBAT_DIR)/%.c,$(SKYCOMBAT_OBJ_DIR)/%.o,$(SKYCOMBAT_GAME_SRCS))
 
-# The probe is a FILE target, not just a phony one, and every game and raylib
-# object takes it as an order-only prerequisite. Under `make -j` a phony
+# Gameplay and its mixed entrypoint use separately rounded operations on every
+# host. Dedicated views, cosmetic world generation and raylib retain their
+# existing policy. Keep raymath local so an external renderer implementation
+# cannot supply simulation arithmetic compiled with a different policy.
+SKYCOMBAT_SIM_SRCS := $(filter-out $(SKYCOMBAT_DIR)/src/views/% \
+	$(SKYCOMBAT_DIR)/src/models/cyberpunk_world.c,$(SKYCOMBAT_GAME_SRCS))
+SKYCOMBAT_SIM_OBJS := $(patsubst $(SKYCOMBAT_DIR)/%.c,$(SKYCOMBAT_OBJ_DIR)/%.o,$(SKYCOMBAT_SIM_SRCS))
+SKYCOMBAT_SIM_FP_FLAGS := -ffp-contract=off -DRAYMATH_STATIC_INLINE
+
+# These objects require raylib's portable headers, not a window-system SDK.
+# The real game still probes its platform before compiling raylib and views.
+$(SKYCOMBAT_SIM_OBJS): $(SKYCOMBAT_OBJ_DIR)/%.o: $(SKYCOMBAT_DIR)/%.c Makefile
+	@mkdir -p $(dir $@)
+	$(CC) $(SKYCOMBAT_CFLAGS) $(SKYCOMBAT_SIM_FP_FLAGS) -c $< -o $@
+
+SKYCOMBAT_FP_CONTRACT_BIN := $(BIN_DIR)/skycombat-fp-contract
+$(SKYCOMBAT_FP_CONTRACT_BIN): tools/dev/fixtures/skycombat/fp_contract_rounding.c \
+	$(SKYCOMBAT_OBJ_DIR)/src/models/aircraft.o Makefile
+	@mkdir -p $(dir $@)
+	$(CC) $(SKYCOMBAT_CFLAGS) $< $(SKYCOMBAT_OBJ_DIR)/src/models/aircraft.o \
+		-lm -o $@
+
+.PHONY: skycombat-fp-contract
+skycombat-fp-contract: $(SKYCOMBAT_FP_CONTRACT_BIN)
+
+# The probe is a FILE target, not just a phony one, and every rendering and
+# raylib object takes it as an order-only prerequisite. Simulation objects
+# remain usable by the headless rounding test. Under `make -j` a phony
 # sibling prerequisite does not stop the other siblings, so a host without the
 # headers used to print the refusal and then keep compiling for a screenful;
-# with the stamp in front, one line is the whole output. FORCE keeps the probe
-# honest on every run without dirtying a single object.
+# the stamp keeps missing SDK headers out of rendering compiler diagnostics.
+# FORCE keeps the probe honest on every run without dirtying a single object.
 SKYCOMBAT_PLATFORM_STAMP := $(SKYCOMBAT_OBJ_DIR)/.platform-ok
 
 $(SKYCOMBAT_PLATFORM_STAMP): FORCE
