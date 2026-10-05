@@ -22,7 +22,9 @@ static int expect(zjson *w, const char *want);
 /* Controlled libc fixture: no locale installation or global locale change. */
 static const char *test_radix = ".";
 static int format_fault;
+static unsigned locale_calls;
 struct lconv *zjson_test_localeconv(void) {
+  ++locale_calls;
   static struct lconv info;
   info.decimal_point = (char *)test_radix;
   return &info;
@@ -68,10 +70,14 @@ static int test_locale_formatter(void) {
     for (int kind = 0; kind < 3; ++kind) {
       char buf[64]; zjson w;
       zjson_init(&w, buf, sizeof buf);
+      unsigned calls_before = locale_calls;
       format_fault = fault;
       zjson_status st = kind == 0 ? zjson_i64(&w, -23) :
                         kind == 1 ? zjson_u64(&w, 23) : zjson_f64(&w, 1.5);
       format_fault = 0;
+      /* Float faults must stop before normalization touches tmp; the later
+       * emit_number guard alone cannot establish this boundary. */
+      CHECK(kind != 2 || locale_calls == calls_before);
       CHECK(st == ZJSON_ENCODING);
       CHECK(zjson_len(&w) == 0);
       CHECK(zjson_bool(&w, true) == ZJSON_ENCODING);
