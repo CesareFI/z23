@@ -896,7 +896,7 @@ ARENA_VIEW_INCLUDES = -Itools \
 # config.h; nothing in this tree includes a bare "config.h" today, and a new one
 # should not start.
 SKYCOMBAT_TEST_INCLUDES = -Iapps/skycombat/include -Iapps/skycombat/specifications \
-	-Ivendor/raylib/src
+	-Ivendor/raylib/src -Icontexts/commons/packages/zsha256/include
 
 # ZCL_ALL_INCLUDES — the one place the header roots are named as a set, so an
 # ad-hoc compile (a cross-compiler syntax sweep, a one-off -fsyntax-only check,
@@ -3103,7 +3103,8 @@ $(BUILD_DIR)/fixtures/rlc_child_broken$(ZCL_HOST_EXEEXT): $(RESIDENT_CONTRACT_FI
 	  -o $@ $(RESIDENT_CONTRACT_FIXTURE_SRC)
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
-	$(wildcard tests/harness/src/*.c))
+	$(wildcard tests/harness/src/*.c)) \
+	contexts/commons/packages/zsha256/src/zsha256.c
 TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c \
 	tools/dev/component_receiver.c \
 	tools/dev/devloop_app_scaffold.c \
