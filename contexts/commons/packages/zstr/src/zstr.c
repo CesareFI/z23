@@ -1,3 +1,6 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ * Purpose: bounded string helpers and zero-allocation split iteration.
+ */
 #include "zstr/zstr.h"
 
 #include <string.h>
@@ -137,7 +140,7 @@ bool zstr_split_next(zstr_split_it *it, zstr_span *out)
 {
     if (!it || !out || it->done || !it->cur) return false;
     const char *start = it->cur;
-    const char *sep = strchr(start, it->delim);
+    const char *sep = it->delim == '\0' ? NULL : strchr(start, it->delim);
     if (sep) {
         out->ptr = start;
         out->len = (size_t)(sep - start);

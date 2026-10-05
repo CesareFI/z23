@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0 */
 /* zstr — bounded, honest C string utilities (C23).
  *
  * strlcpy/strlcat-style copies that always NUL-terminate and report
@@ -48,6 +49,8 @@ bool zstr_ends_with(const char *s, const char *suffix);
 size_t zstr_count(const char *s, const char *needle);
 
 /* Split iterator over a delimiter character (empty fields kept).
+ * A NUL delimiter yields the whole string once, then exhaustion; an empty
+ * string yields one empty field. NULL input yields no fields.
  *
  *   zstr_split_it it;
  *   zstr_split_init(&it, "a,,b", ',');

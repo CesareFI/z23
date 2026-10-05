@@ -1,3 +1,6 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ * Purpose: regression tests for bounded string helpers and split iteration.
+ */
 #include "zstr/zstr.h"
 
 #include <stdio.h>
@@ -145,12 +148,37 @@ static void test_split(void)
     CHECK(wi == 4);
 }
 
+static void test_split_nul_delimiter(void)
+{
+    /* The suffix is in-bounds: baseline incorrectly emits it as field two. */
+    char input[] = {'a', '\0', 'X', '\0'};
+    zstr_split_it it;
+    zstr_span sp;
+    zstr_split_init(&it, input, '\0');
+    CHECK(zstr_split_next(&it, &sp));
+    CHECK(sp.ptr == input && sp.len == 1 && sp.ptr[0] == 'a');
+    CHECK(!zstr_split_next(&it, &sp));
+    CHECK(!zstr_split_next(&it, &sp)); /* exhaustion remains stable */
+
+    /* A genuinely one-byte empty string must never be read past its NUL. */
+    char empty[] = {'\0'};
+    zstr_split_init(&it, empty, '\0');
+    CHECK(zstr_split_next(&it, &sp));
+    CHECK(sp.ptr == empty && sp.len == 0);
+    CHECK(!zstr_split_next(&it, &sp));
+    CHECK(!zstr_split_next(&it, &sp));
+
+    zstr_split_init(&it, NULL, '\0');
+    CHECK(!zstr_split_next(&it, &sp));
+}
+
 int main(void)
 {
     test_copy_concat();
     test_trim_case();
     test_prefix_suffix_count();
     test_split();
+    test_split_nul_delimiter();
     puts("test_zstr: all groups passed (copy concat trim case prefix count split)");
     return 0;
 }
