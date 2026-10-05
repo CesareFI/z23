@@ -4993,3 +4993,30 @@ outcomes. Receipt SHA256 is
 Consensus, monetary policy, PoW, upgrades, transparent/shielded validity,
 recovery, persistence and TLS are unchanged. HTTP and native-command transport
 copies are separate owners and are not claimed retired by this candidate.
+
+## Legacy JNI review admission before allocation — 2026-10-06
+
+`jni_review.c` now reads at most `ZCL_TX_WIRE_MAX` bytes into automatic scratch
+and invokes the existing `zcl_jni_review_admit` helper before allocating the
+legacy copied-input owner. The helper owns transaction parsing and exact input
+count comparison. The accepted path copies the admitted draft into the same
+owner and then follows the unchanged source-copy and review-opening sequence.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer bounds and pointer arithmetic | JNI input remains bounded at 1,925 bytes. `memcpy` uses only the admitted length into the equally sized draft member. Source copying retains its existing capacity checks. |
+| Integer conversion and overflow | The JNI helper checks `jsize` before conversion. No new products or additions exist; `sizeof` measures the fixed 17,472-byte owner. |
+| Allocation and lifetime | Malformed draft/count input allocates no aggregate owner. The one owner on success retains its existing wipe-before-free path. No Java reference or native pointer escapes. |
+| Initialization and failure atomicity | Draft scratch starts zeroed and is wiped on admission refusal, allocation refusal and after the exact admitted span is copied. The owner is zeroed before use. Failure cannot create or replace a review. |
+| JNI exceptions | Pending entry exceptions still refuse before copying. Length-query or draft-copy exceptions return through scratch cleanup. No JNI call follows an observed pending exception. |
+| Stack use and complexity | The added fixed frame is 1,925 bytes and passes the unchanged 4,096-byte compiler gate. Production complexity remains at most M=10; no suppression or pin was added. |
+| Transaction and monetary validity | Admission grants no signing, funding or chain authority. The existing authoritative review parse, previous-output assessment, fee maximum, transaction identity, expiry and network checks remain unchanged. |
+| Secrets and logging | Drafts and previous transactions are public transaction data. No key/seed material or input bytes are logged. The complete draft scratch is still retired defensively. |
+| Concurrency | The existing process-wide review mutex covers admission, copying and opening. Java array length is immutable; no new shared state exists. |
+
+RED proves the previous legacy order violates the no-allocation/no-source-copy
+admission contract. GREEN and the admission-removal mutant prove test
+sensitivity. Focused, Clang 20 and GCC 14 sanitizer lanes pass. The complete
+TLS-OFF safety gate passes both analyzers and all 145/140 CTest cases;
+vendor hashes and reference vectors are intact. This is host fake-VM evidence,
+not ART, emulator, hardware, chain-sync or physical-custody proof.

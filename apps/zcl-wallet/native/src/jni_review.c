@@ -49,11 +49,23 @@ static zcl_status copy_previous(JNIEnv *env, jobjectArray previous, zcl_jni_revi
 static zcl_status open_copied(JNIEnv *env, jbyteArray draft, jobjectArray previous,
     zcl_network network, uint64_t fee, uint64_t now, uint64_t *id)
 {
+    uint8_t wire[ZCL_TX_WIRE_MAX] = {0};
+    size_t length = 0;
+    zcl_status status = zcl_jni_read_bytes(env, draft, wire, sizeof(wire), &length);
+    if (status == ZCL_OK) status = zcl_jni_review_admit(env, previous, wire, length);
+    if (status != ZCL_OK) {
+        zcl_secure_zero(wire, sizeof(wire));
+        return status;
+    }
     zcl_jni_review_inputs *inputs = malloc(sizeof(*inputs));
-    if (inputs == NULL) return ZCL_RESOURCE_EXHAUSTED;
+    if (inputs == NULL) {
+        zcl_secure_zero(wire, sizeof(wire));
+        return ZCL_RESOURCE_EXHAUSTED;
+    }
     memset(inputs, 0, sizeof(*inputs));
-    zcl_status status = zcl_jni_read_bytes(env, draft, inputs->draft,
-        sizeof(inputs->draft), &inputs->draft_length);
+    memcpy(inputs->draft, wire, length);
+    inputs->draft_length = length;
+    zcl_secure_zero(wire, sizeof(wire));
     if (status == ZCL_OK) status = copy_previous(env, previous, inputs);
     if (status == ZCL_OK)
         status = zcl_review_open(&review, inputs->draft, inputs->draft_length, network,

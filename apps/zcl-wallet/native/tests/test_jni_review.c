@@ -134,9 +134,9 @@ static bool preparation_clear(void *buffer, size_t length)
 static bool input_scratch_clear(void *buffer, size_t length)
 {
     if (preparing && preparation_clear(buffer, length)) return true;
-    if (full_sources && length == sizeof(zcl_transparent_tx)) { CHECK(transaction_clears++ == 0); return true; }
+    if (!preparing && length == sizeof(zcl_transparent_tx)) { CHECK(transaction_clears++ == 0); return true; }
     if (full_sources && length == sizeof(zcl_jni_full_sources)) { CHECK(source_clears++ == 0 && borrowed == 0); return true; }
-    if (full_sources && length == ZCL_TX_WIRE_MAX) { CHECK(draft_clears++ == 0); return true; }
+    if (length == ZCL_TX_WIRE_MAX) { CHECK(draft_clears++ == 0); return true; }
     return false;
 }
 
@@ -912,6 +912,7 @@ static void profile_regressions(void)
 static void regressions(void)
 {
     profile_regressions();
+    draft_admission();
     full_sources = true;
     profile_regressions(); captured_sources(); source_bounds(); exceptional_reference(); draft_admission();
     preparing = true;

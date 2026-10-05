@@ -8339,3 +8339,26 @@ impacted groups with zero failures, skips, unobserved or load-flaky outcomes in
 533.211s. Receipt SHA256 is
 `00c1ae9ac34857e1975a86e967497f1fb86b1213776230c0700e4da5b4ea3803`.
 Signed bundle, patch series, receipt, PR draft and manifest verify locally.
+
+## Production continuation: legacy review admission before allocation — 2026-10-06
+
+The legacy JNI `openReview` path now parses its bounded draft and compares the
+immutable source-array count before allocating its 17,472-byte aggregate owner
+or copying any previous transaction. It uses the same platform-neutral C
+admission helper already qualified for full-source review. Unsupported, empty
+and truncated drafts now return their codec-owned status before irrelevant
+source-element errors; successful review performs the unchanged authoritative
+parse, assessment, fee check and identity binding after copying owned bytes.
+
+Canonical RED reaches the legacy aggregate allocation/source path before draft
+parsing and fails the existing no-allocation admission assertion. GREEN reads
+only the at-most-1,925-byte draft, allocates zero aggregate bytes and copies no
+source bytes on refusal. Removing the shared admission call restores RED. The
+draft scratch is wiped on parse, count, allocation and copy paths.
+
+Focused and restored tests pass. Clang 20 and GCC 14 optimized
+ASan/UBSan/LSan runs pass. The full TLS-OFF C safety gate passes both static
+analyzers, all 145 Clang and 140 GCC CTest cases, vendor/reference hashes,
+and complexity: 601 production functions with none above M=10 and 1,851 test
+functions with none above M=15. TLS remains quarantined. Emulator and physical
+device execution are not claimed by this native fake-VM slice.
