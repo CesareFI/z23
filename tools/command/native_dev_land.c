@@ -6984,7 +6984,8 @@ static bool dl_chain_outcome(const struct dl_dirs *d, long long seq,
     if (!dl_read_file(path, data, DL_FILE_CAP, &len)) {
         int saved = errno; free(data); return saved == ENOENT;
     }
-    bool ok = !len || data[len - 1] == '\n';
+    bool ok = memchr(data, '\0', len) == NULL &&
+        (!len || data[len - 1] == '\n');
     char *save = NULL;
     for (char *line = strtok_r(data, "\n", &save); ok && line; line = strtok_r(NULL, "\n", &save)) {
         struct dl_row row;

@@ -5637,8 +5637,8 @@ static int test_dev_land_chain_codec(void)
             ASSERT(snprintf(line, sizeof(line), "{%s,%s}", DLX_CHAIN_ROW, bad[i]) < (int)sizeof(line));
             ASSERT(!zcl_native_dev_land_test_chain_codec(line, out, sizeof(out)));
         }
-        ASSERT(zcl_native_dev_land_test_chain_codec("{" DLX_CHAIN_ROW ",\"nested\":{" DLX_CHAIN_FIELDS "}}", out, sizeof(out)));
-        ASSERT(strstr(out, "predecessor_") == NULL);
+        /* The current row boundary refuses containers before tuple parsing. */
+        ASSERT(!zcl_native_dev_land_test_chain_codec("{" DLX_CHAIN_ROW ",\"nested\":{" DLX_CHAIN_FIELDS "}}", out, sizeof(out)));
         PASS();
     } _test_next:;
     return failures;
@@ -5723,6 +5723,33 @@ static int test_dev_land_chain_relation(void)
         ASSERT(zcl_native_dev_land_test_chain_relation(br, invalid, 1, a, &waiting) == 4);
         char land[1024], history[1200]; dlx_landdir(land, sizeof(land));
         (void)snprintf(history, sizeof(history), "%s/outcomes.jsonl", land);
+        static const char hidden_failed[] =
+            "{\"seq\":99,\"tip\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+            "\"state\":\"cancelled\",\"attempt\":1}\0\n"
+            "{\"seq\":1,\"tip\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+            "\"state\":\"failed\",\"attempt\":1}\n";
+        static const char hidden_duplicate[] =
+            "{\"seq\":99,\"tip\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+            "\"state\":\"cancelled\",\"attempt\":1}\0\n"
+            "{\"seq\":1,\"tip\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+            "\"state\":\"cancelled\",\"attempt\":1}\n"
+            "{\"seq\":1,\"tip\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+            "\"state\":\"cancelled\",\"attempt\":1}\n";
+        static const struct { const char *bytes; size_t length; } binary[] = {
+            { hidden_failed, sizeof(hidden_failed) - 1 },
+            { hidden_duplicate, sizeof(hidden_duplicate) - 1 }
+        };
+        int binary_relations[2];
+        for (size_t i = 0; i < sizeof(binary) / sizeof(binary[0]); ++i) {
+            FILE *file = fopen(history, "wb"); ASSERT(file != NULL);
+            size_t written = fwrite(binary[i].bytes, 1, binary[i].length, file);
+            int closed = fclose(file);
+            ASSERT(written == binary[i].length && closed == 0);
+            binary_relations[i] = zcl_native_dev_land_test_chain_relation(
+                br, rows, 1, a, &waiting);
+        }
+        ASSERT(binary_relations[0] == 4);
+        ASSERT(binary_relations[1] == 4);
         ASSERT(dlx_chain_row(changed, sizeof(changed), 1, rig.clone, a, m, "landed", 0, NULL, NULL));
         size_t n = strlen(changed); ASSERT(n + 2 < sizeof(changed)); changed[n] = '\n'; changed[n + 1] = '\0';
         ASSERT(dlx_write(history, changed));
