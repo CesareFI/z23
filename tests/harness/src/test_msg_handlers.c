@@ -807,6 +807,58 @@ static int test_process_block_msg_late_peer_preserves_reassigned_owner(void)
     return failures;
 }
 
+static int test_process_block_msg_snapshot_requeues_owned_body(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: snapshot pause requeues its settled block body") {
+        peer_scoring_init();
+        struct download_manager *dm = get_download_mgr();
+        dl_init(dm);
+
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.header.nTime = 1700000016u;
+        blk.header.nBits = 0x1f00ffffu;
+        blk.header.nNonce.data[0] = 27;
+
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        block_clear_seen(&hash);
+
+        struct p2p_node owner;
+        unreq_setup_node(&owner, 507);
+        ASSERT(dl_mark_requested(dm, &hash, 3, (uint32_t)owner.id));
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        ASSERT(block_serialize(&blk, &s));
+
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.net_mgr = &nm;
+        mp.snapshot_active = test_snapshot_active;
+
+        ASSERT(process_block_msg(&mp, &owner, &s));
+        ASSERT(!dl_is_in_flight(dm, &hash));
+
+        /* Snapshot receive pauses legacy assignment, but once it hands off the
+         * body claim must still be queued rather than lost with the bytes the
+         * handler deliberately discarded. */
+        struct uint256 resumed;
+        ASSERT(dl_assign_to_peer(dm, 508, &resumed, 1) == 1);
+        ASSERT(uint256_eq(&resumed, &hash));
+
+        (void)dl_drain_for_backpressure(dm);
+        stream_free(&s);
+        block_free(&blk);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_process_block_msg_malformed_releases_owned_requests(void)
 {
     int failures = 0;
@@ -2187,6 +2239,7 @@ int test_msg_handlers(void)
     failures += test_process_block_msg_scores_unrequested();
     failures += test_process_block_msg_no_score_when_requested();
     failures += test_process_block_msg_late_peer_preserves_reassigned_owner();
+    failures += test_process_block_msg_snapshot_requeues_owned_body();
     failures += test_process_block_msg_malformed_releases_owned_requests();
     failures += test_process_blocktxn_malformed_retries_full_body();
     failures += test_process_blocktxn_bad_fill_retries_full_body();

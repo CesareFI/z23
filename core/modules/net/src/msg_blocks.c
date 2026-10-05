@@ -494,6 +494,20 @@ bool msg_block_retry_discarded_body(
     return true;
 }
 
+static void msg_block_requeue_snapshot_discard(
+        struct msg_processor *mp,
+        struct download_manager *dm,
+        const struct uint256 *hash,
+        uint32_t requester_id)
+{
+    if (requester_id == UINT32_MAX)
+        return;
+    struct block_index *bi = mp->main_state
+        ? block_map_find(&mp->main_state->map_block_index, hash)
+        : NULL;
+    dl_requeue_discarded_body(dm, hash, bi ? bi->nHeight : -1);
+}
+
 static void msg_block_handle_rejected_body(
         struct msg_processor *mp,
         const struct uint256 *hash,
@@ -780,6 +794,11 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
      * During RECEIVING: starves P2P socket reads.
      * During VERIFYING: SHA3 computation needs uncontested SQLite. */
     if (msg_processor_snapshot_active(mp)) {
+        /* The body bytes are deliberately discarded, so a request this peer
+         * genuinely owned must remain pending for legacy download to resume
+         * after snapshot handoff. Late replies cannot reach this branch with
+         * ownership: dl_mark_received_from_peer left a newer slot untouched. */
+        msg_block_requeue_snapshot_discard(mp, dm, &hash, requester_id);
         block_free(&blk);
         return true;
     }
