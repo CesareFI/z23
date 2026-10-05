@@ -133,6 +133,8 @@
 
 #include "command/native_command.h"
 #include "command/native_dev_land_regen.h"
+#include "command/native_dev_land_attestation.h"
+#include "util/clientversion.h"
 #include "command/native_devagent.h"
 #include "dependency_links.h"
 
@@ -9119,6 +9121,277 @@ static void dl_drive(const struct zcl_command_request *req,
 #endif
 }
 
+/* Dedicated self observation: no control helper is reachable from this path. */
+static const char dl_attest_head[] = "db648476e77c14308d77501ad85655e2444043b3";
+static const char dl_attest_base[] = "3a93e60ebf922af3d119b9facc1d95803f42844b";
+static const char dl_attest_tree[] = "4514cfd63acc408be3d37023656a8e88bc1be2c6";
+
+static bool dl_attest_string(const struct json_value *j, const char *key,
+                            const char *expected)
+{
+    const char *s = json_get_str(json_get(j, key));
+    return s && expected && strcmp(s, expected) == 0;
+}
+
+static bool dl_attest_binding(const struct json_value *j,
+                             const char *image, const char *source)
+{
+    return j->type == JSON_OBJ && j->num_children == 13 &&
+        dl_attest_string(j, "schema", ZCL_LAND_ATTEST_SCHEMA) &&
+        dl_attest_string(j, "candidate", dl_attest_head) &&
+        dl_attest_string(j, "base", dl_attest_base) &&
+        dl_attest_string(j, "tree", dl_attest_tree) &&
+        dl_attest_string(j, "executable_sha256", image) &&
+        dl_attest_string(j, "compiled_source_sha256", source) &&
+        dl_attest_string(j, "service_origin", "UNKNOWN");
+}
+
+static bool dl_attest_clock(const struct json_value *j, int64_t now)
+{
+    const struct json_value *seq = json_get(j, "seq");
+    const struct json_value *clock = json_get(j, "observed_at_ms");
+    return seq && seq->type == JSON_INT && seq->val.i == 410 &&
+        clock && clock->type == JSON_INT && clock->val.i > 0 &&
+        now >= clock->val.i && now - clock->val.i <= 5000;
+}
+
+static bool dl_attest_flags(const struct json_value *j, bool *enabled)
+{
+    const struct json_value *unsealed = json_get(j, "unsealed");
+    const struct json_value *a = json_get(j, "allow_unsigned_is_one");
+    const struct json_value *b = json_get(j, "proof_stub_nonempty");
+    const struct json_value *both = json_get(j, "fixture_exception_enabled");
+    bool ok = unsealed && unsealed->type == JSON_BOOL && unsealed->val.b &&
+        a && a->type == JSON_BOOL && b && b->type == JSON_BOOL &&
+        both && both->type == JSON_BOOL && both->val.b == (a->val.b && b->val.b);
+    if (ok) *enabled = both->val.b;
+    return ok;
+}
+
+/* Exact producer record: refuse alternate encodings and embedded-NUL loss. */
+static bool dl_attest_wire(const struct json_value *j, const char *wire, size_t length)
+{
+    char canonical[ZCL_LAND_ATTEST_CAP];
+    size_t n = json_write(j, canonical, sizeof(canonical));
+    return n == length && n < sizeof(canonical) && memcmp(canonical, wire, n) == 0;
+}
+
+/* Canonical fields contain printable ASCII without escapes. Check only the
+ * declared span before the legacy reader can advance over Unicode escapes. */
+static bool dl_attest_plain_wire(const char *wire, size_t length)
+{
+    for (size_t i = 0; i < length; ++i) {
+        unsigned char c = (unsigned char)wire[i];
+        if (c < 0x20 || c > 0x7e || c == '\\') return false;
+    }
+    return true;
+}
+
+bool zcl_dev_land_attestation_decode(const char *wire, size_t length,
+    const char *image, const char *source, int64_t now, bool *fixture_enabled)
+{
+    struct json_value j = {0};
+    if (fixture_enabled) *fixture_enabled = false;
+    if (!wire || !length || length >= ZCL_LAND_ATTEST_CAP || !fixture_enabled ||
+        !dl_hex_ok(image, 64) || !dl_hex_ok(source, 64) || now <= 0) {
+        fprintf(stderr, "land attestation: invalid consumer binding\n");
+        return false;
+    }
+    if (!dl_attest_plain_wire(wire, length)) {
+        fprintf(stderr, "land attestation: noncanonical wire byte\n");
+        return false;
+    }
+    bool ok = json_read(&j, wire, length) && dl_attest_binding(&j, image, source) &&
+        dl_attest_clock(&j, now) && dl_attest_wire(&j, wire, length) &&
+        dl_attest_flags(&j, fixture_enabled);
+    if (!ok) fprintf(stderr, "land attestation: malformed, stale or foreign self observation\n");
+    json_free(&j);
+    return ok;
+}
+static bool dl_join_age(int64_t observed, int64_t now)
+{
+    return observed > 0 && now >= observed && now - observed <= 5000;
+}
+
+static bool dl_join_equal(const char *a, const char *b)
+{
+    return a && b && *a && strcmp(a, b) == 0;
+}
+
+static bool dl_join_identity(const struct zcl_land_launcher_identity *a,
+                             const struct zcl_land_launcher_identity *b)
+{
+    return dl_join_equal(a->unit, b->unit) &&
+        dl_join_equal(a->descriptor_sha256, b->descriptor_sha256) &&
+        dl_join_equal(a->invocation_id, b->invocation_id) &&
+        dl_join_equal(a->boot_id, b->boot_id) &&
+        a->manager_uid == b->manager_uid && a->pid == b->pid;
+}
+
+static bool dl_join_expected(const struct zcl_land_launcher_identity *expected)
+{
+    return expected && expected->pid && expected->unit && *expected->unit &&
+        dl_hex_ok(expected->descriptor_sha256, 64) &&
+        dl_hex_ok(expected->invocation_id, 32) && dl_hex_ok(expected->boot_id, 32);
+}
+
+static bool dl_join_matches(const struct zcl_land_launcher_identity *expected,
+                            const struct zcl_land_launcher_capture *capture)
+{
+    const struct zcl_land_launcher_frame *frame = capture->frames;
+    return dl_join_identity(expected, &capture->before) &&
+        dl_join_identity(expected, &capture->after) &&
+        dl_join_identity(expected, &frame->identity) &&
+        frame->uid == expected->manager_uid &&
+        dl_join_equal(frame->transport, "stdout") && frame->cursor && *frame->cursor;
+}
+
+static bool dl_join_fresh(const struct zcl_land_launcher_capture *capture, int64_t now)
+{
+    const struct zcl_land_launcher_frame *frame = capture->frames;
+    return dl_join_age(capture->before.captured_at_ms, now) &&
+        dl_join_age(capture->after.captured_at_ms, now) &&
+        dl_join_age(frame->identity.captured_at_ms, now) &&
+        dl_join_age(frame->journal_at_ms, now) &&
+        capture->before.captured_at_ms <= frame->identity.captured_at_ms &&
+        frame->journal_at_ms <= frame->identity.captured_at_ms &&
+        frame->identity.captured_at_ms <= capture->after.captured_at_ms;
+}
+
+bool zcl_dev_land_launcher_join(
+    const struct zcl_land_launcher_identity *expected,
+    const struct zcl_land_launcher_capture *capture, int64_t now,
+    bool *fixture_enabled)
+{
+    static const char image[] = "d6810cf72e0c0ea08c05e89cb5cd20f37c9d8ecb6f069fc3c38f909bf26af564";
+    static const char source[] = "6f0feb89be24e387e3b9cc67074c95172ddb78d9af093dda11dcf3e135bb5248";
+    if (fixture_enabled) *fixture_enabled = false;
+    if (!dl_join_expected(expected) || !capture || !fixture_enabled ||
+        !capture->complete || !capture->frames || capture->frame_count != 1) {
+        fprintf(stderr, "land launcher join: missing or ambiguous capture\n");
+        return false;
+    }
+    const struct zcl_land_launcher_frame *frame = capture->frames;
+    if (!dl_join_matches(expected, capture) || !dl_join_fresh(capture, now)) {
+        fprintf(stderr, "land launcher join: stale or mismatched invocation\n");
+        return false;
+    }
+    if (!zcl_dev_land_attestation_decode(frame->wire, frame->length,
+        image, source, now, fixture_enabled)) return false;
+    /* The producer's timestamp cannot postdate the journal receipt. Keep the
+     * receiver-now check too: an older journal clock must not relax freshness. */
+    return zcl_dev_land_attestation_decode(frame->wire, frame->length,
+        image, source, frame->journal_at_ms, fixture_enabled);
+}
+
+static bool dl_attest_image(char out[65])
+{
+    if (os_proc_self_exe_identity() != OS_PROC_IMAGE_IDENTITY_RUNNING_IMAGE)
+        return false;
+    FILE *file = os_proc_open_self_exe();
+    if (!file) return false;
+    struct sha256_ctx hash;
+    uint8_t bytes[8192], digest[32];
+    size_t total = 0, n;
+    sha256_init(&hash);
+    while ((n = fread(bytes, 1, sizeof(bytes), file)) != 0) {
+        total += n;
+        if (total > 512u * 1024u * 1024u) break;
+        sha256_write(&hash, bytes, n);
+    }
+    bool ok = total > 0 && total <= 512u * 1024u * 1024u &&
+        !ferror(file) && feof(file);
+    if (fclose(file) != 0) ok = false;
+    if (!ok) return false;
+    sha256_finalize(&hash, digest);
+    zcl_hex_encode(digest, sizeof(digest), out);
+    return true;
+}
+
+static bool dl_attest_row(const struct dl_row *row)
+{
+    return row && strcmp(row->state, "inflight") == 0 &&
+        strcmp(row->local, dl_attest_head) == 0 &&
+        strcmp(row->tip, dl_attest_head) == 0 &&
+        strcmp(row->base, dl_attest_base) == 0 &&
+        strcmp(row->tree, dl_attest_tree) == 0 &&
+        strcmp(row->phase, "prove") == 0 && !row->publication_signature[0] &&
+        !row->publication_target[0] && !row->publication_proof[0] &&
+        !row->publication_bundle[0] && !row->publication_signer[0];
+}
+
+static bool dl_attest_load(struct dl_row *out)
+{
+    struct dl_dirs d;
+    struct dl_row *rows = NULL;
+    size_t count = 0, found = 0;
+    char path[4096 + 32];
+    if (!dl_dirs_resolve(&d, false)) return false;
+    int n = snprintf(path, sizeof(path), "%s/queue.jsonl", d.land);
+    bool ok = n > 0 && (size_t)n < sizeof(path) &&
+        dl_load_rows(path, &rows, &count, NULL, 0);
+    for (size_t i = 0; ok && i < count; ++i) {
+        if (rows[i].seq != 410) continue;
+        *out = rows[i];
+        ++found;
+    }
+    ok = ok && found == 1 && dl_attest_row(out);
+    free(rows);
+    return ok;
+}
+
+static bool dl_attest_encode_flags(struct json_value *j)
+{
+    const char *allow = dl_allow_unsigned();
+    bool a = allow && strcmp(allow, "1") == 0;
+    bool b = dl_stub() != NULL;
+    return json_push_kv_bool(j, "allow_unsigned_is_one", a) &&
+        json_push_kv_bool(j, "proof_stub_nonempty", b) &&
+        json_push_kv_bool(j, "fixture_exception_enabled", a && b) &&
+        json_push_kv_str(j, "service_origin", "UNKNOWN");
+}
+
+static bool dl_attest_encode(struct json_value *j, const struct dl_row *row,
+                            const char *image, const char *source, int64_t now)
+{
+    json_set_object(j);
+    return json_push_kv_str(j, "schema", ZCL_LAND_ATTEST_SCHEMA) &&
+        json_push_kv_int(j, "seq", 410) &&
+        json_push_kv_str(j, "candidate", row->local) &&
+        json_push_kv_str(j, "base", row->base) &&
+        json_push_kv_str(j, "tree", row->tree) &&
+        json_push_kv_bool(j, "unsealed", true) &&
+        json_push_kv_str(j, "executable_sha256", image) &&
+        json_push_kv_str(j, "compiled_source_sha256", source) &&
+        json_push_kv_int(j, "observed_at_ms", now) && dl_attest_encode_flags(j);
+}
+
+static void dl_attest_only(struct zcl_command_reply *reply)
+{
+    struct dl_row row = {0};
+    char image[65], wire[ZCL_LAND_ATTEST_CAP];
+    const char *source = zcl_build_source_id_sha256();
+    int64_t now = (int64_t)platform_time_wall_unix() * 1000;
+    struct json_value j = {0};
+    bool ok = now > 0 && dl_hex_ok(source, 64) && dl_attest_image(image) &&
+        dl_attest_load(&row) && dl_attest_encode(&j, &row, image, source, now);
+    size_t length = ok ? json_write(&j, wire, sizeof(wire)) : 0;
+    bool enabled;
+    ok = length && length < sizeof(wire) &&
+        zcl_dev_land_attestation_decode(wire, length, image, source, now, &enabled);
+    if (!ok) {
+        json_free(&j);
+        dl_fail(reply, "ATTESTATION_UNKNOWN", "attest_only",
+            "self image/source, clock or exact unsealed row unavailable",
+            "no service-origin or publication authority inferred");
+        return;
+    }
+    json_free(&reply->data);
+    reply->data = j;
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = 0;
+}
+
 /* ── dispatcher ────────────────────────────────────────────────────────── */
 
 /* A publication beat blocked on the operator's signed intent. A failed
@@ -9790,6 +10063,10 @@ void zcl_native_handle_dev_land(const struct zcl_command_request *request,
         dl_fail(reply, "BAD_INPUT", "route",
                 "dev land needs an action: submit|attach|attach_publish|status|step|drive|cancel|fence_replace",
                 "input.action missing or empty");
+        return;
+    }
+    if (strcmp(action, "attest_only") == 0) {
+        dl_attest_only(reply);
         return;
     }
     if (strcmp(action, "submit") == 0) {

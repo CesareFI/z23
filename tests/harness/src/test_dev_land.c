@@ -22,6 +22,7 @@
 
 #include "command/native_command.h"
 #include "command/native_dev_land_regen.h"
+#include "command/native_dev_land_attestation.h"
 #include "platform/logical_cpu.h"
 #include "platform/state_root.h"
 #include "config/command_catalog.h"
@@ -8358,9 +8359,249 @@ static int dlx_fence_concurrent(void)
 }
 #endif
 
+static int dlx_attest_only_cases(void)
+{
+    int failures = 0;
+    char land[2048], path[2304], wire[ZCL_LAND_ATTEST_CAP], before[2048], after[2048];
+    size_t before_len = 0, after_len = 0;
+    struct dlx_call c;
+    const char *row = "{\"seq\":410,\"tip\":\"db648476e77c14308d77501ad85655e2444043b3\",\"state\":\"inflight\",\"attempt\":2,\"phase\":\"prove\",\"base\":\"3a93e60ebf922af3d119b9facc1d95803f42844b\",\"local\":\"db648476e77c14308d77501ad85655e2444043b3\",\"tree\":\"4514cfd63acc408be3d37023656a8e88bc1be2c6\"}\n";
+    TEST("land attest-only: self capture roundtrip four BOOL cases and no mutation") {
+        dlx_isolate("attest-only");
+        dlx_landdir(land, sizeof(land));
+        ASSERT(dlx_mkdir_p(land));
+        ASSERT(snprintf(path, sizeof(path), "%s/queue.jsonl", land) < (int)sizeof(path));
+        ASSERT(dlx_write(path, row));
+        ASSERT(dlx_slurp(path, before, sizeof(before), &before_len));
+        for (int i = 0; i < 4; ++i) {
+            ASSERT(setenv("ZCL_LAND_ALLOW_UNSIGNED", (i & 1) ? "1" : "not-one", 1) == 0);
+            ASSERT(setenv("ZCL_LAND_PROOF_STUB", (i & 2) ? "PRIVATE-FIXTURE-VALUE-NOT-OUTPUT" : "", 1) == 0);
+            dlx_begin(&c, "attest_only");
+            ASSERT(dlx_run(&c));
+            ASSERT(dlx_ok(&c));
+            ASSERT_STR_EQ(dlx_str(&c, "service_origin"), "UNKNOWN");
+            ASSERT_EQ(json_get(&c.reply.data, "allow_unsigned_is_one")->val.b, !!(i & 1));
+            ASSERT_EQ(json_get(&c.reply.data, "proof_stub_nonempty")->val.b, !!(i & 2));
+            size_t n = json_write(&c.reply.data, wire, sizeof(wire));
+            ASSERT(n > 0 && n < sizeof(wire));
+            ASSERT(strstr(wire, "PRIVATE-FIXTURE") == NULL);
+            bool enabled = true;
+            const char *image = dlx_str(&c, "executable_sha256");
+            const char *source = dlx_str(&c, "compiled_source_sha256");
+            int64_t clock = dlx_int(&c, "observed_at_ms");
+            ASSERT(zcl_dev_land_attestation_decode(wire, n, image, source, clock, &enabled));
+            ASSERT_EQ(enabled, i == 3);
+            ASSERT(!zcl_dev_land_attestation_decode(wire, n, image, source, clock + 5001, &enabled));
+            ASSERT(!enabled);
+            ASSERT(!zcl_dev_land_attestation_decode(wire, n, image, source, 0, &enabled));
+            ASSERT(!zcl_dev_land_attestation_decode(wire, n, source, "bad-source", clock, &enabled));
+            ASSERT(!zcl_dev_land_attestation_decode(wire, n, source, image, clock, &enabled));
+            ASSERT(!zcl_dev_land_attestation_decode(wire, n, NULL, source, clock, &enabled));
+            ASSERT(!zcl_dev_land_attestation_decode(wire, n - 1, image, source, clock, &enabled));
+            ASSERT(json_push_kv_str(&c.reply.data, "service_origin", "timer"));
+            n = json_write(&c.reply.data, wire, sizeof(wire));
+            ASSERT(!zcl_dev_land_attestation_decode(wire, n, image, source, clock, &enabled));
+            dlx_end(&c);
+            ASSERT(dlx_slurp(path, after, sizeof(after), &after_len));
+            ASSERT_EQ(before_len, after_len);
+            ASSERT(memcmp(before, after, before_len) == 0);
+        }
+        const char *absent[] = {"step.lock", "queue.lock", "outcomes.jsonl", "logs", "wt"};
+        for (size_t i = 0; i < sizeof(absent)/sizeof(absent[0]); ++i) {
+            ASSERT(snprintf(path, sizeof(path), "%s/%s", land, absent[i]) < (int)sizeof(path));
+            ASSERT(access(path, F_OK) != 0);
+        }
+        const char *markers[] = {"\"seq\":41", "\"base\":\"", "\"tree\":\"", "\"local\":\""};
+        for (size_t i = 0; i < sizeof(markers)/sizeof(markers[0]); ++i) {
+            char changed[2048];
+            memcpy(changed, before, before_len + 1);
+            char *at = strstr(changed, markers[i]);
+            ASSERT(at != NULL);
+            at += strlen(markers[i]);
+            *at = *at == '1' ? '2' : '1';
+            ASSERT(snprintf(path, sizeof(path), "%s/queue.jsonl", land) < (int)sizeof(path));
+            ASSERT(dlx_write(path, changed));
+            dlx_begin(&c, "attest_only");
+            ASSERT(dlx_run(&c) && !dlx_ok(&c));
+            ASSERT_STR_EQ(dlx_err_code(&c), "ATTESTATION_UNKNOWN");
+            dlx_end(&c);
+            ASSERT(dlx_slurp(path, after, sizeof(after), &after_len));
+            ASSERT_EQ(before_len, after_len);
+            ASSERT(memcmp(changed, after, after_len) == 0);
+        }
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int dlx_attest_bounded_wire_cases(void)
+{
+    int failures = 0;
+    TEST("land attestation: malformed Unicode exact spans refuse before JSON") {
+        const char *vectors[] = {"{\"x\":\"\\", "{\"x\":\"\\u", "{\"x\":\"\\u0",
+            "{\"x\":\"\\u00", "{\"x\":\"\\u000", "{\"x\":\"\\uZZZZ\"}",
+            "{\"x\":\"\\uD800\"}", "{\"x\":\"\\uDC00\"}",
+            "{\"x\":\"\\uD800\\u", "{\"x\":\"\\u0000\"}"};
+        char digest[65];
+        memset(digest, 'a', 64);
+        digest[64] = 0;
+        for (size_t i = 0; i < sizeof(vectors)/sizeof(vectors[0]); ++i) {
+            size_t n = strlen(vectors[i]);
+            char *span = malloc(n);
+            ASSERT(span != NULL);
+            memcpy(span, vectors[i], n);
+            bool enabled = true;
+            bool accepted = zcl_dev_land_attestation_decode(span, n, digest, digest, 1, &enabled);
+            bool unchanged = memcmp(span, vectors[i], n) == 0;
+            free(span);
+            ASSERT(!accepted && !enabled && unchanged);
+            unsigned char guarded[128];
+            memset(guarded, 0xa5, sizeof(guarded));
+            memcpy(guarded + 1, vectors[i], n);
+            enabled = true;
+            ASSERT(!zcl_dev_land_attestation_decode((char *)guarded + 1, n,
+                digest, digest, 1, &enabled));
+            ASSERT(!enabled && guarded[0] == 0xa5 && guarded[n + 1] == 0xa5);
+        }
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int dlx_attest_refusal_cases(void)
+{
+    int failures = 0;
+    struct dlx_call c;
+    TEST("land attest-only: unavailable root refuses without creating state") {
+        dlx_isolate("attest-missing-root");
+        dlx_begin(&c, "attest_only");
+        ASSERT(dlx_run(&c));
+        ASSERT(!dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "ATTESTATION_UNKNOWN");
+        ASSERT(access(g_dlx_state, F_OK) != 0);
+        dlx_end(&c);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static void dlx_join_bad_identity(int kind, struct zcl_land_launcher_capture *c,
+                                  struct zcl_land_launcher_frame *f)
+{
+    switch (kind) {
+    case 0: c->complete = false; break;
+    case 1: c->frame_count = 0; break;
+    case 2: c->frame_count = 2; break;
+    case 3: c->frames = NULL; break;
+    case 4: c->before.unit = "foreign.service"; break;
+    case 5: c->after.descriptor_sha256 = f->identity.boot_id; break;
+    case 6: f->identity.invocation_id = f->identity.boot_id; break;
+    case 7: f->identity.boot_id = f->identity.invocation_id; break;
+    case 8: c->after.manager_uid++; break;
+    case 9: f->uid++; break;
+    }
+}
+
+static void dlx_join_bad_frame(int kind, struct zcl_land_launcher_capture *c,
+                               struct zcl_land_launcher_frame *f)
+{
+    switch (kind) {
+    case 10: c->after.pid++; break;
+    case 11: f->transport = "journal"; break;
+    case 12: f->cursor = NULL; break;
+    case 13: c->before.captured_at_ms = 4999; break;
+    case 14: c->after.captured_at_ms = 10001; break;
+    case 15: f->identity.captured_at_ms = 9999; break;
+    case 16: f->journal_at_ms = 4999; break;
+    case 17: f->length--; break;
+    case 18: f->wire = "{}"; f->length = 2; break;
+    case 19: f->identity.pid++; break;
+    }
+}
+
+static int dlx_launcher_join_cases(void)
+{
+    int failures = 0;
+    const char *wire = "{\"schema\":\"zcl.dev_land.self_attestation.v1\",\"seq\":410,\"candidate\":\"db648476e77c14308d77501ad85655e2444043b3\",\"base\":\"3a93e60ebf922af3d119b9facc1d95803f42844b\",\"tree\":\"4514cfd63acc408be3d37023656a8e88bc1be2c6\",\"unsealed\":true,\"executable_sha256\":\"d6810cf72e0c0ea08c05e89cb5cd20f37c9d8ecb6f069fc3c38f909bf26af564\",\"compiled_source_sha256\":\"6f0feb89be24e387e3b9cc67074c95172ddb78d9af093dda11dcf3e135bb5248\",\"observed_at_ms\":10000,\"allow_unsigned_is_one\":false,\"proof_stub_nonempty\":false,\"fixture_exception_enabled\":false,\"service_origin\":\"UNKNOWN\"}";
+    struct zcl_land_launcher_identity expected = {
+        .unit = "fixture-attest.service",
+        .descriptor_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        .invocation_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        .boot_id = "cccccccccccccccccccccccccccccccc",
+        .manager_uid = 1000, .pid = 123, .captured_at_ms = 10000
+    };
+    struct zcl_land_launcher_frame frame = {
+        .identity = expected, .uid = 1000, .transport = "stdout",
+        .cursor = "fixture-cursor", .wire = wire, .length = strlen(wire),
+        .journal_at_ms = 10000
+    };
+    struct zcl_land_launcher_capture original = {
+        .before = expected, .after = expected, .frames = &frame,
+        .frame_count = 1, .complete = true
+    };
+    TEST("land launcher join: one exact frame and inclusive 5000ms fixture boundary") {
+        bool enabled = true;
+        ASSERT(zcl_dev_land_launcher_join(&expected, &original, 15000, &enabled));
+        ASSERT(!enabled);
+        ASSERT(!zcl_dev_land_launcher_join(&expected, &original, 15001, &enabled));
+        ASSERT(!enabled);
+        PASS();
+    }
+    TEST("land launcher join: missing stale foreign duplicate and truncated captures UNKNOWN") {
+        for (int kind = 0; kind < 20; ++kind) {
+            struct zcl_land_launcher_frame altered = frame;
+            struct zcl_land_launcher_capture capture = original;
+            capture.frames = &altered;
+            dlx_join_bad_identity(kind, &capture, &altered);
+            dlx_join_bad_frame(kind, &capture, &altered);
+            bool enabled = true;
+            ASSERT(!zcl_dev_land_launcher_join(&expected, &capture, 10000, &enabled));
+            ASSERT(!enabled);
+        }
+        PASS();
+    }
+    TEST("land launcher join: image source and contradictory journal clocks UNKNOWN") {
+        const char *markers[] = {"\"executable_sha256\":\"", "\"compiled_source_sha256\":\""};
+        for (size_t i = 0; i < 4; ++i) {
+            char changed[ZCL_LAND_ATTEST_CAP];
+            ASSERT(strlen(wire) < sizeof(changed));
+            memcpy(changed, wire, strlen(wire) + 1);
+            struct zcl_land_launcher_frame altered = frame;
+            struct zcl_land_launcher_capture capture = original;
+            capture.frames = &altered;
+            if (i < 2) {
+                char *at = strstr(changed, markers[i]);
+                ASSERT(at != NULL);
+                at += strlen(markers[i]);
+                *at = '0';
+                altered.wire = changed;
+            } else {
+                altered.journal_at_ms = i == 2 ? 9999 : 10001;
+            }
+            bool enabled = true;
+            ASSERT(!zcl_dev_land_launcher_join(&expected, &capture, 10001, &enabled));
+            ASSERT(!enabled);
+        }
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
 int test_dev_land(void)
 {
     int failures = 0;
+    failures += dlx_launcher_join_cases();
+    failures += dlx_attest_only_cases();
+    failures += dlx_attest_bounded_wire_cases();
+    failures += dlx_attest_refusal_cases();
     failures += test_dev_land_signed_intent();
 #if !defined(_WIN32)
     failures += dlx_fence_cases();

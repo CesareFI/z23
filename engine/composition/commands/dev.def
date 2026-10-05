@@ -1964,36 +1964,17 @@ ZCL_COMMAND_DEV_READ(
 ZCL_COMMAND_DEV_COMMAND(
     "dev.land", "dev", "",
     "Queue a tip; attach signed Git intent, prove and push without waiting",
-    "One durable landing queue over the owner-private state root: submit "
-    "checks that the tip exists, is signed, and shares history with "
-    "origin/main, then appends {seq, tip, worktree, note} to "
-    "land/queue.jsonl with a single O_APPEND write and returns queued; "
-    "status renders queued requests, the one in flight with its phase, "
-    "elapsed time and attempt, and the last ten outcomes with the pushed "
-    "tip or the failing dimension and its log; step takes one beat under a "
-    "non-blocking host-wide slot lock, rebasing the tip onto origin/main in "
-    "a private landing worktree, running lint-fast, requesting the exact "
-    "commit/base proof through dev.proof, and RETURNING; on an unarmed "
-    "checkout status exposes the exact dev.proof.step inputs in "
-    "in_flight.proof_step for any worker to claim, without starting a "
-    "resident watcher by default; drive is a "
-    "bounded integrator session that releases the step lock during proof "
-    "and attempts publication immediately after PASS; a later step "
-    "reads the proof state and fast-forwards origin/main, retains submission "
-    "time through bounded moving-base retries before yielding to other "
-    "queued work, and retries a "
-    "host-load failure up to three times; "
-    "attach seals the exact proven Git pair and bundle under the local "
-    "operator identity before a push; attach_publish seals and runs that "
-    "same gated current-base push under one step lock; both attach actions "
-    "accept optional base/head pins and refuse a changed reviewed pair; "
-    "attach_publish with seq/base/head may wait 900000 ms for exact proof, "
-    "releasing the step lock between polls; "
-    "cancel drops one request by sequence number unless a push checkpoint "
-    "requires remote reconciliation. Every state change also "
-    "appends to the agent mail outbox when one exists, so an agent learns "
-    "the outcome by pulling rather than by waiting. Integration calls Git "
-    "without a shell; drive executes the existing bounded proof worker.", 65536,
+    "attest_only reports bounded self-image/source, exact unsealed seq410 pair, "
+    "time and two fixture booleans; service origin stays UNKNOWN. It returns "
+    "before all mutations. submit queues a signed related tip; status reads "
+    "the queue and exact proof handoff. step serializes rebase, lint, proof "
+    "request and receipt-gated push in the private worktree. drive bounds that "
+    "sequence and releases its lock during proof. attach seals an exact proven "
+    "pair; attach_publish seals and performs its current-base publication beat "
+    "under one lock. Optional base/head pins refuse changed pairs; wait_ms "
+    "bounds explicit attach_publish proof waiting. cancel refuses unresolved "
+    "push checkpoints. fence_replace binds an explicit paired successor. "
+    "Outcomes retain provenance and normal native mail receipts. No shell.", 65536,
     "land,submit,attach,attach_publish,step,drive,status,cancel,queue,proof,push,rebase,async",
     "zcl.land_input.v1", "zcl.land.v1",
     "action,tip,worktree,note,seq,base,head,wait_ms,json", "action",
