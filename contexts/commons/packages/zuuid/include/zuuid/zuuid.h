@@ -39,11 +39,12 @@ zuuid zuuid_nil(void);
 bool zuuid_is_nil(const zuuid *u);
 
 /* Parse canonical hyphenated form strictly:
- * exactly 36 chars, hyphens at 8/13/18/23, hex elsewhere. */
+ * exactly 36 chars, hyphens at 8/13/18/23, hex elsewhere.
+ * On failure, the destination UUID is unchanged. */
 zuuid_err zuuid_parse(const char *str, zuuid *out);
 
 /* Lenient parse: also accepts bare 32-hex, {braced}, and
- * "urn:uuid:" prefix, any hex case. */
+ * "urn:uuid:" prefix, any hex case. On failure, out is unchanged. */
 zuuid_err zuuid_parse_lenient(const char *str, zuuid *out);
 
 /* Format canonical lowercase into out (must hold ZUUID_STR_LEN bytes,

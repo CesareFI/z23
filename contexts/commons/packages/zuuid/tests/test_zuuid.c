@@ -75,6 +75,33 @@ static void test_parse_lenient(void)
     CHECK(zuuid_parse_lenient(NULL, &b) == ZUUID_ERR_NULL);
 }
 
+static void test_parse_failure_preserves_uuid(void)
+{
+    const char *canon = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
+    zuuid before;
+    memset(&before, 0xa5, sizeof before);
+    for (size_t i = 0; i < 36; i++) {
+        if (canon[i] == '-') continue;
+        char malformed[ZUUID_STR_LEN];
+        memcpy(malformed, canon, sizeof malformed);
+        malformed[i] = 'g';
+        for (int lenient = 0; lenient <= 1; lenient++) {
+            zuuid out = before;
+            zuuid_err err = lenient ? zuuid_parse_lenient(malformed, &out)
+                                    : zuuid_parse(malformed, &out);
+            CHECK(err == ZUUID_ERR_BAD_CHAR);
+            CHECK(zuuid_equal(&out, &before));
+            CHECK(zuuid_parse(canon, &out) == ZUUID_OK);
+            CHECK(out.b[0] == 0xf8 && out.b[15] == 0xf6);
+        }
+    }
+    zuuid out = before;
+    CHECK(zuuid_parse(NULL, &out) == ZUUID_ERR_NULL);
+    CHECK(zuuid_equal(&out, &before));
+    CHECK(zuuid_parse("", &out) == ZUUID_ERR_FORMAT);
+    CHECK(zuuid_equal(&out, &before));
+}
+
 static void test_compare(void)
 {
     zuuid a, b, c;
@@ -155,6 +182,7 @@ int main(void)
     test_nil();
     test_parse_strict();
     test_parse_lenient();
+    test_parse_failure_preserves_uuid();
     test_compare();
     test_generate_v4();
     test_err_str();

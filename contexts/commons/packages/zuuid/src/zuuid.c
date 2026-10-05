@@ -43,12 +43,14 @@ zuuid_err zuuid_parse(const char *str, zuuid *out)
     if (strlen(str) != 36) return ZUUID_ERR_FORMAT;
     if (str[8] != '-' || str[13] != '-' || str[18] != '-' || str[23] != '-')
         return ZUUID_ERR_FORMAT;
+    zuuid parsed;
     zuuid_err e;
-    if ((e = decode_hex(str,      4, out->b))      != ZUUID_OK) return e;
-    if ((e = decode_hex(str + 9,  2, out->b + 4))  != ZUUID_OK) return e;
-    if ((e = decode_hex(str + 14, 2, out->b + 6))  != ZUUID_OK) return e;
-    if ((e = decode_hex(str + 19, 2, out->b + 8))  != ZUUID_OK) return e;
-    if ((e = decode_hex(str + 24, 6, out->b + 10)) != ZUUID_OK) return e;
+    if ((e = decode_hex(str,      4, parsed.b))      != ZUUID_OK) return e;
+    if ((e = decode_hex(str + 9,  2, parsed.b + 4))  != ZUUID_OK) return e;
+    if ((e = decode_hex(str + 14, 2, parsed.b + 6))  != ZUUID_OK) return e;
+    if ((e = decode_hex(str + 19, 2, parsed.b + 8))  != ZUUID_OK) return e;
+    if ((e = decode_hex(str + 24, 6, parsed.b + 10)) != ZUUID_OK) return e;
+    *out = parsed;
     return ZUUID_OK;
 }
 
