@@ -26,6 +26,7 @@
 #include "net/anchor_peers.h"
 #include "net/connman.h"
 #include "net/addrman.h"
+#include "platform/time_compat.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -161,6 +162,38 @@ static int run_floor_gate_selftest(const char *fixture_path)
 #endif
 }
 #endif
+
+static int test_anchor_prompt_flush_after_clock_rollback(void)
+{
+    printf("anchor_peers: prompt flush recovers after clock rollback... ");
+    char dir[256];
+    anchor_tmp_dir(dir, sizeof(dir), "rollback");
+    chain_params_select(CHAIN_MAIN);
+    const struct chain_params *params = chain_params_get();
+    struct connman cm;
+    struct node_signals sigs;
+    memset(&sigs, 0, sizeof(sigs));
+    bool ok = connman_init(&cm, params, &sigs);
+
+    if (ok) {
+        cm.datadir = dir;
+        ok = anchor_add_peer(&cm, 120, 17, PEER_HANDSHAKE_COMPLETE,
+                             false, false, false, NODE_NETWORK) != NULL;
+        cm.last_anchor_flush_ts =
+            (int64_t)platform_time_wall_time_t() + 3600;
+        ok = ok && connman_flush_anchors_if_changed(&cm);
+
+        struct anchor_peer_set loaded;
+        ok = ok && anchor_peers_load(dir, &loaded) == ANCHOR_LOAD_OK &&
+             loaded.count == 1;
+    }
+
+    connman_free(&cm);
+    anchor_cleanup(dir);
+    if (ok) printf("OK\n");
+    else printf("FAIL\n");
+    return ok ? 0 : 1;
+}
 
 int test_anchor_peers(void);
 
@@ -355,8 +388,11 @@ int test_anchor_peers(void)
         else { printf("FAIL (n=%zu anchors=%zu order_ok=%d)\n", n, anchor_count, order_ok); failures++; }
     }
 
+    /* ── 7. wall rollback does not suppress prompt persistence ─── */
+    failures += test_anchor_prompt_flush_after_clock_rollback();
+
 #ifdef ZCL_TESTING
-    /* ── 7. floor lint gate trips on a planted literal, passes clean ── */
+    /* ── 8. floor lint gate trips on a planted literal, passes clean ── */
     printf("anchor_peers: floor lint gate trips then passes... ");
     {
         char dir[256]; anchor_tmp_dir(dir, sizeof(dir), "floorlint");

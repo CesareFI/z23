@@ -2420,6 +2420,7 @@ bool connman_flush_anchors_if_changed(struct connman *cm)
 
     int64_t now = (int64_t)platform_time_wall_time_t();
     if (cm->last_anchor_flush_ts != 0 &&
+        now >= cm->last_anchor_flush_ts &&
         now - cm->last_anchor_flush_ts < ZCL_ANCHOR_PROMPT_FLUSH_SECS)
         return false;
 
