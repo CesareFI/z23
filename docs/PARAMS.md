@@ -48,10 +48,8 @@ The verifying-key prefix has an exact, fixed size:
 | `sprout-verifying.key` | 1449 bytes | (whole file — PHGR13, not Groth16) | 1449 bytes |
 
 Total verifying-key material: 6357 bytes, against roughly 777 MB of
-parameter files. Everything past that prefix is proving-key material, reached
-only through `sapling_get_spend_pk()` / `sapling_get_output_pk()` — and the
-only callers of those two functions are on the path that builds a shielded
-output you are sending. Nothing in block validation, header sync, or peer
+parameter files. `sapling_get_spend_pk()` and `sapling_get_output_pk()` supply
+proving-key material for shielded spend and output proof construction. Nothing in block validation, header sync, or peer
 serving touches them.
 
 Those 6357 bytes are now compiled directly into the node binary, generated
@@ -72,9 +70,9 @@ project controls.
 
 With no proving keys loaded, the native prover reports itself
 `NATIVE_PROVER_UNINITIALIZED` and `zclassic_sapling_prover_is_ready()`
-returns false. `contexts/wallet/controllers/src/wallet_shielded_send.c` checks that
-before doing any coin selection or touching spend state, and if it is false
-it refuses the send with a named error —
+returns false. Transparent shielding checks readiness before coin selection;
+the shielded-spend path checks it after note selection and before witness/proof
+construction. If readiness is false, it refuses the send with a named error —
 `Shielded proving unavailable (backend=..., status=...)` — instead of ever
 attempting to emit an unproven shielded output. There is no path that
 produces a broken or unverified shielded transaction; the send simply does
@@ -114,10 +112,12 @@ A corrupt parameter file therefore costs you the ability to *send* shielded
 funds until you re-fetch it, and nothing else. It is not a reason for a node
 to stop validating the chain.
 
-The one condition that does stop the node is the compiled-in verifying keys
-failing *their* SHA-256 check. That means the binary itself cannot verify
-shielded proofs, and a node that cannot do that must not pretend to validate;
-it names `params_missing` and parks alive-degraded.
+When the missing-file fallback cannot install the embedded verifying keys,
+boot names `params_missing` and parks alive-degraded. If disk parameters are
+refused and the embedded-key fallback also fails, the loader names
+`params_missing` and leaves its loaded flag false; service startup warns
+rather than parking at that check. Mainnet boot also parks if its parameter
+loader thread fails to start.
 
 ## Installing the proving parameters (if you want to send shielded)
 
@@ -157,18 +157,9 @@ starting the node with shielded sending in mind. There is deliberately no
 flag to override a hash mismatch: these are cryptographic keys, and wrong
 bytes are a security failure, not an inconvenience.
 
-### The node does not have to be restarted for them
+### Installing while the node is running
 
-A node that started with no proving parameters is running on the compiled-in
-verifying keys. When the parameters arrive it picks them up in place: the
-loader re-runs against the directory, checks all four pins, loads the proving
-keys and proves a test Spend + Output bundle against its own verifier before
-`shielded_spend_unavailable` clears. Nothing already in use is replaced, so
-the node keeps validating and serving throughout.
-
-What that costs you is one nudge. The node re-runs the loader when a
-parameter fetch it started completes; it does not watch the directory. If you
-copy the files in by hand while the node is up, restart it — or start the
+If you copy the files in by hand while the node is up, restart it — or start the
 node after installing them, which is simpler.
 
 Be clear about what this script does and does not do: it moves and checks
@@ -185,16 +176,14 @@ right scale in principle — 8 MiB chunks, up to 32 GiB per artifact, far more
 than the ~777 MB parameter set needs. It does not carry the parameter files
 today, for three separate reasons:
 
-- The artifact registry classifies a served file into exactly two kinds by
-  its exact filename — a consensus-state bundle or a header-chain seed
-  (`rom_seed_classify()` in `core/modules/net/src/rom_seed.c`). There is no artifact
-  kind for a parameter file, so nothing would admit or serve one yet.
-- The ZCODE package store is a separate, local-only content store today,
-  capped at 64 MiB per package — well under the ~777 MB parameter set, and
-  not reachable from another node regardless of size.
-- The default file-service seed list is empty. A fresh node with no
-  `-fileservice` or `-addnode` pointed at a peer has nobody to ask, for this
-  or any other artifact.
+- `rom_seed_classify()` in `core/modules/net/src/rom_seed_classify.c`
+  recognises consensus-state bundles, the header-chain seed and `.zvsb`
+  source bundles; it has no parameter-file kind.
+- The ZCODE package store has a 64 MiB per-package cap and serves admitted
+  manifests and chunks through the package swarm.
+- File-service seeds can also come from connect-only peers and saved peer
+  advertisements; omitting `-fileservice` and `-addnode` alone does not establish
+  that the seed set is empty.
 
 Fetching the proving parameters over this project's own network remains the
 right long-term home for them, and this change makes that a plain
