@@ -250,6 +250,9 @@ static void test_refused_borrowed_format(void) {
 static size_t moving_bytes;
 static zbuf moving_live, moving_retired, format_storage;
 static unsigned moving_relocations;
+static bool fail_fixture_realloc;
+static bool fail_fixture_malloc;
+static bool fail_fixture_render;
 
 /* Use the package's ordinary allocation path; each fixture request is bounded. */
 static bool fixture_storage(zbuf *out, size_t bytes) {
@@ -264,6 +267,7 @@ static bool fixture_storage(zbuf *out, size_t bytes) {
 }
 
 static void *moving_realloc(void *ptr, size_t bytes) {
+  if (fail_fixture_realloc) return NULL;
   if (ptr != moving_live.data) { CHECK(false); return NULL; }
   zbuf next = {0};
   if (!fixture_storage(&next, bytes)) return NULL;
@@ -283,6 +287,7 @@ static void *moving_realloc(void *ptr, size_t bytes) {
 }
 
 static void *fixture_malloc(size_t bytes) {
+  if (fail_fixture_malloc) return NULL;
   if (format_storage.data) { CHECK(false); return NULL; }
   return fixture_storage(&format_storage, bytes) ? format_storage.data : NULL;
 }
@@ -297,6 +302,12 @@ static void fixture_release(void *ptr) {
   } else {
     CHECK(false);
   }
+}
+
+static int fixture_vsnprintf(char *out, size_t cap, const char *fmt, va_list ap) {
+  int written = vsnprintf(out, cap, fmt, ap);
+  if (out && fail_fixture_render) return -1;
+  return written;
 }
 
 #define zbuf_err_str fixture_zbuf_err_str
@@ -314,7 +325,9 @@ static void fixture_release(void *ptr) {
 #define realloc moving_realloc
 #define malloc fixture_malloc
 #define free fixture_release
+#define vsnprintf fixture_vsnprintf
 #include "../src/zbuf.c"
+#undef vsnprintf
 #undef free
 #undef malloc
 #undef realloc
@@ -351,7 +364,78 @@ static void test_forced_slice_move(void) {
   fixture_zbuf_free(&b);
 }
 
+static void test_forced_format_move(void) {
+  zbuf b;
+  char seed[512];
+  memset(seed, 'a', sizeof seed - 1);
+  seed[sizeof seed - 1] = 0;
+  moving_relocations = 0;
+  CHECK(fixture_zbuf_init(&b, 2048) == ZBUF_OK);
+  CHECK(fixture_zbuf_str(&b, seed) == ZBUF_OK);
+  if (!b.data) return;
+  CHECK(fixture_zbuf_printf(&b, "%s", fixture_zbuf_cstr(&b)) == ZBUF_OK);
+  CHECK(moving_relocations == 1);
+  if (b.len != 1022 || b.cap < 1023) {
+    CHECK(b.len == 1022 && b.cap >= 1023);
+    fixture_zbuf_free(&b);
+    return;
+  }
+  CHECK(b.len == 1022 && memcmp(b.data, seed, 511) == 0);
+  CHECK(memcmp(b.data + 511, seed, 511) == 0 && b.data[1022] == 0);
+  fixture_zbuf_free(&b);
+}
+
+static void test_borrowed_format_move(void) {
+  zbuf b;
+  char expected[65];
+  CHECK(snprintf(expected, sizeof expected, "%064d", 7) == 64);
+  moving_relocations = 0;
+  CHECK(fixture_zbuf_init(&b, 256) == ZBUF_OK);
+  CHECK(fixture_zbuf_str(&b, "%064d") == ZBUF_OK);
+  if (!b.data) return;
+  CHECK(fixture_zbuf_printf(&b, (const char *)b.data, 7) == ZBUF_OK);
+  CHECK(moving_relocations == 1);
+  if (b.len != 69 || b.cap < 70) {
+    CHECK(b.len == 69 && b.cap >= 70);
+    fixture_zbuf_free(&b);
+    return;
+  }
+  CHECK(b.len == 69 && memcmp(b.data, "%064d", 5) == 0);
+  CHECK(memcmp(b.data + 5, expected, sizeof expected) == 0);
+  fixture_zbuf_free(&b);
+}
+
+static void test_format_refusal_state(void) {
+  char seed[512];
+  memset(seed, 'a', sizeof seed - 1);
+  seed[sizeof seed - 1] = 0;
+  for (unsigned row = 0; row < 3; row++) {
+    zbuf b;
+    CHECK(fixture_zbuf_init(&b, 2048) == ZBUF_OK);
+    CHECK(fixture_zbuf_str(&b, seed) == ZBUF_OK);
+    if (!b.data) return;
+    zbuf before = b;
+    moving_relocations = 0;
+    fail_fixture_render = row == 0;
+    fail_fixture_malloc = row == 1;
+    fail_fixture_realloc = row == 2;
+    zbuf_err expected = row == 0 ? ZBUF_ERR_FULL : ZBUF_ERR_OOM;
+    CHECK(fixture_zbuf_printf(&b, "%s", fixture_zbuf_cstr(&b)) == expected);
+    fail_fixture_render = false;
+    fail_fixture_malloc = false;
+    fail_fixture_realloc = false;
+    CHECK(b.data == before.data && b.cap == before.cap && b.len == before.len);
+    CHECK(b.max == before.max && b.err == expected && moving_relocations == 0);
+    CHECK(memcmp(b.data, seed, sizeof seed) == 0);
+    CHECK(fixture_zbuf_put(&b, 'x') == expected);
+    fixture_zbuf_free(&b);
+  }
+}
+
 int main(void) {
+  test_forced_format_move();
+  test_borrowed_format_move();
+  test_format_refusal_state();
   test_forced_slice_move();
   zbuf_free(&moving_retired);
   test_format_own_string();
