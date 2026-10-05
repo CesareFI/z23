@@ -203,7 +203,39 @@ static void test_civil_math(void) {
   }
 }
 
+static void test_civil_range_rejection(void) {
+  static const struct {
+    int64_t year;
+    unsigned month, day;
+    bool valid;
+    int64_t expected;
+  } rows[] = {
+    {INT64_MIN, 1, 1, false, 123},
+    {INT64_MAX, 3, 1, false, 123},
+    {INT64_C(25252734927768524), 7, 27, true, INT64_MAX},
+    {INT64_C(25252734927768524), 7, 28, false, 123},
+    {-INT64_C(25252734927764585), 6, 7, true, INT64_MIN},
+    {-INT64_C(25252734927764585), 6, 6, false, 123},
+  };
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    int before = failures;
+    int64_t days = 123;
+    CHECK(ztime_days_from_civil(rows[i].year, rows[i].month, rows[i].day,
+                                &days) == rows[i].valid);
+    CHECK(days == rows[i].expected);
+    if (rows[i].valid && rows[i].expected == INT64_MIN) {
+      int64_t previous = 123;
+      CHECK(!ztime_days_from_civil(-INT64_C(25252734927764585), 6, 6, &previous));
+      CHECK(previous == 123);
+    }
+    fprintf(stderr, "civil_range_row=%zu result=%s\n", i,
+            before == failures ? "PASS" : "FAIL");
+  }
+}
+
+
 int main(void) {
+    test_civil_range_rejection();
   test_parse_kats();
   test_parse_errors();
   test_format_kats();

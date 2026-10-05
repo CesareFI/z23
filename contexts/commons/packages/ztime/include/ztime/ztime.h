@@ -38,7 +38,8 @@ int ztime_days_in_month(int64_t year, unsigned month);
 bool ztime_is_leap_year(int64_t year);
 
 /* Days since 1970-01-01 for a valid civil date; false when the date is
- * out of range (month/day validity included). */
+ * out of range (month/day validity and int64_t day range included).
+ * On failure, a non-NULL *days_out is unchanged. */
 bool ztime_days_from_civil(int64_t year, unsigned month, unsigned day,
                            int64_t *days_out);
 
