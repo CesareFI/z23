@@ -1841,6 +1841,45 @@ worktree's ignored evidence directory. Manifest SHA256 is
 `2e93d85faac2ef031ed3952d7753abbfaa6b62e96f633a827ca66253105a1c8d`.
 No external publication or reviewer-request action was attempted.
 
+### Public-key ownership verification failure-path candidate prepared
+
+Branch `agent/upstream-wallet-pubkey-verify-failure-20261005`, signed head
+`fcb496d3667751e61d3ab66fc93ffada6d7df441`, applies directly to upstream
+base `3a93e60ebf922af3d119b9facc1d95803f42844b`. The wallet ownership check
+previously ignored a signing refusal and could pass partially initialized
+signature bytes to public verification. A random provider that partially
+filled its challenge before refusing also left those bytes live on the stack.
+The fix fails closed for both providers and retires the challenge, SHA state,
+verification hash and signature scratch at their last use. Successful
+verification semantics are unchanged. Consensus, monetary policy, PoW,
+upgrade rules, serialization, and transparent and shielded validity are
+untouched. Four files change, +209/-9, including generated inventory and an
+actual-source deterministic observer.
+
+Canonical signing-refusal RED and random-provider-failure RED both fail on the
+prior production behavior. Removing the fail-closed signing branch or the
+pre-verification challenge wipe independently makes the focused regression
+fail. The restored candidate passes the focused group and ASan/UBSan/LSan with
+zero skips. Uncached GCC 14 and Clang 20 each accept all 2,433 translation
+units with no new diagnostics. MinGW checks all 2,399 Windows-visible
+translation units and links 74 strict C23 programs. Architecture, generated
+inventory and cap-15 complexity gates pass; the final complexity scan covers
+68,763 functions. The already-run documentation gates cover 612 Markdown
+documents and 152 bound claims.
+
+Local review artifacts `wallet-pubkey-verify-failure-fcb496d36.bundle`,
+`wallet-pubkey-verify-failure-fcb496d36.mbox`, the focused RED/GREEN,
+mutation, sanitizer and compiler logs, the C hazard review, and
+`wallet-pubkey-verify-failure-qualification.txt` are preserved in the
+candidate's ignored evidence directory. Bundle SHA256 is
+`3e37f31fbeaca8691bf24feb4335a1fd43d1a217bea4b94eb2045f99b9786c35`;
+mbox SHA256 is
+`05983f5e17a73ed5dd0a54f8b89538095dc01f816ea6d3110910e05d74ff940f`.
+The commit contains an SSH signature object; identity verification is
+unobserved because this checkout has no configured allowed-signers file, and
+that trust policy was not changed. Exact independent dev proof remains open;
+the candidate is preserved and no external publication action was attempted.
+
 ### Whole-file descriptor candidate exact qualification complete
 
 Branch `agent/upstream-file-io-cloexec-20261004`, signed head
