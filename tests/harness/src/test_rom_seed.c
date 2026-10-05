@@ -306,6 +306,24 @@ static int test_caps(void)
         ASSERT(rom_seed_rate_charge(ip, 600, now));        /* global 600 */
         ASSERT(!rom_seed_rate_charge(ip2, 600, now));       /* global 1200 > 1000 */
 
+        /* A backward clock correction must not mint another full peer/global
+         * budget immediately. Rebase the window without forgetting bytes
+         * already charged; the following second may start a fresh window. */
+        rom_seed_reset();
+        rom_seed_set_peer_bps_cap(1000);
+        rom_seed_set_global_bps_cap(1000);
+        ASSERT(rom_seed_rate_charge(ip, 600, now));
+        ASSERT(!rom_seed_rate_charge(ip, 600, now - 1000));
+        ASSERT(rom_seed_rate_charge(ip, 600, now - 999));
+
+        /* CLOCK_MONOTONIC seconds can be zero just after boot; zero is a live
+         * first window once it carries bytes, not a perpetual reset marker. */
+        rom_seed_reset();
+        rom_seed_set_peer_bps_cap(1000);
+        rom_seed_set_global_bps_cap(1000);
+        ASSERT(rom_seed_rate_charge(ip, 600, 0));
+        ASSERT(!rom_seed_rate_charge(ip, 600, 0));
+
         rom_seed_reset();
         PASS();
     } _test_next:;

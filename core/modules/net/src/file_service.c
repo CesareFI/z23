@@ -747,7 +747,9 @@ static void fs_serve_rom_chunk(struct fs_session *session,
     }
     /* Separate send budget: the ROM global/per-peer byte-rate window bounds how
      * much uplink ROM serving may draw, independent of consensus P2P. */
-    if (!rom_seed_rate_charge(client_ip, sz, (int64_t)platform_time_wall_time_t())) {
+    if (!rom_seed_rate_charge(
+            client_ip, sz,
+            platform_time_monotonic_us() / INT64_C(1000000))) {
         free(buf);
         rom_seed_peer_release(client_ip);
         fs_gate_log_throttled("rom_rate_exceeded", (int)idx);
@@ -805,7 +807,8 @@ static void fs_serve_rom_manifest(struct fs_session *session,
         return;
     }
     if (!rom_seed_rate_charge(client_ip, blen,
-                              (int64_t)platform_time_wall_time_t())) {
+                              platform_time_monotonic_us() /
+                                  INT64_C(1000000))) {
         rom_seed_peer_release(client_ip);
         fs_gate_log_throttled("rom_manifest_rate_exceeded", 0);
         (void)fs_send_frame(session, FS_DONE, NULL, 0);
@@ -869,7 +872,8 @@ static void fs_serve_rom_list(struct fs_session *session,
         return;
     }
     if (!rom_seed_rate_charge(client_ip, (size_t)bn,
-                              (int64_t)platform_time_wall_time_t())) {
+                              platform_time_monotonic_us() /
+                                  INT64_C(1000000))) {
         rom_seed_peer_release(client_ip);
         fs_gate_log_throttled("rom_list_rate_exceeded", 0);
         (void)fs_send_frame(session, FS_DONE, NULL, 0);

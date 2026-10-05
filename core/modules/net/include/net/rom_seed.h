@@ -307,8 +307,10 @@ void rom_seed_peer_release(const uint8_t peer_ip[16]);
 
 /* Charge `n` bytes to the peer's and the global rolling-1s byte-rate windows.
  * Returns false (serve should stop) once either window would exceed its cap.
- * Records served-bytes + unique-peer + chunk stats on success. */
-bool rom_seed_rate_charge(const uint8_t peer_ip[16], uint64_t n, int64_t now);
+ * `now_monotonic` is process-monotonic seconds. Records served-bytes +
+ * unique-peer + chunk stats on success. */
+bool rom_seed_rate_charge(const uint8_t peer_ip[16], uint64_t n,
+                          int64_t now_monotonic);
 
 /* Note a chunk actually served (for stats). Call once per delivered chunk. */
 void rom_seed_note_chunk_served(void);

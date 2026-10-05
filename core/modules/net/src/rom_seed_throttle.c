@@ -45,7 +45,7 @@ struct rom_peer_stat {
     bool     used;
     bool     ever_served;
     uint32_t concurrent;   /* active in-flight serves for this peer   */
-    int64_t  win_start;    /* rolling 1-second byte-rate window start  */
+    int64_t  win_start;    /* monotonic-second byte-rate window start  */
     uint64_t win_bytes;    /* bytes charged in the current window      */
     int64_t  last_seen;    /* LRU eviction when the table is full      */
 };
@@ -57,6 +57,11 @@ static uint64_t g_global_win_bytes = 0;
 static uint64_t g_chunks_served = 0;
 static uint64_t g_bytes_served_total = 0;
 static uint64_t g_unique_peers_served = 0;
+
+static int64_t rom_seed_now_monotonic(void)
+{
+    return platform_time_monotonic_us() / INT64_C(1000000);
+}
 
 /* ── Caps ───────────────────────────────────────────────────────────── */
 
@@ -107,7 +112,7 @@ bool rom_seed_peer_acquire(const uint8_t peer_ip[16])
     if (!peer_ip) return false;
     if (!atomic_load(&g_enabled)) return false;
     uint32_t cap = atomic_load(&g_max_inflight_per_peer);
-    int64_t now = (int64_t)platform_time_wall_time_t();
+    int64_t now = rom_seed_now_monotonic();
     bool ok = false;
     pthread_mutex_lock(&g_caps_mutex);
     struct rom_peer_stat *s = peer_slot_locked(peer_ip, now);
@@ -141,7 +146,23 @@ void rom_seed_peer_release(const uint8_t peer_ip[16])
     pthread_mutex_unlock(&g_caps_mutex);
 }
 
-bool rom_seed_rate_charge(const uint8_t peer_ip[16], uint64_t n, int64_t now)
+static void rom_seed_rate_window_advance(int64_t now, int64_t *start,
+                                         uint64_t *bytes)
+{
+    /* Monotonic seconds may legitimately be zero during the first second
+     * after boot; bytes distinguishes that live window from reset state. */
+    if ((*start == 0 && *bytes == 0) || now > *start) {
+        *start = now;
+        *bytes = 0;
+    } else if (now < *start) {
+        /* Defensive for injected clocks: rebase without minting another
+         * budget. The following monotonic second opens a fresh window. */
+        *start = now;
+    }
+}
+
+bool rom_seed_rate_charge(const uint8_t peer_ip[16], uint64_t n,
+                          int64_t now_monotonic)
 {
     if (!peer_ip) return false;
     uint64_t peer_cap = atomic_load(&g_peer_bps_cap);
@@ -151,28 +172,24 @@ bool rom_seed_rate_charge(const uint8_t peer_ip[16], uint64_t n, int64_t now)
     pthread_mutex_lock(&g_caps_mutex);
 
     /* Global rolling-1s window. */
-    if (now != g_global_win_start) {
-        g_global_win_start = now;
-        g_global_win_bytes = 0;
-    }
+    rom_seed_rate_window_advance(now_monotonic, &g_global_win_start,
+                                 &g_global_win_bytes);
     if (g_global_win_bytes > UINT64_MAX - n) g_global_win_bytes = UINT64_MAX;
     else g_global_win_bytes += n;
     if (g_global_win_bytes > global_cap) ok = false;
 
     /* Per-peer rolling-1s window. */
-    struct rom_peer_stat *s = peer_slot_locked(peer_ip, now);
+    struct rom_peer_stat *s = peer_slot_locked(peer_ip, now_monotonic);
     if (s) {
         if (!s->used) {
             s->used = true;
             memcpy(s->ip, peer_ip, 16);
-            s->win_start = now;
+            s->win_start = now_monotonic;
             s->win_bytes = 0;
         }
-        if (now != s->win_start) {
-            s->win_start = now;
-            s->win_bytes = 0;
-        }
-        s->last_seen = now;
+        rom_seed_rate_window_advance(now_monotonic, &s->win_start,
+                                     &s->win_bytes);
+        s->last_seen = now_monotonic;
         if (s->win_bytes > UINT64_MAX - n) s->win_bytes = UINT64_MAX;
         else s->win_bytes += n;
         if (s->win_bytes > peer_cap) ok = false;
@@ -237,7 +254,7 @@ void rom_seed_throttle_push_json(struct json_value *out)
                      (int64_t)atomic_load(&g_global_bps_cap));
 
     uint64_t chunks_served, bytes_total, unique_peers, cur_bps;
-    int64_t now = (int64_t)platform_time_wall_time_t();
+    int64_t now = rom_seed_now_monotonic();
     pthread_mutex_lock(&g_caps_mutex);
     chunks_served = g_chunks_served;
     bytes_total = g_bytes_served_total;
