@@ -1,4 +1,10 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "zescape/zescape.h"
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -205,8 +211,44 @@ static void test_read_error(void)
 #endif
 }
 
+static void test_output_failure(void)
+{
+#if !defined(_WIN32)
+    const char *modes[] = {"escape", "unescape"};
+    int failed = 0;
+    for (size_t i = 0; i < sizeof modes / sizeof modes[0]; i++) {
+        FILE *input = fopen("/dev/null", "r");
+        FILE *output = fopen("/dev/null", "r");
+        CHECK(input && output);
+        int saved_in = dup(STDIN_FILENO), saved_out = dup(STDOUT_FILENO);
+        CHECK(saved_in >= 0 && saved_out >= 0);
+        CHECK(fflush(stdout) == 0);
+        CHECK(dup2(fileno(input), STDIN_FILENO) >= 0);
+        CHECK(dup2(fileno(output), STDOUT_FILENO) >= 0);
+        clearerr(stdin);
+        clearerr(stdout);
+        char *args[] = {"zescape", (char *)modes[i], NULL};
+        int result = escape_fixture_main(2, args);
+        (void)fflush(stdout);
+        CHECK(dup2(saved_in, STDIN_FILENO) >= 0);
+        CHECK(dup2(saved_out, STDOUT_FILENO) >= 0);
+        clearerr(stdin);
+        clearerr(stdout);
+        CHECK(close(saved_in) == 0 && close(saved_out) == 0);
+        CHECK(fclose(input) == 0 && fclose(output) == 0);
+        if (result != 1) {
+            fprintf(stderr, "FAIL output_error row=%zu mode=%s result=%d\n", i, modes[i], result);
+            failed = 1;
+        }
+    }
+    CHECK(!failed);
+#endif
+}
+
 int main(void)
 {
+    test_output_failure();
+
     test_read_error();
 
     test_escaped_size_overflow();

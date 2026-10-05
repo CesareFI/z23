@@ -29,6 +29,16 @@ static uint8_t *read_all(FILE *f, size_t *out_len)
     return buf;
 }
 
+static int write_output(const void *data, size_t n)
+{
+    if (fwrite(data, 1, n, stdout) != n || fputc('\n', stdout) == EOF ||
+        fflush(stdout) == EOF) {
+        fprintf(stderr, "zescape: output write failed\n");
+        return 0;
+    }
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2 || (strcmp(argv[1], "escape") != 0 && strcmp(argv[1], "unescape") != 0)) {
@@ -40,6 +50,7 @@ int main(int argc, char **argv)
     uint8_t *data = read_all(stdin, &len);
     if (!data) { fprintf(stderr, "zescape: cannot read input\n"); return 1; }
 
+    int status = 0;
     if (strcmp(argv[1], "escape") == 0) {
         size_t cap = zescape_escaped_max(len);
         if (cap == SIZE_MAX) {
@@ -58,8 +69,7 @@ int main(int argc, char **argv)
             free(data);
             return 1;
         }
-        fwrite(out, 1, n, stdout);
-        fputc('\n', stdout);
+        if (!write_output(out, n)) status = 1;
         free(out);
     } else {
         uint8_t *out = malloc(len + 1);
@@ -75,10 +85,9 @@ int main(int argc, char **argv)
             free(data);
             return 1;
         }
-        fwrite(out, 1, n, stdout);
-        fputc('\n', stdout);
+        if (!write_output(out, n)) status = 1;
         free(out);
     }
     free(data);
-    return 0;
+    return status;
 }
