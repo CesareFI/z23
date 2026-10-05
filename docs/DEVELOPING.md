@@ -45,8 +45,8 @@ that run, on a 28-CPU build slot.
 ```bash
 git clone --recurse-submodules https://github.com/z23c/z23.git
 cd z23
-make doctor                            # packages: tools/scripts/vendor_prereqs.tsv
 make doctor-env                        # toolchain: is this host capable at all
+make doctor                            # packages: tools/scripts/vendor_prereqs.tsv
 make setup                             # arm the clone: hooks, archives, compile db
 make -j"$(nproc)" z23                  # the node binary      -> build/bin/z23
 make -j"$(nproc)" z23-dev              # the developer binary -> build/bin/z23-dev
@@ -279,8 +279,9 @@ fleet, never a lane's side errand.
 
 ## 1. Orient
 
-On a new Linux, macOS, or Windows machine, run this first — it compiles with
-a plain `cc` and does not require a C23 toolchain:
+On a new Linux, macOS, or Windows machine, run `make doctor-env` before
+`make doctor`: of these two goals, only `doctor-env` skips the Makefile's
+C23 toolchain gate. It compiles the check with `cc -std=c2x`:
 
 ```bash
 make doctor-env

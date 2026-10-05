@@ -35,8 +35,9 @@ vendor, a package registry, or a hosted service.
 ## Public start here
 
 ```bash
-git clone https://github.com/z23c/z23.git
+git clone --recurse-submodules https://github.com/z23c/z23.git
 cd z23
+make doctor-env
 make doctor
 make setup
 make -j"$(getconf _NPROCESSORS_ONLN)" z23
