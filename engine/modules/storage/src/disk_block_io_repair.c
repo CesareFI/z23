@@ -212,20 +212,24 @@ bool block_index_repair_pos_from_disk(struct block_index *pindex,
      * bundle) degrades to the clear-and-refetch fallback instead of a full
      * walk per failure. Pass-1 hits (the common stale-tail case) are never
      * throttled. */
-    static int64_t g_last_full_scan_unix = 0;
+    static int64_t g_last_full_scan_monotonic_us = 0;
     if (found_file < 0 && scan_all_files) {
-        int64_t now = platform_time_wall_unix();
-        int64_t last = __atomic_load_n(&g_last_full_scan_unix, __ATOMIC_RELAXED);
-        /* last==0 doubles as "never ran" (a frozen/mocked clock reads 0),
+        int64_t now_us = platform_time_monotonic_us();
+        int64_t last_us = __atomic_load_n(&g_last_full_scan_monotonic_us,
+                                          __ATOMIC_RELAXED);
+        /* last_us==0 doubles as "never ran" (a frozen/mocked clock reads 0),
          * so the first full sweep always runs. */
-        if (last != 0 && now - last < 60) {
+        if (last_us != 0 &&
+            now_us - last_us < INT64_C(60) * INT64_C(1000000)) {
             LOG_WARN("disk_block_io",
                      "repair_pos_from_disk: h=%d same-file miss, full blk-set "
                      "scan throttled (%llds since last) — falling back",
-                     pindex->nHeight, (long long)(now - last));
+                     pindex->nHeight,
+                     (long long)((now_us - last_us) / INT64_C(1000000)));
             return false;
         }
-        __atomic_store_n(&g_last_full_scan_unix, now, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_last_full_scan_monotonic_us, now_us,
+                         __ATOMIC_RELAXED);
         int misses = 0;
         for (int i = 0; i <= 9999 && found_file < 0; i++) {
             if (i == cur.nFile)
