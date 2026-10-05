@@ -304,9 +304,65 @@ static void test_inline_end_refusal(void) {
     CHECK(block.b64_len == 0 && block.consumed == sizeof empty - 1);
 }
 
+#define main fixture_pem_cli_main
+#include "../app/main.c"
+#undef main
+
+static void test_cli_growth_bounds(void) {
+    static const size_t capacities[] = {0, SIZE_MAX / 2 + 1, SIZE_MAX};
+    for (size_t i = 0; i < sizeof capacities / sizeof capacities[0]; i++) {
+        uint8_t byte = 7;
+        uint8_t *data = &byte;
+        size_t cap = capacities[i];
+        errno = 0;
+        CHECK(!grow_input(&data, &cap));
+        CHECK(data == &byte && byte == 7 && cap == capacities[i]);
+        CHECK(errno == EOVERFLOW);
+    }
+}
+
+static void test_cli_read_controls(void) {
+    const char *path = "zpem-test-read-controls.fixture";
+    FILE *stream = fopen(path, "w+b");
+    CHECK(stream != NULL);
+    if (!stream) return;
+    size_t length = 17;
+    uint8_t *data = read_all(stream, &length);
+    CHECK(data != NULL && length == 0);
+    free(data);
+    for (size_t i = 0; i < 5000; i++) CHECK(fputc('a', stream) != EOF);
+    CHECK(fflush(stream) == 0);
+    CHECK(fseek(stream, 0, SEEK_SET) == 0);
+    data = read_all(stream, &length);
+    CHECK(data != NULL && length == 5000);
+    if (data) {
+        for (size_t i = 0; i < length; i++) CHECK(data[i] == 'a');
+    }
+    free(data);
+    CHECK(fclose(stream) == 0);
+    CHECK(remove(path) == 0);
+}
+static void test_cli_read_error(void) {
+    const char *path = "zpem-test-write-only.fixture";
+    FILE *stream = fopen(path, "wb");
+    CHECK(stream != NULL);
+    if (!stream) return;
+    size_t length = 17;
+    uint8_t *data = read_all(stream, &length);
+    CHECK(data == NULL);
+    CHECK(length == 17);
+    CHECK(ferror(stream));
+    free(data);
+    CHECK(fclose(stream) == 0);
+    CHECK(remove(path) == 0);
+}
+
 int main(void)
 {
     test_parser_span_bounds();
+    test_cli_read_error();
+    test_cli_growth_bounds();
+    test_cli_read_controls();
     test_inline_end_refusal();
     test_kat();
     test_roundtrip_boundaries();

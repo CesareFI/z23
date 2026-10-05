@@ -1,3 +1,4 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 /* zpem CLI: armor DER stdin as PEM, or unarmor one PEM block.
  *
  *   zpem encode LABEL   DER stdin  -> PEM stdout
@@ -5,9 +6,37 @@
  */
 #include "zpem/zpem.h"
 
+#include <errno.h>
+#include <stdbool.h>
+#include <stdckdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static bool grow_input(uint8_t **buf, size_t *cap)
+{
+    size_t next;
+    if (*cap == 0 || ckd_mul(&next, *cap, 2)) {
+        errno = EOVERFLOW;
+        return false;
+    }
+    uint8_t *replacement = realloc(*buf, next);
+    if (!replacement) return false;
+    *buf = replacement;
+    *cap = next;
+    return true;
+}
+
+static uint8_t *finish_input(FILE *f, uint8_t *buf, size_t len, size_t *out_len)
+{
+    if (ferror(f)) {
+        free(buf);
+        errno = EIO;
+        return NULL;
+    }
+    *out_len = len;
+    return buf;
+}
 
 static uint8_t *read_all(FILE *f, size_t *out_len)
 {
@@ -18,14 +47,10 @@ static uint8_t *read_all(FILE *f, size_t *out_len)
     while ((n = fread(buf + len, 1, cap - len, f)) > 0) {
         len += n;
         if (len == cap) {
-            cap *= 2;
-            uint8_t *nb = realloc(buf, cap);
-            if (!nb) { free(buf); return NULL; }
-            buf = nb;
+            if (!grow_input(&buf, &cap)) { free(buf); return NULL; }
         }
     }
-    *out_len = len;
-    return buf;
+    return finish_input(f, buf, len, out_len);
 }
 
 int main(int argc, char **argv)
@@ -38,7 +63,7 @@ int main(int argc, char **argv)
 
     size_t len = 0;
     uint8_t *data = read_all(stdin, &len);
-    if (!data) { fprintf(stderr, "zpem: out of memory\n"); return 1; }
+    if (!data) { perror("zpem: read input"); return 1; }
 
     if (strcmp(argv[1], "encode") == 0) {
         if (argc != 3) {
