@@ -14,7 +14,7 @@
     },
     {
       "name": "zbase64/zbase64",
-      "root": "ed5e9c0d6a9a32f80610254c61b29d0852c4f69e07aeaff6dfee6ef7e6bc2429",
+      "root": "2a62ff7dbb625835875dd24fd35e7a1bae97ed25a415e4cdec5cfb0244f5190c",
       "semver": "0.1.0"
     },
     {
@@ -24,7 +24,7 @@
     },
     {
       "name": "zbuf/zbuf",
-      "root": "d5645d9803bd1c1931a2c4eae7a7910c5d18437789315b093598df4d3ff1553a",
+      "root": "084781c74e18cb4ae6f6455ef8456b34b454d689b3abf0a04c1774b443584793",
       "semver": "0.1.0"
     },
     {
@@ -69,7 +69,7 @@
     },
     {
       "name": "zpem/zpem",
-      "root": "23a7c6988c2e3f26d0477b9b87c429b8e6cfb3472da0fc12aff9eab6b0872ca5",
+      "root": "79a0756313b34b1d944026942d000de4f82973efe236955ac795862f61555fda",
       "semver": "0.1.0"
     },
     {
@@ -84,7 +84,7 @@
     },
     {
       "name": "zstr/zstr",
-      "root": "e1c41dfa3eb9780784533ef7b8539e10ccbf498cfdf278369a64fa39a05612ee",
+      "root": "451ec5e6ddbf86485f1bf74ab882e29ee4627590b11cc47e091365d6e43875ea",
       "semver": "0.1.0"
     },
     {
@@ -94,7 +94,7 @@
     },
     {
       "name": "zurl/zurl",
-      "root": "c5a8f570d56cd58ecec6dd208139c19b4b67fc85ec7abfba66d7bc428052cb11",
+      "root": "2a7f023b36c83ce52a979f935d716006ca791011e0b765c0fa1f7f4f541cbab1",
       "semver": "0.1.0"
     },
     {
