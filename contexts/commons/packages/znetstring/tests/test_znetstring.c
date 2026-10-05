@@ -156,9 +156,27 @@ static void test_err_str(void)
     for (int e = 0; e <= 4; e++) CHECK(znetstring_err_str((znetstring_err)e) != NULL);
 }
 
+/* Exercise the actual consumer without building another executable. */
+#define main znetstring_cli_main
+#include "../app/main.c"
+#undef main
+
+static void test_cli_read_failure(void) {
+    FILE *saved = stdin;
+    FILE *bad = fopen("/dev/null", "w");
+    if (!bad) abort();
+    stdin = bad;
+    char *args[] = {"znetstring", "encode", NULL};
+    int status = znetstring_cli_main(2, args);
+    stdin = saved;
+    fclose(bad);
+    CHECK(status != 0);
+}
+
 int main(void)
 {
     test_kat();
+    test_cli_read_failure();
     test_roundtrip_sizes();
     test_stream_framing();
     test_rejects();

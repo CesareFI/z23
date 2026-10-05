@@ -27,6 +27,7 @@ static uint8_t *read_all(FILE *f, size_t *out_len)
             buf = nb;
         }
     }
+    if (ferror(f)) { free(buf); return NULL; }
     *out_len = len;
     return buf;
 }
@@ -41,7 +42,7 @@ int main(int argc, char **argv)
 
     size_t len = 0;
     uint8_t *data = read_all(stdin, &len);
-    if (!data) { fprintf(stderr, "znetstring: out of memory\n"); return 1; }
+    if (!data) { fprintf(stderr, "znetstring: read error or out of memory\n"); return 1; }
 
     if (strcmp(argv[1], "encode") == 0) {
         size_t total = znetstring_encoded_len(len);
