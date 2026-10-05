@@ -267,6 +267,23 @@ static int64_t g_block_swarm_last_progress = 0;
  * transfer back out of legacy getdata's hands every few seconds. */
 static _Atomic int64_t g_block_swarm_reaped_unix = 0;
 
+/* Caller holds g_block_swarm_mutex. A piece verified before an unlocked
+ * reducer submit may only be credited if the current swarm still binds that
+ * index to the same payload hash. */
+static bool block_swarm_still_binds_piece(int32_t start_height,
+                                          uint32_t num_pieces,
+                                          uint32_t piece_index,
+                                          const uint8_t piece_hash[32])
+{
+    return atomic_load(&g_block_swarm_active) &&
+           g_block_swarm.piece_states &&
+           g_block_swarm.manifest.start_height == start_height &&
+           g_block_swarm.manifest.num_pieces == num_pieces &&
+           g_block_swarm.manifest.piece_hashes &&
+           memcmp(piece_hash,
+                  g_block_swarm.manifest.piece_hashes[piece_index], 32) == 0;
+}
+
 /* The fc_rate_* per-peer FlyClient-challenge rate limiter (table, mutex,
  * fc_rate_acquire/fc_rate_should_score, and the msgprocessor_test_fc_rate_*
  * test surface) moved to msgprocessor_snapshot_fcrate.c — its only callers
@@ -1699,12 +1716,9 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                         payloads_accepted = mp_block_payload_submit_all(
                             mp, node, block_refs, block_count);
                         pthread_mutex_lock(&g_block_swarm_mutex);
-                        if (!atomic_load(&g_block_swarm_active) ||
-                            !g_block_swarm.piece_states ||
-                            g_block_swarm.manifest.start_height !=
-                                swarm_start ||
-                            g_block_swarm.manifest.num_pieces !=
-                                swarm_pieces) {
+                        if (!block_swarm_still_binds_piece(
+                                swarm_start, swarm_pieces, piece_index,
+                                computed_hash)) {
                             LOG_INFO("net",
                                      "zblkdata piece %u: swarm reaped during "
                                      "payload submit; dropping piece credit",

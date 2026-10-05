@@ -79,6 +79,8 @@
  * (mp_block_swarm_peer_disconnected is public — net/download.h.) */
 void mp_snapshot_send_tick(struct msg_processor *mp, struct p2p_node *node);
 bool mp_block_swarm_is_active(void);
+void mp_block_swarm_test_seed_stall(uint32_t complete, uint32_t total,
+                                    int64_t last_complete_unix);
 
 struct block_piece_payload_ref {
     const unsigned char *data;
@@ -106,6 +108,8 @@ struct bs_sink {
     unsigned scope_depth;
     unsigned scope_max_depth;
     bool scope_open;
+    bool rearm_swarm_on_submit;
+    bool rearmed_swarm;
 };
 
 static bool bs_block_submit(struct block *b, struct validation_state *out,
@@ -114,6 +118,12 @@ static bool bs_block_submit(struct block *b, struct validation_state *out,
     struct bs_sink *sink = ctx;
     if (!sink->scope_open)
         sink->submits_outside_scope++;
+    if (sink->rearm_swarm_on_submit) {
+        sink->rearm_swarm_on_submit = false;
+        mp_block_swarm_test_seed_stall(
+            1, 2, (int64_t)platform_time_wall_time_t());
+        sink->rearmed_swarm = true;
+    }
     if (sink->transient_submit_failures > 0) {
         const char *reason = sink->transient_submit_failures == 1
             ? "p2p-block-intake-full"
@@ -1511,6 +1521,64 @@ static int test_block_swarm_submit_failure_preserves_legacy_owner(void)
     return failures;
 }
 
+static int test_block_swarm_rearm_drops_old_payload_credit(void)
+{
+    int failures = 0;
+    TEST("block swarm: payload accepted across same-shape rearm is not "
+         "credited into the replacement swarm") {
+        const struct chain_params *params = chain_params_get();
+        const int32_t end = 2 * (int32_t)BLOCKS_PER_PIECE;
+        struct bs_seeder seed;
+        struct bs_fetcher fetcher;
+        struct bs_kept replies[4] = {0};
+        bool ok = true;
+
+        ASSERT(!mp_block_swarm_is_active());
+        ASSERT(bs_seeder_build(&seed, end, 17u, "same-shape-rearm"));
+        ASSERT(bs_fetcher_init(&fetcher, end));
+        struct p2p_node *seed_peer = bs_make_peer(&seed.nm, 21);
+        struct p2p_node *fetch_peer = bs_make_peer(&fetcher.nm, 22);
+        ASSERT(seed_peer && fetch_peer);
+        struct send_segment *seed_sent = bs_install_sentinel(seed_peer);
+        struct send_segment *fetch_sent = bs_install_sentinel(fetch_peer);
+
+        push_block_manifest(&seed.mp, seed_peer);
+        bs_pump(seed_peer, seed_sent, &fetcher.mp, fetch_peer,
+                params->pchMessageStart, &ok);
+        ASSERT(ok && mp_block_swarm_is_active());
+
+        mp_snapshot_send_tick(&fetcher.mp, fetch_peer);
+        bs_pump(fetch_peer, fetch_sent, &seed.mp, seed_peer,
+                params->pchMessageStart, &ok);
+        ASSERT(ok);
+        size_t reply_count = bs_steal_queue(seed_peer, seed_sent, replies, 4);
+        ASSERT(reply_count == 2);
+
+        fetcher.sink.rearm_swarm_on_submit = true;
+        ASSERT(bs_deliver(&fetcher.mp, fetch_peer, &replies[0],
+                          params->pchMessageStart));
+        printf("(rearmed=%d replacement_active=%d) ",
+               fetcher.sink.rearmed_swarm,
+               mp_block_swarm_is_active());
+        ASSERT(fetcher.sink.rearmed_swarm);
+        ASSERT(mp_block_swarm_is_active());
+
+        for (size_t i = 0; i < reply_count; i++)
+            free(replies[i].data);
+        mp_block_swarm_test_seed_stall(0, 0, 0);
+        send_segment_free(seed_sent);
+        send_segment_free(fetch_sent);
+        seed_peer->send_head = seed_peer->send_tail = NULL;
+        fetch_peer->send_head = fetch_peer->send_tail = NULL;
+        p2p_node_free(seed_peer);
+        p2p_node_free(fetch_peer);
+        bs_fetcher_free(&fetcher);
+        bs_seeder_free(&seed);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_block_swarm_loopback(void)
 {
     int failures = 0;
@@ -1529,6 +1597,7 @@ int test_block_swarm_loopback(void)
     failures += test_block_swarm_manifest_republish();
     failures += test_block_swarm_past_peer_manifest();
     failures += test_block_swarm_submit_failure_preserves_legacy_owner();
+    failures += test_block_swarm_rearm_drops_old_payload_credit();
     boot_snapshot_offer_test_set_trust_override(-1);
     return failures;
 }
