@@ -131,6 +131,15 @@ int test_db_maintenance(void)
     printf("\n=== db_maintenance tests ===\n");
     int failures = 0;
 
+    DBM_CHECK("dbm: a never-run leg is immediately due",
+              db_maintenance_test_due_at(0, 60, 1000));
+    DBM_CHECK("dbm: a leg stays quiet before its interval",
+              !db_maintenance_test_due_at(1000, 60, 1059));
+    DBM_CHECK("dbm: a leg is due at its interval boundary",
+              db_maintenance_test_due_at(1000, 60, 1060));
+    DBM_CHECK("dbm: wall rollback rebases instead of parking maintenance",
+              db_maintenance_test_due_at(1000, 60, 900));
+
     {
         struct db_maintenance_schedule sched;
         db_maintenance_schedule_wal_cap_only(&sched);

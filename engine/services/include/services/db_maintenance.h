@@ -270,4 +270,9 @@ bool db_maintenance_boot_opted_out(void);
 typedef bool (*db_maintenance_vacuum_gate_fn)(void);
 void db_maintenance_set_vacuum_gate(db_maintenance_vacuum_gate_fn fn);
 
+#ifdef ZCL_TESTING
+bool db_maintenance_test_due_at(int64_t last_unix, int64_t interval_seconds,
+                                int64_t now_unix);
+#endif
+
 #endif /* ZCL_SERVICES_DB_MAINTENANCE_H */

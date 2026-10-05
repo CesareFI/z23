@@ -731,12 +731,22 @@ struct zcl_result db_maintenance_checkpoint_now(void)
 
 /* ── Thread loop ────────────────────────────────────────────── */
 
-/* Returns true if `last_unix == 0` (never run) or the interval
- * has elapsed since the last run. */
-static bool dbm_due(int64_t last_unix, int64_t interval_seconds)
+/* Returns true if `last_unix == 0` (never run), the wall clock moved behind
+ * the last run, or the interval elapsed. A rollback must rebase the schedule
+ * on the next successful run instead of parking housekeeping until wall time
+ * catches up. */
+static bool dbm_due_at(int64_t last_unix, int64_t interval_seconds,
+                       int64_t now_unix)
 {
     if (last_unix == 0) return true;
-    return (platform_time_wall_unix() - last_unix) >= interval_seconds;
+    if (now_unix < last_unix) return true;
+    return (now_unix - last_unix) >= interval_seconds;
+}
+
+static bool dbm_due(int64_t last_unix, int64_t interval_seconds)
+{
+    return dbm_due_at(last_unix, interval_seconds,
+                      platform_time_wall_unix());
 }
 
 /* Returns the WAL file size in bytes, or 0 if unavailable. The on-disk
@@ -780,6 +790,14 @@ static bool dbm_leg_due(int interval_seconds, int64_t last_unix)
 {
     return interval_seconds > 0 && dbm_due(last_unix, interval_seconds);
 }
+
+#ifdef ZCL_TESTING
+bool db_maintenance_test_due_at(int64_t last_unix, int64_t interval_seconds,
+                                int64_t now_unix)
+{
+    return dbm_due_at(last_unix, interval_seconds, now_unix);
+}
+#endif
 
 static void *dbm_thread_fn(void *arg)
 {
