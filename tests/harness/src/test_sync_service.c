@@ -1895,7 +1895,16 @@ static int test_sync_service_builds_alt_recovery_plan(void)
         ASSERT(recovery.should_request_tip_parent);
         ASSERT(!recovery.should_reset_tip_next);
         syncsvc_free_stall_recovery(&recovery);
+
+        bool recovered_after_rollback = syncsvc_build_stall_recovery(
+            &recovery, &ms, &node, 0, 0, 900);
+        size_t rollback_alt_count = recovered_after_rollback
+            ? recovery.alt_count : 0;
+        if (recovered_after_rollback)
+            syncsvc_free_stall_recovery(&recovery);
         main_state_free(&ms);
+        ASSERT(recovered_after_rollback);
+        ASSERT(rollback_alt_count == 2);
         PASS();
     } _test_next:;
 
@@ -2007,7 +2016,16 @@ static int test_sync_service_requests_reset_when_no_alts(void)
         ASSERT(recovery.alt_count == 0);
         ASSERT(recovery.should_reset_tip_next);
         syncsvc_free_stall_recovery(&recovery);
+
+        bool recovered_after_rollback = syncsvc_build_stall_recovery(
+            &recovery, &ms, &node, 0, 0, 1900);
+        bool reset_after_rollback = recovered_after_rollback &&
+            recovery.should_reset_tip_next;
+        if (recovered_after_rollback)
+            syncsvc_free_stall_recovery(&recovery);
         main_state_free(&ms);
+        ASSERT(recovered_after_rollback);
+        ASSERT(reset_after_rollback);
         PASS();
     } _test_next:;
 

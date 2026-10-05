@@ -34,6 +34,15 @@
 
 static int64_t g_last_stall_log = 0;
 static int64_t g_last_stall_reset = 0;
+
+static bool wall_cooldown_active(int64_t now_seconds,
+                                 int64_t last_seconds,
+                                 int64_t window_seconds)
+{
+    return last_seconds != 0 &&
+           now_seconds >= last_seconds &&
+           now_seconds - last_seconds <= window_seconds;
+}
 static int64_t g_last_stale_warn = 0;
 
 /* zcl.sync_benchmark.v1 one-shot guards. Each flips exactly once per process
@@ -440,7 +449,7 @@ bool syncsvc_build_stall_recovery(struct sync_stall_recovery *recovery,
     if (queued != 0 || in_flight != 0) return false;
     if (node->starting_height <= our_h + 10) return false;
     if (node->state < PEER_HANDSHAKE_COMPLETE) return false;
-    if (now_seconds - g_last_stall_log <= 10) return false;
+    if (wall_cooldown_active(now_seconds, g_last_stall_log, 10)) return false;
 
     g_last_stall_log = now_seconds;
     recovery->should_recover = true;
@@ -565,7 +574,8 @@ bool syncsvc_build_stall_recovery(struct sync_stall_recovery *recovery,
     recovery->alt_count = alt_count;
     recovery->should_request_tip_parent = (tip->pprev != NULL);
 
-    if (alt_count == 0 && now_seconds - g_last_stall_reset > 30) {
+    if (alt_count == 0 &&
+        !wall_cooldown_active(now_seconds, g_last_stall_reset, 30)) {
         g_last_stall_reset = now_seconds;
         recovery->should_reset_tip_next = true;
     }
