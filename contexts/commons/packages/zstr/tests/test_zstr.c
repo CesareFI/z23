@@ -172,8 +172,26 @@ static void test_split_nul_delimiter(void)
     CHECK(!zstr_split_next(&it, &sp));
 }
 
+static void test_null_source_contract(void)
+{
+    int failed = 0;
+    const size_t caps[] = {1, 4, 8};
+    for (size_t row = 0; row < sizeof caps / sizeof caps[0]; row++) {
+        char dst[8];
+        memset(dst, 'x', sizeof dst);
+        size_t n = zstr_copy(dst, caps[row], NULL);
+        if (n != 0 || dst[0] != '\0' || dst[7] != 'x') {
+            fprintf(stderr, "FAIL null_copy row=%zu\n", row);
+            failed = 1;
+        }
+    }
+    CHECK(!failed);
+}
+
 int main(void)
 {
+    test_null_source_contract();
+
     test_copy_concat();
     test_trim_case();
     test_prefix_suffix_count();

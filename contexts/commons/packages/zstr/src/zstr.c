@@ -15,7 +15,7 @@ static size_t bounded_len(const char *s, size_t cap)
 
 size_t zstr_copy(char *dst, size_t cap, const char *src)
 {
-    if (!src) return 0;
+    if (!src) src = "";
     size_t n = strlen(src);
     if (dst && cap > 0) {
         size_t take = n < cap - 1 ? n : cap - 1;

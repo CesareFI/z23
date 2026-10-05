@@ -21,10 +21,12 @@ extern "C" {
 #endif
 
 /* Copy src into dst (capacity cap), always NUL-terminating when
- * cap > 0. Returns strlen(src); a result >= cap means truncation. */
+ * cap > 0 and dst is non-NULL. NULL src is treated as an empty string.
+ * Returns strlen(src); a result >= cap means truncation. */
 size_t zstr_copy(char *dst, size_t cap, const char *src);
 
 /* Append src to the NUL-terminated string in dst (capacity cap).
+ * NULL src returns 0 and leaves dst unchanged.
  * Returns the length the combined string would have had; a result
  * >= cap means truncation. */
 size_t zstr_concat(char *dst, size_t cap, const char *src);
