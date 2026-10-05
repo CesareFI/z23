@@ -64,6 +64,15 @@ static int read_lines(zdeque *dq, char lines[MAX_LINES][MAX_LINE])
     return length ? append_line(dq, lines[n], length) : 0;
 }
 
+static int finish_output(void)
+{
+    if (fflush(stdout) == EOF || ferror(stdout)) {
+        fprintf(stderr, "zdeque: error writing stdout\n");
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2 || (strcmp(argv[1], "reverse") != 0 &&
@@ -83,7 +92,7 @@ int main(int argc, char **argv)
         void *p;
         while (zdeque_pop_back(&dq, &p) == ZDEQUE_OK)
             printf("%s\n", (char *)p);
-        return 0;
+        return finish_output();
     }
 
     /* rotate N */
@@ -93,7 +102,7 @@ int main(int argc, char **argv)
         return 2;
     }
     size_t sz = zdeque_size(&dq);
-    if (sz == 0) return 0;
+    if (sz == 0) return finish_output();
     long r = ((rot % (long)sz) + (long)sz) % (long)sz;
     for (long i = 0; i < r; i++) {
         void *p = NULL;
@@ -103,5 +112,5 @@ int main(int argc, char **argv)
     void *p;
     while (zdeque_pop_front(&dq, &p) == ZDEQUE_OK)
         printf("%s\n", (char *)p);
-    return 0;
+    return finish_output();
 }

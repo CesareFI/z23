@@ -12,6 +12,10 @@
 #include <string.h>
 
 static FILE *cli_input;
+static int cli_flush_failure;
+static int cli_flush(FILE *stream) {
+    return cli_flush_failure ? EOF : fflush(stream);
+}
 static int cli_printf(const char *format, ...) {
     (void)format;
     return 0;
@@ -19,10 +23,12 @@ static int cli_printf(const char *format, ...) {
 #undef stdin
 #define stdin cli_input
 #define printf cli_printf
+#define fflush cli_flush
 #define main zdeque_cli_main
 #include "../app/main.c"
 #undef main
 #undef printf
+#undef fflush
 #undef stdin
 
 static int failures = 0;
@@ -161,6 +167,7 @@ static void test_errors(void)
 
 int main(void)
 {
+    (void)cli_flush;
     cli_input = tmpfile();
     CHECK(cli_input != NULL);
     if (!cli_input) return 1;
@@ -191,6 +198,15 @@ int main(void)
     for (int i = 0; i < MAX_LINES; i++) CHECK(fputc('\n', cli_input) != EOF);
     rewind(cli_input);
     CHECK(zdeque_cli_main(2, reverse) == 0);
+    CHECK(fclose(cli_input) == 0);
+    cli_input = tmpfile();
+    CHECK(cli_input != NULL);
+    if (!cli_input) return 1;
+    cli_flush_failure = 1;
+    CHECK(zdeque_cli_main(2, reverse) == 1);
+    char *rotate[] = {"zdeque", "rotate", "0", NULL};
+    CHECK(zdeque_cli_main(3, rotate) == 1);
+    cli_flush_failure = 0;
     CHECK(fclose(cli_input) == 0);
     test_fifo();
     test_stack_discipline();
