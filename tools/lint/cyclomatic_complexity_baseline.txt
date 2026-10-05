@@ -1780,7 +1780,6 @@ engine/jobs/src/script_validate_contextual.c:script_validate_contextual_gate:19
 engine/jobs/src/script_validate_log_store.c:script_validate_body_persist_log_at:17
 engine/jobs/src/script_validate_log_store.c:script_validate_log_insert:16
 engine/jobs/src/script_validate_stage.c:step_validate:31
-engine/jobs/src/script_validate_stage.c:sv_hold_unresolved:16
 engine/jobs/src/script_validate_stage_dump.c:dump_blocking_failure:18
 engine/jobs/src/script_validate_stage_prevout.c:script_validate_created_index_prevout:20
 engine/jobs/src/script_validate_verify.c:sv_parallel:17

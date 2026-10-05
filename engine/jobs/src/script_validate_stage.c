@@ -139,11 +139,12 @@ static void sv_release_stage_block(struct block_parse_handle *handle,
  * blocked-since budget converts a genuinely irreducible hole into EXACTLY ONE
  * named PERMANENT blocker + EV_OPERATOR_NEEDED (naming the outpoint), never a
  * silent loop. g_sv_unresolved_height is the height currently held (-1 = none);
- * g_sv_unresolved_since_unix is when the hold began; g_sv_unresolved_paged_height
- * is the height we already paged the operator for (so we page once per episode). */
+ * g_sv_unresolved_since_monotonic_us is when the hold began;
+ * g_sv_unresolved_paged_height is the height we already paged the operator for
+ * (so we page once per episode). */
 #define SV_UNRESOLVED_BUDGET_SECONDS 600  /* 10 min held before naming a blocker */
 static _Atomic int64_t g_sv_unresolved_height = -1;
-static _Atomic int64_t g_sv_unresolved_since_unix = 0;
+static _Atomic int64_t g_sv_unresolved_since_monotonic_us = 0;
 static _Atomic int64_t g_sv_unresolved_paged_height = -1;
 
 #ifdef ZCL_TESTING
@@ -202,7 +203,7 @@ static const char *const SV_BODY_AVAIL_BLOCKER_CANDIDATES[] = {
  * stack storage, not registry-owned.
  * Deliberately non-static (no public header entry) so
  * test_script_validate_stage.c can drive it directly without waiting on the
- * real-wall-clock SV_UNRESOLVED_BUDGET_SECONDS hold — same pattern as
+ * real-time SV_UNRESOLVED_BUDGET_SECONDS hold — same pattern as
  * find_lowest_prevout_unresolved_hole_unlocked in
  * stage_repair_coin_backfill_util.c. */
 const char *sv_find_body_availability_cause(
@@ -227,10 +228,11 @@ static job_result_t sv_hold_unresolved(struct stage_step_ctx *c, int height,
                                        sqlite3 *db,
                                        const struct uint256 *block_hash)
 {
-    int64_t now = platform_time_wall_unix();
+    int64_t now_monotonic_us = platform_time_monotonic_us();
     if (atomic_load(&g_sv_unresolved_height) != (int64_t)height) {
         atomic_store(&g_sv_unresolved_height, (int64_t)height);
-        atomic_store(&g_sv_unresolved_since_unix, now);
+        atomic_store(&g_sv_unresolved_since_monotonic_us,
+                     now_monotonic_us);
         atomic_store(&g_sv_unresolved_paged_height, (int64_t)-1);
         atomic_fetch_add(&g_internal_error_total, 1); /* once per held height */
         /* Publish the NON-TERMINAL pending-prevout HOLD signal exactly once per
@@ -256,9 +258,10 @@ static job_result_t sv_hold_unresolved(struct stage_step_ctx *c, int height,
                 db, height, block_hash, &s->first_failure_txid,
                 s->first_failure_vin);
     }
-    int64_t since = atomic_load(&g_sv_unresolved_since_unix);
-    int64_t elapsed = (since > 0 && now >= since) ? now - since : 0;
-    atomic_store(&g_last_blocked_unix, now);
+    int64_t since_us = atomic_load(&g_sv_unresolved_since_monotonic_us);
+    int64_t elapsed = since_us > 0
+        ? (now_monotonic_us - since_us) / INT64_C(1000000) : 0;
+    atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
 
     if (elapsed < sv_unresolved_budget())
         return JOB_IDLE; /* hold the cursor; the body re-derives next tick */
@@ -699,7 +702,7 @@ void script_validate_stage_shutdown(void)
     atomic_store(&g_header_event_emit_total, (uint64_t)0);
     atomic_store(&g_header_event_emit_fail_total, (uint64_t)0);
     atomic_store(&g_sv_unresolved_height, (int64_t)-1);
-    atomic_store(&g_sv_unresolved_since_unix, (int64_t)0);
+    atomic_store(&g_sv_unresolved_since_monotonic_us, (int64_t)0);
     atomic_store(&g_sv_unresolved_paged_height, (int64_t)-1);
     stage_db_fault_clear(&g_sv_db_fault);
     pthread_mutex_unlock(&g_lock);
