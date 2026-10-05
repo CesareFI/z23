@@ -93,6 +93,9 @@ bool zhello_world_save(const struct zhello_world *world, const char *path);
  *                          the caller answers with zhello_world_init()
  *   present and damaged -> false, `*missing` is false: a real failure
  *
+ * Position and velocity fields must be finite; NaN and infinity are
+ * damaged state. Any refusal leaves `world` unchanged.
+ *
  * Splitting those two is the whole point. Folding a corrupt file into
  * "start over" is how a person's state disappears with nobody told. */
 bool zhello_world_load(struct zhello_world *world, const char *path,

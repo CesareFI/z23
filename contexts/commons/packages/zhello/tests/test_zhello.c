@@ -92,6 +92,20 @@ int main(void)
 	/* A damaged file is refused, never folded into "start over": that is
 	 * how a person's state disappears with nobody told. `missing` stays
 	 * false, so the caller can tell the two apart. */
+	/* A valid header must not turn nonfinite saved coordinates into a
+	 * world that the painter cannot convert to integer pixel positions. */
+	FILE *nonfinite = fopen(state_path, "r+b");
+	CHECK(nonfinite != NULL);
+	const uint8_t quiet_nan[8] = {0, 0, 0, 0, 0, 0, 0xf8, 0x7f};
+	CHECK(fseek(nonfinite, 10, SEEK_SET) == 0);
+	CHECK(fwrite(quiet_nan, 1, sizeof quiet_nan, nonfinite) == sizeof quiet_nan);
+	CHECK(fclose(nonfinite) == 0);
+	struct zhello_world refused = closed;
+	missing = true;
+	CHECK(!zhello_world_load(&refused, state_path, &missing));
+	CHECK(!missing);
+	CHECK(memcmp(&refused, &closed, sizeof refused) == 0);
+	CHECK(zhello_world_save(&closed, state_path));
 	FILE *bad = fopen(state_path, "r+b");
 	CHECK(bad != NULL);
 	CHECK(fseek(bad, 3, SEEK_SET) == 0);

@@ -7,6 +7,7 @@
 #include "zhello/zhello.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -259,10 +260,16 @@ bool zhello_world_load(struct zhello_world *world, const char *path,
 	if (version != ZHELLO_STATE_VERSION)
 		return false;
 
-	world->x = zhello_get_f64(wire + 10);
-	world->y = zhello_get_f64(wire + 18);
-	world->vx = zhello_get_f64(wire + 26);
-	world->vy = zhello_get_f64(wire + 34);
-	world->frames = zhello_get_u64(wire + 42);
+	const struct zhello_world loaded = {
+		.x = zhello_get_f64(wire + 10),
+		.y = zhello_get_f64(wire + 18),
+		.vx = zhello_get_f64(wire + 26),
+		.vy = zhello_get_f64(wire + 34),
+		.frames = zhello_get_u64(wire + 42),
+	};
+	if (!isfinite(loaded.x) || !isfinite(loaded.y) ||
+	    !isfinite(loaded.vx) || !isfinite(loaded.vy))
+		return false;
+	*world = loaded;
 	return true;
 }
