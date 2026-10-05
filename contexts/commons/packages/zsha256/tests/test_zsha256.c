@@ -227,11 +227,62 @@ static void test_randomized_consistency(void)
     }
 }
 
+static void test_empty_updates_and_failure_state(void)
+{
+    const size_t lengths[] = {0, 1, 55, 56, 63, 64, 65, 119, 120, 127, 128, 129};
+    const size_t key_lengths[] = {0, 1, 63, 64, 65, 128};
+    uint8_t data[129], key[128];
+    memset(data, 'x', sizeof data);
+    memset(key, 'k', sizeof key);
+    for (size_t n = 0; n < sizeof lengths / sizeof lengths[0]; ++n) {
+        size_t len = lengths[n];
+        uint8_t want[ZSHA256_DIGEST_LEN], got[ZSHA256_DIGEST_LEN];
+        zsha256(data, len, want);
+        for (size_t split = 0; split <= len; ++split) {
+            zsha256_ctx ctx = {0};
+            unsigned char saved[sizeof ctx];
+            zsha256_init(&ctx);
+            zsha256_update(&ctx, data, split);
+            memcpy(saved, &ctx, sizeof ctx);
+            zsha256_update(&ctx, NULL, 0);
+            zsha256_update(&ctx, data, 0);
+            CHECK(memcmp(saved, &ctx, sizeof ctx) == 0);
+            zsha256_update(&ctx, NULL, 1);
+            zsha256_update(&ctx, NULL, SIZE_MAX);
+            zsha256_final(&ctx, NULL);
+            CHECK(memcmp(saved, &ctx, sizeof ctx) == 0);
+            zsha256_update(&ctx, data + split, len - split);
+            zsha256_update(&ctx, NULL, 0);
+            zsha256_final(&ctx, got);
+            CHECK(memcmp(want, got, sizeof got) == 0);
+        }
+        for (size_t k = 0; k < sizeof key_lengths / sizeof key_lengths[0]; ++k) {
+            zsha256_hmac(key, key_lengths[k], data, len, want);
+            for (size_t split = 0; split <= len; ++split) {
+                zsha256_hmac_ctx ctx = {0};
+                unsigned char saved[sizeof ctx];
+                zsha256_hmac_init(&ctx, key, key_lengths[k]);
+                zsha256_hmac_update(&ctx, data, split);
+                memcpy(saved, &ctx, sizeof ctx);
+                zsha256_hmac_update(&ctx, NULL, 0);
+                zsha256_hmac_update(&ctx, NULL, SIZE_MAX);
+                zsha256_hmac_final(&ctx, NULL);
+                CHECK(memcmp(saved, &ctx, sizeof ctx) == 0);
+                zsha256_hmac_update(&ctx, data + split, len - split);
+                zsha256_hmac_update(&ctx, NULL, 0);
+                zsha256_hmac_final(&ctx, got);
+                CHECK(memcmp(want, got, sizeof got) == 0);
+            }
+        }
+    }
+}
+
 int main(void)
 {
     test_sha_vectors();
     test_hmac_vectors();
     test_incremental();
+    test_empty_updates_and_failure_state();
     test_compare_and_robustness();
     test_randomized_consistency();
     puts("test_zsha256: all groups passed (vectors hmac incremental compare fuzz)");

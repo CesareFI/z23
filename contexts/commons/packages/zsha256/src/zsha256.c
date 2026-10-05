@@ -72,7 +72,7 @@ void zsha256_init(zsha256_ctx *ctx)
 
 void zsha256_update(zsha256_ctx *ctx, const void *data, size_t len)
 {
-    if (!ctx || (!data && len > 0)) return;
+    if (!ctx || len == 0 || !data) return;
     const uint8_t *p = data;
     ctx->total_len += len;
 
