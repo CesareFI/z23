@@ -218,6 +218,54 @@ _test_next:;
     return failures;
 }
 
+/* Observe only the new bullets, not internal pattern state. */
+static bool skycombat_gun_shot(weapons_system_t *w, int count, int right_count)
+{
+    const Vector3 origin = {100, 200, 300}, direction = {0, 0, 1};
+    bullet_t *old_head = w->bullets_head;
+    int old_count = w->bullet_count;
+    weapons_fire_bullet(w, origin, direction, 0.0f);
+    int seen = 0, right = 0;
+    for (bullet_t *b = w->bullets_head; b != old_head; b = b->next) {
+        if (!b || seen >= count) return false;
+        float dx = b->position.x - origin.x;
+        if (fabsf(fabsf(dx) - 8.0f) > 0.0001f ||
+            b->position.y != origin.y || b->position.z != origin.z) return false;
+        if (dx > 0) right++;
+        if (w->current_upgrade == WEAPON_UPGRADE_NONE &&
+            (b->velocity.x != 0 || b->velocity.y != 0 || b->velocity.z != BULLET_SPEED)) return false;
+        seen++;
+    }
+    return seen == count && right == right_count && w->bullet_count == old_count + count;
+}
+
+static int skycombat_gun_pattern_tests(void)
+{
+    int failures = 0;
+    weapons_system_t *a = weapons_create(), *b = weapons_create(), *reference = weapons_create();
+    ASSERT(a && b && reference);
+    TEST("guns: fresh systems and interleaving preserve each wing cycle") {
+        ASSERT(skycombat_gun_shot(a, 1, 1)); ASSERT(skycombat_gun_shot(b, 1, 1));
+        ASSERT(skycombat_gun_shot(reference, 1, 1));
+        ASSERT(skycombat_gun_shot(reference, 1, 0)); ASSERT(skycombat_gun_shot(reference, 2, 1));
+        ASSERT(skycombat_gun_shot(reference, 1, 1));
+        ASSERT(skycombat_gun_shot(b, 1, 0)); ASSERT(skycombat_gun_shot(a, 1, 0));
+        ASSERT(skycombat_gun_shot(b, 2, 1)); ASSERT(skycombat_gun_shot(b, 1, 1));
+        ASSERT(skycombat_gun_shot(a, 2, 1)); ASSERT(skycombat_gun_shot(b, 1, 0));
+        ASSERT(skycombat_gun_shot(a, 1, 1)); PASS();
+    }
+    TEST("guns: spread advances the cycle and recreation resets it") {
+        weapons_apply_upgrade(a, WEAPON_UPGRADE_SPREAD_SHOT, 10.0f);
+        ASSERT(skycombat_gun_shot(a, 6, 3)); weapons_clear_upgrade(a);
+        ASSERT(skycombat_gun_shot(a, 2, 1));
+        weapons_destroy(b); b = weapons_create();
+        ASSERT(b && skycombat_gun_shot(b, 1, 1)); PASS();
+    }
+_test_next:;
+    weapons_destroy(reference); weapons_destroy(b); weapons_destroy(a);
+    return failures;
+}
+
 int test_skycombat_models(void);
 int test_skycombat_models(void)
 {
@@ -422,6 +470,7 @@ _test_next:;
     failures += skycombat_match_lifecycle_tests();
     failures += skycombat_match_bounds_tests();
     failures += skycombat_pickup_tests();
+    failures += skycombat_gun_pattern_tests();
     if (failures == 0)
         printf("test_skycombat_models: all passed\n");
     else

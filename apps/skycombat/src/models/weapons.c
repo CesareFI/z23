@@ -22,6 +22,7 @@ weapons_system_t* weapons_create(void) {
     // Initialize linked list
     weapons->bullets_head = NULL;
     weapons->bullet_count = 0;
+    weapons->fire_pattern = 0;
     
     for (int i = 0; i < MAX_MISSILES; i++) {
         weapons->missiles[i].active = false;
@@ -379,8 +380,7 @@ void weapons_fire_bullet(weapons_system_t* weapons, Vector3 position, Vector3 di
     weapons->last_fire_direction = direction;
     
     // Fire bullets from wings with alternating pattern
-    static int fire_pattern = 0;
-    fire_pattern = (fire_pattern + 1) % 3;
+    weapons->fire_pattern = (weapons->fire_pattern + 1) % 3;
     
     // Determine number of bullets based on upgrade
     int bullet_count = (weapons->current_upgrade == WEAPON_UPGRADE_SPREAD_SHOT) ? 3 : 1;
@@ -388,8 +388,8 @@ void weapons_fire_bullet(weapons_system_t* weapons, Vector3 position, Vector3 di
     for (int side = -1; side <= 1; side += 2) {
         // Skip one side based on pattern for more interesting fire (unless spread shot)
         if (weapons->current_upgrade != WEAPON_UPGRADE_SPREAD_SHOT) {
-            if (fire_pattern == 1 && side == -1) continue;
-            if (fire_pattern == 2 && side == 1) continue;
+            if (weapons->fire_pattern == 1 && side == -1) continue;
+            if (weapons->fire_pattern == 2 && side == 1) continue;
         }
         
         // Fire multiple bullets for spread shot

@@ -97,6 +97,7 @@ typedef enum {
 typedef struct {
     bullet_t* bullets_head;  // Linked list for infinite bullets
     int bullet_count;        // Track active bullets
+    int fire_pattern;        // Per-system three-step wing alternation
     missile_t missiles[MAX_MISSILES];
     laser_t lasers[MAX_LASERS];
     plasma_t plasma[MAX_PLASMA];
