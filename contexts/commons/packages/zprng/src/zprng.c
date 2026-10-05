@@ -70,7 +70,7 @@ void zxoshiro256ss_shuffle(zxoshiro256ss *rng, void *base, size_t n,
 {
     uint8_t tmp[256];
 
-    if (!base || n < 2 || !elemsize || elemsize > sizeof tmp)
+    if (!base || n < 2 || !elemsize)
         return;
     for (size_t i = n - 1; i > 0; i--) {
         uint8_t *a = (uint8_t *)base + i * elemsize;
@@ -78,8 +78,14 @@ void zxoshiro256ss_shuffle(zxoshiro256ss *rng, void *base, size_t n,
                      (size_t)zxoshiro256ss_below(rng, (uint64_t)i + 1) *
                          elemsize;
 
-        memcpy(tmp, a, elemsize);
-        memcpy(a, b, elemsize);
-        memcpy(b, tmp, elemsize);
+        if (a == b) continue;
+        for (size_t off = 0; off < elemsize;) {
+            size_t take = elemsize - off;
+            if (take > sizeof tmp) take = sizeof tmp;
+            memcpy(tmp, a + off, take);
+            memcpy(a + off, b + off, take);
+            memcpy(b + off, tmp, take);
+            off += take;
+        }
     }
 }

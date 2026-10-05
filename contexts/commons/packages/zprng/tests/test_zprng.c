@@ -145,8 +145,40 @@ static void test_shuffle_odd_sizes(void)
     check(1, "shuffle degenerate no-op");
 }
 
+static void test_shuffle_large_items(void)
+{
+    const size_t sizes[] = {257, 512, 513};
+    for (size_t row = 0; row < sizeof sizes / sizeof sizes[0]; row++) {
+        size_t size = sizes[row];
+        unsigned char actual[3 * 513 + 2], expected[sizeof actual];
+        memset(actual, 0xa5, sizeof actual);
+        for (size_t i = 0; i < 3; i++)
+            for (size_t j = 0; j < size; j++)
+                actual[1 + i * size + j] = (unsigned char)(i * 67 + j);
+        memcpy(expected, actual, sizeof actual);
+        zxoshiro256ss rng, reference;
+        zxoshiro256ss_init(&rng, 1234);
+        reference = rng;
+        for (size_t i = 2; i > 0; i--) {
+            size_t k = (size_t)zxoshiro256ss_below(&reference, i + 1);
+            for (size_t j = 0; j < size; j++) {
+                unsigned char byte = expected[1 + i * size + j];
+                expected[1 + i * size + j] = expected[1 + k * size + j];
+                expected[1 + k * size + j] = byte;
+            }
+        }
+        zxoshiro256ss_shuffle(&rng, actual + 1, 3, size);
+        int ok = memcmp(actual, expected, sizeof actual) == 0 &&
+                 memcmp(&rng, &reference, sizeof rng) == 0;
+        fprintf(stderr, "large_shuffle_row=%zu size=%zu result=%s\n", row,
+                size, ok ? "PASS" : "FAIL");
+        check(ok, "shuffle handles large items with bounded swaps");
+    }
+}
+
 int main(void)
 {
+    test_shuffle_large_items();
     test_splitmix_vectors();
     test_xoshiro_vectors();
     test_determinism();
