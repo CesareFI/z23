@@ -1185,6 +1185,10 @@ skipped. Existing branch refs are not moved or published history rewritten.
 The assembled tip must pass complexity even when every input is skipped.
 The checker measures each candidate's C source and ratchet baseline. Changes
 to checker implementation itself still require the assembled tip's full lint.
+Both stack tools refuse inherited `GIT_*` variables before Git or generator
+effects, except the output-only `GIT_PAGER` and `GIT_TERMINAL_PROMPT` settings.
+They require Git's worktree root to match the script's physical root.
+Run them from an ordinary shell without ambient Git routing or configuration.
 
 For example, reconstruct the existing stack-refresh corrections in order:
 

@@ -15,6 +15,19 @@ case "${1:-}" in
 esac
 [ "$#" -le 1 ] || { echo 'stack-tip-refresh: too many arguments' >&2; exit 2; }
 cd "$ROOT"
+# Direct and retained-source entry points have the same physical-tree boundary.
+for git_env in ${!GIT_@}; do
+    case "$git_env" in
+        GIT_PAGER|GIT_TERMINAL_PROMPT) continue ;;
+        *) ;;
+    esac
+    printf 'stack tool: refusing inherited Git environment: %s\n' "$git_env" >&2
+    exit 2
+done
+if [ "$(git rev-parse --show-toplevel)" != "$ROOT" ]; then
+    echo 'stack tool: Git worktree does not match the script root' >&2
+    exit 2
+fi
 
 # Make may also regenerate tracked view headers. Compare against the initial
 # working contents, not HEAD, without hashing every unchanged source file.
@@ -127,6 +140,7 @@ repair_counts() (
 )
 
 selftest() (
+    bash "$ROOT/tools/scripts/stack_git_environment_test.sh"
     local tmp script="$ROOT/tools/scripts/stack_tip_refresh.sh"
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/zcl-stack-refresh.XXXXXX")"
     trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "SELFTEST FAIL exit=$rc" >&2; [ ! -f "${out:-}" ] || cat "$out" >&2; fi; rm -rf "$tmp"' EXIT

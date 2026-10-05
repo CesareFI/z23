@@ -4,9 +4,24 @@
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
+# Refuse ambient Git routing/configuration before any checkout or index access.
+# Names only: values may contain private paths or configuration.
+for git_env in ${!GIT_@}; do
+    case "$git_env" in
+        GIT_PAGER|GIT_TERMINAL_PROMPT) continue ;;
+        *) ;;
+    esac
+    printf 'stack tool: refusing inherited Git environment: %s\n' "$git_env" >&2
+    exit 2
+done
+if [ "$(git rev-parse --show-toplevel)" != "$ROOT" ]; then
+    echo 'stack tool: Git worktree does not match the script root' >&2
+    exit 2
+fi
 fail() { printf 'stack-build: %s\n' "$*" >&2; exit 2; }
 
 selftest() (
+    bash "$ROOT/tools/scripts/stack_git_environment_test.sh"
     local tmp script="$ROOT/tools/scripts/stack_build.sh" key value path
     local -a settings=()
     # Reuse public configuration, never create signing keys or trust settings.
