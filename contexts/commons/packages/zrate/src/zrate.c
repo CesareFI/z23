@@ -1,3 +1,6 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ * Purpose: token-bucket and sliding-window rate limiting.
+ */
 #include "zrate/zrate.h"
 
 #include <string.h>
@@ -36,9 +39,10 @@ bool zrate_bucket_take(zrate_bucket *b, double n, uint64_t now_ms)
 
 uint64_t zrate_bucket_wait_ms(zrate_bucket *b, double n, uint64_t now_ms)
 {
-    if (!b || n > b->capacity || b->rate_per_sec <= 0) return UINT64_MAX;
+    if (!b || n > b->capacity) return UINT64_MAX;
     refill(b, now_ms);
     if (n <= b->tokens) return 0;
+    if (b->rate_per_sec <= 0) return UINT64_MAX;
     double missing = n - b->tokens;
     double secs = missing / b->rate_per_sec;
     uint64_t ms = (uint64_t)(secs * 1000.0);

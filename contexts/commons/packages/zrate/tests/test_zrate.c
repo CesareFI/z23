@@ -1,3 +1,6 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ * Purpose: regression tests for token-bucket and sliding-window rate limiting.
+ */
 #include "zrate/zrate.h"
 
 #include <stdio.h>
@@ -65,6 +68,32 @@ static void test_bucket_wait(void)
     zrate_bucket_init(&b, 1.0, 0.0, 0);
     CHECK(zrate_bucket_take(&b, 1.0, 0));
     CHECK(zrate_bucket_wait_ms(&b, 1.0, 0) == UINT64_MAX);
+    /* No refill is needed when the bucket already has enough tokens. */
+    zrate_bucket_init(&b, 5.0, 0.0, 0);
+    CHECK(zrate_bucket_wait_ms(&b, 1.0, 0) == 0);
+    CHECK(zrate_bucket_wait_ms(&b, 5.0, 0) == 0);
+    CHECK(zrate_bucket_wait_ms(&b, 0.0, 0) == 0);
+    CHECK(zrate_bucket_wait_ms(&b, 6.0, 0) == UINT64_MAX);
+    CHECK(zrate_bucket_peek(&b, 0) == 5.0); /* wait must not spend */
+    CHECK(zrate_bucket_take(&b, 5.0, 0));
+    CHECK(zrate_bucket_wait_ms(&b, 1.0, 0) == UINT64_MAX);
+    CHECK(zrate_bucket_wait_ms(&b, 1.0, 100000) == UINT64_MAX);
+    CHECK(zrate_bucket_wait_ms(&b, 0.0, 100000) == 0);
+    CHECK(zrate_bucket_peek(&b, 100000) == 0.0);
+    CHECK(zrate_bucket_take(&b, 0.0, 100000));
+    CHECK(!zrate_bucket_take(&b, 1.0, 100000));
+    CHECK(zrate_bucket_wait_ms(NULL, 1.0, 0) == UINT64_MAX);
+    /* Init normalizes a negative refill rate to zero. */
+    zrate_bucket_init(&b, 5.0, -1.0, 0);
+    CHECK(zrate_bucket_wait_ms(&b, 1.0, 0) == 0);
+    CHECK(zrate_bucket_take(&b, 5.0, 0));
+    CHECK(zrate_bucket_wait_ms(&b, 1.0, 0) == UINT64_MAX);
+    /* Positive-rate fractional waits still round up, never down. */
+    zrate_bucket_init(&b, 5.0, 3.0, 0);
+    CHECK(zrate_bucket_take(&b, 5.0, 0));
+    CHECK(zrate_bucket_wait_ms(&b, 1.0, 0) == 334);
+    CHECK(zrate_bucket_wait_ms(&b, 0.001, 0) == 1);
+    CHECK(zrate_bucket_wait_ms(&b, 1.0, 334) == 0);
 }
 
 static void test_window_basic(void)
