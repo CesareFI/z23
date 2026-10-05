@@ -45,6 +45,14 @@ static bool parse_index(const char *text, size_t count, unsigned long *index) {
   return true;
 }
 
+static int finish_input(FILE *in, int result) {
+  if (ferror(in)) {
+    fputs("zpool: read error\n", stderr);
+    return 2;
+  }
+  return result;
+}
+
 int main(int argc, char **argv) {
   
   if (argc != 3) {
@@ -104,5 +112,5 @@ int main(int argc, char **argv) {
       break;
     }
   }
-  return bad;
+  return finish_input(stdin, bad);
 }
