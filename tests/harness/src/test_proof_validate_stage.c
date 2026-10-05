@@ -616,6 +616,13 @@ int test_proof_validate_stage(void)
                  proof_validate_stage_step_once() == JOB_IDLE);
         PV_CHECK("internal_error: counter still 1 (same held height)",
                  proof_validate_stage_internal_error_total() == 1);
+        proof_validate_stage_unresolved_budget_set_for_test(0);
+        job_result_t escalated = proof_validate_stage_step_once();
+        PV_CHECK("internal_error: elapsed hold becomes blocked",
+                 escalated == JOB_BLOCKED);
+        PV_CHECK("internal_error: elapsed hold names its blocker",
+                 blocker_exists("proof_validate.internal_error"));
+        proof_validate_stage_unresolved_budget_set_for_test(-1);
         pv_teardown(dir, &ms, &sc);
     }
 

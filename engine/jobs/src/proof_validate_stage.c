@@ -97,14 +97,30 @@ static _Atomic int64_t  g_last_advance_height = -1;
  * PERMANENT blocker + EV_OPERATOR_NEEDED (naming height+txid+proof_type), never
  * a silent loop AND never a transient flipped into a permanent ok=0 reject.
  * g_pv_unresolved_height is the height currently held (-1 = none);
- * g_pv_unresolved_since_unix is when the hold began; g_pv_unresolved_paged_height
- * is the height we already paged the operator for (page once per episode).
+ * g_pv_unresolved_since_monotonic_us is when the hold began;
+ * g_pv_unresolved_paged_height is the height we already paged the operator for
+ * (page once per episode).
  * The GENUINE proof-invalid verdict (a real bad proof) is unaffected — it still
  * writes ok=0 + advances below. */
 #define PV_UNRESOLVED_BUDGET_SECONDS 600  /* 10 min held before naming a blocker */
 static _Atomic int64_t g_pv_unresolved_height = -1;
-static _Atomic int64_t g_pv_unresolved_since_unix = 0;
+static _Atomic int64_t g_pv_unresolved_since_monotonic_us = 0;
 static _Atomic int64_t g_pv_unresolved_paged_height = -1;
+
+#ifdef ZCL_TESTING
+static _Atomic int g_pv_unresolved_budget_override = -1;
+void proof_validate_stage_unresolved_budget_set_for_test(int seconds)
+{
+    atomic_store(&g_pv_unresolved_budget_override, seconds);
+}
+static int pv_unresolved_budget(void)
+{
+    int override = atomic_load(&g_pv_unresolved_budget_override);
+    return override >= 0 ? override : PV_UNRESOLVED_BUDGET_SECONDS;
+}
+#else
+static int pv_unresolved_budget(void) { return PV_UNRESOLVED_BUDGET_SECONDS; }
+#endif
 
 /* Clear HOLD tracking after a clean advance so the next internal error gets a
  * fresh budget and releases the named blocker. */
@@ -122,18 +138,20 @@ static job_result_t pv_hold_unresolved(struct stage_step_ctx *c, int height,
                                        const struct uint256 *fail_txid,
                                        const char *fail_type)
 {
-    int64_t now = platform_time_wall_unix();
+    int64_t now_monotonic_us = platform_time_monotonic_us();
     if (atomic_load(&g_pv_unresolved_height) != (int64_t)height) {
         atomic_store(&g_pv_unresolved_height, (int64_t)height);
-        atomic_store(&g_pv_unresolved_since_unix, now);
+        atomic_store(&g_pv_unresolved_since_monotonic_us,
+                     now_monotonic_us);
         atomic_store(&g_pv_unresolved_paged_height, (int64_t)-1);
         atomic_fetch_add(&g_internal_error_total, 1); /* once per held height */
     }
-    int64_t since = atomic_load(&g_pv_unresolved_since_unix);
-    int64_t elapsed = (since > 0 && now >= since) ? now - since : 0;
-    atomic_store(&g_last_blocked_unix, now);
+    int64_t since_us = atomic_load(&g_pv_unresolved_since_monotonic_us);
+    int64_t elapsed = since_us > 0
+        ? (now_monotonic_us - since_us) / INT64_C(1000000) : 0;
+    atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
 
-    if (elapsed < PV_UNRESOLVED_BUDGET_SECONDS)
+    if (elapsed < pv_unresolved_budget())
         return JOB_IDLE; /* hold the cursor; the body re-derives next tick */
 
     char txhex[65] = {0};
@@ -664,8 +682,11 @@ void proof_validate_stage_shutdown(void)
     /* TL-2 HOLD tracking reset (clears the named blocker if one is live). */
     pv_unresolved_clear();
     atomic_store(&g_pv_unresolved_height, (int64_t)-1);
-    atomic_store(&g_pv_unresolved_since_unix, (int64_t)0);
+    atomic_store(&g_pv_unresolved_since_monotonic_us, (int64_t)0);
     atomic_store(&g_pv_unresolved_paged_height, (int64_t)-1);
+#ifdef ZCL_TESTING
+    atomic_store(&g_pv_unresolved_budget_override, -1);
+#endif
     pthread_mutex_unlock(&g_lock);
 }
 

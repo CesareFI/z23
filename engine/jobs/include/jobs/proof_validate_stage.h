@@ -80,6 +80,10 @@ void proof_validate_stage_set_reader(proof_validate_reader_fn fn, void *user);
 void proof_validate_stage_set_tx_verifier(proof_validate_tx_verify_fn fn,
                                           void *user);
 
+#ifdef ZCL_TESTING
+void proof_validate_stage_unresolved_budget_set_for_test(int seconds);
+#endif
+
 /* Cross-height proof pre-verification pool (jobs/pv_lookahead.h): start/stop
  * the pool bound to this stage's exact (main_state, datadir, reader, verifier)
  * tuple. Production callers of the start are engine/composition/src/boot_mint_anchor.c
