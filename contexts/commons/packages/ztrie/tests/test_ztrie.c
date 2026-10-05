@@ -105,6 +105,11 @@ static void test_longest_prefix(void)
     CHECK(cstr_lpm(t, "/api/v1/x", &n) == &v_apiv1 && n == 7);
 
     CHECK(ztrie_longest_prefix(NULL, "x", 1, &n) == NULL);
+
+    /* A NULL value still names the longest matching key. */
+    CHECK(ztrie_put(t, "/api/v1", 7, NULL, NULL));
+    n = SIZE_MAX;
+    CHECK(cstr_lpm(t, "/api/v1/users", &n) == NULL && n == 7);
     ztrie_destroy(t);
 }
 

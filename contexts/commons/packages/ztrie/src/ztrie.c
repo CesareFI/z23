@@ -143,7 +143,7 @@ void *ztrie_longest_prefix(const ztrie *t, const void *text_,
             best_len = i + 1;
         }
     }
-    if (best && match_len) *match_len = best_len;
+    if (match_len) *match_len = best_len;
     return best;
 }
 
