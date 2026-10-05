@@ -118,7 +118,7 @@ not fold through `connect_block()` and are out of simnet scope.
 | ZSLP `SEND` | A | `make t ONLY=simnet`: `mint SLP SEND through simnet`, `ZSLP projection sees genesis/send transfer balances`. |
 | ZSLP `MINT` | A | `make t ONLY=simnet`: `mint SLP MINT through simnet`, `ZSLP projection sees mint transfer`. |
 | ZSLP malformed lokad | A | Negative case: `malformed SLP OP_RETURN is indexed as non-SLP`, `malformed SLP does not add token transfers`. |
-| ZSLP `BURN` | B | `SLP_TX_BURN` exists as an implicit enum/comment, but there is no `slp_build_burn`, parser branch, or burn projection row. Current ZSLP projection records decoded token transfers; it is not a token-validity ledger and does not enforce spend balance. |
+| ZSLP `BURN` | A | `make t ONLY=simnet`: `mint SLP implicit-BURN through simnet`, `fold SLP implicit-BURN into strict ledger`, and `strict ZSLP supply records exactly 150 burned units`. |
 | ZNAM `REGISTER` | A | `make t ONLY=simnet`: `mint ZNAM REGISTER through simnet`, `ZNAM projection resolves registered name`. |
 | ZNAM `UPDATE` | A | `make t ONLY=simnet`: owner positive `ZNAM owner UPDATE changes primary target`; non-owner negative `ZNAM non-owner UPDATE is ignored by projection`. |
 | ZNAM `TRANSFER` | A | `make t ONLY=simnet`: `mint ZNAM TRANSFER through simnet`, `ZNAM TRANSFER changes owner`. |
@@ -146,11 +146,11 @@ not fold through `connect_block()` and are out of simnet scope.
 | Market RPC/local `zmarket_list` | C | Local read/controller action. Lower-level offer list/find behavior is covered by `test_file_market`; no end-to-end simnet coverage. |
 | Market RPC/local `zmarket_buy` | C | Local download workflow action. The chunk/payment glue is not an on-chain simnet action today; no end-to-end simnet coverage. |
 | Market RPC/local `zmarket_status` | C | Local read/controller action. File manifest/status pieces are covered by `test_file_controller`; no end-to-end simnet coverage. |
-| HTLC script build | A | `make t ONLY=simnet`: `test_simnet_txkit` builds and tests the 97-byte HTLC contract through settlement (lines 321-322). |
+| HTLC script build | A | `make t ONLY=simnet`: `test_simnet_txkit` builds and tests the 97-byte HTLC contract through settlement (lines 469-477). |
 | HTLC P2SH address derivation | A | `make t ONLY=simnet`: `test_simnet_txkit` derives P2SH address from HTLC script and funds P2SH output; redeem/refund settlement paths are tested end-to-end. |
-| HTLC redeem scriptSig build | A | `make t ONLY=simnet`: `test_simnet_txkit` (lines 334-345) builds redeem scriptSig, enqueues to mempool, and verifies settlement through connect_block. |
-| HTLC refund scriptSig build | A | `make t ONLY=simnet`: `test_simnet_txkit` (lines 362-381) builds refund scriptSig, tests nonfinal rejection before lock height, advances to lock height, then enqueues and verifies settlement. |
-| HTLC secret extraction | A | `make t ONLY=simnet`: `test_simnet_txkit` uses extracted secret in redeem scriptSig (line 195) and verifies it through mempool/settlement. |
+| HTLC redeem scriptSig build | A | `make t ONLY=simnet`: `test_simnet_txkit` (lines 482-493) builds redeem scriptSig, enqueues to mempool, and verifies settlement through connect_block. |
+| HTLC refund scriptSig build | A | `make t ONLY=simnet`: `test_simnet_txkit` (lines 510-528) builds refund scriptSig, tests nonfinal rejection before lock height, advances to lock height, then enqueues and verifies settlement. |
+| HTLC secret extraction | C | `test_htlc` extracts the third push from a mock redeem scriptSig and compares it with the expected secret (lines 183-221). |
 | Swap chain selection (`ZCL`, `BTC`, `LTC`, `DOGE`) | C | Controller/model selection action, not a chain action. Covered by swap/HTLC protocol tests. |
 | Swap initiate | C | Controller/model action that builds local swap state. On-chain funding/settlement remains Class B. |
 | Swap participate | C | Controller/model action that builds local swap state. On-chain funding/settlement remains Class B. |
