@@ -239,6 +239,11 @@ static int test_per_connection_budget(void)
 {
     int failures = 0;
     TEST("file_service: per-connection byte/time budget trips") {
+        int64_t before = platform_time_monotonic_us() / INT64_C(1000000);
+        int64_t transfer_now = fs_client_now_seconds_for_test();
+        int64_t after = platform_time_monotonic_us() / INT64_C(1000000);
+        ASSERT(transfer_now >= before && transfer_now <= after);
+
         /* Fixed positive monotonic samples keep every boundary input valid
          * even on a host whose real monotonic epoch is still near zero. */
         int64_t now = INT64_C(10000000);

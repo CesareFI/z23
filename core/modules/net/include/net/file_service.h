@@ -234,6 +234,7 @@ bool fs_ip_bytes_charge(const uint8_t ip[16], uint64_t n);
 /* Observe the private process-local rate window without exposing it in
  * production builds. Returns INT64_MIN when the IP has no slot. */
 int64_t fs_ip_hour_start_for_test(const uint8_t ip[16]);
+int64_t fs_client_now_seconds_for_test(void);
 #endif
 
 /* Per-connection budget predicate: false once the connection exceeds its

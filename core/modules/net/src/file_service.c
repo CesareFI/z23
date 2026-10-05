@@ -417,6 +417,18 @@ int64_t fs_ip_hour_start_for_test(const uint8_t ip[16])
 }
 #endif
 
+static int64_t fs_client_now_seconds(void)
+{
+    return platform_time_monotonic_us() / INT64_C(1000000);
+}
+
+#ifdef ZCL_TESTING
+int64_t fs_client_now_seconds_for_test(void)
+{
+    return fs_client_now_seconds();
+}
+#endif
+
 bool fs_conn_budget_ok(uint64_t bytes_sent, int64_t start_monotonic_ms,
                        int64_t now_monotonic_ms)
 {
@@ -2219,7 +2231,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
     snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks", datadir);
     mkdir(blocks_dir, 0755);
 
-    int64_t dl_start = (int64_t)platform_time_wall_time_t();
+    int64_t dl_start = fs_client_now_seconds();
 
     /* Check if previous partial download exists — verify and resume.
      * We spot-check existing chunks with SHA3 to detect corruption. */
@@ -2352,7 +2364,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
             done += atomic_load(&workers[w].bytes);
             if (!atomic_load(&workers[w].done)) all_done = false;
         }
-        int64_t el = (int64_t)platform_time_wall_time_t() - dl_start;
+        int64_t el = fs_client_now_seconds() - dl_start;
         if (el > max_wait) {
             printf("file_service: timeout after %llds, cancelling stuck "
                    "workers\n", (long long)el);
@@ -2385,7 +2397,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
             }
         }
         double pct = total_bytes > 0 ? 100.0 * (double)done / (double)total_bytes : 0;
-        int64_t elapsed = (int64_t)platform_time_wall_time_t() - dl_start;
+        int64_t elapsed = fs_client_now_seconds() - dl_start;
         double mbps = elapsed > 0 ? (double)done / (1048576.0 * (double)elapsed) : 0;
         int eta = (done > 0 && elapsed > 0) ?
             (int)((double)(total_bytes - done) / ((double)done / (double)elapsed)) : 0;
@@ -2410,7 +2422,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         total_fail += atomic_load(&workers[w].chunks_fail);
     }
 
-    int64_t dl_elapsed = (int64_t)platform_time_wall_time_t() - dl_start;
+    int64_t dl_elapsed = fs_client_now_seconds() - dl_start;
     printf("=== File sync: %.1f GB in %llds (%.1f MB/s avg) "
            "chunks: %u ok, %u failed out of %u ===\n",
            (double)bytes_done / (1024.0 * 1024.0 * 1024.0),
