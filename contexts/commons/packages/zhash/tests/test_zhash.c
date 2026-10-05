@@ -4,16 +4,37 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 
+static FILE *cli_input, *cli_output;
+static int cli_fail_flush;
+static unsigned cli_flush_calls;
+static int cli_wrong_flush_stream;
 static int cli_flush_failure(FILE *stream) {
-  (void)stream;
-  return EOF;
+  cli_flush_calls++;
+  cli_wrong_flush_stream |= stream != cli_output;
+  return cli_fail_flush ? EOF : fflush(stream);
 }
+static int cli_printf(const char *format, ...) {
+  va_list args;
+  va_start(args, format);
+  const int result = vfprintf(cli_output, format, args);
+  va_end(args);
+  return result;
+}
+#undef stdin
+#undef stdout
+#define stdin cli_input
+#define stdout cli_output
+#define printf cli_printf
 #define fflush cli_flush_failure
 #define main zhash_cli_main
 #include "../app/main.c"
 #undef main
 #undef fflush
+#undef printf
+#undef stdout
+#undef stdin
 
 static int g_fail = 0;
 #define CHECK(cond)                                                     \
@@ -136,13 +157,44 @@ static void test_fuzz(void) {
 }
 
 int main(void) {
-  (void)cli_flush_failure;
+  cli_input = tmpfile();
+  cli_output = tmpfile();
+  CHECK(cli_input != NULL && cli_output != NULL);
+  if (!cli_input || !cli_output) {
+    if (cli_input) CHECK(fclose(cli_input) == 0);
+    if (cli_output) CHECK(fclose(cli_output) == 0);
+    return 1;
+  }
   char *algorithms[] = {"fnv1a64", "fnv1a32", "crc32", "djb2", "sdbm"};
   for (size_t i = 0; i < sizeof algorithms / sizeof algorithms[0]; i++) {
     char *args[] = {"zhash", algorithms[i], "abc", NULL};
-    CHECK(zhash_cli_main(3, args) == 1);
-    if (i < 3) CHECK(zhash_cli_main(2, args) == 1);
+    for (int failure = 0; failure <= 1; failure++) {
+      cli_fail_flush = failure;
+      cli_flush_calls = 0;
+      cli_wrong_flush_stream = 0;
+      const long before = ftell(cli_output);
+      CHECK(before >= 0);
+      CHECK(zhash_cli_main(3, args) == failure);
+      CHECK(cli_flush_calls == 1);
+      CHECK(cli_wrong_flush_stream == 0);
+      CHECK(ftell(cli_output) > before);
+      if (i < 3) {
+        rewind(cli_input);
+        CHECK(ferror(cli_input) == 0);
+        cli_flush_calls = 0;
+        cli_wrong_flush_stream = 0;
+        const long stream_before = ftell(cli_output);
+        CHECK(stream_before >= 0);
+        CHECK(zhash_cli_main(2, args) == failure);
+        CHECK(ferror(cli_input) == 0);
+        CHECK(cli_flush_calls == 1);
+        CHECK(cli_wrong_flush_stream == 0);
+        CHECK(ftell(cli_output) > stream_before);
+      }
+    }
   }
+  CHECK(fclose(cli_input) == 0);
+  CHECK(fclose(cli_output) == 0);
   test_kat();
   test_stream();
   test_mix();
