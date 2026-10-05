@@ -151,6 +151,12 @@ static bool chf_peer_usable(const struct p2p_node *node, int32_t height)
     return node->starting_height >= height;
 }
 
+static bool chf_send_throttled(int64_t now_us, int64_t last_us)
+{
+    return last_us != 0 && now_us >= last_us &&
+           now_us - last_us < CHF_SEND_INTERVAL_US;
+}
+
 void checkpoint_header_fetch_maybe_send(struct msg_processor *mp,
                                         struct p2p_node *node,
                                         int64_t now_seconds)
@@ -169,7 +175,11 @@ void checkpoint_header_fetch_maybe_send(struct msg_processor *mp,
     /* Global throttle: claim the send slot before doing any work. */
     int64_t now_us = now_seconds * 1000000;
     int64_t last = atomic_load(&g_last_send_us);
-    if (last != 0 && now_us - last < CHF_SEND_INTERVAL_US)
+    /* The send loop supplies wall time. If it steps backward, treating the
+     * prior stamp as a future deadline suppresses every peer until the clock
+     * catches up. A regressed stamp starts a new throttle epoch; the CAS below
+     * still lets exactly one peer claim it. */
+    if (chf_send_throttled(now_us, last))
         return; // raw-return-ok:throttled
 
     /* Resolve the checkpoint header's parent hash from the imported block map:

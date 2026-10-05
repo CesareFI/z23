@@ -230,8 +230,16 @@ static int gsf_checkpoint_fetch_send_failure_retry(
     GSF_CHECK("failed checkpoint fetch leaves immediate retry eligible",
               retry_peer.send_size > 0);
 
+    gsf_drain_send_queue(&retry_peer);
+    struct p2p_node clock_step_peer;
+    gsf_setup_outbound_peer(&clock_step_peer, target->nHeight);
+    checkpoint_header_fetch_maybe_send(mp, &clock_step_peer, 0);
+    GSF_CHECK("backward wall-clock step keeps checkpoint fetch eligible",
+              clock_step_peer.send_size > 0);
+
     gsf_free_outbound_peer(&failed_peer);
     gsf_free_outbound_peer(&retry_peer);
+    gsf_free_outbound_peer(&clock_step_peer);
     checkpoint_header_fetch_test_reset();
     return failures;
 }
