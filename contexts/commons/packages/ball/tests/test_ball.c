@@ -16,6 +16,11 @@ enum { TEST_WIDTH = 96, TEST_HEIGHT = 96 };
 
 int main(void)
 {
+	const struct ball_canvas empty_canvas = {NULL, 0, 0};
+	uint8_t zero_pixel[4] = {0};
+	const struct ball_canvas one_pixel = {zero_pixel, 1, 1};
+	CHECK(ball_canvas_digest(&empty_canvas) == UINT64_C(14695981039346656037));
+	CHECK(ball_canvas_digest(&one_pixel) == UINT64_C(5558979605539197941));
 	static uint8_t pixels_a[TEST_WIDTH * TEST_HEIGHT * BALL_PIXEL_BYTES];
 	static uint8_t pixels_b[TEST_WIDTH * TEST_HEIGHT * BALL_PIXEL_BYTES];
 	struct ball_world world_a;
@@ -35,7 +40,7 @@ int main(void)
 	for (size_t i = 3u; i < sizeof pixels_a; i += BALL_PIXEL_BYTES)
 		CHECK(pixels_a[i] == 0xffu);
 	const uint64_t digest = ball_canvas_digest(&canvas_a);
-	if (digest != UINT64_C(16732952640180923659)) {
+	if (digest != UINT64_C(7127855221134341213)) {
 		(void)fprintf(stderr, "ball KAT digest=%llu\n",
 			      (unsigned long long)digest);
 		return 1;
