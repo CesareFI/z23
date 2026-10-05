@@ -545,15 +545,18 @@ static void legacy_mirror_sync_stats_snapshot_impl(
     out->lag_breach_since        = atomic_load(&g_lms.lag_breach_since);
     out->lag_critical_since      = atomic_load(&g_lms.lag_critical_since);
     {
-        int64_t now = (int64_t)platform_time_wall_time_t();
+        int64_t now_us = platform_time_monotonic_us();
+        int64_t breach_since_us =
+            atomic_load(&g_lms.lag_breach_since_monotonic_us);
+        int64_t critical_since_us =
+            atomic_load(&g_lms.lag_critical_since_monotonic_us);
         out->lag_breach_seconds =
-            out->lag_known &&
-            out->lag_breach_since > 0 && now >= out->lag_breach_since
-                ? now - out->lag_breach_since : 0;
+            out->lag_known && breach_since_us > 0 && now_us >= breach_since_us
+                ? (now_us - breach_since_us) / INT64_C(1000000) : 0;
         out->lag_critical_seconds =
-            out->lag_known &&
-            out->lag_critical_since > 0 && now >= out->lag_critical_since
-                ? now - out->lag_critical_since : 0;
+            out->lag_known && critical_since_us > 0 &&
+            now_us >= critical_since_us
+                ? (now_us - critical_since_us) / INT64_C(1000000) : 0;
     }
     const char *sev = "none";
     if (out->lag_known &&
@@ -639,6 +642,8 @@ void legacy_mirror_sync_reset_for_test(void)
     atomic_store(&g_lms.headers_added, 0);
     atomic_store(&g_lms.lag_breach_since, 0);
     atomic_store(&g_lms.lag_critical_since, 0);
+    atomic_store(&g_lms.lag_breach_since_monotonic_us, 0);
+    atomic_store(&g_lms.lag_critical_since_monotonic_us, 0);
     atomic_store(&g_lms.lag_breach_emitted, 0);
     atomic_store(&g_lms.lag_critical_emitted, 0);
 #ifdef ZCL_TESTING

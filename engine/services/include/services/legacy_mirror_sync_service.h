@@ -186,6 +186,9 @@ void legacy_mirror_sync_reset_for_test(void);
 void legacy_mirror_sync_test_set_stats(
     const struct legacy_mirror_sync_stats *stats,
     struct main_state *ms);
+void legacy_mirror_sync_test_evaluate_lag_slo_at(
+    int lag, int legacy_height, int local_height,
+    int64_t wall_now, int64_t monotonic_now_us);
 #endif
 
 #endif /* ZCL_SERVICES_LEGACY_MIRROR_SYNC_SERVICE_H */

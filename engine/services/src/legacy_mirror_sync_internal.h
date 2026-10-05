@@ -40,6 +40,8 @@ struct legacy_mirror_sync_runtime {
     _Atomic int lag_sla_critical_secs;
     _Atomic int64_t lag_breach_since;
     _Atomic int64_t lag_critical_since;
+    _Atomic int64_t lag_breach_since_monotonic_us;
+    _Atomic int64_t lag_critical_since_monotonic_us;
     _Atomic int lag_breach_emitted;
     _Atomic int lag_critical_emitted;
     char datadir[1024];

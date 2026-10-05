@@ -16,6 +16,7 @@
 #include "services/legacy_mirror_sync_service.h"
 #include "event/event.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "util/supervisor.h"
 
 #include <stdatomic.h>
@@ -147,6 +148,61 @@ static int test_concurrent_catchup_observer_fires(void)
                     "applied=15 target=3117800 source=mirror reason=tick");
         ASSERT(atomic_load(&g_concurrent_events) == 1);
         event_clear_observers(EV_MIRROR_CONCURRENT_CATCHUP);
+    } TEST_END
+    return failures;
+}
+
+static int test_slo_escalation_survives_wall_clock_rollback(void)
+{
+    int failures = 0;
+    TEST_CASE("lag_slo: wall rollback cannot postpone fatal escalation")
+    {
+        legacy_mirror_sync_reset_for_test();
+        struct legacy_mirror_sync_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = 1,
+            .rpc_user = "user",
+            .rpc_password = "pass",
+            .lag_sla_breach_blocks = 10,
+            .lag_sla_breach_secs = 60,
+            .lag_sla_critical_blocks = 100,
+            .lag_sla_critical_secs = 300,
+            .enabled = true,
+        };
+        ASSERT(legacy_mirror_sync_init(&cfg, NULL, NULL, NULL, NULL).ok);
+
+        struct legacy_mirror_sync_stats in = {0};
+        in.enabled = true;
+        in.running = true;
+        in.reachable = true;
+        in.legacy_height = 1200;
+        in.local_height = 1000;
+        legacy_mirror_sync_test_set_stats(&in, NULL);
+
+        atomic_store(&g_slo_breach_events, 0);
+        memset(g_last_payload, 0, sizeof(g_last_payload));
+        event_clear_observers(EV_LAG_SLO_BREACH);
+        event_observe(EV_LAG_SLO_BREACH, slo_observer, NULL);
+
+        int64_t wall_now = (int64_t)platform_time_wall_time_t();
+        int64_t monotonic_now_us = platform_time_monotonic_us();
+        legacy_mirror_sync_test_evaluate_lag_slo_at(
+            200, 1200, 1000, wall_now,
+            monotonic_now_us - INT64_C(301000000));
+        legacy_mirror_sync_test_evaluate_lag_slo_at(
+            200, 1200, 1000, wall_now - 3600, monotonic_now_us);
+
+        ASSERT(atomic_load(&g_slo_breach_events) == 2);
+        ASSERT(strstr(g_last_payload, "severity=fatal") != NULL);
+
+        struct legacy_mirror_sync_stats out = {0};
+        legacy_mirror_sync_stats_cached_snapshot(&out);
+        ASSERT(out.lag_breach_seconds >= 301);
+        ASSERT(out.lag_critical_seconds >= 301);
+        ASSERT_STR_EQ(out.lag_breach_severity, "fatal");
+
+        event_clear_observers(EV_LAG_SLO_BREACH);
+        legacy_mirror_sync_reset_for_test();
     } TEST_END
     return failures;
 }
@@ -341,6 +397,7 @@ int test_lag_slo(void)
     failures += test_snapshot_surfaces_thresholds();
     failures += test_slo_breach_observer_fires();
     failures += test_concurrent_catchup_observer_fires();
+    failures += test_slo_escalation_survives_wall_clock_rollback();
     failures += test_legacy_mirror_registers_supervisor_contract();
     failures += test_legacy_mirror_backs_off_when_rpc_is_absent();
     failures += test_dump_shape_is_stable();

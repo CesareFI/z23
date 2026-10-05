@@ -559,8 +559,35 @@ static void lms_record_stuck_status(int height)
  *      ≥ breach_secs sustained → severity=critical (one emit)
  *   lag ≥ critical_blocks     → start/continue critical timer
  *      ≥ critical_secs sustained → severity=fatal (one emit; node_health flips) */
+static void lms_reset_lag_slo_level(
+    _Atomic int64_t *wall_since,
+    _Atomic int64_t *monotonic_since_us,
+    _Atomic int *emitted)
+{
+    atomic_store(monotonic_since_us, 0);
+    atomic_store(wall_since, 0);
+    atomic_store(emitted, 0);
+}
+
+static int64_t lms_lag_slo_elapsed_seconds(
+    _Atomic int64_t *wall_since,
+    _Atomic int64_t *monotonic_since_us,
+    int64_t wall_now,
+    int64_t monotonic_now_us)
+{
+    int64_t since_us = atomic_load(monotonic_since_us);
+    if (since_us == 0) {
+        atomic_store(wall_since, wall_now);
+        atomic_store(monotonic_since_us, monotonic_now_us);
+        return 0;
+    }
+    return monotonic_now_us >= since_us
+        ? (monotonic_now_us - since_us) / INT64_C(1000000) : 0;
+}
+
 static void lms_evaluate_lag_slo(int lag, int legacy_height, int local_height,
-                                 int64_t now)
+                                 int64_t wall_now,
+                                 int64_t monotonic_now_us)
 {
     int breach_blocks   = atomic_load(&g_lms.lag_sla_breach_blocks);
     int breach_secs     = atomic_load(&g_lms.lag_sla_breach_secs);
@@ -568,28 +595,30 @@ static void lms_evaluate_lag_slo(int lag, int legacy_height, int local_height,
     int critical_secs   = atomic_load(&g_lms.lag_sla_critical_secs);
 
     if (breach_blocks <= 0) {
-        atomic_store(&g_lms.lag_breach_since, 0);
-        atomic_store(&g_lms.lag_critical_since, 0);
-        atomic_store(&g_lms.lag_breach_emitted, 0);
-        atomic_store(&g_lms.lag_critical_emitted, 0);
+        lms_reset_lag_slo_level(&g_lms.lag_breach_since,
+            &g_lms.lag_breach_since_monotonic_us,
+            &g_lms.lag_breach_emitted);
+        lms_reset_lag_slo_level(&g_lms.lag_critical_since,
+            &g_lms.lag_critical_since_monotonic_us,
+            &g_lms.lag_critical_emitted);
         return;
     }
 
     if (lag < breach_blocks) {
         /* Recovered. Reset both timers + emission latches. */
-        atomic_store(&g_lms.lag_breach_since, 0);
-        atomic_store(&g_lms.lag_critical_since, 0);
-        atomic_store(&g_lms.lag_breach_emitted, 0);
-        atomic_store(&g_lms.lag_critical_emitted, 0);
+        lms_reset_lag_slo_level(&g_lms.lag_breach_since,
+            &g_lms.lag_breach_since_monotonic_us,
+            &g_lms.lag_breach_emitted);
+        lms_reset_lag_slo_level(&g_lms.lag_critical_since,
+            &g_lms.lag_critical_since_monotonic_us,
+            &g_lms.lag_critical_emitted);
         return;
     }
 
-    int64_t since = atomic_load(&g_lms.lag_breach_since);
-    if (since == 0) {
-        atomic_store(&g_lms.lag_breach_since, now);
-        since = now;
-    }
-    int64_t breach_for = now - since;
+    int64_t breach_for = lms_lag_slo_elapsed_seconds(
+        &g_lms.lag_breach_since,
+        &g_lms.lag_breach_since_monotonic_us,
+        wall_now, monotonic_now_us);
 
     if (breach_for >= breach_secs &&
         !atomic_exchange(&g_lms.lag_breach_emitted, 1)) {
@@ -601,12 +630,10 @@ static void lms_evaluate_lag_slo(int lag, int legacy_height, int local_height,
     }
 
     if (critical_blocks > 0 && lag >= critical_blocks) {
-        int64_t csince = atomic_load(&g_lms.lag_critical_since);
-        if (csince == 0) {
-            atomic_store(&g_lms.lag_critical_since, now);
-            csince = now;
-        }
-        int64_t crit_for = now - csince;
+        int64_t crit_for = lms_lag_slo_elapsed_seconds(
+            &g_lms.lag_critical_since,
+            &g_lms.lag_critical_since_monotonic_us,
+            wall_now, monotonic_now_us);
         if (crit_for >= critical_secs &&
             !atomic_exchange(&g_lms.lag_critical_emitted, 1)) {
             event_emitf(EV_LAG_SLO_BREACH, 0,
@@ -616,10 +643,21 @@ static void lms_evaluate_lag_slo(int lag, int legacy_height, int local_height,
                         (long long)crit_for);
         }
     } else {
-        atomic_store(&g_lms.lag_critical_since, 0);
-        atomic_store(&g_lms.lag_critical_emitted, 0);
+        lms_reset_lag_slo_level(&g_lms.lag_critical_since,
+            &g_lms.lag_critical_since_monotonic_us,
+            &g_lms.lag_critical_emitted);
     }
 }
+
+#ifdef ZCL_TESTING
+void legacy_mirror_sync_test_evaluate_lag_slo_at(
+    int lag, int legacy_height, int local_height,
+    int64_t wall_now, int64_t monotonic_now_us)
+{
+    lms_evaluate_lag_slo(lag, legacy_height, local_height,
+                         wall_now, monotonic_now_us);
+}
+#endif
 
 static void lms_observe_local_primary(int local, int legacy_blocks)
 {
@@ -693,7 +731,9 @@ struct zcl_result legacy_mirror_sync_request_catchup(const char *reason)
     /* SLO evaluation runs every tick regardless of gating — the loud
      * half of the redundancy guarantee. Severity is emitted once per
      * episode (latched), cleared when lag drops back below threshold. */
-    lms_evaluate_lag_slo(lag, legacy_blocks, local, (int64_t)platform_time_wall_time_t());
+    lms_evaluate_lag_slo(lag, legacy_blocks, local,
+                         (int64_t)platform_time_wall_time_t(),
+                         platform_time_monotonic_us());
 
     char local_hash[65] = {0}, remote_hash[65] = {0};
     {
