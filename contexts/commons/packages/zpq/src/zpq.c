@@ -86,6 +86,7 @@ zpq *zpq_create(zpq_cmp cmp, void *cmp_ctx, zpq_alloc alloc)
 zpq *zpq_from(void *const *items, size_t n, zpq_cmp cmp, void *cmp_ctx,
               zpq_alloc alloc)
 {
+    if (!items && n != 0) return NULL;
     zpq *pq = alloc_pq(cmp, cmp_ctx, alloc);
     if (!pq) return NULL;
     if (n == 0) return pq;

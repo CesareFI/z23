@@ -34,7 +34,9 @@ typedef struct zpq zpq;
  * hosted malloc/free. Returns NULL on allocation failure. */
 zpq *zpq_create(zpq_cmp cmp, void *cmp_ctx, zpq_alloc alloc);
 
-/* Create from an existing array (copied, heapified in O(n)). */
+/* Create from an existing array (copied, heapified in O(n)).
+ * Returns NULL when items is NULL with n > 0, cmp is NULL, the size
+ * overflows, or allocation fails. NULL items is allowed with n == 0. */
 zpq *zpq_from(void *const *items, size_t n, zpq_cmp cmp, void *cmp_ctx,
               zpq_alloc alloc);
 

@@ -81,6 +81,8 @@ static void test_from_and_replace(void)
     CHECK(n == 8 && prev == 100);
     zpq_destroy(pq);
 
+    CHECK(zpq_from(NULL, 1, cmp_int_ptr, NULL, (zpq_alloc){0}) == NULL);
+
     /* Empty-from. */
     zpq *e = zpq_from(NULL, 0, cmp_int_ptr, NULL, (zpq_alloc){0});
     CHECK(e != NULL && zpq_len(e) == 0);
