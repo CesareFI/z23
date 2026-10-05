@@ -28,6 +28,8 @@
 #include "test/test_core.h"
 
 #include <math.h>
+#include <float.h>
+#include <limits.h>
 
 /* raymath.h picks its implementation on this macro and warns under -Wundef if
  * it is merely absent. Spelled out here so the node flag set stays intact. */
@@ -74,6 +76,73 @@ static void skycombat_stub_DrawLine3D(Vector3 a, Vector3 b, Color t)
 
 #include "../../../apps/skycombat/src/models/aircraft.c"
 #include "../../../apps/skycombat/src/models/weapons.c"
+#include "../../../apps/skycombat/src/models/match_rules.c"
+
+static int skycombat_match_lifecycle_tests(void)
+{
+    int failures = 0;
+    match_state_t *s = match_state_create(MATCH_TYPE_TEAM_DEATHMATCH);
+    ASSERT(s != NULL);
+    match_state_t before; memcpy(&before, s, sizeof(before));
+    int scores[4] = {2, 3, 0, 0}, winner = 99;
+    bool team = false;
+    TEST("match: unstarted ledger refuses progress, finish and snapshots") {
+        match_state_update(s, 2.0f); match_add_score(s, 0, 0, 1);
+        ASSERT(!match_state_set_team_scores(s, scores)); ASSERT(!match_state_finish(s));
+        ASSERT(!match_check_win_condition(s, &winner, &team)); ASSERT_EQ(winner, 99);
+        ASSERT(memcmp(s, &before, sizeof(before)) == 0); PASS();
+    }
+    TEST("match: begin once, tick and invalid timestep preserve state") {
+        ASSERT(match_state_begin(s)); memcpy(&before, s, sizeof(before));
+        ASSERT(!match_state_begin(s)); ASSERT(memcmp(s, &before, sizeof(before)) == 0);
+        match_state_update(s, -1.0f); match_state_update(s, NAN); match_state_update(s, INFINITY);
+        ASSERT(memcmp(s, &before, sizeof(before)) == 0);
+        match_state_update(s, 2.0f); ASSERT_EQ(s->elapsed_time, 2.0f); PASS();
+    }
+    TEST("match: snapshots commit together; invalid inactive teams refuse") {
+        ASSERT(match_state_set_team_scores(s, scores)); ASSERT_EQ(s->team_scores[1], 3);
+        ASSERT(match_state_set_team_scores(s, s->team_scores));
+        memcpy(&before, s, sizeof(before)); scores[2] = 1;
+        ASSERT(!match_state_set_team_scores(s, scores)); ASSERT(memcmp(s, &before, sizeof(before)) == 0);
+        scores[2] = 0; scores[0] = -1;
+        ASSERT(!match_state_set_team_scores(s, scores)); ASSERT(memcmp(s, &before, sizeof(before)) == 0);
+        scores[0] = 30; scores[1] = 30; ASSERT(match_state_set_team_scores(s, scores));
+        ASSERT(match_is_over(s)); ASSERT_EQ(s->winning_team, -1);
+        ASSERT(match_check_win_condition(s, &winner, &team)); ASSERT(team); ASSERT_EQ(winner, -1);
+        memcpy(&before, s, sizeof(before)); match_state_update(s, 3.0f); match_add_score(s, 0, 0, 2);
+        ASSERT(!match_state_set_team_scores(s, scores)); ASSERT(!match_state_finish(s));
+        ASSERT(memcmp(s, &before, sizeof(before)) == 0); PASS();
+    }
+_test_next:;
+    match_state_destroy(s);
+    return failures;
+}
+
+static int skycombat_match_bounds_tests(void)
+{
+    int failures = 0;
+    match_state_t *s = match_state_create(MATCH_TYPE_TEAM_DEATHMATCH);
+    ASSERT(s != NULL);
+    TEST("match: invalid creation/rules, score overflow and timeout winner") {
+        ASSERT(match_state_create((match_type_t)-1) == NULL);
+        ASSERT(match_state_create((match_type_t)99) == NULL);
+        s->rules.team_count = 5; match_state_t before; memcpy(&before, s, sizeof(before));
+        ASSERT(!match_state_begin(s)); ASSERT(memcmp(s, &before, sizeof(before)) == 0);
+        s->rules.team_count = 2; ASSERT(match_state_begin(s));
+        s->team_scores[0] = INT_MAX; memcpy(&before, s, sizeof(before)); match_add_score(s, 0, 0, 1);
+        ASSERT(memcmp(s, &before, sizeof(before)) == 0);
+        s->team_scores[0] = INT_MIN; memcpy(&before, s, sizeof(before)); match_add_score(s, 0, 0, -1);
+        ASSERT(memcmp(s, &before, sizeof(before)) == 0);
+        s->elapsed_time = FLT_MAX; memcpy(&before, s, sizeof(before)); match_state_update(s, FLT_MAX);
+        ASSERT(memcmp(s, &before, sizeof(before)) == 0);
+        s->elapsed_time = 0; s->team_scores[0] = 2; s->team_scores[1] = 4;
+        s->rules.time_limit = 1.0f; match_state_update(s, 1.0f);
+        ASSERT(match_is_over(s)); ASSERT_EQ(s->winning_team, 1); PASS();
+    }
+_test_next:;
+    match_state_destroy(s);
+    return failures;
+}
 
 int test_skycombat_models(void);
 int test_skycombat_models(void)
@@ -276,6 +345,8 @@ int test_skycombat_models(void)
     }
 
 _test_next:;
+    failures += skycombat_match_lifecycle_tests();
+    failures += skycombat_match_bounds_tests();
     if (failures == 0)
         printf("test_skycombat_models: all passed\n");
     else

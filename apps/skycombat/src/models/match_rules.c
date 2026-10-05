@@ -12,10 +12,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
+#include <limits.h>
 
 match_state_t* match_state_create(match_type_t type) {
+    if ((unsigned)type > MATCH_TYPE_CAPTURE_FLAG) {
+        fprintf(stderr, "match create: invalid type\n"); return NULL;
+    }
     match_state_t* state = calloc(1, sizeof(match_state_t));
-    if (!state) return NULL;
+    if (!state) { fprintf(stderr, "match create: allocation failed\n"); return NULL; }
     
     state->rules.type = type;
     state->winning_team = -1;
@@ -50,37 +55,100 @@ void match_state_destroy(match_state_t* state) {
     free(state);
 }
 
+static int match_leader(const match_state_t *s) {
+    int best = s->team_scores[0], winner = 0;
+    for (int i = 1; i < s->rules.team_count; ++i) {
+        if (s->team_scores[i] > best) { best = s->team_scores[i]; winner = i; }
+        else if (s->team_scores[i] == best) winner = -1;
+    }
+    return winner;
+}
+
+static bool match_rules_valid(const match_rules_t *r) {
+    const float f[] = {r->time_limit, r->respawn_time, r->zone_capture_time, r->zone_points_per_second};
+    for (unsigned i = 0; i < sizeof(f)/sizeof(f[0]); ++i)
+        if (!isfinite(f[i]) || signbit(f[i]) || f[i] > 1000000.0f) return false;
+    return (unsigned)r->type <= MATCH_TYPE_CAPTURE_FLAG &&
+        r->score_limit >= 1 && r->score_limit <= 1000000 && r->team_count >= 0 &&
+        r->team_count <= 4 && (!r->teams_enabled || r->team_count >= 2);
+}
+
+bool match_state_begin(match_state_t *s) {
+    if (!s || s->match_started || s->match_ended || s->elapsed_time != 0 ||
+        s->winning_team != -1 || s->winning_player != -1 ||
+        s->zone_control_time != 0 || s->zone_contest_time != 0) {
+        fprintf(stderr, "match begin: no pristine ledger\n"); return false;
+    }
+    if (!match_rules_valid(&s->rules)) {
+        fprintf(stderr, "match begin: invalid rules\n"); return false;
+    }
+    if (s->zone_controller < -1 || s->zone_controller >= (s->rules.teams_enabled ? s->rules.team_count : 5)) {
+        fprintf(stderr, "match begin: invalid zone controller\n"); return false;
+    }
+    for (int i = 0; i < 4; ++i)
+        if (s->team_scores[i] != 0) { fprintf(stderr, "match begin: nonzero scores\n"); return false; }
+    s->match_started = true;
+    return true;
+}
+
+bool match_state_finish(match_state_t *s) {
+    if (!s || !s->match_started || s->match_ended) {
+        fprintf(stderr, "match finish: no active match\n"); return false;
+    }
+    if (s->rules.teams_enabled) {
+        if (s->rules.team_count < 2 || s->rules.team_count > 4) {
+            fprintf(stderr, "match finish: invalid team count\n"); return false;
+        }
+        s->winning_team = match_leader(s);
+    }
+    s->match_ended = true;
+    return true;
+}
+
+bool match_state_set_team_scores(match_state_t *s, const int scores[4]) {
+    if (!s || !scores || !s->match_started || s->match_ended || !s->rules.teams_enabled ||
+        s->rules.team_count < 2 || s->rules.team_count > 4) {
+        fprintf(stderr, "match scores: no active team match\n"); return false;
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (scores[i] < 0 || scores[i] > 1000000 || (i >= s->rules.team_count && scores[i] != 0)) {
+            fprintf(stderr, "match scores: invalid score\n"); return false;
+        }
+    }
+    memmove(s->team_scores, scores, sizeof(s->team_scores));
+    for (int i = 0; i < s->rules.team_count; ++i)
+        if (scores[i] >= s->rules.score_limit) return match_state_finish(s);
+    return true;
+}
+
+static void match_update_zone(match_state_t *s, float dt) {
+    if (!s->rules.teams_enabled || s->zone_controller < 0 ||
+        s->zone_controller >= s->rules.team_count || s->zone_controller >= 4) return;
+    double points = (double)s->rules.zone_points_per_second * (double)dt;
+    float time = s->zone_control_time + dt;
+    if (!isfinite(points) || points < 0 || points >= (double)INT_MAX || !isfinite(time)) {
+        fprintf(stderr, "match zone: unrepresentable award or time\n"); return;
+    }
+    s->zone_control_time = time;
+    match_add_score(s, -1, s->zone_controller, (int)points);
+}
+
 void match_state_update(match_state_t* state, float dt) {
-    if (!state->match_started || state->match_ended) return;
+    if (!state || !state->match_started || state->match_ended) return;
+    if (!isfinite(dt) || dt < 0 || !isfinite(state->elapsed_time + dt)) {
+        fprintf(stderr, "match update: invalid timestep\n"); return;
+    }
     
     state->elapsed_time += dt;
     
     // Check time limit
     if (state->rules.time_limit > 0 && state->elapsed_time >= state->rules.time_limit) {
-        state->match_ended = true;
-        
-        // Determine winner by score
-        if (state->rules.teams_enabled) {
-            int max_score = -9999;
-            for (int i = 0; i < state->rules.team_count; i++) {
-                if (state->team_scores[i] > max_score) {
-                    max_score = state->team_scores[i];
-                    state->winning_team = i;
-                }
-            }
-        }
+        (void)match_state_finish(state);
+        return;
     }
     
-    // Update zone control
-    if (state->rules.type == MATCH_TYPE_KING_OF_HILL && state->zone_controller >= 0) {
-        state->zone_control_time += dt;
-        
-        // Award points for zone control
-        float points = state->rules.zone_points_per_second * dt;
-        if (state->rules.teams_enabled) {
-            state->team_scores[state->zone_controller] += (int)points;
-        }
-    }
+    // Keep zone awards inside the same checked score path.
+    if (state->rules.type == MATCH_TYPE_KING_OF_HILL) match_update_zone(state, dt);
 }
 
 void match_rules_deathmatch(match_rules_t* rules, int score_limit) {
@@ -134,19 +202,23 @@ void match_rules_king_of_hill(match_rules_t* rules, float time_limit) {
 }
 
 void match_add_score(match_state_t* state,[[maybe_unused]] int player_id, int team_id, int points) {
+    if (!state || !state->match_started || state->match_ended) return;
     if (state->rules.teams_enabled && team_id >= 0 && team_id < state->rules.team_count) {
+        if (team_id >= 4 || (points > 0 && state->team_scores[team_id] > INT_MAX - points) ||
+            (points < 0 && state->team_scores[team_id] < INT_MIN - points)) {
+            fprintf(stderr, "match score: overflow or invalid team\n"); return;
+        }
         state->team_scores[team_id] += points;
         
         // Check win condition
         if (state->team_scores[team_id] >= state->rules.score_limit) {
-            state->match_ended = true;
-            state->winning_team = team_id;
+            (void)match_state_finish(state);
         }
     }
 }
 
 void match_player_killed(match_state_t* state, int killer_id, int victim_id, int killer_team, int victim_team) {
-    if (!state->match_started || state->match_ended) return;
+    if (!state || !state->match_started || state->match_ended) return;
     
     // Award points
     if (killer_id >= 0 && killer_id != victim_id) {
@@ -168,7 +240,7 @@ void match_player_killed(match_state_t* state, int killer_id, int victim_id, int
 }
 
 bool match_check_win_condition(match_state_t* state, int* winner_id, bool* is_team) {
-    if (!state->match_ended) return false;
+    if (!state || !winner_id || !is_team || !state->match_ended) return false;
     
     if (state->rules.teams_enabled) {
         *winner_id = state->winning_team;
@@ -182,7 +254,7 @@ bool match_check_win_condition(match_state_t* state, int* winner_id, bool* is_te
 }
 
 bool match_is_over(match_state_t* state) {
-    return state->match_ended;
+    return state && state->match_ended;
 }
 
 team_id_t match_assign_team(match_state_t* state, int current_players[4]) {

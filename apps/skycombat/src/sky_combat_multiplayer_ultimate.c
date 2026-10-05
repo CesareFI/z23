@@ -279,6 +279,34 @@ static void update_camera_ultimate(multiplayer_game_t* game, float dt) {
                            cam_distance, cam_height, dt);
 }
 
+static void destroy_game_systems(multiplayer_game_t *game) {
+    if (game->match->match_started && !game->match->match_ended)
+        (void)match_state_finish(game->match);
+    input_mvc_fast_destroy(game->input_system);
+    cyberpunk_world_destroy(game->world);
+    match_state_destroy(game->match);
+    powerup_manager_destroy(game->powerup_mgr);
+    aircraft_manager_destroy(game->aircraft_mgr);
+    effects_destroy(game->effects);
+    weapons_destroy(game->weapons);
+}
+
+static void update_match_ledger(multiplayer_game_t *game, float dt) {
+    if (!game->match->match_started || game->match->match_ended) return;
+    int scores[4] = {0};
+    for (int i = 0; i < game->aircraft_mgr->aircraft_count; ++i) {
+        const managed_aircraft_t *aircraft = &game->aircraft_mgr->aircraft[i];
+        int team = aircraft->team_id;
+        if (team >= 0 && team < 4) {
+            if (aircraft->kills < 0 || aircraft->kills > 1000000 - scores[team]) {
+                fprintf(stderr, "match roster: invalid or overflowing kill total\n"); return;
+            }
+            scores[team] += aircraft->kills;
+        }
+    }
+    if (match_state_set_team_scores(game->match, scores)) match_state_update(game->match, dt);
+}
+
 int main(void) {
     /* Initialize window */
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT);
@@ -315,9 +343,15 @@ int main(void) {
     game.match->rules.respawn_time = 3.0f;
     game.match->rules.friendly_fire = false;
     game.match->rules.team_count = 2;
+    if (!match_state_begin(game.match)) {
+        fprintf(stderr, "Could not begin match\n");
+        destroy_game_systems(&game);
+        CloseWindow();
+        return 1;
+    }
     
     /* Add players with teams */
-    game.local_player_id = aircraft_manager_add(game.aircraft_mgr, "PLAYER 1", RED, false, true);
+    game.local_player_id = aircraft_manager_add_with_team(game.aircraft_mgr, "PLAYER 1", RED, false, true, 0);
     aircraft_manager_add_with_team(game.aircraft_mgr, "BLUE LEADER", BLUE, true, false, 1);
     aircraft_manager_add_with_team(game.aircraft_mgr, "BLUE WING", SKYBLUE, true, false, 1);
     aircraft_manager_add_with_team(game.aircraft_mgr, "RED LEADER", MAROON, true, false, 0);
@@ -457,7 +491,6 @@ int main(void) {
         /* Update systems */
         aircraft_manager_update(game.aircraft_mgr, dt);
         powerup_manager_update(game.powerup_mgr, dt);
-        match_state_update(game.match, dt);
         weapons_update(game.weapons, dt);
         effects_update(game.effects, dt);
         update_camera_ultimate(&game, dt);
@@ -503,16 +536,8 @@ int main(void) {
             }
         }
         
-        /* Update scores */
-        for (int i = 0; i < 4; i++) {
-            game.match->team_scores[i] = 0;
-        }
-        for (int i = 0; i < game.aircraft_mgr->aircraft_count; i++) {
-            const managed_aircraft_t* aircraft = &game.aircraft_mgr->aircraft[i];
-            if (aircraft->team_id >= 0 && aircraft->team_id < 4) {
-                game.match->team_scores[aircraft->team_id] += aircraft->kills;
-            }
-        }
+        /* Snapshot this tick's kills before advancing/finishing the ledger. */
+        update_match_ledger(&game, dt);
         
         /* Damage flash */
         if (game.damage_flash > 0) game.damage_flash -= dt;
@@ -572,13 +597,7 @@ int main(void) {
     
     /* Cleanup */
     UnloadRenderTexture(screen_buffer);
-    input_mvc_fast_destroy(game.input_system);
-    cyberpunk_world_destroy(game.world);
-    match_state_destroy(game.match);
-    powerup_manager_destroy(game.powerup_mgr);
-    aircraft_manager_destroy(game.aircraft_mgr);
-    effects_destroy(game.effects);
-    weapons_destroy(game.weapons);
+    destroy_game_systems(&game);
     
     CloseWindow();
     return 0;

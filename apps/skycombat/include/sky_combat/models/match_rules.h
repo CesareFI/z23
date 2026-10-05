@@ -77,6 +77,11 @@ typedef struct {
 match_state_t* match_state_create(match_type_t type);
 void match_state_destroy(match_state_t* state);
 void match_state_update(match_state_t* state, float dt);
+// Begin a pristine configured ledger; terminal ledgers cannot be restarted.
+bool match_state_begin(match_state_t* state);
+bool match_state_finish(match_state_t* state); // Tied teams have winner -1.
+// Validate all four before replacement; invalid/inactive calls change nothing.
+bool match_state_set_team_scores(match_state_t* state, const int scores[4]);
 
 // Rule presets
 void match_rules_deathmatch(match_rules_t* rules, int score_limit);
