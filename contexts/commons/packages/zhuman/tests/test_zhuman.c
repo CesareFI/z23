@@ -1,3 +1,6 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ * Purpose: regression tests for human-readable byte and duration formatting and parsing.
+ */
 #include "zhuman/zhuman.h"
 
 #include <stdio.h>
@@ -197,11 +200,36 @@ static void test_err_str(void)
     CHECK(zhuman_err_str((zhuman_err)999) != NULL);
 }
 
+static void test_uint64_decimal_bounds(void)
+{
+    expect_parse_bytes("18446744073709551615 B", UINT64_MAX);
+    expect_parse_bytes("18446744073709551615", UINT64_MAX);
+    expect_parse_bytes("18446744073709551614 B", UINT64_MAX - 1);
+    expect_parse_duration("18446744073709551615ms", UINT64_MAX);
+    expect_parse_duration("18446744073709551614ms", UINT64_MAX - 1);
+
+    uint64_t value = 123;
+    CHECK(zhuman_parse_bytes("18446744073709551616 B", &value) == ZHUMAN_ERR_OVERFLOW);
+    CHECK(value == 123);
+    CHECK(zhuman_parse_duration("18446744073709551616ms", &value) == ZHUMAN_ERR_OVERFLOW);
+    CHECK(value == 123);
+    /* Decimal accumulation can fit while subsequent unit scaling cannot. */
+    CHECK(zhuman_parse_bytes("18446744073709551615 KiB", &value) == ZHUMAN_ERR_OVERFLOW);
+    CHECK(value == 123);
+    CHECK(zhuman_parse_duration("18446744073709551615s", &value) == ZHUMAN_ERR_OVERFLOW);
+    CHECK(value == 123);
+    /* Distinct valid components must still respect the total bound. */
+    CHECK(zhuman_parse_duration("1s 18446744073709551615ms", &value) == ZHUMAN_ERR_OVERFLOW);
+    CHECK(value == 123);
+    expect_parse_duration("1s 18446744073709550615ms", UINT64_MAX);
+}
+
 int main(void)
 {
     test_format_bytes();
     test_parse_bytes();
     test_duration();
+    test_uint64_decimal_bounds();
     test_err_str();
     puts("test_zhuman: all groups passed (fmtbytes parsebytes duration errstr)");
     return 0;

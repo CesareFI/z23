@@ -1,3 +1,6 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
+ * Purpose: human-readable byte and duration formatting and parsing.
+ */
 #include "zhuman/zhuman.h"
 
 #include <stdio.h>
@@ -69,8 +72,9 @@ zhuman_err zhuman_parse_bytes(const char *str, uint64_t *out)
     uint64_t whole = 0;
     int digits = 0;
     while (*str >= '0' && *str <= '9') {
-        if (whole > (UINT64_MAX - 9) / 10) return ZHUMAN_ERR_OVERFLOW;
-        whole = whole * 10 + (uint64_t)(*str - '0');
+        uint64_t digit = (uint64_t)(*str - '0');
+        if (whole > (UINT64_MAX - digit) / 10) return ZHUMAN_ERR_OVERFLOW;
+        whole = whole * 10 + digit;
         str++;
         digits++;
     }
@@ -176,8 +180,9 @@ zhuman_err zhuman_parse_duration(const char *str, uint64_t *out_ms)
 
         uint64_t val = 0;
         while (*str >= '0' && *str <= '9') {
-            if (val > (UINT64_MAX - 9) / 10) return ZHUMAN_ERR_OVERFLOW;
-            val = val * 10 + (uint64_t)(*str - '0');
+            uint64_t digit = (uint64_t)(*str - '0');
+            if (val > (UINT64_MAX - digit) / 10) return ZHUMAN_ERR_OVERFLOW;
+            val = val * 10 + digit;
             str++;
         }
         /* Optional fraction, only meaningful before 's'. */
