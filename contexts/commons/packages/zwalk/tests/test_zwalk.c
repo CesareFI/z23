@@ -350,13 +350,38 @@ static void test_symlink_root_slashes(void) {
     path_to(path, sizeof path, suffixes[i]);
     nvisits = 0;
     bool ok = zwalk(path, NULL, record, NULL);
-    CHECK(ok && nvisits == 1 && visits[0][0] == 'S');
+    char expected[600];
+    snprintf(expected, sizeof expected, "S 0 0 %s", path);
+    CHECK(ok && nvisits == 1 && strcmp(visits[0], expected) == 0);
+  }
+}
+
+/* Original path spelling and ordinary trailing-separator semantics. */
+static void test_root_slash_controls(void) {
+  static const char *const directories[] = {"empty/", "empty///"};
+  for (size_t i = 0; i < sizeof directories / sizeof directories[0]; i++) {
+    char path[512], expected[600];
+    path_to(path, sizeof path, directories[i]);
+    snprintf(expected, sizeof expected, "D 0 0 %s", path);
+    nvisits = 0;
+    CHECK(zwalk(path, NULL, record, NULL));
+    CHECK(nvisits == 1);
+    CHECK(nvisits == 1 && strcmp(visits[0], expected) == 0);
+  }
+  static const char *const files[] = {"a.txt/", "a.txt///"};
+  for (size_t i = 0; i < sizeof files / sizeof files[0]; i++) {
+    char path[512];
+    path_to(path, sizeof path, files[i]);
+    nvisits = 0;
+    CHECK(!zwalk(path, NULL, record, NULL));
+    CHECK(nvisits == 0);
   }
 }
 
 int main(void) {
   build_fixture();
   test_symlink_root_slashes();
+  test_root_slash_controls();
   test_default_walk();
   test_depth_limit();
   test_skip_hidden();
