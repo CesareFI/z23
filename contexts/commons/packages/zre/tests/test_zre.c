@@ -432,6 +432,36 @@ static void test_explicit_lengths(void) {
   }
 }
 
+static void test_empty_fragment_alternatives(void) {
+  const char *patterns[] = {"|a", "|a", "b||a", "(?:)|a", "a{0}|b", "a{0,0}|b", "(?:a{0})|b", "^(?:|a)b$", "^(?:|a)+$"};
+  const char *texts[] = {"x", "a", "a", "b", "x", "b", "b", "b", ""};
+  const size_t ends[] = {0, 0, 0, 0, 0, 0, 0, 1, 0};
+  for (size_t i = 0; i < sizeof patterns / sizeof patterns[0]; ++i) {
+    int before = failures;
+    zre_prog *p = compile(patterns[i]);
+    CHECK(p != NULL);
+    if (!p) continue;
+    zre_span caps[ZRE_MAX_CAPS] = {{0, 0}};
+    bool matched = zre_match(p, texts[i], strlen(texts[i]), caps, ZRE_MAX_CAPS);
+    CHECK(matched);
+    if (matched) CHECK(caps[0].start == 0 && caps[0].end == ends[i]);
+    zre_free(p);
+    fprintf(stderr, "empty fragment row %zu: %s\n", i, failures == before ? "PASS" : "FAIL");
+  }
+  /* An empty participating capture is different from a skipped capture. */
+  int before = failures;
+  zre_prog *p = compile("((?:)|a)");
+  CHECK(p != NULL);
+  if (p) {
+    zre_span caps[ZRE_MAX_CAPS] = {{0, 0}};
+    bool matched = zre_match(p, "a", 1, caps, ZRE_MAX_CAPS);
+    CHECK(matched);
+    if (matched) CHECK(caps[1].start == 0 && caps[1].end == 0);
+    zre_free(p);
+  }
+  fprintf(stderr, "empty fragment capture: %s\n", failures == before ? "PASS" : "FAIL");
+}
+
 int main(void) {
   test_literals();
   test_dot();
@@ -446,6 +476,7 @@ int main(void) {
   test_semantics();
   test_adversarial();
   test_explicit_lengths();
+  test_empty_fragment_alternatives();
   if (failures) {
     fprintf(stderr, "zre: %d failure(s)\n", failures);
     return 1;

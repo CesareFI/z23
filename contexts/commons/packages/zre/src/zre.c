@@ -648,11 +648,21 @@ static int32_t gen_leaf(emitter *e, int op, uint8_t c, const uint32_t *cls) {
   return list1(j, 0);
 }
 
+/* An empty fragment has a real continuation to patch, including {0}. */
+static int32_t gen_epsilon(emitter *e) {
+  int32_t j = emit_jmp(e);
+  return j < 0 ? -1 : list1(j, 0);
+}
+
+static int32_t gen_repeat_exit(emitter *e, int32_t out) {
+  return out < 0 ? gen_epsilon(e) : out;
+}
+
 static int32_t gen(emitter *e, int32_t ni) {
   const node *n = &e->nodes[ni];
   switch (n->kind) {
   case N_EMPTY:
-    return -1;
+    return gen_epsilon(e);
   case N_CHAR:
     return gen_leaf(e, OP_CHAR, n->c, NULL);
   case N_ANY:
@@ -783,7 +793,7 @@ static int32_t gen(emitter *e, int32_t ni) {
         return -1;
       out = lappend(e, d, list1(s, 1));
     }
-    return out;
+    return gen_repeat_exit(e, out);
   }
   default:
     gen_fail(e, ZRE_ERR_PROGRAM, "internal: unknown AST node");
