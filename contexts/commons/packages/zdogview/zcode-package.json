@@ -9,12 +9,12 @@
   "dependencies": [
     {
       "name": "zdogfight/zdogfight",
-      "root": "9f5e59b5dafb65068c84d530c9daa493a08f32dd1358fabe590ca97559047d2e",
+      "root": "3dedb336d99602a5ef3a924e1c3b9d256423d9db00b510ef853a4071cadccff8",
       "semver": "0.1.0"
     },
     {
       "name": "zprng/zprng",
-      "root": "577ffde9ca912872b4a382da2e0b96392abfb2fe3a2066629b01b5e72164b62b",
+      "root": "83d7a4e0afa5060737d81040d81ebe3855a72a2d7ce300f1dab22ab07144c304",
       "semver": "0.1.0"
     }
   ],
