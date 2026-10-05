@@ -8486,3 +8486,25 @@ M=15. Valid wallet creation, record/profile validation, entropy derivation,
 12-word recovery, storage durability, no-overwrite behavior, consensus and
 monetary rules remain unchanged. No Android runtime or physical-device claim
 is made.
+
+## Production continuation: malformed recovery headers refused before entropy copy — 2026-10-06
+
+JNI `recoveredWalletAddress` now validates its bounded public wallet-header
+copy before reading managed entropy or invoking the random provider. A malformed
+header previously copied the 32-byte entropy fixture and generated 32 blinding
+bytes before the lower recovery owner rejected it. It now refuses after the
+header length and region calls, with zero entropy reads and zero random calls.
+The parsed-info scratch is wiped, and accepted headers remain subject to the
+unchanged authoritative lower-owner parse.
+
+Canonical RED observes the unnecessary entropy and random work. GREEN observes
+exactly two JNI calls and neither secret action; moving admission after both
+operations restores RED. Focused JNI key/record tests pass under Clang 20 and
+GCC 14 ASan/UBSan/LSan.
+
+The final exact-tree TLS-OFF safety gate passes both static analyzers, all 145
+Clang and 140 GCC tests, vendor/reference hashes and frame warnings. Production
+covers 604 functions with none above M=10; 1,857 test functions have none above
+M=15. Valid recovery, key derivation, 12-word semantics, address generation,
+storage, transaction validity, consensus and monetary rules remain unchanged.
+No Android runtime or physical-device claim is made.

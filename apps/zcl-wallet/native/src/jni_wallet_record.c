@@ -2,6 +2,14 @@
 #include "jni_support.h"
 #include "zcl_wallet_record.h"
 
+static zcl_status admit_wallet_header(const uint8_t *header, size_t length)
+{
+    zcl_wallet_info info = {0};
+    const zcl_status status = zcl_wallet_header_parse(header, length, &info);
+    zcl_secure_zero(&info, sizeof(info));
+    return status;
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_org_zclassic_wallet_core_NativeCore_createWalletHeader(JNIEnv *env, jclass type,
                                                            jbyteArray input, jint chain)
@@ -36,6 +44,8 @@ Java_org_zclassic_wallet_core_NativeCore_recoveredWalletAddress(JNIEnv *env, jcl
     size_t entropy_len = 0, header_len = 0;
     bool ready = false;
     if (zcl_jni_read_bytes(env, header_input, header, sizeof(header), &header_len) != ZCL_OK)
+        goto cleanup;
+    if (admit_wallet_header(header, header_len) != ZCL_OK)
         goto cleanup;
     if (zcl_jni_read_bytes(env, entropy_input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
         goto cleanup;

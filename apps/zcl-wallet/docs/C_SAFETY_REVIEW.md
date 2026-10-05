@@ -5142,3 +5142,28 @@ after the entropy read restores RED. Focused JNI and fuzz-regression lanes pass
 under Clang 20 and GCC 14 ASan/UBSan/LSan. The complete TLS-OFF gate passes both
 analyzers and all 145/140 tests after the full gate correctly exposed and the
 test owner learned the added parsed-scratch wipe. TLS remains quarantined.
+
+## Recovery-header admission before entropy copy — 2026-10-06
+
+`recoveredWalletAddress` now parses and retires its bounded public wallet
+header before reading the managed entropy array or requesting random blinding
+bytes. This JNI preflight limits secret and provider work; the lower recovery
+owner still performs its unchanged authoritative header parse before deriving
+the requested address.
+
+| Hazard | Review |
+| --- | --- |
+| Secret lifetime | A malformed public header now causes zero entropy-array reads and zero random-provider calls. Valid requests still copy at most 32 entropy bytes, and the complete entropy and blinding scratch spans retain their existing final cleanup. |
+| Header bounds and validation | The header remains bounded by the existing 80-byte JNI copy. Preflight uses the existing wallet-header parser and immediately wipes the complete parsed-info scratch. The lower owner re-parses accepted bytes. |
+| JNI exceptions | Header length/region exceptions retain their existing cleanup. Entropy exceptions remain covered after header admission. No JNI operation follows an observed pending exception. |
+| Failure behavior | Preflight has no storage or custody side effect. Invalid headers still return the parser-owned refusal before any derivation or Java output allocation. |
+| Output and ownership | Accepted calls follow the same recovery owner and byte-array publication path. No native pointer or Java reference is added or retained. |
+| Stack and complexity | One bounded parsed-info scratch is added and wiped. Production remains M<=10 across 604 functions; tests remain M<=15 across 1,857 functions without suppression. |
+| Custody and consensus | Valid header and entropy bytes reach the unchanged lower owner. Key derivation, 12-word recovery, address encoding, storage, transaction validity, monetary policy and consensus are unchanged. |
+
+Canonical RED observes the entropy read and random-provider call for a
+malformed header. GREEN stops after the two header JNI calls; moving preflight
+after entropy and random work restores RED. Focused JNI record/key tests pass
+under Clang 20 and GCC 14 ASan/UBSan/LSan. The complete TLS-OFF gate passes both
+analyzers and all 145/140 tests. TLS remains quarantined. This fake-VM evidence
+makes no ART, emulator, hardware or physical-device claim.

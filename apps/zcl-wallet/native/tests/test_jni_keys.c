@@ -34,7 +34,7 @@ static bool header_ready;
 static touched_span touched[8];
 static size_t touched_count;
 static bool pending, fail_random, null_without_exception, array_with_exception;
-static unsigned fail_call, vm_calls, random_calls, active_operation;
+static unsigned fail_call, vm_calls, random_calls, entropy_reads, active_operation;
 static size_t transfer_prefix = SIZE_MAX;
 static size_t transferred_count = SIZE_MAX;
 #define OPERATION_COUNT 7u
@@ -132,7 +132,11 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
     const fake_array *array = region(input, start, length, BYTES);
     /* Header bytes are public. Every entropy destination in these adapters
      * owns 32 bytes, including the tail beyond a shorter supported input. */
-    if (array != &header) { CHECK(length <= 32); track(output, 32); }
+    if (array != &header) {
+        CHECK(length <= 32);
+        track(output, 32);
+        if (array == &entropy) ++entropy_reads;
+    }
     if (vm_fault()) { if (length > 0) output[0] = 42; return; }
     memcpy(output, array->data.bytes + (size_t)start, (size_t)length);
 }
@@ -237,7 +241,7 @@ static void prepare(void)
     touched_count = 0;
     memset(touched, 0, sizeof(touched));
     pending = fail_random = null_without_exception = array_with_exception = false;
-    fail_call = vm_calls = random_calls = 0;
+    fail_call = vm_calls = random_calls = entropy_reads = 0;
     transfer_prefix = SIZE_MAX;
     transferred_count = SIZE_MAX;
     active_operation = 0;
@@ -482,7 +486,8 @@ static void invalid_headers(void)
     const size_t offsets[] = {0, 8, 9, 10, 11, 12, 44, 79};
     for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
         prepare(); header.data.bytes[offsets[i]] ^= 0xff;
-        CHECK(!run(6) && !pending);
+        CHECK(!run(6) && !pending && vm_calls == 2 &&
+            entropy_reads == 0 && random_calls == 0);
     }
     prepare(); entropy.data.bytes[0] = 1;
     CHECK(!run(6) && random_calls == 1 && !pending);
