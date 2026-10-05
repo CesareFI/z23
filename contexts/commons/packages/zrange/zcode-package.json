@@ -9,7 +9,7 @@
   "dependencies": [
     {
       "name": "zsemver/zsemver",
-      "root": "faf6572a5cc7e530a035d1747a873dcc17d498a1aacc8b046ceaaf0f047f28d4",
+      "root": "b230aee3718cf40a830a3e23f0979fe8694b5c5b0219cf0726dffc855e4d7973",
       "semver": "0.1.0"
     }
   ],
