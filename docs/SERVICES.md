@@ -1,10 +1,10 @@
 # Services — the declared way to add one
 
-A **service** is a unit that registers its own native commands, owns its own
-state namespace, and derives access from a ZSLP token balance — declared, not
-coded into the node. Adding one never touches `core/`, and structurally cannot:
-a service is refused at validation time if it declares anything that would let
-it reach consensus state.
+A **service binding** declares a native command namespace, a state namespace,
+and a ZSLP token-balance gate. Adding a declaration does not require editing
+`core/`: validation refuses reserved namespaces and incomplete isolation flags.
+The binding is data, not code confinement; runtime callers and writers must
+honor its declared boundaries.
 
 This page is the map. The authoritative text lives next to the code, so it
 cannot drift:
@@ -17,7 +17,7 @@ cannot drift:
 | What does one declare exactly? | `z23 app service inspect <name>` |
 | What commands does the branch expose? | `docs/API_REFERENCE.md` — generated from `engine/composition/commands`, drift-gated |
 | Does a holder qualify? | `z23 app service access <name>` |
-| What state is each service in? | `z23 app service status` |
+| What state is each service in? | `z23 app service status` (currently an uninitialized CLI-local snapshot) |
 
 ## Why a binding rather than a new registry
 
@@ -78,7 +78,9 @@ The verdict is reproducible by construction:
 Every failure denies with a named reason. There is no path that grants without
 a qualifying balance. A binding may name the reserved unminted sentinel (32
 bytes of `0xFF`) so a contract can be declared and reviewed before its token
-exists; that binding validates but never grants, and cannot leave `STARTING`.
+exists; that binding validates but never grants. For a registered service in
+an initialized lifecycle registry, a denied start records a fault and moves
+from `STARTING` to `BLOCKED`.
 
 ## The boundary
 
@@ -116,5 +118,6 @@ stays named. `remove` returns a service to `DECLARED` and deliberately does not
 drop its tables: unregistering a declaration and destroying operator data are
 different acts.
 
-The registry is in-memory and rebuilt from the compiled catalog each boot, so
-every service reads `declared` until something registers it.
+The registry is in-memory and can be initialized from the compiled catalog.
+At this base, initialization is called only by tests; `app service status`
+therefore reports an uninitialized, empty CLI-local lifecycle snapshot.
