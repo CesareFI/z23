@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0
- * purpose: Select and explicitly reload one pinned HUD and draw its admitted inert recipe. */
+ * purpose: Select, reload and switch one pinned HUD while retaining its admitted inert recipe. */
 #ifndef SKY_EXPR_USE_H
 #define SKY_EXPR_USE_H
 #include "expr_format.h"
@@ -10,13 +10,17 @@
 #include <stdbool.h>
 #include <string.h>
 struct sky_expr_option { const char *path,*pin_path; uint8_t pin[32]; };
-struct sky_expr_hud { bool active; struct expr_part part; };
+struct sky_expr_hud { bool active,builtin_selected; struct expr_part part; };
 static inline const char *sky_expr_pin_option(const char *arg)
 {
  const char prefix[]="--hud-pin-file=";
  if(!arg || strncmp(arg,prefix,sizeof prefix-1) || !arg[sizeof prefix-1])return NULL;
  return arg+sizeof prefix-1;
 }
+static inline bool sky_expr_custom_selected(const struct sky_expr_hud *hud)
+{ return hud->active && !hud->builtin_selected; }
+static inline void sky_expr_toggle(struct sky_expr_hud *hud)
+{ if(hud->active)hud->builtin_selected=!hud->builtin_selected; }
 /* argv lives through startup; failure leaves out unchanged. No option is default. */
 static inline bool sky_expr_option_parse(int argc,char *const argv[],struct sky_expr_option *out)
 {
@@ -40,7 +44,7 @@ static inline bool sky_expr_option_parse(int argc,char *const argv[],struct sky_
 /* Once at startup. Admission owns diagnostics; a refusal selects the baseline. */
 static inline void sky_expr_start(const struct sky_expr_option *option,const double fields[XF_COUNT],struct sky_expr_hud *hud)
 {
- hud->active=false;
+ hud->active=false;hud->builtin_selected=false;
  if(option->path)hud->active=expr_admit_file(option->path,option->pin,fields,256,
    SKY_HUD_MAX_OPS,SKY_HUD_TEXT_BYTES,&hud->part,NULL)==EX_ADMIT_OK;
 }
@@ -115,7 +119,7 @@ static inline enum expr_admit_status sky_expr_reload(const struct sky_expr_optio
 /* Private admitted state stays immutable. Each frame draws the captured recipe. */
 static inline void sky_expr_render(const struct sky_expr_hud *hud,void (*builtin)(void *),void *context)
 {
- if(!hud->active){builtin(context);return;}
+ if(!sky_expr_custom_selected(hud)){builtin(context);return;}
  for(unsigned i=0;i<hud->part.recipe.op_count;i++)
   sky_expr_draw_op(&hud->part.recipe,&hud->part.recipe.ops[i]);
 }

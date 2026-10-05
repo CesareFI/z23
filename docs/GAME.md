@@ -86,6 +86,11 @@ integer centre rounding, horizontal padding and height. A following TEXT
 operation supplies the label. Text is copied from
 the counted arena to a bounded NUL-terminated buffer for raylib.
 
+Press **F7** to switch between the admitted recipe and the built-in HUD.
+Switching retains the captured recipe and reads neither file, so you can
+compare both displays without restarting. F7 does nothing until a recipe
+has been admitted.
+
 To reload during play, add the second option `--hud-pin-file=<file>` after
 `--hud-part`. Press **F6** to re-read the pin and part and assemble a recipe
 using the current screen/player/match snapshot. The pin file must contain
@@ -93,7 +98,8 @@ exactly 64 hex digits, optionally followed by one LF; filenames or extra
 whitespace are refused. Startup still uses the inline pin. Without the second
 option F6 does nothing. A refused reload prints one typed reason and preserves
 the complete previous HUD; a successful reload can also recover from a refused
-startup. This is a single-thread frame-boundary change, not native code loading.
+startup. Reloading while the built-in HUD is selected keeps that selection;
+press F7 to show the newly admitted recipe. This is a single-thread frame-boundary change, not native code loading.
 
 For the red square above, start a reloadable session:
 

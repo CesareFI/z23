@@ -969,6 +969,60 @@ static int reload_cases(void)
  unlink(path);unlink(pin_path);return failures;
 }
 
+/* Manual display selection must never reread or mutate the admitted part. */
+static int toggle_trace(const struct sky_expr_hud *hud,const char *want)
+{
+ use_trace_at=0;use_trace[0]=0;sky_expr_render(hud,use_builtin,"BUILTIN\n");
+ return strcmp(use_trace,want)!=0;
+}
+static int toggle_recipe_cases(void)
+{
+ struct sky_expr_hud hud={0},empty={0};struct sky_expr_hud before_empty;
+ memcpy(&before_empty,&empty,sizeof empty);sky_expr_toggle(&empty);
+ int failures=memcmp(&empty,&before_empty,sizeof empty)!=0;
+ failures+=sky_expr_custom_selected(&empty);failures+=toggle_trace(&empty,"BUILTIN\n");
+ hud.active=true;hud.part.length=1;hud.part.bytes[0]=0xa5;hud.part.sha256[0]=0x7f;
+ hud.part.recipe.op_count=1;
+ hud.part.recipe.ops[0]=(struct sky_hud_op_v1){.kind=SKY_HUD_OP_RECT,.x=10,.y=20,.w=30,.h=40,.rgba=0x11223344};
+ struct expr_part before;memcpy(&before,&hud.part,sizeof before);
+ unsigned opens=reload_pin_opens,closes=reload_pin_closes,part_closes=admit_probe_closes,events=use_diag_events;
+ failures+=!sky_expr_custom_selected(&hud);
+ for(unsigned i=0;i<1000;i++) {
+  sky_expr_toggle(&hud);bool builtin=i%2==0;
+  failures+=hud.builtin_selected!=builtin;failures+=sky_expr_custom_selected(&hud)==builtin;
+  failures+=toggle_trace(&hud,builtin?"BUILTIN\n":"R 10.0 20.0 30.0 40.0 17 34 51 68\n");
+  failures+=memcmp(&before,&hud.part,sizeof before)!=0;
+ }
+ failures+=reload_pin_opens!=opens;failures+=reload_pin_closes!=closes;
+ failures+=admit_probe_closes!=part_closes;failures+=use_diag_events!=events;
+ return failures;
+}
+static int toggle_file_cases(void)
+{
+ char path[512],pin_path[512];int fd=test_mkstemp(path,sizeof path,"toggle_part");if(fd<0)return 1;
+ if(close(fd)){unlink(path);return 1;}fd=test_mkstemp(pin_path,sizeof pin_path,"toggle_pin");
+ if(fd<0){unlink(path);return 1;}if(close(fd)){unlink(path);unlink(pin_path);return 1;}
+ uint8_t bytes[2048]={0},pin[32];double fields[XF_COUNT]={0};fields[XF_SHIELD]=1;
+ size_t n=draw_fixture(bytes,3,1);int failures=0;
+ if(!admit_fixture_write(path,bytes,n,pin)){unlink(path);unlink(pin_path);return 1;}
+ struct sky_expr_option option={.path=path,.pin_path=pin_path};memcpy(option.pin,pin,32);
+ struct sky_expr_hud hud={.builtin_selected=true};sky_expr_start(&option,fields,&hud);
+ failures+=!hud.active || hud.builtin_selected;sky_expr_toggle(&hud);
+ failures+=!hud.builtin_selected;failures+=toggle_trace(&hud,"BUILTIN\n");
+ if(unlink(path) || unlink(pin_path)){perror("toggle unlink fixture");return failures+1;}
+ unsigned opens=reload_pin_opens,closes=reload_pin_closes,part_closes=admit_probe_closes;
+ sky_expr_toggle(&hud);failures+=toggle_trace(&hud,"T HUD10 10.0 20.0 12.0\n");
+ sky_expr_toggle(&hud);failures+=toggle_trace(&hud,"BUILTIN\n");
+ failures+=reload_pin_opens!=opens || reload_pin_closes!=closes || admit_probe_closes!=part_closes;
+ failures+=reload_preserved(&option,fields,&hud,EX_ADMIT_READ);
+ zcl_write_u32_le(bytes+32+16*2+8,25);
+ failures+=!admit_fixture_write(path,bytes,n,pin) || reload_write_pin(pin_path,pin,true);
+ failures+=sky_expr_reload(&option,fields,&hud)!=EX_ADMIT_OK;
+ failures+=!hud.builtin_selected;failures+=toggle_trace(&hud,"BUILTIN\n");
+ sky_expr_toggle(&hud);failures+=toggle_trace(&hud,"T HUD25 25.0 20.0 12.0\n");
+ unlink(path);unlink(pin_path);return failures;
+}
+
 int test_skycombat_expr(void);
 int test_skycombat_expr(void)
 {
@@ -977,6 +1031,7 @@ int test_skycombat_expr(void)
  failures+=draw_kinds()+draw_refusals()+draw_capacity()+draw_followups()+draw_defensive();
  failures+=use_metric_cases()+use_metric_range_cases();
  failures+=reload_option_cases()+reload_cases();
+ failures+=toggle_recipe_cases()+toggle_file_cases();
  failures+=admit_file_cases();failures+=use_option_cases()+use_file_cases()+use_box_case()+use_refusal_cases()+use_render_cases()+use_multiple_ops();
  printf("test_skycombat_expr: %s (%d failures)\n",failures?"FAILED":"PASS",failures);
  return failures;

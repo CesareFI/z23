@@ -275,7 +275,7 @@ static void render_hud_ultimate(void *context) {
 
 static void render_game_hud(const struct sky_expr_hud *hud,multiplayer_game_t *game)
 {
-    if(hud->active)render_host_debug(game);
+    if(sky_expr_custom_selected(hud))render_host_debug(game);
     sky_expr_render(hud,render_hud_ultimate,game);
 }
 
@@ -352,6 +352,7 @@ static void update_part_hud(const struct sky_expr_option *option,multiplayer_gam
 static void poll_part_hud(const struct sky_expr_option *option,multiplayer_game_t *game,struct sky_expr_hud *hud)
 {
     if(option->pin_path && IsKeyPressed(KEY_F6))update_part_hud(option,game,hud,true);
+    if(IsKeyPressed(KEY_F7))sky_expr_toggle(hud);
 }
 
 /* Compose strict option contracts without opening a window on refusal.
