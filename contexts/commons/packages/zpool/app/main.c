@@ -18,6 +18,7 @@
 #include "zpool/zpool.h"
 
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -25,7 +26,16 @@
 #define MAX_BLOCKS 4096u
 #define MAX_OP 128u
 
-static _Alignas(16) unsigned char arena[(size_t)MAX_BLOCK * MAX_BLOCKS];
+static _Alignas(max_align_t) unsigned char arena[(size_t)MAX_BLOCK * MAX_BLOCKS];
+
+static bool init_pool(zpool *pool, size_t block_size, size_t count) {
+  size_t stride = block_size < sizeof(void *) ? sizeof(void *) : block_size;
+  size_t alignment = _Alignof(max_align_t);
+  if (stride > SIZE_MAX - (alignment - 1u)) return false;
+  stride = (stride + alignment - 1u) / alignment * alignment;
+  if (count > sizeof(arena) / stride) return false;
+  return zpool_init(pool, arena, stride * count, block_size);
+}
 
 int main(int argc, char **argv) {
   
@@ -46,7 +56,7 @@ int main(int argc, char **argv) {
   }
 
   zpool pool;
-  if (!zpool_init(&pool, arena, (size_t)bs * bc, (size_t)bs)) {
+  if (!init_pool(&pool, (size_t)bs, (size_t)bc)) {
     fprintf(stderr, "zpool: cannot initialize pool\n");
     return 2;
   }
