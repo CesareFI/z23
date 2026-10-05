@@ -25,12 +25,13 @@ typedef enum {
 } zhex_err;
 
 /* Exact buffer sizes (excluding any terminator). */
-size_t zhex_encoded_len(size_t bin_len);   /* always 2 * bin_len */
+size_t zhex_encoded_len(size_t bin_len);   /* 2 * bin_len, SIZE_MAX on overflow */
 size_t zhex_decoded_len(size_t hex_len);   /* hex_len / 2, even if odd */
 
 /* Encode bin[0..bin_len) into out as lowercase hex.
  * out must hold 2*bin_len bytes; out is NOT NUL-terminated.
- * Returns ZHEX_OK or ZHEX_ERR_NULL. */
+ * Returns ZHEX_OK, ZHEX_ERR_NULL, or ZHEX_ERR_SMALL when 2*bin_len
+ * cannot fit in size_t (rejected before reading input or writing output). */
 zhex_err zhex_encode(const uint8_t *bin, size_t bin_len, char *out);
 
 /* Same, uppercase. */

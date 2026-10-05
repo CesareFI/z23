@@ -9,7 +9,7 @@ static const char UPPER_DIGITS[] = "0123456789ABCDEF";
 
 size_t zhex_encoded_len(size_t bin_len)
 {
-    return bin_len * 2u;
+    return bin_len > SIZE_MAX / 2u ? SIZE_MAX : bin_len * 2u;
 }
 
 size_t zhex_decoded_len(size_t hex_len)
@@ -30,6 +30,7 @@ static zhex_err encode_with(const uint8_t *bin, size_t bin_len, char *out,
 {
     if (!out) return ZHEX_ERR_NULL;
     if (!bin && bin_len > 0) return ZHEX_ERR_NULL;
+    if (bin_len > SIZE_MAX / 2u) return ZHEX_ERR_SMALL;
     for (size_t i = 0; i < bin_len; i++) {
         out[2 * i]     = digits[bin[i] >> 4];
         out[2 * i + 1] = digits[bin[i] & 0x0f];

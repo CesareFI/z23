@@ -33,6 +33,19 @@ static void test_encode(void)
     CHECK(zhex_decoded_len(10) == 5);
     CHECK(zhex_decoded_len(9) == 4); /* floor; decode rejects odd */
 
+    /* Exact sizing must never wrap into a small allocation request. */
+    const size_t too_large = SIZE_MAX / 2u + 1u;
+    CHECK(zhex_encoded_len(too_large) == SIZE_MAX);
+    CHECK(zhex_encoded_len(SIZE_MAX) == SIZE_MAX);
+    CHECK(zhex_encoded_len(SIZE_MAX / 2u) == SIZE_MAX - 1u);
+    /* Reject before touching input/output: only tiny real objects exist. */
+    const uint8_t one = 0xab;
+    char canary[2] = {'X', 'Y'};
+    CHECK(zhex_encode(&one, too_large, canary) == ZHEX_ERR_SMALL);
+    CHECK(canary[0] == 'X' && canary[1] == 'Y');
+    CHECK(zhex_encode_upper(&one, too_large, canary) == ZHEX_ERR_SMALL);
+    CHECK(canary[0] == 'X' && canary[1] == 'Y');
+
     /* NULL handling. */
     CHECK(zhex_encode(NULL, 3, out) == ZHEX_ERR_NULL);
     CHECK(zhex_encode(b1, sizeof b1, NULL) == ZHEX_ERR_NULL);
