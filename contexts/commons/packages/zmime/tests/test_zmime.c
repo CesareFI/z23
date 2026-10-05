@@ -237,7 +237,21 @@ static void test_application_registry(void) {
   CHECK(strcmp(zmime_from_extension(NULL, 0), "application/octet-stream") == 0);
 }
 
+static void test_quoted_byte_edges(void) {
+  zmime_content_type ct;
+  const char del[] = "a/b; x=\"\x7f\"";
+  const char obs[] = "a/b; x=\"\\\x80\"";
+  const char tab[] = "a/b; x=\"\\\t\"";
+  CHECK(!zmime_parse_content_type(del, sizeof del - 1, &ct));
+  CHECK(zmime_parse_content_type(obs, sizeof obs - 1, &ct) &&
+        (unsigned char)ct.params[0].value[0] == 0x80 &&
+        ct.params[0].value[1] == '\0');
+  CHECK(zmime_parse_content_type(tab, sizeof tab - 1, &ct) &&
+        ct.params[0].value[0] == '\t' && ct.params[0].value[1] == '\0');
+}
+
 int main(void) {
+  test_quoted_byte_edges();
   test_application_registry();
   test_registry();
   test_parse_kats();

@@ -131,6 +131,13 @@ static int take_token(cur *c, char *buf, size_t cap) {
   return 1;
 }
 
+/* Visible ASCII and obs-text are legal quoted bytes; HTAB is handled
+ * by the caller. DEL and all other controls are forbidden. */
+static int quoted_byte_valid(char ch) {
+  unsigned char c = (unsigned char)ch;
+  return c >= 0x20 && c != 0x7F;
+}
+
 /* Parse a parameter value: token or quoted-string. */
 static int take_value(cur *c, char *buf, size_t cap) {
   size_t n = 0;
@@ -151,8 +158,8 @@ static int take_value(cur *c, char *buf, size_t cap) {
         c->n--;
         if (c->n == 0) return 0;
         ch = *c->p;
-        if (ch < 0x20 || ch == 0x7F) return 0;
-      } else if ((unsigned char)ch < 0x20 && ch != '\t') {
+        if (!quoted_byte_valid(ch) && ch != '\t') return 0;
+      } else if (!quoted_byte_valid(ch) && ch != '\t') {
         return 0;
       }
       if (n + 1 >= cap) return 0;
