@@ -520,6 +520,9 @@ static struct zcl_result scan_log_tail(struct block_log_file *h)
                 h, (off_t)tail->offset, &hash, &len);
         if (!r.ok) return r;
         cursor = (off_t)(tail->offset + LOG_HEADER_BYTES + len);
+        if (cursor > log_end)
+            return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
+                           "indexed log record extends past EOF");
     }
 
     while (cursor < log_end) {

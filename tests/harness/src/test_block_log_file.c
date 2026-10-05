@@ -105,6 +105,22 @@ static bool overwrite_first_index_hash(const char *path,
     return ok;
 }
 
+static bool overwrite_u32_le(const char *path, off_t offset, uint32_t value)
+{
+    uint8_t bytes[4] = {
+        (uint8_t)value,
+        (uint8_t)(value >> 8),
+        (uint8_t)(value >> 16),
+        (uint8_t)(value >> 24),
+    };
+    int fd = open(path, O_RDWR);
+    if (fd < 0) return false;
+    bool ok = lseek(fd, offset, SEEK_SET) == offset;
+    if (ok) ok = write(fd, bytes, sizeof bytes) == (ssize_t)sizeof bytes;
+    if (close(fd) != 0) ok = false;
+    return ok;
+}
+
 static bool result_has_code(struct zcl_result result, int code)
 {
     return !result.ok && result.code == code;
@@ -411,6 +427,32 @@ int test_block_log_file(void)
                   result_has_code(r, BLOCK_LOG_ERR_CORRUPT));
         r = p.append(p.self, 0, &fake, a, sizeof a - 1);
         BLF_CHECK("side-index mismatch is not idempotent append",
+                  result_has_code(r, BLOCK_LOG_ERR_CORRUPT));
+
+        block_log_file_close(h);
+        test_rm_rf(dir);
+    }
+
+    /* ── 10. An indexed tail may not claim payload bytes past EOF. */
+    {
+        char dir[64]; make_tmpdir(dir, sizeof dir);
+        struct block_log_file *h = NULL;
+        struct block_log_port p = {0};
+        ZCL_TEST_SETUP(block_log_file_open(dir, &h, &p));
+
+        struct block_hash hash; fill_hash(&hash, 0xc0);
+        uint8_t payload = 0x5a;
+        ZCL_TEST_SETUP(p.append(p.self, 0, &hash, &payload, 1));
+        block_log_file_close(h);
+
+        char logpath[512];
+        snprintf(logpath, sizeof logpath, "%s/blocks.log", dir);
+        BLF_CHECK("extend indexed tail length past EOF",
+                  overwrite_u32_le(logpath, 4 + 32, 4096));
+
+        h = NULL; memset(&p, 0, sizeof p);
+        struct zcl_result r = block_log_file_open(dir, &h, &p);
+        BLF_CHECK("indexed tail past EOF is corrupt",
                   result_has_code(r, BLOCK_LOG_ERR_CORRUPT));
 
         block_log_file_close(h);
