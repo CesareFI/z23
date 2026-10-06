@@ -6,6 +6,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+
+#include "base/cleanse.h"
 
 enum json_type {
     JSON_NULL,
