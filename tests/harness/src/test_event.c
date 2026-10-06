@@ -990,11 +990,152 @@ static int test_error_ring_dump_json_tiny_buffer(void)
     return failures;
 }
 
+/* Regression: event_emitf must clamp the vsnprintf would-be length to the
+ * stack buffer before synchronous observers run. Pre-fix it passed the
+ * raw n (> 255 possible) to notify_observers, and the registered
+ * length-scanning observers (prometheus parse_peer_kind,
+ * consensus_reject_index cri_parse_payload) walked payload[i] for
+ * i < payload_len -- an OOB read past the 256-byte buffer. The observer
+ * here scans like those consumers after checking the buffer bound. */
+static uint32_t g_emitf_seen_len;
+static uint8_t g_emitf_scan_sum;
+static char g_emitf_seen_payload[EVENT_PAYLOAD_SIZE];
+
+static void emitf_len_observer(enum event_type type, uint32_t peer_id,
+                               const void *payload, uint32_t payload_len,
+                               void *ctx)
+{
+    const uint8_t *p = payload;
+    (void)type;
+    (void)peer_id;
+    (void)ctx;
+    g_emitf_seen_len = payload_len;
+    g_emitf_scan_sum = 0;
+    g_emitf_seen_payload[0] = '\0';
+    /* Report the broken contract without making the regression itself read
+     * beyond a formatted emitter's stack buffer. */
+    if (payload_len > EVENT_PAYLOAD_SIZE - 1)
+        return;
+    for (uint32_t i = 0; i < payload_len; i++)
+        g_emitf_scan_sum = (uint8_t)(g_emitf_scan_sum + p[i]);
+    memcpy(g_emitf_seen_payload, payload, payload_len);
+    g_emitf_seen_payload[payload_len] = '\0';
+}
+
+static int test_emitf_clamps_observer_length(void)
+{
+    int failures = 0;
+
+    TEST("event_emitf clamps a >255-byte format to the payload buffer") {
+        event_log_init();
+        event_clear_all_observers();
+        g_emitf_seen_len = 0;
+        g_emitf_scan_sum = 0;
+        ASSERT(event_observe(EV_TCP_CONNECTED, emitf_len_observer, NULL));
+
+        /* 300 digits plus text: vsnprintf reports a would-be length well
+         * over EVENT_PAYLOAD_SIZE while truncating the buffer. */
+        event_emitf(EV_TCP_CONNECTED, 7, "reject reason overflow %0300d", 42);
+
+        ASSERT(g_emitf_seen_len > 0);
+        ASSERT(g_emitf_seen_len <= EVENT_PAYLOAD_SIZE - 1);
+        ASSERT(g_emitf_seen_len == EVENT_PAYLOAD_SIZE - 1);
+        char expected[EVENT_PAYLOAD_SIZE];
+        memcpy(expected, "reject reason overflow ", 23);
+        memset(expected + 23, '0', sizeof(expected) - 24);
+        expected[sizeof(expected) - 1] = '\0';
+        ASSERT(strcmp(g_emitf_seen_payload, expected) == 0);
+        uint8_t sum = 0;
+        for (size_t i = 0; i < sizeof(expected) - 1; i++)
+            sum = (uint8_t)(sum + (uint8_t)expected[i]);
+        ASSERT(g_emitf_scan_sum == sum);
+        PASS();
+    } _test_next:;
+
+    event_clear_all_observers();
+    return failures;
+}
+
+static int test_emitf_truncation_boundary(void)
+{
+    int failures = 0;
+
+    TEST("event_emitf preserves the truncation boundary and short messages") {
+        event_log_init();
+        event_clear_all_observers();
+        g_emitf_seen_len = 0;
+        ASSERT(event_observe(EV_TCP_CONNECTED, emitf_len_observer, NULL));
+
+        /* Both sides of the truncation boundary and a short message. */
+        event_emitf(EV_TCP_CONNECTED, 7, "%0255d", 42);
+        ASSERT(g_emitf_seen_len == EVENT_PAYLOAD_SIZE - 1);
+        ASSERT(strcmp(g_emitf_seen_payload + 253, "42") == 0);
+        event_emitf(EV_TCP_CONNECTED, 7, "%0256d", 42);
+        ASSERT(g_emitf_seen_len == EVENT_PAYLOAD_SIZE - 1);
+        ASSERT(strcmp(g_emitf_seen_payload + 254, "4") == 0);
+        event_emitf(EV_TCP_CONNECTED, 7, "short %d", 42);
+        ASSERT(g_emitf_seen_len == 8);
+        ASSERT(strcmp(g_emitf_seen_payload, "short 42") == 0);
+        PASS();
+    } _test_next:;
+
+    event_clear_all_observers();
+    return failures;
+}
+
+static int test_peer_state_legal_clamps_observer_length(void)
+{
+    int failures = 0;
+    char reason[301];
+    memset(reason, 'x', sizeof(reason) - 1);
+    reason[sizeof(reason) - 1] = '\0';
+
+    TEST("legal peer transition clamps a long reason before observers") {
+        event_log_init();
+        g_emitf_seen_len = 0;
+        _Atomic enum peer_state state = PEER_DISCONNECTED;
+        ASSERT(event_observe(EV_PEER_STATE_CHANGE, emitf_len_observer, NULL));
+        ASSERT(peer_set_state_checked(7, &state, PEER_CONNECTING, reason));
+        ASSERT(state == PEER_CONNECTING);
+        ASSERT(g_emitf_seen_len == EVENT_PAYLOAD_SIZE - 1);
+        PASS();
+    } _test_next:;
+
+    event_clear_all_observers();
+    return failures;
+}
+
+static int test_peer_state_illegal_clamps_observer_length(void)
+{
+    int failures = 0;
+    char reason[301];
+    memset(reason, 'x', sizeof(reason) - 1);
+    reason[sizeof(reason) - 1] = '\0';
+
+    TEST("illegal peer transition clamps a long reason before observers") {
+        event_log_init();
+        g_emitf_seen_len = 0;
+        _Atomic enum peer_state state = PEER_DISCONNECTED;
+        ASSERT(event_observe(EV_PEER_STATE_CHANGE, emitf_len_observer, NULL));
+        ASSERT(!peer_set_state_checked(7, &state, PEER_ACTIVE, reason));
+        ASSERT(state == PEER_DISCONNECTED);
+        ASSERT(g_emitf_seen_len == EVENT_PAYLOAD_SIZE - 1);
+        PASS();
+    } _test_next:;
+
+    event_clear_all_observers();
+    return failures;
+}
+
 int test_event(void)
 {
     int failures = 0;
 
     failures += test_emit_dump_roundtrip();
+    failures += test_emitf_clamps_observer_length();
+    failures += test_emitf_truncation_boundary();
+    failures += test_peer_state_legal_clamps_observer_length();
+    failures += test_peer_state_illegal_clamps_observer_length();
     failures += test_async_queue_overflow_accounting();
     failures += test_dump_count();
     failures += test_peer_state_legal();
