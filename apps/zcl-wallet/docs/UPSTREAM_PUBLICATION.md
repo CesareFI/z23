@@ -2118,3 +2118,14 @@ The narrow generated-inventory target unexpectedly entered the repository's
 parse-time vendor bootstrap and attempted pinned zlib/SQLite acquisition; that
 build was terminated and not retried. Subsequent work used verified local donor
 artifacts only. No external publication or reviewer-request action was attempted.
+
+### Final artifact manifests verified
+
+The new fixture and wallet candidates now carry copied unprivileged proof
+receipts, status, phase, lint and test evidence alongside their bundles, mboxes,
+focused evidence, qualification records and PR drafts. Every entry verifies
+against its candidate-local manifest. The fixture manifest SHA256 is
+`92a78749e15674193eeaea86675fc480aea2053a4373a9cb8de4d51dda5cfd5c`;
+the compact wallet manifest SHA256 is
+`3713aaed6aedd0b934403b6709f5a729b4e0a702a6af3a7d87d3e2fa56d466b0`.
+No external publication action was attempted.
