@@ -199,20 +199,33 @@ static int store_case_blob_absent_and_bad_args(struct vcs_package_store *s,
     uint8_t out[512];
     size_t out_len = SIZE_MAX;
     /* ---- absent root fails cleanly (no crash, no partial write) ---- */
+    uint8_t expected[sizeof(out)];
+    memset(out, 0x3c, sizeof(out));
+    memcpy(expected, out, sizeof(out));
     uint8_t absent[32];
     memcpy(absent, root, 32);
     absent[0] ^= 0xff;
     ZS_CHECK("blob: get of an absent root fails cleanly",
              vcs_blob_get_from(s, absent, out, sizeof(out), &out_len) ==
                  VCS_BLOB_ERR_ABSENT && out_len == 0);
+    ZS_CHECK("blob: absent read preserves the whole buffer",
+             memcmp(out, expected, sizeof(out)) == 0);
     out_len = SIZE_MAX;
     ZS_CHECK("blob: get with a null buffer refused",
              vcs_blob_get_from(s, root, NULL, 16, &out_len) ==
                  VCS_BLOB_ERR_NULL && out_len == 0);
     out_len = SIZE_MAX;
+    ZS_CHECK("blob: null root refused",
+             vcs_blob_get_from(s, NULL, out, sizeof(out), &out_len) ==
+                 VCS_BLOB_ERR_NULL && out_len == 0);
+    ZS_CHECK("blob: null-root refusal preserves the whole buffer",
+             memcmp(out, expected, sizeof(out)) == 0);
+    out_len = SIZE_MAX;
     ZS_CHECK("blob: buffer smaller than the blob refused",
              vcs_blob_get_from(s, root, out, 256 - 1u, &out_len) ==
                  VCS_BLOB_ERR_CAPACITY && out_len == 0);
+    ZS_CHECK("blob: capacity refusal preserves the whole buffer",
+             memcmp(out, expected, sizeof(out)) == 0);
     return failures;
 }
 
