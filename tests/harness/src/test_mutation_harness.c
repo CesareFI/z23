@@ -198,6 +198,57 @@ static const struct zcl_mut_result *tmh_find(const struct zcl_mut_report *r,
     return NULL;
 }
 
+/* Seed an exact key through the campaign, then replace its record bytes. */
+static int tmh_cache_records(const struct zcl_mut_config *cfg,
+                             const struct zcl_mut_plan *plan)
+{
+    int failures = 0;
+    struct zcl_mut_report r = { 0 };
+    struct zcl_mut_config cached = *cfg;
+    cached.use_cache = true;
+    cached.abort_after = 1;
+    char path[1200], cache[1000];
+    DIR *d = NULL;
+    static const char records[][40] = {
+        "KILLED test\0garbage\n", "KILLED test\nSURVIVED -\n",
+        "KILLED testx\n", "KILLED \n", "KILLED test\n", "KILLED test"
+    };
+    static const size_t lengths[] = { 20, 23, 13, 8, 12, 11 };
+    TEST("cache records refuse hidden bytes and preserve complete outcomes") {
+        ASSERT(zcl_mut_campaign_run(&cached, plan, &r));
+        zcl_mut_report_free(&r);
+        ASSERT(snprintf(cache, sizeof cache, "%s/cache", cfg->work_dir) <
+               (int)sizeof cache);
+        d = opendir(cache);
+        ASSERT(d != NULL);
+        struct dirent *e;
+        path[0] = '\0';
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            ASSERT(snprintf(path, sizeof path, "%s/%s", cache, e->d_name) <
+                   (int)sizeof path);
+            break;
+        }
+        ASSERT(path[0] != '\0');
+        for (size_t i = 0; i < sizeof lengths / sizeof lengths[0]; i++) {
+            ASSERT(zcl_mut_write_file(path, records[i], lengths[i]));
+            ASSERT(zcl_mut_campaign_run(&cached, plan, &r));
+            ASSERT_EQ(r.result_count, (size_t)1);
+            ASSERT_EQ(r.results[0].cached, i >= 4);
+            if (i >= 4) {
+                ASSERT_EQ(r.results[0].outcome, ZCL_MUT_OUTCOME_KILLED);
+                ASSERT_STR_EQ(r.results[0].killed_by, "test");
+            }
+            zcl_mut_report_free(&r);
+        }
+        PASS();
+    }
+_test_next:;
+    if (d) (void)closedir(d);
+    zcl_mut_report_free(&r);
+    return failures;
+}
+
 int test_mutation_harness(void);
 int test_mutation_harness(void)
 {
@@ -468,6 +519,8 @@ int test_mutation_harness(void)
     }
 
     /* ─────────────── the interrupted run: the corrupting case ─────────── */
+
+    failures += tmh_cache_records(&cfg, &plan);
 
     TEST("a run stopped partway still leaves the subject byte-identical") {
         struct zcl_mut_config cut_cfg = cfg;

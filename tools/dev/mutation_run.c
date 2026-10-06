@@ -854,6 +854,8 @@ static void mut_cache_key(const struct mut_ctx *c,
 static bool mut_cache_get(const struct mut_ctx *c, const char *key,
                           enum zcl_mut_outcome *out, const char **killed_by)
 {
+    *out = ZCL_MUT_OUTCOME_ERROR;
+    *killed_by = "";
     char path[PATH_MAX];
     if (!mut_join(path, sizeof path, c->cache_dir, key))
         return false;
@@ -861,23 +863,21 @@ static bool mut_cache_get(const struct mut_ctx *c, const char *key,
     char *text = zcl_mut_read_file(path, &len);
     if (!text)
         return false;
+    if (len > 0 && text[len - 1] == '\n')
+        len--;
+    static const char *const reasons[] = { "-", "test", "timeout", "crash" };
     bool ok = false;
     for (int i = 0; i < ZCL_MUT_OUTCOME_COUNT; i++) {
         const char *name = zcl_mut_outcome_name((enum zcl_mut_outcome)i);
-        if (strncmp(text, name, strlen(name)) == 0 &&
-            text[strlen(name)] == ' ') {
-            *out = (enum zcl_mut_outcome)i;
-            const char *rest = text + strlen(name) + 1;
-            if (strncmp(rest, "test", 4) == 0)
-                *killed_by = "test";
-            else if (strncmp(rest, "timeout", 7) == 0)
-                *killed_by = "timeout";
-            else if (strncmp(rest, "crash", 5) == 0)
-                *killed_by = "crash";
-            else
-                *killed_by = "";
-            ok = true;
-            break;
+        for (size_t j = 0; j < sizeof reasons / sizeof reasons[0]; j++) {
+            char record[128];
+            int n = snprintf(record, sizeof record, "%s %s", name, reasons[j]);
+            if (n > 0 && len == (size_t)n && memcmp(text, record, len) == 0) {
+                *out = (enum zcl_mut_outcome)i;
+                *killed_by = j == 0 ? "" : reasons[j];
+                ok = true;
+                break;
+            }
         }
     }
     free(text);
