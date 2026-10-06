@@ -602,6 +602,73 @@ static bool dvx_sources_complete(const struct dvx_call *c, size_t want)
     return true;
 }
 
+static bool dvx_stored_cursor(const char *bytes, size_t n, bool accepted)
+{
+    char dir[1100], path[1200];
+    struct dvx_call p;
+    dvx_maildir(dir, sizeof(dir));
+    (void)snprintf(path, sizeof(path), "%s/cursor.alice", dir);
+    FILE *f = fopen(path, "wb");
+    if (!f) dvx_fixture_fail("could not open stored cursor");
+    bool written = fwrite(bytes, 1, n, f) == n;
+    if (fclose(f) != 0 || !written)
+        dvx_fixture_fail("could not write stored cursor");
+    dvx_pull_agent(&p, "alice", NULL);
+    bool ok = dvx_run(&p) && dvx_ok(&p) == accepted;
+    if (!accepted)
+        ok = ok && strcmp(p.reply.error.code, "MAIL_CURSOR_STALE") == 0;
+    else
+        ok = ok && strcmp(dvx_str(&p, "resumed_from"), "agent") == 0;
+    dvx_end(&p);
+    return ok;
+}
+
+static int test_mail_cursor_row(const char *name, const char *bytes, size_t n,
+                                bool accepted)
+{
+    int failures = 0;
+    TEST(name) {
+        dvx_isolate("stored_cursor");
+        ASSERT(dvx_ack_token("alice", "7"));
+        ASSERT(dvx_stored_cursor(bytes, n, accepted));
+        PASS();
+    }
+_test_next:;
+    dvx_restore();
+    return failures;
+}
+
+static int test_mail_stored_cursor(void)
+{
+    char oversized[4096];
+    int failures = 0;
+    memset(oversized, '0', sizeof(oversized));
+    oversized[sizeof(oversized) - 1] = 'x';
+    failures += test_mail_cursor_row("mail: stored NUL suffix refuses",
+                                     "7\0junk", 6, false);
+    failures += test_mail_cursor_row("mail: stored scalar suffix refuses",
+                                     "7junk", 5, false);
+    failures += test_mail_cursor_row("mail: stored oversized suffix refuses",
+                                     oversized, sizeof(oversized), false);
+    failures += test_mail_cursor_row("mail: stored scalar overflow refuses",
+                                     "9223372036854775808", 19, false);
+    failures += test_mail_cursor_row("mail: stored repeated newline refuses",
+                                     "7\n\n", 3, false);
+    failures += test_mail_cursor_row("mail: stored bare CR refuses",
+                                     "7\r", 2, false);
+    failures += test_mail_cursor_row("mail: stored scalar without newline",
+                                     "7", 1, true);
+    failures += test_mail_cursor_row("mail: stored scalar with LF",
+                                     "7\n", 2, true);
+    failures += test_mail_cursor_row("mail: stored scalar with CRLF",
+                                     "7\r\n", 3, true);
+    failures += test_mail_cursor_row("mail: stored token without newline",
+                                     "0|", 2, true);
+    failures += test_mail_cursor_row("mail: stored token with CRLF",
+                                     "0|\r\n", 4, true);
+    return failures;
+}
+
 static int test_mail_ref_filter_and_agent_resume(void)
 {
     int failures = 0;
@@ -668,6 +735,9 @@ _test_next:;
     return failures;
 }
 
+#if !defined(_WIN32)
+static int test_mail_ack_sync(int mode);
+#endif
 static int test_mail_independent_cursor(void)
 {
     int failures = 0;
@@ -701,6 +771,11 @@ static int test_mail_independent_cursor(void)
         PASS();
     }
 _test_next:;
+    dvx_restore();
+#if !defined(_WIN32)
+    failures += test_mail_ack_sync(1);
+    failures += test_mail_ack_sync(2);
+#endif
     return failures;
 }
 
@@ -931,6 +1006,74 @@ _test_next:;
     return failures;
 }
 
+#if !defined(_WIN32)
+static int dvx_sync_mode;
+static bool dvx_overlap_exact;
+static char dvx_cursor_path[1200];
+
+static bool dvx_cursor_exact(const char *want)
+{
+    char text[64] = {0};
+    FILE *f = fopen(dvx_cursor_path, "r");
+    if (!f) return false;
+    size_t n = fread(text, 1, sizeof(text) - 1, f);
+    return fclose(f) == 0 && n == strlen(want) && strcmp(text, want) == 0;
+}
+
+static bool dvx_ack_ok(long long cursor)
+{
+    struct dvx_call a;
+    dvx_ack(&a, "alice", cursor);
+    bool ok = dvx_run(&a) && dvx_ok(&a);
+    dvx_end(&a);
+    return ok;
+}
+
+int zcl_devagent_mail_test_sync(int fd);
+int zcl_devagent_mail_test_sync(int fd)
+{
+    if (dvx_sync_mode == 1) { errno = EIO; return -1; }
+    if (dvx_sync_mode == 2) {
+        struct dvx_call a;
+        dvx_sync_mode = 0;
+        dvx_ack(&a, "alice", 7);
+        bool installed = dvx_run(&a) && dvx_ok(&a);
+        dvx_end(&a);
+        dvx_overlap_exact = installed && pwrite(fd, "12\n", 3, 0) == 3 &&
+            dvx_cursor_exact("7\n");
+    }
+    return fsync(fd);
+}
+
+static int test_mail_ack_sync(int mode)
+{
+    int failures = 0;
+    TEST("mail: ack flush refusal preserves OLD; overlap keeps installs whole") {
+        struct dvx_call a;
+        dvx_isolate("acksync");
+        (void)snprintf(dvx_cursor_path, sizeof(dvx_cursor_path),
+                       "%s/z23/dev/mail/cursor.alice", g_dvx_state);
+        ASSERT(dvx_ack_ok(7));
+        dvx_sync_mode = mode;
+        dvx_overlap_exact = false;
+        dvx_ack(&a, "alice", 12);
+        ASSERT(dvx_run(&a));
+        ASSERT(dvx_ok(&a) == (mode == 2));
+        ASSERT(dvx_cursor_exact(mode == 1 ? "7\n" : "12\n"));
+        ASSERT(mode == 1 || dvx_overlap_exact);
+        dvx_end(&a);
+        dvx_sync_mode = 0;
+        ASSERT(dvx_ack_ok(12));
+        ASSERT(dvx_cursor_exact("12\n"));
+        PASS();
+    }
+_test_next:;
+    dvx_sync_mode = 0;
+    dvx_restore();
+    return failures;
+}
+#endif
+
 int test_devagent_mail(void);
 int test_devagent_mail(void)
 {
@@ -940,6 +1083,7 @@ int test_devagent_mail(void)
     failures += test_mail_independent_cursor();
     failures += test_mail_paging();
     failures += test_mail_ref_filter_and_agent_resume();
+    failures += test_mail_stored_cursor();
     failures += test_mail_board_fields();
 #if !defined(_WIN32)
     failures += test_mail_cwd_invariance();

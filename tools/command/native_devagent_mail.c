@@ -1769,6 +1769,32 @@ static bool dvm_cursor_text_ok(const char *s)
     return dvm_since_token(s, &probe);
 }
 
+static bool dvm_cursor_scalar(const char *text, long long *value)
+{
+    char *end;
+    *value = 0;
+    errno = 0;
+    long long parsed = strtoll(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || parsed < 0)
+        return false;
+    *value = parsed;
+    return true;
+}
+
+static void dvm_cursor_read(FILE *f, char *buf, size_t cap)
+{
+    size_t n = fread(buf, 1, cap - 1, f);
+    bool complete = fgetc(f) == EOF && !ferror(f) &&
+                    memchr(buf, '\0', n) == NULL;
+    if (fclose(f) != 0) complete = false;
+    if (!complete) n = 0;
+    buf[n] = '\0';
+    if (n > 0 && buf[n - 1] == '\n') {
+        buf[--n] = '\0';
+        if (n > 0 && buf[n - 1] == '\r') buf[--n] = '\0';
+    }
+}
+
 /* Pull with `agent` and no `since` resumes from that agent's acked cursor:
  * the file ack wrote. Absent file = from the start. Returns false with a
  * fail reply written when the stored text is not a cursor. `buf` owns the
@@ -1793,17 +1819,12 @@ static bool dvm_pull_resume_agent(const struct zcl_command_request *req,
     n = (size_t)snprintf(path, sizeof(path), "%s/cursor.%s", maildir, agent);
     if (n == 0 || n >= sizeof(path) || !(f = fopen(path, "rb")))
         return true; /* never acked: page from the start */
-    n = fread(buf, 1, cap - 1, f);
-    (void)fclose(f);
-    buf[n] = '\0';
-    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r'))
-        buf[--n] = '\0';
+    dvm_cursor_read(f, buf, cap);
     filter->resumed = "agent";
     if (dvm_cursor_text_ok(buf) && !strchr(buf, '|')) {
-        filter->since = strtoll(buf, NULL, 10);
-        return true;
+        if (dvm_cursor_scalar(buf, &filter->since)) return true;
     }
-    if (dvm_cursor_text_ok(buf) && dvm_since_token(buf, filter))
+    if (strchr(buf, '|') && dvm_cursor_text_ok(buf) && dvm_since_token(buf, filter))
         return true;
     dvm_fail(reply, "MAIL_CURSOR_STALE",
              "the agent's stored cursor is not a cursor; ack a fresh one",
@@ -1886,23 +1907,34 @@ static struct dvm_ack_write_result dvm_ack_write_cursor(
     return (struct dvm_ack_write_result){0};
 }
 #else
+#if defined(ZCL_TESTING)
+int zcl_devagent_mail_test_sync(int fd);
+#define DVM_ACK_SYNC(fd) zcl_devagent_mail_test_sync(fd)
+#else
+#define DVM_ACK_SYNC(fd) fsync(fd)
+#endif
 static struct dvm_ack_write_result dvm_ack_write_cursor(
     const char *tmp, const char *path, const char *text, size_t len)
 {
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    char staged[DVM_PATH_CAP];
+    int n = snprintf(staged, sizeof(staged), "%s.XXXXXX", tmp);
+    if (n < 0 || (size_t)n >= sizeof(staged))
+        return (struct dvm_ack_write_result){
+            "MAIL_WRITE_FAILED", "cursor staging path exceeds its bound", tmp};
+    int fd = mkstemp(staged);
     if (fd < 0)
         return (struct dvm_ack_write_result){
             "MAIL_WRITE_FAILED", "cannot record the cursor", tmp};
-    (void)fchmod(fd, 0600);
-    ssize_t w = write(fd, text, len);
-    (void)close(fd);
-    if (w != (ssize_t)len) {
-        (void)unlink(tmp);
+    bool ready = fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 &&
+        write(fd, text, len) == (ssize_t)len && DVM_ACK_SYNC(fd) == 0;
+    int closed = close(fd);
+    if (!ready || closed != 0) {
+        (void)unlink(staged);
         return (struct dvm_ack_write_result){
-            "MAIL_WRITE_FAILED", "short write of the cursor", tmp};
+            "MAIL_WRITE_FAILED", "cannot write, flush or close the cursor", tmp};
     }
-    if (rename(tmp, path) != 0) {
-        (void)unlink(tmp);
+    if (rename(staged, path) != 0) {
+        (void)unlink(staged);
         return (struct dvm_ack_write_result){
             "MAIL_WRITE_FAILED", "cannot install the cursor file", path};
     }
