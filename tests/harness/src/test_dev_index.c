@@ -377,8 +377,7 @@ int test_dev_index(void)
     TEST("index: status numbers are exact under the injected clock") {
         struct dvi_fake_clock fc;
         atomic_store(&fc.mono_ns, (int64_t)0);
-        atomic_store(&fc.wall_ms, (int64_t)1788300000000LL); /* 2026-09-01
-                                                              * ~00:20:00Z */
+        atomic_store(&fc.wall_ms, (int64_t)1788300000000LL); /* 2026-09-01T22:00:00Z */
         const clock_iface_t iface = {.now_monotonic_ns = dvi_fake_mono,
                                      .now_wall_ms = dvi_fake_wall,
                                      .self = &fc};
@@ -391,7 +390,7 @@ int test_dev_index(void)
         ASSERT(st.rows == 1);
         ASSERT(st.has_rows);
         ASSERT_STR_EQ(st.newest_ts, "2026-09-01T00:00:00Z");
-        ASSERT(st.seconds_since_newest > 0);
+        ASSERT(st.seconds_since_newest == 79200);
         ASSERT(st.bytes_behind == 0);
         /* 1, not 0: the TSV header line is deliberately never indexed and
          * rows_skipped counts every line that produced no row. */
