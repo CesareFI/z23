@@ -4900,11 +4900,49 @@ _test_next:;
 }
 #endif
 
+extern bool fleet_steer_intake_stream(FILE *, long long *, char [64]);
+static int fmx_t_intake_records(void)
+{
+    int failures = 0;
+    TEST("steer: malformed intake cannot publish historical prefix state") {
+        char overflow[1025], error[64]; long long count;
+        const char *rows[] = {"failures=7\nlast_error=E\0junk", overflow,
+            "failures=7\nlast_error=E\nextra=x\n", "failures=7junk\nlast_error=E",
+            "failures=7\nlast_error=E", "position=\nfailures=7\nlast_error=E\n"};
+        size_t sizes[] = {28, sizeof(overflow), 32, 27, 23, 34};
+        memset(overflow, 'x', sizeof(overflow)); memcpy(overflow, "failures=7\n", 11);
+        for (size_t i = 0; i < 6; ++i) {
+            FILE *f = tmpfile(); ASSERT(f != NULL);
+            size_t wrote = fwrite(rows[i], 1, sizes[i], f); ASSERT_EQ(wrote, sizes[i]); rewind(f);
+            bool ok = fleet_steer_intake_stream(f, &count, error); int closed = fclose(f); ASSERT_EQ(closed, 0);
+            ASSERT_EQ(ok, i >= 4); ASSERT_EQ(count, i >= 4 ? 7 : -1);
+            ASSERT_STR_EQ(error, i >= 4 ? "E" : "INTAKE_UNAVAILABLE");
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#if !defined(_WIN32)
+static int fmx_t_intake_read_error(void) {
+    int failures = 0;
+    TEST("steer: intake I/O error is unavailable") {
+        char error[64]; long long count; FILE *f = tmpfile(); ASSERT(f != NULL);
+        ASSERT(close(fileno(f)) == 0);
+        bool ok = fleet_steer_intake_stream(f, &count, error); (void)fclose(f);
+        ASSERT(!ok); ASSERT_EQ(count, -1); ASSERT_STR_EQ(error, "INTAKE_UNAVAILABLE");
+        PASS();
+    } _test_next:;
+    return failures; }
+#endif
 int test_fleet_steer(void);
 int fmx_task_projection_checks(void);
 int test_fleet_steer(void)
 {
     int failures = 0;
+    failures += fmx_t_intake_records();
+#if !defined(_WIN32)
+    failures += fmx_t_intake_read_error();
+#endif
 
     node_rpc_client_set_test_hook(fmx_no_node);
     failures += fmx_task_projection_checks();

@@ -1846,11 +1846,40 @@ struct fmc_local {
  * so it is reported in the reason as history, not taken as a current
  * block; the current block is this brief's own failed pull of the same
  * mail. -1 when the receiver never wrote one. */
+/* Complete intake extent; unavailable output is never a measured prefix. */
+bool fleet_steer_intake_stream(FILE *f, long long *count, char error[64]);
+static bool fmc_intake_extent(FILE *f, char text[1024], size_t *n)
+{
+    *n = fread(text, 1, 1024, f);
+    if (ferror(f) || !feof(f) || *n == 1024 || memchr(text, 0, *n)) return false;
+    text[*n] = '\0'; return true;
+}
+bool fleet_steer_intake_stream(FILE *f, long long *count, char error[64])
+{
+    char text[1024]; size_t n, len; char *p, *end;
+    *count = -1; (void)snprintf(error, 64, "INTAKE_UNAVAILABLE");
+    if (!fmc_intake_extent(f, text, &n)) return false;
+    p = text;
+    if (strncmp(p, "position=", 9) == 0) {
+        p = strchr(p, '\n'); if (!p) return false; ++p;
+    }
+    if (strncmp(p, "failures=", 9) != 0) return false;
+    p += 9; end = strchr(p, '\n'); if (!end) return false;
+    len = (size_t)(end - p);
+    if (!len || len > 18u || !fmc_digits(p, len)) return false;
+    long long value = fmc_num(p, len);
+    p = end + 1;
+    if (strncmp(p, "last_error=", 11) != 0) return false;
+    p += 11; len = n - (size_t)(p - text);
+    if (len && p[len - 1u] == '\n') --len;
+    if (len >= 64u || memchr(p, '\n', len) || memchr(p, '\r', len)) return false;
+    memcpy(error, p, len); error[len] = '\0'; *count = value;
+    return true;
+}
 static void fmc_intake_read(struct fmc_local *lo)
 {
-    char root[4096], path[4096 + 64], text[1024];
+    char root[4096], path[4096 + 64];
     FILE *f;
-    size_t n;
     lo->intake_failures = -1;
     lo->intake_error[0] = '\0';
     if (!platform_state_root_existing(root, sizeof(root)) ||
@@ -1860,13 +1889,12 @@ static void fmc_intake_read(struct fmc_local *lo)
     f = fopen(path, "rb");
     if (!f)
         return;
-    n = fread(text, 1, sizeof(text) - 1, f);
-    (void)fclose(f);
-    text[n] = '\0';
-    lo->intake_failures = fmc_body_int(text, "failures");
-    if (!fmc_body_kv(text, "last_error", lo->intake_error,
-                     sizeof(lo->intake_error)))
-        lo->intake_error[0] = '\0';
+    bool ok = fleet_steer_intake_stream(f, &lo->intake_failures, lo->intake_error);
+    if (fclose(f) != 0) {
+        ok = false; lo->intake_failures = -1;
+        (void)snprintf(lo->intake_error, sizeof(lo->intake_error), "INTAKE_UNAVAILABLE");
+    }
+    if (!ok) LOG_WARN(FMC_LOG, "receiver intake.state unavailable: incomplete or malformed record");
 }
 
 static bool fmc_lock_seen(const char *s)
