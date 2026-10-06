@@ -2125,7 +2125,21 @@ The new fixture and wallet candidates now carry copied unprivileged proof
 receipts, status, phase, lint and test evidence alongside their bundles, mboxes,
 focused evidence, qualification records and PR drafts. Every entry verifies
 against its candidate-local manifest. The fixture manifest SHA256 is
-`92a78749e15674193eeaea86675fc480aea2053a4373a9cb8de4d51dda5cfd5c`;
+`5a66e59737395133951e261d5efaf77c82a100765087fe5c0a5842f9f49ee69f`;
 the compact wallet manifest SHA256 is
-`3713aaed6aedd0b934403b6709f5a729b4e0a702a6af3a7d87d3e2fa56d466b0`.
+`38725eed0486911709de77b86defd2d8b42dd9629303dcd8c3479e0eb6981291`.
 No external publication action was attempted.
+
+Both explicit review ranges pass `tools/scripts/pr_security_scan.sh` CLEAN:
+no new consensus-divergence token, supply-chain execution, committed-secret or
+dangerous-C finding, and both static security gates pass.
+
+A local wallet/LevelDB branch-head gap scan found no additional unclassified
+production wallet candidate. Android fuzz-manifest argument checking is specific
+to the app's CMake runner; authenticated change-suffix recovery is specific to
+the Android journal format already classified D; `ldb-verifier-input-deps` is
+P3 build-input tracking rather than wallet/LevelDB runtime behavior; the older
+Base58 and public-key branches are superseded by qualified review heads; and
+the remaining wallet-scan/backup heads are already ancestors of upstream main.
+The older reflex-fixture proof branch is no longer a prerequisite for the compact
+public-key candidate and remains general proof-infrastructure reference work.
