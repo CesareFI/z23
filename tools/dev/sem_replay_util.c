@@ -176,6 +176,8 @@ int sr_run(char *const argv[], const char *cwd, const char *log,
 
 static bool drain(int fd, char **out, size_t *len)
 {
+    *out = NULL;
+    *len = 0;
     size_t cap = 65536, n = 0;
     char *buf = zcl_malloc(cap, "sem_replay_drain");
     if (buf == NULL) {
@@ -184,11 +186,14 @@ static bool drain(int fd, char **out, size_t *len)
     }
     for (;;) {
         if (cap - n < 4096) {
+            if (cap > SIZE_MAX / 2) {
+                fprintf(stderr, "sem-replay: input too large\n");
+                goto failed;
+            }
             char *nb = zcl_realloc(buf, cap * 2, "sem_replay_drain");
             if (nb == NULL) {
                 fprintf(stderr, "sem-replay: out of memory reading a pipe\n");
-                free(buf);
-                return false;
+                goto failed;
             }
             buf = nb;
             cap *= 2;
@@ -196,7 +201,11 @@ static bool drain(int fd, char **out, size_t *len)
         ssize_t r = read(fd, buf + n, cap - n - 1);
         if (r < 0 && errno == EINTR)
             continue;
-        if (r <= 0)
+        if (r < 0) {
+            fprintf(stderr, "sem-replay: read: %s\n", strerror(errno));
+            goto failed;
+        }
+        if (r == 0)
             break;
         n += (size_t)r;
     }
@@ -204,6 +213,9 @@ static bool drain(int fd, char **out, size_t *len)
     *out = buf;
     *len = n;
     return true;
+failed:
+    free(buf);
+    return false;
 }
 
 int sr_capture(char *const argv[], const char *cwd, const char *log,
@@ -242,6 +254,8 @@ int sr_capture(char *const argv[], const char *cwd, const char *log,
 
 bool sr_read_file(const char *path, char **out, size_t *len)
 {
+    *out = NULL;
+    *len = 0;
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0)
         return false;

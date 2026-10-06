@@ -541,6 +541,71 @@ static int srt_tu_paths(const struct srt_fx *fx)
     return rc != 0;
 }
 
+/* Compile the real reader with deterministic read results and time. */
+static bool srt_reader_fixture(const struct srt_fx *fx, char bin[PATH_MAX])
+{
+    static const char source[] =
+        "#define _GNU_SOURCE\n#include <unistd.h>\n#include <errno.h>\n"
+        "#include <string.h>\nstatic int mode, calls;\n"
+        "static ssize_t injected(int fd, void *p, size_t n) {\n"
+        "(void)fd; if(n<3)return -1; int c=calls++;\n"
+        "if(c==0){errno=EINTR;return -1;}\n"
+        "if(c==1){memcpy(p,\"abc\",3);return 3;}\n"
+        "if(mode){errno=EIO;return -1;}return 0;}\n"
+        "#define read injected\n#include \"tools/dev/sem_replay_util.c\"\n"
+        "#undef read\nint64_t clock_now_monotonic_ns(void){return 0;}\n"
+        "static int check(int capture, int error){\n"
+        "char sentinel;char *p=&sentinel;size_t n=99;calls=0;mode=error;\n"
+        "char *a[]={\"true\",NULL};\n"
+        "int rc=capture?sr_capture(a,NULL,NULL,&p,&n):"
+        "(sr_read_file(\"/dev/null\",&p,&n)?0:-1);\n"
+        "if(error)return rc!=-1||p!=NULL||n!=0||calls!=3;\n"
+        "if(rc||!p||n!=3||calls!=3)return 1;\n"
+        "int bad=memcmp(p,\"abc\",4)!=0;\n"
+        "struct sr_strv s={.v=&p,.n=1};sr_strv_clear(&s);return bad;}\n"
+        "int main(int argc,char **argv){if(argc!=2)return 9;\n"
+        "int row=argv[1][0]-'0';return check(row/2,row%2);}\n";
+    char src[PATH_MAX + 32];
+    if (!srt_write(fx->tools, "reader.c", source))
+        return false;
+    snprintf(src, sizeof src, "%s/reader.c", fx->tools);
+    snprintf(bin, PATH_MAX, "%s/reader", fx->tools);
+#if defined(__APPLE__)
+    const char *discard = "-Wl,-dead_strip";
+#else
+    const char *discard = "-Wl,--gc-sections";
+#endif
+    const char *argv[] = {"cc", "-std=c23", "-O1", "-D_DEFAULT_SOURCE",
+        "-ffunction-sections", "-fdata-sections", discard, "-I.",
+        "-Itools/dev", "-Iplatform/modules/util/include", "-Iplatform/modules/base/include",
+        "-Iplatform/modules/platform/include", "-Iplatform/modules/sha3/include",
+        "-Icontexts/commons/packages/zjsonp/include",
+        "-Icontexts/commons/packages/zutf8/include", "-o", bin, src,
+        "platform/modules/base/src/safe_alloc.c", NULL};
+    int rc = srt_run(argv);
+    if (rc != 0)
+        printf("(reader probe compile output: %s) ", g_srt_out);
+    return rc == 0;
+}
+
+static bool srt_reader_errors(const struct srt_fx *fx)
+{
+    char bin[PATH_MAX];
+    if (!srt_reader_fixture(fx, bin))
+        return false;
+    bool ok = true;
+    static const char *rows[] = {"0", "1", "2", "3"};
+    for (size_t i = 0; i < 4; i++) {
+        const char *argv[] = {bin, rows[i], NULL};
+        int rc = srt_run(argv);
+        if (rc != 0) {
+            printf("(reader probe %s exit %d: %s) ", rows[i], rc, g_srt_out);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 static bool srt_setup(struct srt_fx *fx)
 {
     const char *probe[] = {"objcopy", "--version", NULL};
@@ -551,7 +616,7 @@ static bool srt_setup(struct srt_fx *fx)
     /* Without objcopy the replay cannot split code from debug changes and
      * files a changed object as unknown, which it treats as code. */
     fx->objcopy = srt_run(probe) == 0;
-    return srt_find_tool(fx) && srt_mkdir_p(fx->tools) && srt_tu_paths(fx) == 0 && srt_tools(fx) && srt_history(fx);
+    return srt_find_tool(fx) && srt_mkdir_p(fx->tools) && srt_reader_errors(fx) && srt_tu_paths(fx) == 0 && srt_tools(fx) && srt_history(fx);
 }
 
 /* ── running the replay ──────────────────────────────────────────────── */

@@ -45,10 +45,13 @@ int sr_run(char *const argv[], const char *cwd, const char *log,
            char *const env[], struct sr_cost *cost);
 
 /* Run argv in cwd and capture its stdout (stderr goes to log, or is
- * inherited when log is NULL). *out is NUL-terminated and owned. */
+ * inherited when log is NULL). On successful reading, *out is NUL-terminated
+ * and owned. On setup or read failure, returns -1 with *out NULL and *len 0. */
 int sr_capture(char *const argv[], const char *cwd, const char *log,
                char **out, size_t *len);
 
+/* Success publishes owned NUL-terminated bytes. Refusal leaves *out NULL
+ * and *len 0. */
 bool sr_read_file(const char *path, char **out, size_t *len);
 bool sr_write_file(const char *path, const char *data, size_t len);
 bool sr_mkdirs(const char *path); /* mkdir -p */
