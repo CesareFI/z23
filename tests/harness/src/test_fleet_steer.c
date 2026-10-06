@@ -4992,6 +4992,42 @@ static int fmx_t_sent_framing(void)
     }
 _test_next:; fmx_restore(); return failures;
 }
+static int fmx_t_ack_framing(void)
+{
+    int failures = 0;
+    const clock_iface_t *saved_clock = clock_default();
+    clock_iface_t fixed_clock = {fmx_activity_wall_ms,
+                                 fmx_activity_wall_ms, NULL};
+    clock_set_default(&fixed_clock);
+    static const struct { const char *wire; size_t len; bool valid; } rows[] = {
+        {"7", 1, true}, {"7\n", 2, true}, {"9223372036854775807", 19, true},
+        {"7|outbox:120\n", sizeof("7|outbox:120\n") - 1, true},
+        {"7|outbox:120,inbox.peer-host:4096\n", sizeof("7|outbox:120,inbox.peer-host:4096\n") - 1, true},
+        {"7|\0x\n", 5, false}, {" 7", 2, false}, {"+7", 2, false},
+        {"7\0garbage\n", 10, false}, {"7junk\n", 6, false},
+        {"7\n8\n", 4, false}, {"9223372036854775808\n", 20, false},
+        {"777777777777777777777777777777777777\n", 37, false},
+        {"7\n\n", 3, false}, {"7\r\n", 3, false}, {"", 0, false}, {"-1\n", 3, false}
+    };
+    TEST("steer: only complete scalar or token cursors acknowledge sends") {
+        for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+            char gid[64], code[64], path[1400];
+            fmx_isolate("ack_framing");
+            ASSERT(fmx_mint("brief,send,evidence", gid, sizeof(gid)));
+            fmx_ref_attempt(gid, "ack-framing", "ack-framing", code, sizeof(code));
+            ASSERT_STR_EQ(code, "");
+            int n = snprintf(path, sizeof(path), "%s/z23/dev/mail/cursor.field-agent", g_fmx_state);
+            ASSERT(n > 0 && (size_t)n < sizeof(path));
+            FILE *file = fopen(path, "wb"); ASSERT(file != NULL);
+            bool wrote = fwrite(rows[i].wire, 1, rows[i].len, file) == rows[i].len;
+            int closed = fclose(file); ASSERT(wrote && closed == 0);
+            ASSERT(fmx_state_agrees(gid, "ack-framing", rows[i].valid ? "acknowledged" : "queued"));
+            fmx_restore();
+        }
+        PASS();
+    }
+_test_next:; fmx_restore(); clock_set_default(saved_clock); return failures;
+}
 int test_fleet_steer(void);
 int fmx_task_projection_checks(void);
 int test_fleet_steer(void)
@@ -5025,6 +5061,7 @@ int test_fleet_steer(void)
     failures += fmx_t_sent_needs_receiver();
     failures += fmx_t_sent_local_ack();
     failures += fmx_t_sent_framing();
+    failures += fmx_t_ack_framing();
     failures += fmx_t_grants();
     failures += fmx_t_grant_records();
     failures += fmx_t_grant_list();

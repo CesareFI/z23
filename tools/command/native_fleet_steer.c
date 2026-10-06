@@ -1284,14 +1284,38 @@ static bool fmc_clean_agent(const char *agent, char *out, size_t cap)
 
 /* Receiver ack cursor from the mail leaf's cursor.<agent> file. Returns -1
  * when the receiver never acked (nothing acknowledged). */
+/* Matches DVM_TOKEN_CAP in native_devagent_mail.c. */
+#define FMC_ACK_TOKEN_CAP (16u * (128u + 24u) + 32u)
+
+static bool fmc_ack_token_ok(const char *token)
+{
+    for (const char *p = token; *p; p++) {
+        if (!isalnum((unsigned char)*p) && !strchr("._-:,|", *p))
+            return false;
+    }
+    return true;
+}
+
+static long long fmc_ack_parse(char *buf, size_t len)
+{
+    char *end = NULL;
+    if (len == 0 || memchr(buf, '\0', len)) return -1;
+    if (buf[len - 1] == '\n') len--;
+    if (len == 0 || len >= FMC_ACK_TOKEN_CAP || !isdigit((unsigned char)buf[0])) return -1;
+    buf[len] = '\0';
+    errno = 0;
+    long long v = strtoll(buf, &end, 10);
+    if (errno == ERANGE || v < 0) return -1;
+    if (*end && (*end != '|' || !fmc_ack_token_ok(end + 1))) return -1;
+    return v;
+}
+
 static long long fmc_ack_cursor(const char *agent)
 {
     char root[4096], path[4096 + 64];
     char clean[FMC_NAME_MAX + 1];
     FILE *f;
-    char buf[32];
-    char *end = NULL;
-    long long v;
+    char buf[FMC_ACK_TOKEN_CAP + 1];
     int n;
     if (!fmc_clean_agent(agent, clean, sizeof(clean)))
         return -1;
@@ -1303,16 +1327,11 @@ static long long fmc_ack_cursor(const char *agent)
     f = fopen(path, "rb");
     if (!f)
         return -1;
-    buf[0] = '\0';
-    if (!fgets(buf, sizeof(buf), f)) {
-        fclose(f);
-        return -1;
-    }
-    (void)fclose(f);
-    v = strtoll(buf, &end, 10);
-    if (end == buf || v < 0)
-        return -1;
-    return v;
+    size_t len = fread(buf, 1, sizeof(buf), f);
+    bool failed = ferror(f) != 0 || len == sizeof(buf);
+    failed |= fclose(f) != 0;
+    if (failed) return -1;
+    return fmc_ack_parse(buf, len);
 }
 
 /* Closed completion vocabulary. Only an explicit pass verdict with a
