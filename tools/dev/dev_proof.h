@@ -781,7 +781,8 @@ bool zcl_dev_proof_warm_marker_read(
     const char *generation, char root[PATH_MAX], char local[65],
     char base[65], int64_t *completed,
     struct zcl_dev_proof_build_identity_v1 *identity);
-/* Seed donor_build into gen_build (object and depfile outputs linked,
+/* Seed donor_build into gen_build (object and depfile outputs linked or
+ * privately copied under the host's donor-isolation policy,
  * dependency room files and the wrapper copied, everything else skipped)
  * and repair the timestamp graph so exactly `changed` (relative to gen_src)
  * reads newer than the seeds. `copy_wrapper` is the caller gate production

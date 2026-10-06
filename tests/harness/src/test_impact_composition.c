@@ -10967,7 +10967,7 @@ static int test_pw_next_proof_seeds_from_the_finished_generation(void)
         char donor_epoch[65] = {0}, gen_epoch[65] = {0};
         char donor_a[8192], donor_b[8192], gen_a[8192], gen_b[8192];
         uint64_t files = 0;
-        struct stat donor_a_st, donor_b_st, gen_a_st, gen_b_st;
+        struct stat seed_a_st, seed_b_st, gen_a_st, gen_b_st, donor_b_st;
         ASSERT(ic_warm_setup(&t, "next", NULL));
         ASSERT(ic_warm_epoch(t.donor, donor_epoch));
         /* Non-authoritative: the seeding a qualified verifier account would
@@ -10976,6 +10976,10 @@ static int test_pw_next_proof_seeds_from_the_finished_generation(void)
         ASSERT(strcmp(donor, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == 0);
         ASSERT(reason[0] == 0);
         ASSERT(files == 4); /* a.o, a.d, b.o, b.d */
+        ASSERT(ic_warm_obj(t.gen, donor_epoch, "a.o", gen_a, sizeof(gen_a)));
+        ASSERT(ic_warm_obj(t.gen, donor_epoch, "b.o", gen_b, sizeof(gen_b)));
+        ASSERT(stat(gen_a, &seed_a_st) == 0);
+        ASSERT(stat(gen_b, &seed_b_st) == 0);
         ASSERT(ic_warm_make(&t, t.gen));
         /* One tree, two checkout paths, one epoch: the generation's own
          * make addresses the directory it was seeded into. */
@@ -10987,17 +10991,21 @@ static int test_pw_next_proof_seeds_from_the_finished_generation(void)
                            sizeof(donor_b)));
         ASSERT(ic_warm_obj(t.gen, gen_epoch, "a.o", gen_a, sizeof(gen_a)));
         ASSERT(ic_warm_obj(t.gen, gen_epoch, "b.o", gen_b, sizeof(gen_b)));
-        ASSERT(stat(donor_a, &donor_a_st) == 0);
         ASSERT(stat(donor_b, &donor_b_st) == 0);
         ASSERT(stat(gen_a, &gen_a_st) == 0);
         ASSERT(stat(gen_b, &gen_b_st) == 0);
-        /* b.c and everything it reads are unchanged: its object is the
-         * donor's, byte for byte and inode for inode. */
-        ASSERT(gen_b_st.st_ino == donor_b_st.st_ino);
+        /* Reuse preserves this generation's seed, whether it was linked or
+         * privately copied. Identity is device+inode, not donor inode alone. */
+        ASSERT(ic_generation_stat_equal(&seed_b_st, &gen_b_st));
+        ASSERT(gen_b_st.st_size == (off_t)(sizeof("int b;\n") - 1));
+        ASSERT(donor_b_st.st_size == gen_b_st.st_size);
+        ASSERT(ic_file_has(gen_b, "int b;\n"));
+        ASSERT(ic_file_has(donor_b, "int b;\n"));
         /* h.h changed between the two commits, so the seeded depfile makes
          * a.o stale: it was rebuilt against the new header, into a new
          * inode, and the donor's copy kept the old header's bytes. */
-        ASSERT(gen_a_st.st_ino != donor_a_st.st_ino);
+        ASSERT(gen_a_st.st_dev != seed_a_st.st_dev ||
+               gen_a_st.st_ino != seed_a_st.st_ino);
         ASSERT(ic_file_has(gen_a, "header v2"));
         ASSERT(!ic_file_has(gen_a, "header v1"));
         ASSERT(ic_file_has(donor_a, "header v1"));
