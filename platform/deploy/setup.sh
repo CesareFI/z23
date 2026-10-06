@@ -6,7 +6,7 @@
 set -e
 
 TARGET_USER="${SUDO_USER:-$(whoami)}"
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 SERVICE_DIR="$(eval echo ~$TARGET_USER)/.config/systemd/user"
 
 echo "Setting up Z23 for user: $TARGET_USER"
