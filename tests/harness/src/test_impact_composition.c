@@ -11284,6 +11284,43 @@ static int test_ic_proof_text_readers_refuse_nul(void)
 }
 #endif
 
+#if !defined(_WIN32)
+static int test_ic_proof_request_exact_extent(void)
+{
+    int failures = 0;
+    TEST("proof request: refuse sixth line and trailing bytes") {
+        static const char local[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        static const char base[] = "1111111111111111111111111111111111111111";
+        static const char *const tails[] = {
+            "\ngarbage\n", "", "\n", "\r\n", "\n\n", "junk", "\n\0garbage"
+        };
+        static const size_t tail_sizes[] = {9, 0, 1, 2, 2, 4, 9};
+        static const bool accepted[] = {false, true, true, true, false, false, false};
+        char root[4096], relative[256], path[4096], body[320];
+        ASSERT(snprintf(root, sizeof(root), IC_FIX_ROOT "/request_extent_%ld",
+                        (long)getpid()) > 0);
+        ASSERT(snprintf(relative, sizeof(relative),
+                        ".cache/zcl-dev-proof/requests/%s-%s.request", local, base) > 0);
+        ASSERT(ic_proof_private_write(root, relative, ""));
+        ASSERT(snprintf(path, sizeof(path), "%s/%s", root, relative) > 0);
+        int n = snprintf(body, sizeof(body), "zcl.dev_proof_request.v1\n%s\n%s\n1\n1",
+                         local, base);
+        ASSERT(n > 0 && (size_t)n + 9 < sizeof(body));
+        for (size_t i = 0; i < sizeof(tails) / sizeof(tails[0]); i++) {
+            FILE *file = fopen(path, "wb");
+            ASSERT(file != NULL);
+            ASSERT(fwrite(body, 1, (size_t)n, file) == (size_t)n);
+            ASSERT(fwrite(tails[i], 1, tail_sizes[i], file) == tail_sizes[i]);
+            ASSERT(fclose(file) == 0);
+            ASSERT(zcl_dev_proof_queue_has_pending(root) == accepted[i]);
+        }
+        ASSERT(test_rm_rf_recursive(root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
+
 int test_impact_composition(void)
 {
     int failures = 0;
@@ -11454,6 +11491,7 @@ int test_impact_composition(void)
     failures += test_pw_identity_mismatch_stays_cold_with_its_reason();
     failures += test_pw_live_donor_is_never_seeded_from();
     failures += test_pw_authoritative_proof_refuses_same_uid_donor();
+    failures += test_ic_proof_request_exact_extent();
     failures += test_ic_proof_text_readers_refuse_nul();
 #endif
     return failures;

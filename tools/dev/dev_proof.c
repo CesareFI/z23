@@ -987,12 +987,30 @@ static bool proof_lease_running(const char *path, int64_t *pid_out,
  * three a malformed request tripped. */
 static size_t dp_request_split(char *text, char *lines[5])
 {
-    char *save = NULL;
     size_t count = 0;
-    for (char *line = strtok_r(text, "\n", &save); line && count < 5;
-         line = strtok_r(NULL, "\n", &save))
-        lines[count++] = line;
+    for (;;) {
+        if (count == 5) return 6;
+        lines[count++] = text;
+        char *end = strchr(text, '\n');
+        if (!end) break;
+        *end = 0;
+        text = end + 1;
+    }
     return count;
+}
+
+static bool dp_request_text_read(const char *path, char text[320])
+{
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    size_t n = fread(text, 1, 320, file);
+    bool ok = !ferror(file) && n < 320 && !memchr(text, 0, n);
+    if (fclose(file) != 0) ok = false;
+    if (!ok) return false;
+    text[n] = 0;
+    if (n && text[n - 1] == '\n') text[--n] = 0;
+    if (n && text[n - 1] == '\r') text[--n] = 0;
+    return true;
 }
 
 static bool dp_request_shape_ok(char *const lines[5], size_t count)
@@ -1023,7 +1041,7 @@ static bool proof_request_read(const char *path, char local[65], char base[65],
 {
     char text[320], *lines[5];
     if (!proof_private_regular(path) ||
-        !proof_read_text(path, text, sizeof(text)))
+        !dp_request_text_read(path, text))
         return false;
     size_t count = dp_request_split(text, lines);
     if (!dp_request_shape_ok(lines, count)) return false;
