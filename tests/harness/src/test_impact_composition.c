@@ -84,6 +84,8 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/file.h>
+#include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -3015,6 +3017,9 @@ struct ic_base_script {
     int calls;
     int supersede_at; /* 0: never */
     enum zcl_dev_proof_base_observation otherwise;
+    int release_fd;
+    int release_at;
+    bool released;
 };
 
 static enum zcl_dev_proof_base_observation ic_base_observe(void *ctx)
@@ -3023,6 +3028,9 @@ static enum zcl_dev_proof_base_observation ic_base_observe(void *ctx)
     script->calls++;
     if (script->supersede_at > 0 && script->calls >= script->supersede_at)
         return ZCL_DEV_PROOF_BASE_SUPERSEDED;
+    if (!script->released && script->release_at > 0 &&
+        script->calls >= script->release_at)
+        script->released = send(script->release_fd, "D", 1, MSG_NOSIGNAL) == 1;
     return script->otherwise;
 }
 
@@ -3034,57 +3042,129 @@ static void ic_fake_worker_term(int signal_number)
     ic_fake_worker_termed = 1;
 }
 
-/* A stand-in for the forked proof worker: it runs `run_ms` unless SIGTERM
- * ends it first, and exits 0 either way, the way a real worker settles its
- * pair and exits. */
-static pid_t ic_fake_worker(int run_ms)
+/* The flag is checked with SIGTERM blocked. pselect atomically installs the
+ * wait mask, so a pending SIGTERM interrupts the wait instead of being lost. */
+static bool ic_fake_worker_wait_setup(int fd, sigset_t *wait_mask)
 {
-    pid_t pid = fork();
-    if (pid != 0) return pid;
+    sigset_t term;
+    return fd < FD_SETSIZE && sigemptyset(&term) == 0 &&
+           sigaddset(&term, SIGTERM) == 0 &&
+           sigprocmask(SIG_BLOCK, &term, wait_mask) == 0 &&
+           sigdelset(wait_mask, SIGTERM) == 0;
+}
+
+/* Completion is causal: ready precedes observation; a release or SIGTERM
+ * must match the expected outcome. The 10s deadline is failure, not success. */
+[[noreturn]] static void ic_fake_worker(bool cancelled, int fd)
+{
+    sigset_t wait_mask;
+    if (!ic_fake_worker_wait_setup(fd, &wait_mask)) _exit(2);
     struct sigaction action = {0};
     action.sa_handler = ic_fake_worker_term;
     sigemptyset(&action.sa_mask);
-    (void)sigaction(SIGTERM, &action, NULL);
-    int64_t end = platform_time_monotonic_us() + (int64_t)run_ms * 1000;
-    while (!ic_fake_worker_termed && platform_time_monotonic_us() < end)
-        platform_sleep_ms(5); /* real-clock: the worker stand-in is a real forked process the requester signals; virtual time cannot deliver SIGTERM. */
-    _exit(0);
+    if (sigaction(SIGTERM, &action, NULL) != 0 ||
+        send(fd, "R", 1, MSG_NOSIGNAL) != 1) _exit(2);
+    bool released = false;
+    int64_t end = platform_time_monotonic_us() + 10000000;
+    while (!ic_fake_worker_termed && !released) {
+        int64_t remaining = end - platform_time_monotonic_us();
+        if (remaining <= 0) break;
+        fd_set input;
+        FD_ZERO(&input);
+        FD_SET(fd, &input);
+        struct timespec timeout = {.tv_sec = (time_t)(remaining / 1000000),
+                                   .tv_nsec = (long)(remaining % 1000000) * 1000};
+        int rc = pselect(fd + 1, &input, NULL, NULL, &timeout, &wait_mask);
+        if (rc > 0) {
+            char byte = 0;
+            released = read(fd, &byte, 1) == 1 && byte == 'D';
+            break;
+        }
+        if (rc < 0 && errno != EINTR) break;
+    }
+    bool expected = cancelled ? ic_fake_worker_termed != 0
+                              : released && !ic_fake_worker_termed;
+    if (close(fd) != 0) expected = false;
+    _exit(expected ? 0 : 2);
 }
 
-static int64_t ic_waited_ms(int run_ms, const struct zcl_dev_proof_base_probe *probe,
+/* A successful production wait already reaped its child. Clean up a failed
+ * fixture or a waiter that returned early, and make either case non-PASS. */
+static bool ic_waiter_reaped(pid_t worker)
+{
+    if (worker <= 0) return false;
+    pid_t reaped;
+    do {
+        reaped = waitpid(worker, NULL, WNOHANG);
+    } while (reaped < 0 && errno == EINTR);
+    if (reaped < 0 && errno == ECHILD) return true;
+    fprintf(stderr, "proof probe fixture: waiter did not reap worker\n");
+    if (reaped == 0) {
+        (void)kill(worker, SIGKILL);
+        do {
+            reaped = waitpid(worker, NULL, 0);
+        } while (reaped < 0 && errno == EINTR);
+    }
+    return false;
+}
+
+static int64_t ic_waited_ms(bool cancelled, const struct zcl_dev_proof_base_probe *probe,
                             int *result, bool *superseded)
 {
     int64_t start = platform_time_monotonic_us();
-    pid_t worker = ic_fake_worker(run_ms);
-    *result = worker > 0
-        ? zcl_dev_proof_test_foreground_wait((int)worker, probe, superseded)
-        : -2;
+    int endpoints[2];
+    *result = -2;
+    *superseded = false;
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, endpoints) != 0) {
+        fprintf(stderr, "proof probe fixture: socketpair failed errno=%d\n", errno);
+        return -1;
+    }
+    pid_t worker = fork();
+    if (worker == 0) {
+        if (close(endpoints[0]) != 0) _exit(2);
+        ic_fake_worker(cancelled, endpoints[1]);
+    }
+    bool ready = close(endpoints[1]) == 0 && worker > 0;
+    struct pollfd input = {.fd = endpoints[0], .events = POLLIN};
+    char byte = 0;
+    ready = ready && poll(&input, 1, 5000) > 0 &&
+            read(endpoints[0], &byte, 1) == 1 && byte == 'R';
+    if (ready && probe)
+        ((struct ic_base_script *)probe->ctx)->release_fd = endpoints[0];
+    if (ready && !probe)
+        ready = send(endpoints[0], "D", 1, MSG_NOSIGNAL) == 1;
+    if (ready)
+        *result = zcl_dev_proof_test_foreground_wait((int)worker, probe, superseded);
+    else
+        fprintf(stderr, "proof probe fixture: worker readiness failed errno=%d\n", errno);
+    if (!ic_waiter_reaped(worker)) *result = -2;
+    if (close(endpoints[0]) != 0) *result = -2;
     return (platform_time_monotonic_us() - start) / 1000;
 }
 
 static int test_ic_proof_base_probe_cancels_superseded_worker(void)
 {
     int failures = 0;
-    TEST("proof: a superseded base ends the worker within one probe interval; no answer never does") {
+    TEST("proof: superseded observation cancels; unknown observations permit only natural completion") {
         struct ic_base_script moved = {.supersede_at = 2,
                                        .otherwise = ZCL_DEV_PROOF_BASE_CURRENT};
-        struct ic_base_script silent = {.otherwise = ZCL_DEV_PROOF_BASE_UNKNOWN};
+        struct ic_base_script silent = {.otherwise = ZCL_DEV_PROOF_BASE_UNKNOWN,
+                                        .release_at = 3};
         struct zcl_dev_proof_base_probe moved_probe = {
             .observe = ic_base_observe, .ctx = &moved, .interval_ms = 50};
         struct zcl_dev_proof_base_probe silent_probe = {
             .observe = ic_base_observe, .ctx = &silent, .interval_ms = 50};
         int moved_rc = 0, silent_rc = 0, plain_rc = 0;
         bool moved_flag = false, silent_flag = false, plain_flag = false;
-        int64_t moved_ms = ic_waited_ms(10000, &moved_probe, &moved_rc,
+        int64_t moved_ms = ic_waited_ms(true, &moved_probe, &moved_rc,
                                         &moved_flag);
-        int64_t silent_ms = ic_waited_ms(400, &silent_probe, &silent_rc,
-                                         &silent_flag);
-        int64_t plain_ms = ic_waited_ms(100, NULL, &plain_rc, &plain_flag);
+        (void)ic_waited_ms(false, &silent_probe, &silent_rc, &silent_flag);
+        (void)ic_waited_ms(false, NULL, &plain_rc, &plain_flag);
         ASSERT_EQ(moved_rc, 1);
         ASSERT(moved_flag && moved.calls == 2 && moved_ms < 5000);
         ASSERT_EQ(silent_rc, 1);
-        ASSERT(!silent_flag && silent.calls >= 3 && silent_ms >= 390);
-        ASSERT(plain_rc == 1 && !plain_flag && plain_ms >= 90);
+        ASSERT(!silent_flag && silent.calls >= 3 && silent.released);
+        ASSERT(plain_rc == 1 && !plain_flag);
         PASS();
     } _test_next:;
     return failures;
