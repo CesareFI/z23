@@ -8704,3 +8704,19 @@ Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0 codec/retirement lanes pass. The
 exact-tree TLS-OFF gate passes both analyzers, all 145 Clang and 140 GCC tests,
 production M<=10 and test M<=15. Base58 bytes, active-span efficiency, keys,
 recovery, transaction validity, monetary policy and consensus are unchanged.
+
+## Production continuation: Base58 JNI scratch retired — 2026-10-06
+
+Generic Base58 JNI encoding/decoding now clears its complete 128-byte payload
+and 184-byte text scratch. Each consumed input is retired before VM allocation,
+and result scratch is retired after publication. The regression covers success,
+length and partial-region exceptions, allocation failure with and without a
+pending exception, and partial result publication in both directions.
+
+Canonical RED reaches allocation with live input scratch. GREEN observes one
+full wipe per span on every tested path; deleting all four cleanup calls
+restores RED, and saved hashes verify exact restoration. Focused Clang 20.1.2
+ASan/UBSan/LSan and GCC 14.2.0 lanes pass. The exact-tree TLS-OFF gate passes
+both analyzers, all 145 Clang and 140 GCC tests, production M<=10 and test
+M<=15. Base58 bytes, keys, recovery, transaction validity, monetary policy and
+consensus are unchanged. No Android runtime or physical-device claim is made.

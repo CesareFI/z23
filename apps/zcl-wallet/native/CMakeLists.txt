@@ -558,7 +558,9 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set_tests_properties(wallet_jni_review PROPERTIES TIMEOUT 15)
         add_executable(jni_address_tests tests/test_jni_address.c src/jni_codecs.c src/jni_support.c)
         target_include_directories(jni_address_tests PRIVATE src ${zcl_test_jni_headers})
-        target_link_libraries(jni_address_tests PRIVATE zcl_wallet_core)
+    target_link_libraries(jni_address_tests PRIVATE zcl_wallet_core)
+    target_compile_definitions(jni_address_tests PRIVATE
+        zcl_secure_zero=zcl_jni_address_test_zero)
         target_compile_options(jni_address_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         add_test(NAME wallet_jni_address COMMAND jni_address_tests)

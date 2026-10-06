@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "jni_support.h"
+#include "zcl_keys.h"
 
 #include <string.h>
 
@@ -10,11 +11,13 @@ Java_org_zclassic_wallet_core_NativeCore_encodeBase58(JNIEnv *env, jclass type,
     (void)type;
     uint8_t payload[128] = {0}, text[184] = {0};
     size_t size = 0, length = 0;
-    if (zcl_jni_read_bytes(env, input, payload, sizeof(payload), &size) != ZCL_OK)
-        return NULL;
-    if (zcl_base58check_encode(payload, size, text, sizeof(text), &length) != ZCL_OK)
-        return NULL;
-    return zcl_jni_new_bytes(env, text, length);
+    zcl_status status = zcl_jni_read_bytes(env, input, payload, sizeof(payload), &size);
+    if (status == ZCL_OK)
+        status = zcl_base58check_encode(payload, size, text, sizeof(text), &length);
+    zcl_secure_zero(payload, sizeof(payload));
+    jbyteArray output = status == ZCL_OK ? zcl_jni_new_bytes(env, text, length) : NULL;
+    zcl_secure_zero(text, sizeof(text));
+    return output;
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -24,11 +27,13 @@ Java_org_zclassic_wallet_core_NativeCore_decodeBase58(JNIEnv *env, jclass type,
     (void)type;
     uint8_t text[184] = {0}, payload[128] = {0};
     size_t length = 0, size = 0;
-    if (zcl_jni_read_bytes(env, input, text, sizeof(text), &length) != ZCL_OK)
-        return NULL;
-    if (zcl_base58check_decode(text, length, payload, sizeof(payload), &size) != ZCL_OK)
-        return NULL;
-    return zcl_jni_new_bytes(env, payload, size);
+    zcl_status status = zcl_jni_read_bytes(env, input, text, sizeof(text), &length);
+    if (status == ZCL_OK)
+        status = zcl_base58check_decode(text, length, payload, sizeof(payload), &size);
+    zcl_secure_zero(text, sizeof(text));
+    jbyteArray output = status == ZCL_OK ? zcl_jni_new_bytes(env, payload, size) : NULL;
+    zcl_secure_zero(payload, sizeof(payload));
+    return output;
 }
 
 /* Public adapter record: type byte and 20 hash bytes. Not chain serialization.

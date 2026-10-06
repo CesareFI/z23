@@ -5421,3 +5421,28 @@ invalid-alphabet refusal; deleting all cleanup calls restores RED while leaving
 functional logic intact. Focused Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0
 codec/retirement tests pass, followed by the complete 145/140 TLS-OFF matrix
 and both analyzers. TLS remains quarantined.
+
+## Base58 JNI scratch retirement — 2026-10-06
+
+The generic Base58 JNI encoder and decoder now retire their complete 128-byte
+payload and 184-byte text scratch spans. Consumed input is cleared before any
+potentially blocking/failing VM allocation; output scratch is cleared after the
+VM transfer attempt.
+
+| Hazard | Review |
+| --- | --- |
+| Secret lifetime | The adapter can transport extended private-key compatible data. Both full native spans are cleared after success, partial input copy, codec refusal, allocation refusal and partial output publication. |
+| Allocation ordering | Encode retires payload before allocating its text result; decode retires text before allocating its payload result. Only the result scratch remains live during publication. |
+| JNI exceptions | Length, region, allocation and set-region exceptions remain pending. Cleanup performs no JNI operation and cannot clear or replace the exception. |
+| Managed ownership | Successful Java byte arrays remain caller-owned and mutable; native cleanup neither aliases nor attempts to erase them. Failed partial results retain the established managed-caller cleanup requirement. |
+| Byte compatibility | Base58 inputs, outputs, bounds and statuses are unchanged. No additional copy or allocation is introduced. |
+| Complexity | Production remains M<=10 across 606 functions; tests remain M<=15 across 1,866 functions without suppression. |
+| Authority | Keys, recovery, addresses, transaction validity, monetary policy, storage and consensus are unchanged. |
+
+Canonical RED reaches VM allocation with live input scratch. GREEN verifies
+both full-span wipes across success, length exception, partial region exception,
+allocation exception/refusal and partial publication exception in both
+directions; deleting the four cleanup calls restores RED. Focused Clang 20.1.2
+ASan/UBSan/LSan and GCC 14.2.0 tests pass, followed by the complete 145/140
+TLS-OFF matrix and both analyzers. TLS remains quarantined; no ART/device claim
+is made.

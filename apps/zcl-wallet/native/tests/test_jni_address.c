@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+#undef zcl_secure_zero
 #include "jni_support.h"
+#include "zcl_keys.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,13 +9,28 @@
 #define CHECK(v) do { if (!(v)) { fprintf(stderr, "JNI address check failed at %d\n", __LINE__); abort(); } } while (0)
 #define API Java_org_zclassic_wallet_core_NativeCore_encodeAddress
 JNIEXPORT jbyteArray JNICALL API(JNIEnv *, jclass, jbyteArray, jint);
+JNIEXPORT jbyteArray JNICALL Java_org_zclassic_wallet_core_NativeCore_encodeBase58(
+    JNIEnv *, jclass, jbyteArray);
+JNIEXPORT jbyteArray JNICALL Java_org_zclassic_wallet_core_NativeCore_decodeBase58(
+    JNIEnv *, jclass, jbyteArray);
 
 /* One bounded fake result reference per call, never retained by production.
  * Real JVM/device tests separately qualify actual VM reference lifetimes. */
-typedef struct { jsize length; uint8_t bytes[64]; } fake_array;
+typedef struct { jsize length; uint8_t bytes[184]; } fake_array;
 static struct { uint64_t before; fake_array value; uint64_t after; } result_box;
 static bool pending;
-static unsigned fault;
+static unsigned fault, active, clears_128, clears_184;
+
+void zcl_jni_address_test_zero(void *pointer, size_t length);
+void zcl_jni_address_test_zero(void *pointer, size_t length)
+{
+    CHECK(pointer != NULL && (length == 128 || length == 184));
+    zcl_secure_zero(pointer, length);
+    const uint8_t *bytes = pointer;
+    for (size_t i = 0; i < length; ++i) CHECK(bytes[i] == 0);
+    if (length == 128) ++clears_128;
+    else ++clears_184;
+}
 
 static jboolean JNICALL exception_check(JNIEnv *env)
 {
@@ -33,8 +50,8 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize
 {
     (void)env;
     const fake_array *array = (const fake_array *)input;
-    CHECK(array != NULL && !pending && offset == 0 && count >= 0 && count <= 21);
-    CHECK(count == array->length && output != NULL);
+    CHECK(array != NULL && !pending && offset == 0 && count >= 0 && count <= 184);
+    CHECK(count == array->length && count <= 184 && output != NULL);
     if (fault == 2) {
         if (count > 0) output[0] = 42;
         pending = true;
@@ -46,7 +63,9 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize
 static jbyteArray JNICALL new_bytes(JNIEnv *env, jsize count)
 {
     (void)env;
-    CHECK(!pending && count == 35);
+    CHECK(!pending && count > 0 && count <= 184);
+    if (active == 1) CHECK(clears_128 == 1 && clears_184 == 0);
+    if (active == 2) CHECK(clears_128 == 0 && clears_184 == 1);
     if (fault == 3 || fault == 5) { pending = fault == 3; return NULL; }
     result_box.value.length = count;
     return (jbyteArray)&result_box.value;
@@ -55,7 +74,7 @@ static jbyteArray JNICALL new_bytes(JNIEnv *env, jsize count)
 static void JNICALL set_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize count, const jbyte *data)
 {
     (void)env;
-    CHECK(input == (jbyteArray)&result_box.value && !pending && offset == 0 && count == 35);
+    CHECK(input == (jbyteArray)&result_box.value && !pending && offset == 0 && count > 0 && count <= 184);
     CHECK(result_box.value.length == count && data != NULL);
     memcpy(result_box.value.bytes, data, (size_t)count);
     if (fault == 4) pending = true;
@@ -114,10 +133,36 @@ static void regressions(void)
     CHECK(API(&vm, NULL, NULL, 0) == NULL);
 }
 
+static void base58_retirement(void)
+{
+    fake_array payload = {78, {0}}, encoded = {0};
+    for (size_t i = 0; i < 78; ++i) payload.bytes[i] = (uint8_t)(i + 1);
+    for (unsigned operation = 1; operation <= 2; ++operation) {
+        for (unsigned selected = 0; selected <= 5; ++selected) {
+            const fake_array *input = operation == 1 ? &payload : &encoded;
+            active = operation; fault = selected; pending = false;
+            clears_128 = clears_184 = 0;
+            memset(&result_box, 0, sizeof(result_box));
+            jbyteArray result = operation == 1
+                ? Java_org_zclassic_wallet_core_NativeCore_encodeBase58(&vm, NULL, (jbyteArray)input)
+                : Java_org_zclassic_wallet_core_NativeCore_decodeBase58(&vm, NULL, (jbyteArray)input);
+            CHECK(clears_128 == 1 && clears_184 == 1);
+            CHECK(pending == (selected >= 1 && selected <= 4));
+            CHECK(result == (selected == 0 ? (jbyteArray)&result_box.value : NULL));
+            if (operation == 1 && selected == 0) encoded = result_box.value;
+            if (operation == 2 && selected == 0)
+                CHECK(result_box.value.length == 78 &&
+                    memcmp(result_box.value.bytes, payload.bytes, 78) == 0);
+        }
+    }
+    active = 0;
+}
+
 #ifndef ZCL_JNI_ADDRESS_FUZZ
 int main(void)
 {
     regressions();
+    base58_retirement();
     puts("JNI address record, region and exception checks passed");
     return 0;
 }
