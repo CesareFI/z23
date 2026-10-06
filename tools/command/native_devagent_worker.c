@@ -1674,6 +1674,13 @@ static const char *wkr_leaf_str(const struct zcl_command_request *req,
     return (v && v->type == JSON_STR) ? json_get_str(v) : "";
 }
 
+/* The queue's selector alphabet, checked before copying option text. */
+static bool wkr_selector_ok(const char *s)
+{
+    return strlen(s) <= 128 && strspn(s,
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-:+") == strlen(s);
+}
+
 /* Parse the run input into opts. NULL on success, else the refusal
  * message (the evidence names the offending input). */
 static const char *wkr_leaf_opts(const struct zcl_command_request *request,
@@ -1690,8 +1697,8 @@ static const char *wkr_leaf_opts(const struct zcl_command_request *request,
         return "action is exactly run";
     worker = wkr_leaf_str(request, "worker");
     *evidence = "input.worker missing or too long";
-    if (!worker[0] || strlen(worker) > 48)
-        return "worker names the resident worker, 1-48 characters";
+    if (strlen(worker) > 48 || !zcl_devagent_name_ok(worker))
+        return "worker is 1-48 of [A-Za-z0-9_.-], excluding . and ..";
     memset(opts, 0, sizeof(*opts));
     session = wkr_leaf_str(request, "session");
     if (!session[0]) {
@@ -1701,12 +1708,16 @@ static const char *wkr_leaf_opts(const struct zcl_command_request *request,
         session = sess_default;
     }
     *evidence = "input.session too long";
-    if (strlen(session) > (sizeof(opts->session) - 1))
-        return "session names this worker run, at most 55 characters";
+    if (strlen(session) > 48 || !zcl_devagent_name_ok(session))
+        return "session is 1-48 of [A-Za-z0-9_.-], excluding . and ..";
+    const char *selector = wkr_leaf_str(request, "model");
+    *evidence = "input.model invalid alphabet or length";
+    if (!wkr_selector_ok(selector))
+        return "execution selector must fit the queue's 128-byte alphabet";
     (void)snprintf(opts->worker, sizeof(opts->worker), "%s", worker);
     (void)snprintf(opts->session, sizeof(opts->session), "%s", session);
     (void)snprintf(opts->model, sizeof(opts->model), "%s",
-                   wkr_leaf_str(request, "model"));
+                   selector);
     opts->deadline_s = wkr_leaf_int(request, "deadline_s", 300, 1, 3600);
     opts->idle_start_s = wkr_leaf_int(request, "idle_start_s", 1, 1, 30);
     opts->idle_limit_s = wkr_leaf_int(request, "idle_limit_s", 60, 1, 600);
@@ -1717,6 +1728,16 @@ static const char *wkr_leaf_opts(const struct zcl_command_request *request,
     opts->token_cap = wkr_leaf_int(request, "token_cap", 32000, 1, 1000000);
     return NULL;
 }
+
+#ifdef ZCL_TESTING
+bool zcl_devagent_worker_test_options(const struct zcl_command_request *request);
+bool zcl_devagent_worker_test_options(const struct zcl_command_request *request)
+{
+    struct wkr_drive_opts opts;
+    const char *evidence;
+    return wkr_leaf_opts(request, &opts, &evidence) == NULL;
+}
+#endif
 
 /* The run's confinement backend, or false with the refusal filled. POSIX
  * forks under rlimits and is always available; Windows runs only when its

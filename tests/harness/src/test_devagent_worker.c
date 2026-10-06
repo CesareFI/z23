@@ -1633,10 +1633,45 @@ _test_next:;
 }
 #endif
 
+bool zcl_devagent_worker_test_options(const struct zcl_command_request *request);
+static int wtx_option_encoding(void)
+{
+    int failures = 0;
+    TEST("worker: identities and session boundaries refuse before claim") {
+        char s48[49], s49[50], s55[56], selector129[130];
+        memset(s48, 's', 48); s48[48] = '\0';
+        memset(s49, 's', 49); s49[49] = '\0';
+        memset(s55, 's', 55); s55[55] = '\0';
+        memset(selector129, 'a', 129); selector129[129] = '\0';
+        const struct {const char *worker, *session, *selector; bool ok;} cases[] = {
+            {"a\"b", "s", "", false}, {"a\\u0062", "s", "", false},
+            {"fixture", "a\"b", "", false}, {"fixture", "s", "a\"b", false},
+            {"fixture", s48, "id:v1+fast", true},
+            {"fixture", s49, "", false}, {"fixture", s55, "", false},
+            {"fixture", "s", selector129, false}, {"a\xff", "s", "", false},
+            {"..", "s", "", false}, {"fixture", "s", "a\\u0062", false}
+        };
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            struct wtx_call c;
+            wtx_begin(&c, "dev.agent.worker", "zcl.agent_worker.v1");
+            (void)json_push_kv_str(&c.input, "action", "run");
+            (void)json_push_kv_str(&c.input, "worker", cases[i].worker);
+            (void)json_push_kv_str(&c.input, "session", cases[i].session);
+            (void)json_push_kv_str(&c.input, "model", cases[i].selector);
+            ASSERT(zcl_devagent_worker_test_options(&c.request) == cases[i].ok);
+            wtx_end(&c);
+        }
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+
 int test_devagent_worker(void);
 int test_devagent_worker(void)
 {
-    int failures = 0;
+    int failures = wtx_option_encoding();
 
 #if !defined(_WIN32)
     failures += wtx_status_cases();
