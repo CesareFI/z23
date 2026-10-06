@@ -7536,6 +7536,71 @@ static bool dp_img_fixture(const char *path, const char *name, time_t when)
 }
 #endif
 
+#if defined(__linux__)
+bool zcl_hotfork_shape_test_read_built(const char *kept, const struct stat *st,
+                                      struct timespec *built);
+static bool dp_built_boundaries(void)
+{
+    static const long long seconds[] = {LLONG_MIN, LLONG_MAX, 0};
+    struct stat st = {.st_dev = 1, .st_ino = 2};
+    for (size_t i = 0; i < sizeof(seconds) / sizeof(seconds[0]); i++) {
+        char text[128];
+        int n = snprintf(text, sizeof(text), "1 2 %lld 999999999\n", seconds[i]);
+        if (n < 0 || (size_t)n >= sizeof(text)) return false;
+        if (!dp_mk_write(".", "stored-object.built", text)) return false;
+        struct timespec built = {.tv_sec = 99, .tv_nsec = 99};
+        bool representable = (long long)(time_t)seconds[i] == seconds[i];
+        if (zcl_hotfork_shape_test_read_built("stored-object", &st, &built) !=
+            representable) return false;
+        if (built.tv_sec != (representable ? (time_t)seconds[i] : 0) ||
+            built.tv_nsec != (representable ? 999999999 : 0)) return false;
+    }
+    return true;
+}
+#endif
+static int test_hotfork_shape_built_extent(void)
+{
+    int failures = 0;
+    TEST("dev platform: stored build timestamps refuse trailing fields") {
+#if defined(__linux__)
+        ASSERT(dp_built_boundaries());
+        static const char *const rows[] = {
+            "1 2 3 4", "1 2 3 4\n", "1 2 3 4 garbage\n",
+            "1 2 3 4 5\n", "1 2 3 4\n1 2 3 4\n", "1 2 3",
+            "1 2 3 1000000000\n", "1 2 3 -1\n",
+            "1 2 9999999999999999999999999999999999999999 4\n",
+            "1 2 -9999999999999999999999999999999999999999 4\n",
+            "9999999999999999999999999999999999999999 2 3 4\n",
+            "1 9999999999999999999999999999999999999999 3 4\n",
+            "1 2 3 9999999999999999999999999999999999999999\n",
+            "-1 2 3 4\n", "1 -2 3 4\n", "1 2 3x 4\n",
+        };
+        struct stat st = {.st_dev = 1, .st_ino = 2};
+        for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+            ASSERT(dp_mk_write(".", "stored-object.built", rows[i]));
+            struct timespec built = {.tv_sec = 99, .tv_nsec = 99};
+            ASSERT_EQ(zcl_hotfork_shape_test_read_built("stored-object", &st,
+                                                        &built), i < 2);
+            ASSERT_EQ(built.tv_sec, i < 2 ? 3 : 0);
+            ASSERT_EQ(built.tv_nsec, i < 2 ? 4 : 0);
+        }
+        ASSERT(dp_mk_write(".", "stored-object.built", rows[0]));
+        int fd = open("stored-object.built", O_WRONLY | O_APPEND | O_CLOEXEC);
+        ASSERT(fd >= 0);
+        ssize_t n = write(fd, "\0garbage\n", 9);
+        int rc = close(fd);
+        ASSERT(n == 9 && rc == 0);
+        struct timespec built = {.tv_sec = 99, .tv_nsec = 99};
+        ASSERT(!zcl_hotfork_shape_test_read_built("stored-object", &st, &built));
+        ASSERT_EQ(built.tv_sec, 0);
+        ASSERT_EQ(built.tv_nsec, 0);
+#endif
+        PASS();
+    } _test_next:;
+    (void)unlink("stored-object.built");
+    return failures;
+}
+
 static int test_hotfork_shape_image_cache(void)
 {
     int failures = 0;
@@ -9373,6 +9438,7 @@ static const struct dp_shard_case g_dp_cases[] = {
     DP_CASE(test_hotfork_story_file_green_and_red, 5),
     DP_CASE(test_hotfork_shape_refusals, 5),
     DP_CASE(test_hotfork_shape_image_cache, 5),
+    DP_CASE(test_hotfork_shape_built_extent, 5),
     DP_CASE(test_hotfork_resident_model_closure, 5),
     DP_CASE(test_resident_restart_builder, 4),
     DP_CASE(test_shell_compiled_epoch_scope, 5),
@@ -9537,7 +9603,7 @@ static int test_dev_platform_platform_arm(void)
         owned += counts[i];
         nonempty &= counts[i] > 0;
     }
-    if (DP_CASE_COUNT != 65u + (unsigned)(
+    if (DP_CASE_COUNT != 66u + (unsigned)(
 #if defined(__APPLE__)
             1
 #else

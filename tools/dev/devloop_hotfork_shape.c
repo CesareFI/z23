@@ -645,26 +645,71 @@ static bool shape_record_built(const char *kept, const struct stat *st)
     return ok;
 }
 
+static bool shape_built_numbers(char fields[4][128],
+                                unsigned long long *dev,
+                                unsigned long long *ino,
+                                long long *sec, long *nsec)
+{
+    char *end;
+    *dev = 0;
+    *ino = 0;
+    *sec = 0;
+    *nsec = 0;
+    if (fields[0][0] == '-' || fields[1][0] == '-') return false;
+    errno = 0;
+    *dev = strtoull(fields[0], &end, 10);
+    if (errno == ERANGE || end == fields[0] || *end) return false;
+    errno = 0;
+    *ino = strtoull(fields[1], &end, 10);
+    if (errno == ERANGE || end == fields[1] || *end) return false;
+    errno = 0;
+    *sec = strtoll(fields[2], &end, 10);
+    if (errno == ERANGE || end == fields[2] || *end) return false;
+    errno = 0;
+    *nsec = strtol(fields[3], &end, 10);
+    return errno != ERANGE && end != fields[3] && !*end;
+}
+
 /* The build time recorded for the kept object `kept` (stated as `st`);
  * false when there is no record or it names another file. */
 static bool shape_read_built(const char *kept, const struct stat *st,
                              struct timespec *built)
 {
+    *built = (struct timespec){0};
     char path[PATH_MAX];
     unsigned long long dev = 0, ino = 0;
     long long sec = 0;
     long nsec = 0;
+    size_t len = 0;
+    int used = 0;
+    char fields[4][128];
     char *text = shape_built_path(kept, path, sizeof(path))
-                     ? shape_slurp(path, 128, NULL) : NULL;
-    bool ok = text && sscanf(text, "%llu %llu %lld %ld", &dev, &ino, &sec,
-                             &nsec) == 4 &&
+                     ? shape_slurp(path, 128, &len) : NULL;
+    bool ok = text && sscanf(text, "%127s %127s %127s %127s%n",
+                             fields[0], fields[1], fields[2], fields[3],
+                             &used) == 4 &&
+              ((size_t)used == len ||
+               ((size_t)used + 1 == len && text[used] == '\n')) &&
+              shape_built_numbers(fields, &dev, &ino, &sec, &nsec) &&
+              nsec >= 0 && nsec < 1000000000 && (long long)(time_t)sec == sec &&
               dev == (unsigned long long)st->st_dev &&
               ino == (unsigned long long)st->st_ino;
     free(text);
-    built->tv_sec = (time_t)sec;
-    built->tv_nsec = nsec;
+    if (ok)
+        *built = (struct timespec){.tv_sec = (time_t)sec, .tv_nsec = nsec};
     return ok;
 }
+
+#if defined(ZCL_TESTING)
+/* Exercise the stored timestamp reader without a running-image clock. */
+bool zcl_hotfork_shape_test_read_built(const char *kept, const struct stat *st,
+                                      struct timespec *built);
+bool zcl_hotfork_shape_test_read_built(const char *kept, const struct stat *st,
+                                      struct timespec *built)
+{
+    return shape_read_built(kept, st, built);
+}
+#endif
 
 /* Keeps the epoch object (stated as `st`) and its depfile for the running
  * image, recording the object's build time first when it is newly kept. */
