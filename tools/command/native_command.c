@@ -2782,7 +2782,7 @@ static void nc_print_error_build_next(const char *command,
                                       struct json_value *item)
 {
     if (next_command && next_command[0]) {
-        struct json_value parsed;
+        struct json_value parsed = {0};
         if (next_input && next_input[0] &&
             json_read(&parsed, next_input, strlen(next_input)) &&
             parsed.type == JSON_OBJ &&
