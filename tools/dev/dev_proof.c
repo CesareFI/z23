@@ -3032,7 +3032,8 @@ static bool dp_plan_body_read(const char *path, char *body, size_t body_size,
         return false;
     }
     size_t n = fread(body, 1, body_size - 1, f);
-    bool ok = !ferror(f) && n > 0 && n < body_size - 1;
+    bool ok = !ferror(f) && n > 0 && n < body_size - 1 &&
+              memchr(body, 0, n) == NULL;
     fclose(f);
     if (!ok) return false;
     body[n] = 0;

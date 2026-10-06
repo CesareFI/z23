@@ -11285,6 +11285,38 @@ static int test_ic_proof_text_readers_refuse_nul(void)
 #endif
 
 #if !defined(_WIN32)
+static int test_pw_plan_rejects_hidden_fields(void)
+{
+    int failures = 0;
+    TEST("proof plan: reject fields hidden after a NUL") {
+        static const char mutation[] =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        char root[4096], path[4096], plan[128], why[160];
+        test_make_tmpdir(root, sizeof(root), "proof_plan", "hidden_fields");
+        ASSERT(snprintf(plan, sizeof(plan), "BASE_GENERATION=%s", mutation) == 80);
+        ASSERT(ic_write(root, "build/dev-loop/restart.env", plan));
+        struct zcl_dev_proof_build_identity_v1 identity = {0};
+        ASSERT(zcl_dev_proof_build_identity_v1_capture(root, &identity, why,
+                                                      sizeof(why)));
+        ASSERT(zcl_dev_proof_build_plan_verify(root, &identity, mutation, why,
+                                              sizeof(why)));
+        ASSERT(snprintf(path, sizeof(path), "%s/build/dev-loop/restart.env",
+                        root) < (int)sizeof(path));
+        FILE *file = fopen(path, "ab");
+        ASSERT(file != NULL);
+        static const char hidden[] = "\0\nDEV_CFLAGS=changed\n";
+        bool written = fwrite(hidden, 1, sizeof(hidden) - 1, file) == sizeof(hidden) - 1;
+        ASSERT(fclose(file) == 0);
+        ASSERT(written);
+        ASSERT(!zcl_dev_proof_build_plan_verify(root, &identity, mutation, why,
+                                               sizeof(why)));
+        ASSERT(strcmp(why, "proof_offline_build_plan_unavailable") == 0);
+        ASSERT(test_rm_rf_recursive(root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_proof_request_exact_extent(void)
 {
     int failures = 0;
@@ -11493,6 +11525,7 @@ int test_impact_composition(void)
     failures += test_pw_authoritative_proof_refuses_same_uid_donor();
     failures += test_ic_proof_request_exact_extent();
     failures += test_ic_proof_text_readers_refuse_nul();
+    failures += test_pw_plan_rejects_hidden_fields();
 #endif
     return failures;
 }
