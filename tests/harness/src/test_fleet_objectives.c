@@ -138,10 +138,57 @@ static int64_t fox_count_lines(const char *text)
 
 /* ── the fixture tree ───────────────────────────────────────────────── */
 
+static int fox_case_ledger_extent(void)
+{
+    int failures = 0;
+    char root[512], path[1024], raw[5000];
+    const char row[] = "{\"state\":\"landed\",\"note\":\"extent\","
+        "\"ts\":\"2026-09-06T10:00:00Z\",\"attempt\":1,\"started\":1788688800}";
+    const char *ids[] = {"landing_latency_s", "landing_attempts_per_train"};
+    test_make_tmpdir(root, sizeof root, "fleet_objectives", "extent");
+    for (size_t i = 0; i < 6; i++) {
+        (void)snprintf(path, sizeof path, "%s/case%zu", root, i);
+        if (i == 5) {
+            ASSERT(fox_mkdir(path)); /* fopen succeeds, reading a directory fails */
+        } else {
+            size_t n = sizeof row - 1;
+            memcpy(raw, row, n);
+            if (i != 1) raw[n++] = '\n';
+            if (i >= 2) {
+                memcpy(raw + n, row, sizeof row - 1);
+                n += sizeof row - 1;
+                if (i == 2) { raw[n++] = 0; raw[n++] = 'x'; }
+                if (i == 3) { memset(raw + n, ' ', 4200); n += 4200; }
+                if (i == 4) raw[n - 1] = 'x'; /* unfinished JSON */
+                raw[n++] = '\n';
+            }
+            FILE *f = fopen(path, "wb");
+            ASSERT(f != NULL);
+            ASSERT_EQ(fwrite(raw, 1, n, f), n);
+            ASSERT_EQ(fclose(f), 0);
+        }
+        struct fox_call c;
+        fox_begin(&c);
+        fox_set(&c, "outcomes", path);
+        ASSERT(fox_run(&c));
+        for (size_t j = 0; j < 2; j++) {
+            const struct json_value *v = fox_row(&c, ids[j]);
+            ASSERT(v != NULL);
+            ASSERT_EQ(json_get_bool(json_get(v, "measured")), i < 2);
+            if (i >= 2) ASSERT(fox_row_str(v, "reason")[0] != 0);
+        }
+        fox_end(&c);
+    }
+_test_next:;
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
 int test_fleet_objectives(void);
 int test_fleet_objectives(void)
 {
     int failures = 0;
+    failures += fox_case_ledger_extent();
     char root[512];
     char outcomes_ok[1024], outcomes_missing[1024];
     char attempts_dir[1024], attempt1[1200], phases_path[1300];

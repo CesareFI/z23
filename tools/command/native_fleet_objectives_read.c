@@ -176,9 +176,25 @@ static void obj_outcomes_row(const struct json_value *row,
                       sizeof(stats->last_landed_note));
 }
 
-/* The newest `landed` row's train identity and timestamp: `landed` rows
- * are rare relative to the rest of the ledger, so tracking only that one
- * fact keeps this pass a single field update per matching row. */
+/* 1: complete record (including final EOF record), 0: EOF, -1: unavailable. */
+static int obj_ledger_line(FILE *fp, char *line, size_t cap, size_t *len)
+{
+    *len = 0;
+    int ch;
+    while ((ch = fgetc(fp)) != EOF) {
+        if (ch == 0 || *len == cap - 1)
+            return -1;
+        line[(*len)++] = (char)ch;
+        if (ch == '\n')
+            break;
+    }
+    line[*len] = 0;
+    if (ferror(fp))
+        return -1;
+    return *len ? 1 : 0;
+}
+
+/* Track the newest landed train only after verifying the whole ledger. */
 static bool obj_scan_outcomes(const char *path, struct obj_outcomes_stats *out,
                               char *reason, size_t reason_cap)
 {
@@ -191,14 +207,22 @@ static bool obj_scan_outcomes(const char *path, struct obj_outcomes_stats *out,
         (void)snprintf(reason, reason_cap, "missing outcomes file %s", path);
         return false;
     }
-    while (fgets(line, sizeof(line), fp)) {
+    size_t len;
+    int status;
+    while ((status = obj_ledger_line(fp, line, sizeof line, &len)) == 1) {
         struct json_value row;
         json_init(&row);
-        if (json_read(&row, line, strlen(line)) && row.type == JSON_OBJ)
+        bool valid = json_read(&row, line, len) && row.type == JSON_OBJ;
+        if (valid)
             obj_outcomes_row(&row, out);
         json_free(&row);
+        if (!valid) { status = -1; break; }
     }
-    (void)fclose(fp);
+    if (fclose(fp) != 0 || status < 0) {
+        memset(out, 0, sizeof *out);
+        (void)snprintf(reason, reason_cap, "incomplete outcomes file %s", path);
+        return false;
+    }
     return true;
 }
 
@@ -287,15 +311,19 @@ static bool obj_train_stats_for_note(const char *path, const char *note,
     fp = fopen(path, "r");
     if (!fp)
         return false;
-    while (fgets(line, sizeof(line), fp)) {
+    size_t len;
+    int status;
+    while ((status = obj_ledger_line(fp, line, sizeof line, &len)) == 1) {
         struct json_value row;
         json_init(&row);
-        if (json_read(&row, line, strlen(line)) && row.type == JSON_OBJ)
+        bool valid = json_read(&row, line, len) && row.type == JSON_OBJ;
+        if (valid)
             obj_train_stats_row(&row, note, out);
         json_free(&row);
+        if (!valid) { status = -1; break; }
     }
-    (void)fclose(fp);
-    return true;
+    bool closed = fclose(fp) == 0;
+    return closed && status == 0;
 }
 
 static void obj_train_stats_free(struct obj_train_stats *stats)
@@ -353,7 +381,7 @@ static struct zcl_objective_value obj_landing_latency_s(
         return v;
     if (!obj_train_stats_for_note(use, stats.last_landed_note, &train) ||
         !train.found) {
-        obj_set_reason(&v, "no rows for the landed train in %s", use);
+        obj_set_reason(&v, "unavailable rows for the landed train in %s", use);
         obj_train_stats_free(&train);
         return v;
     }
@@ -377,7 +405,7 @@ static struct zcl_objective_value obj_landing_attempts_per_train(
         return v;
     if (!obj_train_stats_for_note(use, stats.last_landed_note, &train) ||
         train.attempts.n == 0) {
-        obj_set_reason(&v, "no rows for the landed train in %s", use);
+        obj_set_reason(&v, "unavailable rows for the landed train in %s", use);
         obj_train_stats_free(&train);
         return v;
     }
