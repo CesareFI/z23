@@ -571,7 +571,8 @@ static int check_dead_node_fails_closed(void)
 
 struct rt_publication_test {
     struct runtime_snapshot_publication pub;
-    atomic_bool done;
+    atomic_uint done, ready;
+    atomic_bool go;
 };
 static struct runtime_snapshot rt_publication_pattern(uint64_t generation)
 {
@@ -581,9 +582,21 @@ static struct runtime_snapshot rt_publication_pattern(uint64_t generation)
         .collected_unix_meta = {.presence = TELEMETRY_PRESENT, .age_ms = 17,
             .observed_unix = (int64_t)generation + 1000, .reason = "publication"}};
 }
+static bool rt_publication_matches(const struct runtime_snapshot *out)
+{
+    return out->child_count >= 1 && out->child_count <= 256 &&
+        out->ticks_run_total == -out->child_count &&
+        strcmp(out->worst_tick_child, "publication") == 0 &&
+        out->collected_unix == out->child_count + 1000 &&
+        out->collected_unix_meta.observed_unix == out->collected_unix &&
+        out->collected_unix_meta.presence == TELEMETRY_PRESENT &&
+        out->collected_unix_meta.age_ms == 17;
+}
 static int rt_publication_writer(void *arg)
 {
     struct rt_publication_test *test = arg;
+    atomic_fetch_add_explicit(&test->ready, 1, memory_order_release);
+    while (!atomic_load_explicit(&test->go, memory_order_acquire)) thrd_yield();
     int result = 0;
     for (uint64_t i = 2; i <= 256; i++) {
         struct runtime_snapshot snap = rt_publication_pattern(i);
@@ -592,35 +605,42 @@ static int rt_publication_writer(void *arg)
         while (status == RUNTIME_SNAPSHOT_BUSY);
         if (status != RUNTIME_SNAPSHOT_READY) { result = 1; break; }
     }
-    atomic_store_explicit(&test->done, true, memory_order_release);
+    atomic_fetch_add_explicit(&test->done, 1, memory_order_release);
     return result;
 }
 static int check_publication_concurrency(struct rt_publication_test *test)
 {
     int failures = 0;
     struct runtime_snapshot out;
-    uint64_t generation;
-    thrd_t writer;
-    bool started = thrd_create(&writer, rt_publication_writer, test) == thrd_success;
-    RT_CHECK("[publication] concurrent writer starts", started);
+    uint64_t generation, previous = 1;
+    thrd_t writers[2];
+    unsigned started = 0;
+    for (; started < 2; started++)
+        if (thrd_create(&writers[started], rt_publication_writer, test) != thrd_success) break;
+    RT_CHECK("[publication] both writers start", started == 2);
+    while (atomic_load_explicit(&test->ready, memory_order_acquire) < started) thrd_yield();
+    atomic_store_explicit(&test->go, true, memory_order_release);
     bool mixed = false;
     if (started) {
         do {
             enum runtime_snapshot_status status = runtime_snapshot_read(&test->pub, &out, &generation);
-            if (status == RUNTIME_SNAPSHOT_READY)
-                mixed |= out.child_count != (int64_t)generation || out.ticks_run_total != -(int64_t)generation ||
-                    out.collected_unix != (int64_t)generation + 1000 ||
-                    strcmp(out.worst_tick_child, "publication") != 0 || out.collected_unix_meta.age_ms != 17;
-            else mixed |= status != RUNTIME_SNAPSHOT_BUSY;
-        } while (!atomic_load_explicit(&test->done, memory_order_acquire));
-        int result;
-        if (thrd_join(writer, &result) != thrd_success) {
-            fprintf(stderr, "FAIL publication writer join\n"); abort();
+            if (status == RUNTIME_SNAPSHOT_READY) {
+                mixed |= !rt_publication_matches(&out) || generation < previous;
+                previous = generation;
+            } else mixed |= status != RUNTIME_SNAPSHOT_BUSY;
+        } while (atomic_load_explicit(&test->done, memory_order_acquire) < started);
+        int errors = 0;
+        for (unsigned i = 0; i < started; i++) {
+            int result;
+            if (thrd_join(writers[i], &result) != thrd_success) {
+                fprintf(stderr, "FAIL publication writer join\n"); abort();
+            }
+            errors |= result;
         }
-        RT_CHECK("[publication] concurrent reads never mix generations", !mixed && result == 0);
-        RT_CHECK("[publication] complete final generation remains readable",
+        RT_CHECK("[publication] two writers complete without mixed reads", !mixed && errors == 0);
+        RT_CHECK("[publication] generation counts every successful publish",
             runtime_snapshot_read(&test->pub, &out, &generation) == RUNTIME_SNAPSHOT_READY &&
-            generation == 256 && out.child_count == 256);
+            generation == 1 + 255 * started && out.child_count == 256 && rt_publication_matches(&out));
     }
     return failures;
 }
@@ -628,7 +648,9 @@ static int check_snapshot_publication(void)
 {
     int failures = 0;
     struct rt_publication_test test = {.pub = RUNTIME_SNAPSHOT_PUBLICATION_INIT};
-    atomic_init(&test.done, false);
+    atomic_init(&test.done, 0);
+    atomic_init(&test.ready, 0);
+    atomic_init(&test.go, false);
     struct runtime_snapshot out = {.child_count = -999};
     uint64_t generation = 999;
     RT_CHECK("[publication] empty is unavailable and preserves outputs",
@@ -641,6 +663,12 @@ static int check_snapshot_publication(void)
     RT_CHECK("[publication] held writer returns busy without touching output",
         runtime_snapshot_read(&test.pub, &out, &generation) == RUNTIME_SNAPSHOT_BUSY &&
         out.child_count == -999 && generation == 999);
+    struct runtime_snapshot saved, competing = rt_publication_pattern(99);
+    memcpy(&saved, &test.pub.snapshot, sizeof(saved));
+    RT_CHECK("[publication] occupied cache refuses a publisher",
+        runtime_snapshot_publish(&test.pub, &competing) == RUNTIME_SNAPSHOT_BUSY);
+    RT_CHECK("[publication] refused publisher preserves snapshot and capture metadata",
+        test.pub.generation == 1 && memcmp(&saved, &test.pub.snapshot, sizeof(saved)) == 0);
     atomic_flag_clear_explicit(&test.pub.guard, memory_order_release);
     RT_CHECK("[publication] producer failure is unavailable",
         runtime_snapshot_publish(&test.pub, NULL) == RUNTIME_SNAPSHOT_UNAVAILABLE);
@@ -648,14 +676,14 @@ static int check_snapshot_publication(void)
         runtime_snapshot_read(&test.pub, &out, &generation) == RUNTIME_SNAPSHOT_READY &&
         generation == 1 && out.collected_unix == 1001 &&
         out.collected_unix_meta.observed_unix == 1001 && out.collected_unix_meta.age_ms == 17);
-    failures += check_publication_concurrency(&test);
+    /* Do not race an implementation already proven to bypass ownership. */
+    if (!failures) failures += check_publication_concurrency(&test);
     test.pub.generation = UINT64_MAX;
     RT_CHECK("[publication] generation exhaustion refuses without wrapping",
         runtime_snapshot_publish(&test.pub, &snap) == RUNTIME_SNAPSHOT_UNAVAILABLE &&
         test.pub.generation == UINT64_MAX);
     return failures;
 }
-
 int test_telemetry_runtime(void)
 {
     int failures = 0;
