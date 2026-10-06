@@ -1843,6 +1843,43 @@ worktree's ignored evidence directory. Manifest SHA256 is
 `2e93d85faac2ef031ed3952d7753abbfaa6b62e96f633a827ca66253105a1c8d`.
 No external publication or reviewer-request action was attempted.
 
+### Recovery target exact-path admission candidate qualified
+
+Branch `agent/upstream-wallet-recovery-datadir-bound-20261006`, signed head
+`2edfff5082f3cf076e116003d8510a114ee0d147`, stacks the qualified fleet
+fixture on upstream base `3a93e60ebf922af3d119b9facc1d95803f42844b`.
+The offline 12-word recovery command previously copied a 1,024-byte explicit
+target into a 1,024-byte buffer, silently changing it to a different
+1,023-byte path before lock and filesystem operations. The C23 command
+boundary now refuses any target it cannot copy exactly as `DATADIR_TOO_LONG`
+before filesystem, database, seed or key work. Valid recovery behavior,
+mnemonic derivation, wallet encryption and formats remain unchanged.
+
+Canonical RED shows the prior source reaching the truncated path and returning
+`DATADIR_LOCKED` instead of invalid input. Focused GREEN and
+ASan/UBSan/LSan each pass the complete recovery-safety group 1/1 with zero
+skips, retaining damaged-database preservation, concurrent-writer exclusion,
+encrypted-at-rest recovery and explicit plaintext opt-in. The cap-15
+complexity scan covers 68,756 functions; architecture, documentation,
+generated inventory, 80-package anatomy and file-size gates pass. The
+candidate-only security scan is CLEAN.
+
+The first exact-proof attempt refused the copied producer with
+`proof_producer_source_mismatch`. After rebuilding `dev-bin` from the exact
+candidate and using the prescribed retry-to-step route, the cold proof passes
+all 215 lint gates in 186.623s and 64/64 impact-selected groups in 269.1s,
+with zero skips, cache hits, unobserved cases or load-flaky outcomes, no
+eligible donor and `receipt_reused=false`; foreground time is 474.218s.
+Receipt SHA256 is
+`0b4eabbe44903f94ed74bb3e852a7e2e9ea30867dbb201cc8d6ecd998e3aca97`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-wallet-recovery-datadir-proof-20261006`.
+
+The local bundle, wallet-only mbox, RED/GREEN and sanitizer evidence, exact
+receipt/logs, qualification and PR draft verify against manifest SHA256
+`9fc030cea93fe3d5dd10c02b72033bfc7507e5634805f598fca9713659bba73c`.
+No external publication or reviewer-request action was attempted.
+
 ### Public-key ownership verification failure-path candidate prepared
 
 Branch `agent/upstream-wallet-pubkey-verify-failure-20261005`, signed head
