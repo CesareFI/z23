@@ -579,6 +579,8 @@ static int64_t obj_file_line_count(const char *path)
             lines++;
         last = c;
     }
+    if (ferror(fp))
+        lines = -1;
     if (last != '\n' && lines >= 0)
         lines++; /* count a final unterminated line */
     (void)fclose(fp);
@@ -606,6 +608,11 @@ static struct zcl_objective_value obj_lint_families_over_ceiling(
         if (snprintf(path, sizeof(path), "%s/%s", dir, e->d_name) <= 0)
             continue;
         lines = obj_file_line_count(path);
+        if (lines < 0) {
+            obj_set_reason(&v, "cannot read lint family %s", path);
+            (void)closedir(d);
+            return v;
+        }
         if (lines > OBJ_LINT_CEILING_LINES)
             over++;
     }

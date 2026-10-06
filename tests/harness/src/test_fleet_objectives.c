@@ -138,6 +138,36 @@ static int64_t fox_count_lines(const char *text)
 
 /* ── the fixture tree ───────────────────────────────────────────────── */
 
+static int fox_line_read_error(void)
+{
+    int failures = 0;
+    char root[512], path[600];
+    struct zcl_objectives_options options = {0};
+    struct zcl_objective_value value;
+    test_make_tmpdir(root, sizeof(root), "fleet_objectives", "read_error");
+    (void)snprintf(path, sizeof(path), "%s/unreadable.c", root);
+    options.lintc_dir = root;
+    options.baseline = path;
+    TEST("objectives: a line-count read error is unmeasured") {
+        ASSERT(fox_mkdir(path)); /* fgetc on a directory fails, not clean EOF. */
+        value = zcl_objectives_measure(&options, "lint_families_over_ceiling");
+        ASSERT(!value.measured);
+        ASSERT(strstr(value.reason, path) != NULL);
+        value = zcl_objectives_measure(&options, "functions_over_complexity_cap");
+        ASSERT(!value.measured);
+        ASSERT(value.reason[0] != '\0');
+        ASSERT_EQ(rmdir(path), 0);
+        ASSERT(fox_write(path, "x\nx"));
+        value = zcl_objectives_measure(&options, "functions_over_complexity_cap");
+        ASSERT(value.measured);
+        ASSERT_EQ(value.value, 2);
+        PASS();
+    }
+_test_next:;
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
 static int fox_case_ledger_extent(void)
 {
     int failures = 0;
@@ -451,6 +481,7 @@ int test_fleet_objectives(void)
 
 _test_next:;
     (void)test_rm_rf_recursive(root);
+    failures += fox_line_read_error();
     if (failures == 0)
         printf("test_fleet_objectives: all passed\n");
     else
