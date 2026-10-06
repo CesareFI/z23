@@ -281,10 +281,9 @@ static struct zcl_result ti_overlay_publish(
     return ZCL_OK;
 }
 
-int test_transaction_intent(void)
+static int ti_validation_cases(void)
 {
     int failures = 0;
-    struct node_db ndb; memset(&ndb, 0, sizeof(ndb));
 
     TEST("vault intents retain typed mempool rejection reasons") {
         ASSERT_STR_EQ(vault_intent_mempool_error_code(
@@ -631,6 +630,7 @@ int test_transaction_intent(void)
 
         struct wallet *wallet = zcl_calloc(1, sizeof(*wallet), "test-wallet");
         /* ~40 MB wallet: heap, never stack */
+        ASSERT(wallet != NULL);
         wallet_init(wallet);
         struct wallet_rpc_context ctx;
         memset(&ctx, 0, sizeof(ctx));
@@ -726,6 +726,14 @@ int test_transaction_intent(void)
         node_db_close(&exact_db);
         PASS();
     }
+
+_test_next:;
+    return failures;
+}
+
+static int ti_async_cases(void)
+{
+    int failures = 0;
 
     TEST("async queue marker and owner cancellation are atomic") {
         struct node_db async_db; memset(&async_db, 0, sizeof(async_db));
@@ -857,6 +865,19 @@ int test_transaction_intent(void)
         PASS();
     }
 
+_test_next:;
+    return failures;
+}
+
+int test_transaction_intent(void)
+{
+    int failures = 0;
+    struct node_db ndb; memset(&ndb, 0, sizeof(ndb));
+    failures += ti_validation_cases();
+    if (failures) goto _test_next;
+    failures += ti_async_cases();
+    if (failures) goto _test_next;
+
     TEST("transaction intent is encrypted, claim-once, recoverable, idempotent") {
         ASSERT(node_db_open(&ndb, ":memory:"));
         wallet_lock_reset_for_test();
@@ -890,9 +911,48 @@ int test_transaction_intent(void)
         ASSERT_EQ(got.state, VAULT_INTENT_PROVING);
 
         const uint8_t raw[] = {1, 2, 3, 4, 5};
-        uint8_t loaded[16]; size_t loaded_len = 0;
+        uint8_t loaded[16], untouched[16];
+        memset(loaded, 0xa5, sizeof(loaded));
+        memset(untouched, 0xa5, sizeof(untouched));
+        size_t loaded_len = SIZE_MAX;
         ASSERT(vault_intent_store_raw(&ndb, row.plan_id, raw, sizeof(raw)));
         ASSERT(vault_intent_has_raw(&ndb, row.plan_id));
+        ASSERT(!vault_intent_load_raw(&ndb, row.plan_id, loaded,
+                                      sizeof(raw) - 1, &loaded_len));
+        ASSERT_EQ(loaded_len, 0);
+        ASSERT(memcmp(loaded, untouched, sizeof(loaded)) == 0);
+        uint8_t absent_plan[32];
+        memset(absent_plan, 0xee, sizeof(absent_plan));
+        loaded_len = SIZE_MAX;
+        ASSERT(!vault_intent_load_raw(&ndb, absent_plan, loaded,
+                                      sizeof(loaded), &loaded_len));
+        ASSERT_EQ(loaded_len, 0);
+        ASSERT(memcmp(loaded, untouched, sizeof(loaded)) == 0);
+
+        loaded_len = SIZE_MAX;
+        ASSERT(!vault_intent_load_raw(NULL, row.plan_id, loaded,
+                                      sizeof(loaded), &loaded_len));
+        ASSERT_EQ(loaded_len, 0);
+        ASSERT(memcmp(loaded, untouched, sizeof(loaded)) == 0);
+        struct node_db closed_db = {0};
+        loaded_len = SIZE_MAX;
+        ASSERT(!vault_intent_load_raw(&closed_db, row.plan_id, loaded,
+                                      sizeof(loaded), &loaded_len));
+        ASSERT_EQ(loaded_len, 0);
+        ASSERT(memcmp(loaded, untouched, sizeof(loaded)) == 0);
+        loaded_len = SIZE_MAX;
+        ASSERT(!vault_intent_load_raw(&ndb, NULL, loaded,
+                                      sizeof(loaded), &loaded_len));
+        ASSERT_EQ(loaded_len, 0);
+        ASSERT(memcmp(loaded, untouched, sizeof(loaded)) == 0);
+        loaded_len = SIZE_MAX;
+        ASSERT(!vault_intent_load_raw(&ndb, row.plan_id, NULL,
+                                      sizeof(loaded), &loaded_len));
+        ASSERT_EQ(loaded_len, 0);
+        ASSERT(memcmp(loaded, untouched, sizeof(loaded)) == 0);
+        ASSERT(!vault_intent_load_raw(&ndb, row.plan_id, loaded,
+                                      sizeof(loaded), NULL));
+        ASSERT(memcmp(loaded, untouched, sizeof(loaded)) == 0);
         ASSERT(vault_intent_load_raw(&ndb, row.plan_id, loaded,
                                      sizeof(loaded), &loaded_len));
         ASSERT_EQ(loaded_len, sizeof(raw));

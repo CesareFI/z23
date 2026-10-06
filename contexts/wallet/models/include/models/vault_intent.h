@@ -164,6 +164,8 @@ bool vault_intent_set_confirmation(
 bool vault_intent_expire_due(struct node_db *ndb, int64_t now_unix);
 bool vault_intent_store_raw(struct node_db *ndb, const uint8_t plan_id[32],
                             const uint8_t *raw_tx, size_t raw_tx_len);
+/* On failure, a non-NULL out_len is set to zero and out is unchanged.
+ * On success, out_len receives the copied raw transaction length. */
 bool vault_intent_load_raw(struct node_db *ndb, const uint8_t plan_id[32],
                            uint8_t *out, size_t out_cap, size_t *out_len);
 bool vault_intent_has_raw(struct node_db *ndb, const uint8_t plan_id[32]);

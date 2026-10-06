@@ -549,7 +549,10 @@ bool vault_intent_store_raw(struct node_db *ndb, const uint8_t plan_id[32],
 bool vault_intent_load_raw(struct node_db *ndb, const uint8_t plan_id[32],
                            uint8_t *out, size_t out_cap, size_t *out_len)
 {
-    if (!ndb || !ndb->open || !plan_id || !out || !out_len)
+    if (!out_len)
+        LOG_FAIL("vault_intent", "load_raw: missing output length");
+    *out_len = 0;
+    if (!ndb || !ndb->open || !plan_id || !out)
         LOG_FAIL("vault_intent", "load_raw: invalid argument");
     sqlite3_stmt *s = NULL;
     AR_PREPARE_BOOL(ndb, s,
