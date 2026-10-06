@@ -126,9 +126,28 @@ bool db_mesh_pairing_insert(struct node_db *ndb,
         AR_BIND_INT(st, 10, (int64_t)row->revocation_generation));
 }
 
-static void mesh_pairing_read(struct db_mesh_pairing *out, sqlite3_stmt *st)
+static bool mesh_pairing_columns_valid(sqlite3_stmt *st)
 {
-    memset(out, 0, sizeof(*out));
+    if (sqlite3_column_type(st, 0) != SQLITE_TEXT ||
+        sqlite3_column_bytes(st, 0) != MESH_PAIRING_ID_HEX)
+        LOG_FAIL("mesh_pairing", "read: malformed pairing id");
+    for (int column = 1; column <= 3; column++)
+        if (sqlite3_column_type(st, column) != SQLITE_BLOB ||
+            sqlite3_column_bytes(st, column) != 32)
+            LOG_FAIL("mesh_pairing", "read: malformed identity column %d", column);
+    for (int column = 4; column <= 9; column++)
+        if (sqlite3_column_type(st, column) != SQLITE_INTEGER ||
+            sqlite3_column_int64(st, column) < 0)
+            LOG_FAIL("mesh_pairing", "read: malformed integer column %d", column);
+    return true;
+}
+
+static bool mesh_pairing_read(struct db_mesh_pairing *published, sqlite3_stmt *st)
+{
+    if (!mesh_pairing_columns_valid(st))
+        LOG_FAIL("mesh_pairing", "read: stored authority columns refused");
+    struct db_mesh_pairing decoded = {0};
+    struct db_mesh_pairing *out = &decoded;
     AR_READ_STR(st, 0, out->pairing_id, sizeof(out->pairing_id));
     AR_READ_BLOB(st, 1, out->network_genesis, 32);
     AR_READ_BLOB(st, 2, out->peer_master_pubkey, 32);
@@ -139,6 +158,11 @@ static void mesh_pairing_read(struct db_mesh_pairing *out, sqlite3_stmt *st)
     out->expires_at = AR_COL_INT(st, 7);
     out->revoked_at = AR_COL_INT(st, 8);
     out->revocation_generation = (uint64_t)AR_COL_INT(st, 9);
+    struct ar_errors errors;
+    if (!db_mesh_pairing_validate(out, &errors))
+        LOG_FAIL("mesh_pairing", "read: invalid pairing authority");
+    *published = decoded;
+    return true;
 }
 
 #define MESH_PAIRING_COLS \
@@ -154,7 +178,11 @@ bool db_mesh_pairing_find(struct node_db *ndb, const char *pairing_id,
         return false;
     AR_QUERY_ONE_BOOL(ndb, st,
         "SELECT " MESH_PAIRING_COLS " FROM mesh_pairings WHERE pairing_id=?",
-        AR_BIND_TEXT(st, 1, pairing_id), mesh_pairing_read(out, st));
+        AR_BIND_TEXT(st, 1, pairing_id),
+        if (!mesh_pairing_read(out, st)) {
+            AR_FINALIZE(st);
+            LOG_FAIL("mesh_pairing", "find: malformed stored pairing authority");
+        });
 }
 
 int db_mesh_pairing_list(struct node_db *ndb, struct db_mesh_pairing *out,
@@ -177,7 +205,7 @@ int db_mesh_pairing_list_after(struct node_db *ndb, struct db_mesh_pairing *out,
             AR_BIND_INT(st, 1, (int64_t)max);
             AR_BIND_INT(st, 2, (int64_t)skip);
         } while (0),
-        mesh_pairing_read(&out[count], st));
+        if (!mesh_pairing_read(&out[count], st)) continue);
 }
 
 static bool mesh_pairing_read_checked(struct db_mesh_pairing *out,

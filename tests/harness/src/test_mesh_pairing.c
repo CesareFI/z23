@@ -1017,6 +1017,48 @@ static int test_mesh_pairing_malformed_row(unsigned which, unsigned layer)
     return failures;
 }
 
+static int test_mesh_pairing_malformed_authority(void)
+{
+    int failures = 0;
+    struct node_db ndb = {0};
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_pairing", "malformed-authority");
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    TEST("mesh pairing: malformed revocation authority is refused") {
+        struct vcs_zcode_dht_delegation delegation;
+        uint8_t fingerprint[32], genesis[32];
+        struct db_mesh_pairing row, out;
+        ASSERT(mesh_fixture(&ndb, path, &delegation, fingerprint, genesis));
+        ASSERT_EQ(mesh_pairing_service_accept(
+                      &ndb, genesis, &delegation, fingerprint,
+                      delegation.noise_static_pubkey, true,
+                      MESH_PAIRING_CAP_STATUS_READ, 2000, 3000, &row),
+                  MESH_PAIRING_OK);
+        ASSERT(db_mesh_pairing_find(&ndb, row.pairing_id, &out));
+        ASSERT_EQ(mesh_pairing_service_authorize_status(
+                      &ndb, genesis, row.pairing_id, &delegation,
+                      delegation.noise_static_pubkey, 2500), MESH_PAIRING_OK);
+        /* raw-sql-ok:test-fixture -- malformed authority in an isolated DB. */
+        ASSERT_EQ(sqlite3_exec(ndb.db,
+                      "UPDATE mesh_pairings SET revoked_at=X'01'",
+                      NULL, NULL, NULL), SQLITE_OK);
+        bool found = db_mesh_pairing_find(&ndb, row.pairing_id, &out);
+        int reason = mesh_pairing_service_authorize_status(
+            &ndb, genesis, row.pairing_id, &delegation,
+            delegation.noise_static_pubkey, 2500);
+        printf("[malformed found=%d authorization=%d] ", found, reason);
+        ASSERT(!found);
+        ASSERT(reason != MESH_PAIRING_OK);
+        ASSERT_EQ(db_mesh_pairing_list(&ndb, &out, 1), 0);
+        PASS();
+    }
+_test_next:
+    if (ndb.open)
+        node_db_close(&ndb);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_mesh_pairing(void)
 {
     int failures = 0;
@@ -1373,6 +1415,7 @@ int test_mesh_pairing(void)
     for (unsigned which = 0; which < 10; which++)
         for (unsigned layer = 0; layer < (which == 9 ? 1u : 3u); layer++)
             failures += test_mesh_pairing_malformed_row(which, layer);
+    failures += test_mesh_pairing_malformed_authority();
     failures += test_mesh_observation_interrupted_step();
     failures += test_mesh_roster_page();
     for (unsigned which = 0; which < 3; which++)
