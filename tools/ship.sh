@@ -328,11 +328,21 @@ ship_checkout_has_real_tor_archives() {
 # Epoch candidates are enumerated too, so a STALE epoch — bytes no live
 # alias holds — is still refused.
 ship_dev_artifact_paths() {
-    printf '%s\n' \
-        "${1:-.}/build/bin/z23.dev" \
-        "${1:-.}/build/bin/z23-dev" \
-        "${1:-.}/build/bin/zclassic23-dev"
-    ls -1 "${1:-.}"/build/bin/dev/epochs/*/zclassic23-dev 2>/dev/null || true
+    # A reader may close the pipe early — ship_dev_artifact_reach returns on
+    # the first alias that matches by inode or sha, and any consumer of this
+    # enumeration is entitled to break early too. SIGPIPE is therefore
+    # ignored inside the producer: with set -o pipefail a fatal SIGPIPE here
+    # kills the shell mid-selftest (observed in the proof pipeline as
+    # "line 331: printf: write error: Broken pipe" + selftest FAILED), while
+    # the ignored-signal write error is noise we already treat as optional.
+    (
+        trap '' PIPE
+        printf '%s\n' \
+            "${1:-.}/build/bin/z23.dev" \
+            "${1:-.}/build/bin/z23-dev" \
+            "${1:-.}/build/bin/zclassic23-dev"
+        ls -1 "${1:-.}"/build/bin/dev/epochs/*/zclassic23-dev 2>/dev/null || true
+    ) 2>/dev/null || true
 }
 
 # Echo the reach and return 0 when $1 IS the dev artifact under any of those
@@ -594,6 +604,35 @@ if [ "${1:-}" = "--selftest" ] || [ "${1:-}" = "--selftest-dev-guard" ]; then
     # group invokes it directly (--selftest-dev-guard); the full selftest
     # runs the same function on a subdirectory of its own sandbox. The
     # caller owns the fixture directory's lifetime.
+    # The FIFO acknowledgement orders closure before enumeration without a
+    # clock assumption. The second case closes after one line, like reach.
+    ship_selftest_early_close_reader() {
+        local g="$1" mode="$2" ready line
+        ready="$g/reader-closed"
+        mkfifo "$ready" || die 'cannot create early-close acknowledgement'
+        if (
+            if [ "$mode" = first-line ]; then
+                printf 'reader readiness\n' || exit 1
+            fi
+            IFS= read -r line < "$ready" || exit 1
+            [ "$line" = closed ] || exit 1
+            ship_dev_artifact_paths "$g"
+        ) 2> "$g/producer-error" | (
+            if [ "$mode" = first-line ]; then
+                IFS= read -r line || exit 1
+                [ "$line" = 'reader readiness' ] || exit 1
+            fi
+            exec 0<&-
+            printf 'closed\n' > "$ready"
+        ); then
+            [ ! -s "$g/producer-error" ] || die "enumeration producer reported a write error ($mode)"
+            rm "$ready" "$g/producer-error" || die 'cannot remove early-close acknowledgement'
+            say "  early-close reader ($mode): enumeration producer survives broken pipes"
+        else
+            die "enumeration producer failed on early-close reader ($mode)"
+        fi
+    }
+
     ship_selftest_dev_guard() {
         local g="$1" bin
         bin="$g/build/bin"
@@ -634,6 +673,8 @@ if [ "${1:-}" = "--selftest" ] || [ "${1:-}" = "--selftest-dev-guard" ]; then
         ln -sfn z23.release "$bin/z23"
         refute ship_dev_artifact_reach "$bin/z23" "$g"
         refute ship_dev_artifact_reach "$bin/absent" "$g"
+        ship_selftest_early_close_reader "$g" before-write
+        ship_selftest_early_close_reader "$g" first-line
     }
     if [ "${1:-}" = "--selftest-dev-guard" ]; then
         devguard_root="$(mktemp -d "$(ship_scratch_root)/z23-ship-selftest.XXXXXX")"
