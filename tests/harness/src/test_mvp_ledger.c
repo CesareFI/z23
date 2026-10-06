@@ -14,6 +14,7 @@
 #include "test/test_core.h"
 
 #include "mvp_ledger.h"
+#include "mvp_ledger_internal.h"
 #include "json/json.h"
 #include "zutf8/zutf8.h"
 
@@ -1422,9 +1423,35 @@ _test_next:;
     return failures;
 }
 
+static int test_mvp_ledger_fresh_error(void)
+{
+    int failures = 0;
+    TEST("only an absent or readable empty ledger is fresh") {
+        char tmp[PATH_MAX], path[PATH_MAX], missing[PATH_MAX];
+        ASSERT(test_mkdtemp(tmp, sizeof(tmp), "mvlfresh") != NULL);
+        (void)snprintf(path, sizeof(path), "%s/ledger", tmp);
+        (void)snprintf(missing, sizeof(missing), "%s/missing", tmp);
+        ASSERT(mvl_ledger_is_fresh(missing));
+        mvl_write_file(tmp, "ledger", "");
+        ASSERT(mvl_ledger_is_fresh(path));
+        mvl_write_file(tmp, "ledger", "header\n");
+        ASSERT(!mvl_ledger_is_fresh(path));
+        /* On this POSIX host fopen succeeds on a directory, then fgetc
+         * returns EOF with ferror: that is unreadable, not an empty file. */
+        ASSERT(!mvl_ledger_is_fresh(tmp));
+        (void)snprintf(missing, sizeof(missing), "%s/ledger/child", tmp);
+        ASSERT(!mvl_ledger_is_fresh(missing));
+        test_rm_rf_recursive(tmp);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
 int test_mvp_ledger(void)
 {
     int failures = 0;
+    failures += test_mvp_ledger_fresh_error();
     failures += test_mvp_ledger_classify();
     failures += test_mvp_ledger_agents();
     failures += test_mvp_ledger_meta_extent();

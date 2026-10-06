@@ -6,6 +6,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "mvp_ledger.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -256,12 +257,23 @@ bool mvl_ledger_is_fresh(const char *path)
 {
     FILE *f = fopen(path, "r");
     int c;
+    bool fresh;
 
-    if (!f)
-        return true;
+    if (!f) {
+        if (errno == ENOENT)
+            return true;
+        fprintf(stderr, "%s: mvl_open: cannot inspect ledger\n", path);
+        return false;
+    }
     c = fgetc(f);
-    (void)fclose(f);
-    return c == EOF;
+    fresh = c == EOF && !ferror(f);
+    if (ferror(f))
+        fprintf(stderr, "%s: mvl_read_error: cannot inspect ledger\n", path);
+    if (fclose(f) != 0) {
+        fprintf(stderr, "%s: mvl_close: cannot close ledger\n", path);
+        return false;
+    }
+    return fresh;
 }
 
 /* ── the XP game: bounded tables ──────────────────────────────────────── */
