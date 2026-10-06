@@ -3506,14 +3506,15 @@ static int pv_zbuild_compile_mode(int argc, char **argv)
         return rc;
     char input_sha3_hex[65];
     zcl_hex_encode(input_after, 32, input_sha3_hex);
-    fprintf(stdout,
+    static const char format[] =
 #if defined(__APPLE__)
             "zbuild-ok=1 seatbelt=1 rlimits=1 network=0 "
 #else
             "zbuild-ok=1 landlock=1 seccomp=1 rlimits=1 network=0 "
 #endif
             "compiler=%s bytes=%lld input_sha3=%s observed_reads=3 "
-            "observed_writes=1\n",
+            "observed_writes=1\n";
+    fprintf(stdout, format,
             VCS_BUILD_COMPILER_V1, (long long)output_st.st_size,
             input_sha3_hex);
     return 0;
@@ -3758,13 +3759,14 @@ static int pv_zbuild_test_mode(int argc, char **argv)
         (void)unlink(output);
         return 5;
     }
-    fprintf(stdout,
+    static const char format[] =
             "zbuild-test-ok=1 verdict=%s exit=%d signal=%d timeout=%d "
 #if defined(__APPLE__)
-            "seatbelt=1 rlimits=1 network=0\n",
+            "seatbelt=1 rlimits=1 network=0\n";
 #else
-            "landlock=1 seccomp=1 rlimits=1 network=0\n",
+            "landlock=1 seccomp=1 rlimits=1 network=0\n";
 #endif
+    fprintf(stdout, format,
             run.exited && run.exit_code == 0 && !run.timed_out &&
                     run.term_signal == 0
                 ? "pass" : "fail",
@@ -4090,13 +4092,14 @@ static int pv_zbuild_fuzz_mode(int argc, char **argv)
         (void)unlink(output);
         return 5;
     }
-    fprintf(stdout,
+    static const char format[] =
             "zbuild-fuzz-ok=1 verdict=%s seeds=%u completed=%u "
 #if defined(__APPLE__)
-            "seatbelt=1 rlimits=1 network=0\n",
+            "seatbelt=1 rlimits=1 network=0\n";
 #else
-            "landlock=1 seccomp=1 rlimits=1 network=0\n",
+            "landlock=1 seccomp=1 rlimits=1 network=0\n";
 #endif
+    fprintf(stdout, format,
             v.status == 1 ? "pass" : "fail", seeds, v.completed);
     return 0;
 }
