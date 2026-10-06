@@ -32,16 +32,26 @@ vendor, a package registry, or a hosted service.
 
 ![A user-owned Z23 node containing a full node and C23 Commons, with replaceable AI workers outside its authority boundary](docs/assets/z23-hero.svg)
 
+## At a glance
+
+| You want to | Start with | Read next |
+| --- | --- | --- |
+| Run your own ZClassic node | [Public start here](#public-start-here), then [Run a node](#run-a-node) | [Getting Started](docs/GETTING_STARTED.md) |
+| Reach the chain tip sooner | [What reaching the tip actually costs](#what-reaching-the-tip-actually-costs) | [Sync](docs/SYNC.md) |
+| Share and reuse C23 source | [The C23 Commons](#the-c23-commons) | [Commons Quickstart](docs/C23_COMMONS_QUICKSTART.md) |
+| Change Z23 itself | [Working on Z23 itself](#working-on-z23-itself) | [Developing](docs/DEVELOPING.md) |
+| Attach a coding agent | [Connect coding agents](#connect-coding-agents) | [AGENTS.md](AGENTS.md) |
+
 ## Public start here
 
 ```bash
 git clone --recurse-submodules https://github.com/z23c/z23.git
 cd z23
-make doctor-env
-make doctor
-make setup
-make -j"$(getconf _NPROCESSORS_ONLN)" z23
-build/bin/z23 discover help
+make doctor-env    # can this compiler build C23?
+make doctor        # what this host still needs, with the command that installs it
+make setup         # arm this clone's git hooks and write compile_commands.json
+make -j"$(getconf _NPROCESSORS_ONLN)" z23 # first run fetches and checksum-verifies pinned sources
+build/bin/z23 discover help    # the program lists its own commands
 ```
 
 On Linux that needs `gcc` 14+ (or `clang` with working `-std=c23`), GNU
@@ -119,6 +129,12 @@ plus `-fileservice=HOST` to pull the header seed and state bundle from that
 host's file service. Every path, with its measured evidence, is in
 [Sync](docs/SYNC.md).
 
+| Path | You need | Time to tip | Standing |
+| --- | --- | --- | --- |
+| Full P2P sync from genesis | nothing extra | hours | the default |
+| A peer's signed state offer | a peer with a fresh offer | short | built and code-tested; not yet the proven everyday path |
+| Import from `zclassicd` | an existing legacy datadir | short | today's proven cold start |
+
 ## Consensus parity is the inviolable target
 
 Z23 shares one network with the legacy `zclassicd` clients: same P2P protocol,
@@ -179,6 +195,8 @@ rooms in `contexts`, what the system needs from the outside world in
 modules live beneath the authority that owns them, and the build refuses a file
 placed outside its room; `build/bin/z23 code context-map` prints the view it
 generates.
+
+![Six steps from describing software to sharing it, with the visible result as the decision point](docs/assets/z23-journey.svg)
 
 Building software here runs DESCRIBE → REUSE → CREATE → SEE → KEEP → SHARE, so
 seeing the consequence comes before deciding to keep it. `zhello` is the

@@ -38,7 +38,7 @@
     <path d="M607 274H694M607 290H669M607 306H710" stroke="#a78bfa" stroke-width="4"/>
     <path d="M722 202L738 218L766 187" fill="none" stroke="#3ddc97" stroke-width="7"/>
     <path d="M722 274L738 290L766 259" fill="none" stroke="#3ddc97" stroke-width="7"/>
-    <text x="676" y="341" text-anchor="middle" font-size="13" font-weight="800" letter-spacing="1.4" fill="#86edbd">INDEPENDENT REPRODUCTION</text>
+    <text x="660" y="408" text-anchor="middle" font-size="13" font-weight="800" letter-spacing="1.4" fill="#86edbd">INDEPENDENT REPRODUCTION</text>
     <path d="M764 345L840 422" stroke="#3ddc97" stroke-width="14" stroke-linecap="round"/>
     <path d="M764 345L840 422" stroke="#86edbd" stroke-width="4" stroke-linecap="round"/>
 

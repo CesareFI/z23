@@ -42,12 +42,12 @@
     <text x="287" y="343" font-size="16" fill="#b9d9ff">P2P · WALLET · RPC</text>
     <text x="287" y="369" font-size="15" fill="#97a3b6">consensus comes first</text>
 
-    <text x="588" y="187" font-size="13" font-weight="760" letter-spacing="2" fill="#a78bfa">SYSTEM 02 · OPTIONAL</text>
-    <text x="588" y="235" font-size="30" font-weight="780" fill="#e9eef6">C23</text>
-    <text x="588" y="270" font-size="30" font-weight="780" fill="#e9eef6">COMMONS</text>
-    <path d="M589 307H742" stroke="#a78bfa" stroke-width="4"/>
-    <text x="588" y="343" font-size="16" fill="#d8cdfd">SOURCE · EVIDENCE</text>
-    <text x="588" y="369" font-size="15" fill="#97a3b6">locally admitted</text>
+    <text x="624" y="187" font-size="13" font-weight="760" letter-spacing="2" fill="#a78bfa">SYSTEM 02 · OPTIONAL</text>
+    <text x="624" y="235" font-size="30" font-weight="780" fill="#e9eef6">C23</text>
+    <text x="624" y="270" font-size="30" font-weight="780" fill="#e9eef6">COMMONS</text>
+    <path d="M625 307H778" stroke="#a78bfa" stroke-width="4"/>
+    <text x="624" y="343" font-size="16" fill="#d8cdfd">SOURCE · EVIDENCE</text>
+    <text x="624" y="369" font-size="15" fill="#97a3b6">locally admitted</text>
 
     <circle cx="549" cy="309" r="54" fill="url(#hero-gate)" stroke="#f0b44c" stroke-width="2"/>
     <circle cx="549" cy="309" r="34" fill="#0d1219" stroke="#f0b44c" stroke-width="2"/>
@@ -71,12 +71,12 @@
 
     <text x="90" y="427" text-anchor="middle" font-size="14" font-weight="750" fill="#e9eef6">ACCEPT</text>
     <text x="90" y="449" text-anchor="middle" font-size="14" font-weight="750" fill="#e9eef6">OR REFUSE</text>
-    <path d="M127 436H218" stroke="#3ddc97" stroke-width="2"/>
+    <path d="M142 436H218" stroke="#3ddc97" stroke-width="2"/>
 
-    <path d="M805 91L826 127" fill="none" stroke="#69748a" stroke-width="2" stroke-dasharray="5 7" marker-end="url(#hero-proposal)"/>
-    <circle cx="775" cy="64" r="20" fill="#10151e" stroke="#69748a" stroke-width="2" stroke-dasharray="4 4"/>
-    <circle cx="729" cy="77" r="12" fill="#10151e" stroke="#69748a" stroke-width="2" stroke-dasharray="4 4"/>
-    <circle cx="814" cy="89" r="10" fill="#10151e" stroke="#69748a" stroke-width="2" stroke-dasharray="4 4"/>
+    <path d="M768 104L822 127" fill="none" stroke="#69748a" stroke-width="2" stroke-dasharray="5 7" marker-end="url(#hero-proposal)"/>
+    <circle cx="716" cy="70" r="20" fill="#10151e" stroke="#69748a" stroke-width="2" stroke-dasharray="4 4"/>
+    <circle cx="672" cy="84" r="12" fill="#10151e" stroke="#69748a" stroke-width="2" stroke-dasharray="4 4"/>
+    <circle cx="756" cy="96" r="10" fill="#10151e" stroke="#69748a" stroke-width="2" stroke-dasharray="4 4"/>
     <text x="902" y="42" text-anchor="end" font-size="13" font-weight="760" letter-spacing="1.2" fill="#97a3b6">AI WORKERS</text>
     <text x="902" y="62" text-anchor="end" font-size="13" fill="#69748a">propose from outside</text>
 

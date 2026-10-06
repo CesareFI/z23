@@ -26,20 +26,20 @@
 
     <g font-size="14" font-weight="780" letter-spacing="1.3">
       <circle cx="76" cy="293" r="8" fill="#5ea8ff"/>
-      <text x="57" y="267" fill="#b9d9ff">01 · DESCRIBE</text>
-      <text x="57" y="323" font-size="13" font-weight="500" letter-spacing="0" fill="#97a3b6">what should happen</text>
+      <text x="57" y="328" fill="#b9d9ff">01 · DESCRIBE</text>
+      <text x="57" y="349" font-size="13" font-weight="500" letter-spacing="0" fill="#97a3b6">what should happen</text>
 
       <circle cx="202" cy="193" r="8" fill="#3ddc97"/>
-      <text x="202" y="164" text-anchor="middle" fill="#86edbd">02 · REUSE</text>
-      <text x="202" y="224" text-anchor="middle" font-size="13" font-weight="500" letter-spacing="0" fill="#97a3b6">existing C23 first</text>
+      <text x="202" y="146" text-anchor="middle" fill="#86edbd">02 · REUSE</text>
+      <text x="202" y="167" text-anchor="middle" font-size="13" font-weight="500" letter-spacing="0" fill="#97a3b6">existing C23 first</text>
 
       <circle cx="279" cy="357" r="8" fill="#a78bfa"/>
       <text x="255" y="443" text-anchor="middle" fill="#d8cdfd">03 · CREATE</text>
       <text x="255" y="466" text-anchor="middle" font-size="13" font-weight="500" letter-spacing="0" fill="#97a3b6">only what is missing</text>
 
       <circle cx="798" cy="227" r="8" fill="#f2708a"/>
-      <text x="798" y="198" text-anchor="middle" fill="#fac0cc">05 · KEEP</text>
-      <text x="798" y="259" text-anchor="middle" font-size="13" font-weight="500" letter-spacing="0" fill="#97a3b6">one exact version</text>
+      <text x="798" y="180" text-anchor="middle" fill="#fac0cc">05 · KEEP</text>
+      <text x="798" y="201" text-anchor="middle" font-size="13" font-weight="500" letter-spacing="0" fill="#97a3b6">one exact version</text>
 
       <circle cx="898" cy="365" r="8" fill="#3ddc97"/>
       <text x="898" y="412" text-anchor="end" fill="#86edbd">06 · SHARE</text>
