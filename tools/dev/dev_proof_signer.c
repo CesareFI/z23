@@ -266,19 +266,29 @@ struct signer_allow_scan {
     bool found_target;
 };
 
-static void signer_allow_line(const char *line,
+static size_t signer_allow_end(const char *line, size_t start, size_t end)
+{
+    while (end > start && (line[end - 1] == ' ' || line[end - 1] == '\t' ||
+                           line[end - 1] == '\r'))
+        end--;
+    return end;
+}
+
+static void signer_allow_line(const char *line, size_t end,
                               const uint8_t *target,
                               const uint8_t *own, bool own_present,
                               struct signer_allow_scan *scan)
 {
     uint8_t key[ZCL_DEV_PROOF_SIGNER_PUBKEY_BYTES];
-    size_t start = 0, end = strlen(line);
+    size_t start = 0;
     char text[ZCL_DEV_PROOF_SIGNER_PUBKEY_HEX];
+    if (memchr(line, 0, end)) {
+        scan->malformed++;
+        return;
+    }
     while (start < end && (line[start] == ' ' || line[start] == '\t'))
         start++;
-    while (end > start && (line[end - 1] == ' ' || line[end - 1] == '\t' ||
-                           line[end - 1] == '\r'))
-        end--;
+    end = signer_allow_end(line, start, end);
     if (start == end || line[start] == '#')
         return; /* blank and comment lines are neither trusted nor malformed */
     size_t len = end - start;
@@ -343,10 +353,8 @@ static bool signer_allow_scan(const uint8_t *target, const uint8_t *own,
     for (size_t i = 0; i <= (size_t)size; i++) {
         if (i != (size_t)size && text[i] != '\n')
             continue;
-        char saved = text[i];
-        text[i] = 0;
-        signer_allow_line(text + begin, target, own, own_present, scan);
-        text[i] = saved;
+        signer_allow_line(text + begin, i - begin, target, own, own_present,
+                          scan);
         begin = i + 1u;
     }
     free(text);

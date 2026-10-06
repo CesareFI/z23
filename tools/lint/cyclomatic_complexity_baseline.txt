@@ -3806,7 +3806,6 @@ tools/dev/dev_proof_budget.c:zcl_dev_proof_timing_parse_group_line:22
 tools/dev/dev_proof_receipt.c:verdict_payload_valid:16
 tools/dev/dev_proof_receipt.c:zcl_dev_proof_receipt_parse:17
 tools/dev/dev_proof_receipt.c:zcl_dev_verdict_leaf_verify:16
-tools/dev/dev_proof_signer.c:signer_allow_line:17
 tools/dev/dev_workspace.c:cycle_record_read_named:23
 tools/dev/dev_workspace.c:cycle_state_write_impl:41
 tools/dev/dev_workspace.c:zcl_devloop_cycle_state_read:18

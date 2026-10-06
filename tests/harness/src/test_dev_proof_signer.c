@@ -295,6 +295,19 @@ static int test_dps_allowlist(void)
         ASSERT(strcmp(why, "signer_unknown") == 0);
 
         ASSERT(dps_allow_path(allow, sizeof(allow)));
+        /* The full physical record, including bytes after NUL, decides trust. */
+        for (unsigned lf = 0; lf < 2; lf++) {
+            int bad_len = snprintf(line, sizeof(line), "%s%cgarbage%s",
+                                   hex, 0, lf ? "\n" : "");
+            ASSERT(bad_len > 0 && (size_t)bad_len < sizeof(line));
+            ASSERT(dps_write(allow, line, (size_t)bad_len, 0600));
+            ASSERT(!dps_validate(&parsed, why, sizeof(why)));
+            ASSERT(strcmp(why, "signer_unknown") == 0);
+            struct zcl_dev_proof_allowlist_state bad;
+            ASSERT(zcl_dev_proof_signer_allowlist_state(&bad, &why_token));
+            ASSERT(bad.present && bad.trusted == 0 && bad.malformed == 1);
+            ASSERT(!bad.self_listed);
+        }
         /* Malformed and commented lines are counted and skipped; the trusted
          * key may be the last line with no trailing newline. */
         int n = snprintf(line, sizeof(line),
