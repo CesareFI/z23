@@ -294,31 +294,39 @@ static bool session_dir_trusted(const char *root)
            S_ISDIR(st.st_mode) && owner_only(&st);
 }
 
+static ssize_t session_body_read(int fd, char body[256], struct stat *st)
+{
+    bool trusted = fstat(fd, st) == 0 && S_ISREG(st->st_mode) &&
+                   st->st_nlink == 1 && owner_only(st) &&
+                   st->st_size > 0 && st->st_size < 256;
+    ssize_t got = trusted ? pread(fd, body, 256, 0) : -1;
+    bool closed = close(fd) == 0;
+    if (!trusted || !closed || got != st->st_size || memchr(body, 0, (size_t)got))
+        return -1;
+    body[got] = 0;
+    return got;
+}
+
 static bool session_read(const char *root, int64_t pid,
                          struct session_record *rec)
 {
     char path[PATH_MAX], body[256];
-    struct stat st;
+    *rec = (struct session_record){0};
     if (!session_path(root, pid, path) || !session_dir_trusted(root))
         return false;
     int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0)
         return false;
-    bool trusted = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
-                   st.st_nlink == 1 && owner_only(&st);
-    if (trusted)
-        rec->file = st;
-    ssize_t got = trusted ? pread(fd, body, sizeof(body) - 1, 0) : -1;
-    (void)close(fd);
+    ssize_t got = session_body_read(fd, body, &rec->file);
     if (got <= 0)
         return false;
-    body[got] = 0;
     long long recorded = 0;
     unsigned long long token = 0;
     int used = 0;
     if (sscanf(body, SESSION_SCHEMA " %lld %llu %63s %llu %llu%n", &recorded,
                &token, rec->boot, &rec->exe_dev, &rec->exe_ino, &used) != 5 ||
-        recorded != pid || token == 0 || strcmp(body + used, "\n") != 0)
+        recorded != pid || token == 0 ||
+        !(used == got || (used + 1 == got && body[used] == '\n')))
         return false;
     rec->born = token;
     return true;

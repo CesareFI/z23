@@ -9027,6 +9027,49 @@ static bool dp_tamper_record(const char *root, const char *path,
     return false;
 }
 
+static int test_watch_session_record_extent(void)
+{
+    int failures = 0, fd = -1;
+    struct dp_fake_watch fake = {0};
+    char root[PATH_MAX] = {0}, path[PATH_MAX], body[300];
+    TEST("dev platform: session records refuse hidden tails and accept complete EOF records") {
+#if !defined(__linux__)
+        PASS();
+        goto _test_next;
+#endif
+        ASSERT(dp_watch_session_root(root, "watch-extent"));
+        ASSERT(dp_fake_watch_start(root, 30000, &fake));
+        ASSERT(dp_record_path(root, fake.watcher, path));
+        for (int row = 0; row < 6; row++) {
+            ASSERT(zcl_devloop_watch_session_record(root, fake.watcher));
+            fd = open(path, O_RDWR | O_CLOEXEC);
+            ASSERT(fd >= 0);
+            ssize_t n = read(fd, body, 255);
+            ASSERT(n > 1 && n < 255);
+            size_t len = (size_t)n;
+            if (row == 1) { body[len++] = 0; body[len++] = 'x'; }
+            if (row == 2) len--; /* Complete record at EOF. */
+            if (row == 3) body[len++] = 'x';
+            if (row == 4) { memset(body + len, 'x', 300 - len); len = 300; }
+            if (row == 5) len -= 2; /* Incomplete last scalar. */
+            ASSERT(ftruncate(fd, 0) == 0);
+            ASSERT(pwrite(fd, body, len, 0) == (ssize_t)len);
+            int rc = close(fd);
+            fd = -1;
+            ASSERT(rc == 0);
+            ASSERT_EQ((int)zcl_devloop_watch_session_probe(root, fake.watcher),
+                      row == 0 || row == 2
+                          ? (int)ZCL_DEVLOOP_WATCH_SESSION_LIVE
+                          : (int)ZCL_DEVLOOP_WATCH_SESSION_ABSENT);
+        }
+        PASS();
+    } _test_next:;
+    if (fd >= 0) (void)close(fd);
+    dp_fake_watch_reap(&fake);
+    if (root[0]) (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
 static int test_watch_session_untrusted_record_pruned(void)
 {
     int failures = 0;
@@ -9361,6 +9404,7 @@ static const struct dp_shard_case g_dp_cases[] = {
     DP_CASE(test_watch_session_refuses_unproven_pid, 1),
     DP_CASE(test_watch_session_unproven_record_kept, 1),
     DP_CASE(test_watch_session_untrusted_record_pruned, 0),
+    DP_CASE(test_watch_session_record_extent, 0),
     DP_CASE(test_watch_session_stop_binds_birth, 3),
     DP_CASE(test_watch_session_reused_pid_other_user, 6),
     DP_CASE(test_watch_session_forget_spares_rewritten_record, 7),
@@ -9493,7 +9537,7 @@ static int test_dev_platform_platform_arm(void)
         owned += counts[i];
         nonempty &= counts[i] > 0;
     }
-    if (DP_CASE_COUNT != 64u + (unsigned)(
+    if (DP_CASE_COUNT != 65u + (unsigned)(
 #if defined(__APPLE__)
             1
 #else
