@@ -9456,6 +9456,69 @@ static int test_watch_session_abort_child(void)
     return failures;
 }
 
+extern bool zcl_devloop_restart_response_stream_test(FILE *, FILE *);
+
+static bool dp_response_output(FILE *out, const char *bytes, size_t length)
+{
+    char result[4097] = {0};
+    size_t wanted = length == 4095 ? 4096 : 4;
+    if (fseek(out, 0, SEEK_SET) != 0 ||
+        fread(result, 1, sizeof(result), out) != wanted)
+        return false;
+    return length == 4095 ? memcmp(result, bytes, length) == 0 &&
+                           result[length] == '\n' :
+                           memcmp(result, "a\nb\n", 4) == 0;
+}
+
+static FILE *dp_response_fixture(void)
+{
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof(path), "restart-response");
+    if (fd < 0)
+        return NULL;
+    FILE *stream = fdopen(fd, "w+b");
+    if (!stream)
+        (void)close(fd);
+    if (unlink(path) != 0) {
+        if (stream)
+            (void)fclose(stream);
+        return NULL;
+    }
+    return stream;
+}
+
+static bool dp_response_bytes(const char *bytes, size_t length, bool expected)
+{
+    FILE *in = dp_response_fixture(), *out = dp_response_fixture();
+    bool ok = false;
+    if (in && out && fwrite(bytes, 1, length, in) == length &&
+        fseek(in, 0, SEEK_SET) == 0) {
+        ok = zcl_devloop_restart_response_stream_test(in, out) == expected;
+        if (ok && expected)
+            ok = dp_response_output(out, bytes, length);
+    }
+    if (in) fclose(in);
+    if (out) fclose(out);
+    return ok;
+}
+
+static int test_restart_response_extent(void)
+{
+    int failures = 0;
+    TEST("dev platform: restart response refuses hidden or split tokens") {
+        char oversized[4097];
+        memset(oversized, 'x', 4096);
+        oversized[4096] = '\n';
+        ASSERT(dp_response_bytes(oversized, sizeof(oversized), false));
+        ASSERT(dp_response_bytes("a\0b\n", 4, false));
+        ASSERT(dp_response_bytes(" a\t b\n", 6, true));
+        ASSERT(dp_response_bytes("a b", 3, true));
+        ASSERT(dp_response_bytes(oversized, 4095, true));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Case identity and ownership are kept in one table. The registered base
  * group proves the partition; each child group runs its assigned cases. */
 struct dp_shard_case {
@@ -9465,6 +9528,7 @@ struct dp_shard_case {
 };
 #define DP_CASE(fn, owner) {#fn, fn, owner}
 static const struct dp_shard_case g_dp_cases[] = {
+    DP_CASE(test_restart_response_extent, 3),
     DP_CASE(test_failure_store, 5),
     DP_CASE(test_cycle_seal_batch, 5),
     DP_CASE(test_drive_wait_ignores_seal_lock, 5),
@@ -9639,7 +9703,7 @@ static int test_dev_platform_platform_arm(void)
         owned += counts[i];
         nonempty &= counts[i] > 0;
     }
-    if (DP_CASE_COUNT != 66u + (unsigned)(
+    if (DP_CASE_COUNT != 67u + (unsigned)(
 #if defined(__APPLE__)
             1
 #else

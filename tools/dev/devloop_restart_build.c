@@ -29,6 +29,7 @@
 #include "util/thread_registry.h"
 
 #include <errno.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
@@ -703,13 +704,41 @@ static bool rr_cache_key_base_reloc(const struct rr_plan *plan,
            rr_sha256_file(full, hash_out);
 }
 
+/* A token ends at whitespace or clean EOF; no shortened token is usable. */
+static int rr_response_token(FILE *f, char token[4096], size_t *length)
+{
+    *length = 0;
+    token[0] = 0;
+    int c;
+    do {
+        c = fgetc(f);
+    } while (c != EOF && isspace((unsigned char)c));
+    while (c != EOF && !isspace((unsigned char)c)) {
+        if (c == 0 || *length == 4095) {
+            fprintf(stderr, "restart response: NUL or oversized token\n");
+            token[0] = 0;
+            return -1;
+        }
+        token[(*length)++] = (char)c;
+        c = fgetc(f);
+    }
+    token[*length] = 0;
+    if (ferror(f)) {
+        fprintf(stderr, "restart response: input read failed\n");
+        return -1;
+    }
+    return *length ? 1 : 0;
+}
+
 static bool rr_cache_key_scan_inputs(FILE *f, const char *root,
                                      struct sha256_ctx *ctx)
 {
     char token[4096];
     bool ok = true;
-    while (ok && fscanf(f, "%4095s", token) == 1) {
-        rr_key_field(ctx, "link_input", token, strlen(token));
+    size_t length;
+    int status = 0;
+    while (ok && (status = rr_response_token(f, token, &length)) == 1) {
+        rr_key_field(ctx, "link_input", token, length);
         if (strncmp(token, "build/dev-loop/restart-objects/", 31) == 0 ||
             strncmp(token, "build/dev-loop/restart-test-objects/", 36) == 0) {
             char full[PATH_MAX], hash[65];
@@ -719,7 +748,7 @@ static bool rr_cache_key_scan_inputs(FILE *f, const char *root,
                 rr_key_field(ctx, "overlay_sha256", hash, strlen(hash));
         }
     }
-    return ok && !ferror(f);
+    return ok && status == 0;
 }
 
 static bool rr_cache_key(const struct rr_plan *plan, const char *root,
@@ -1230,7 +1259,9 @@ static bool rr_write_overlay_response_scan(FILE *in, FILE *dst,
     char token[4096], full[PATH_MAX];
     bool ok = true;
     *count = 0;
-    while (ok && fscanf(in, "%4095s", token) == 1) {
+    size_t length;
+    int status = 0;
+    while (ok && (status = rr_response_token(in, token, &length)) == 1) {
         bool overlay =
             strncmp(token, "build/dev-loop/restart-objects/", 31) == 0 ||
             strncmp(token, "build/dev-loop/restart-test-objects/", 36) == 0;
@@ -1241,7 +1272,7 @@ static bool rr_write_overlay_response_scan(FILE *in, FILE *dst,
         if (ok)
             (*count)++;
     }
-    return ok && *count > 0 && !ferror(in) && rr_flush_stream(dst);
+    return ok && status == 0 && *count > 0 && rr_flush_stream(dst);
 }
 
 static bool rr_write_overlay_response(const char *root, const char *rsp,
@@ -1604,7 +1635,9 @@ static bool rr_write_response_scan(const struct rr_plan *plan,
 {
     char token[4096];
     bool ok = true;
-    while (ok && fscanf(in, "%4095s", token) == 1) {
+    size_t length;
+    int status = 0;
+    while (ok && (status = rr_response_token(in, token, &length)) == 1) {
         char persistent_overlay[PATH_MAX];
         const char *write_path;
         rr_write_response_resolve(plan, root, overlays, overlay_count,
@@ -1613,7 +1646,17 @@ static bool rr_write_response_scan(const struct rr_plan *plan,
                                   unresolved);
         ok = fprintf(dst, "%s\n", write_path) > 0;
     }
-    return ok && !ferror(in) && rr_flush_stream(dst);
+    return ok && status == 0 && rr_flush_stream(dst);
+}
+
+/* Stream seam exercises the production response writer without a linker. */
+bool zcl_devloop_restart_response_stream_test(FILE *in, FILE *dst);
+bool zcl_devloop_restart_response_stream_test(FILE *in, FILE *dst)
+{
+    const struct rr_plan plan = {0};
+    bool seen = false, unresolved = false;
+    return rr_write_response_scan(&plan, ".", in, dst, NULL, 0,
+                                  "", &seen, &unresolved);
 }
 
 static bool rr_write_response_check_seen(const struct rr_overlay *overlays,
