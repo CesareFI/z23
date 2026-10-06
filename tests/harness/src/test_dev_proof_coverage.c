@@ -554,6 +554,44 @@ static int test_dpc_real_log_shape(void)
     return failures;
 }
 
+static int test_dpc_nul_record(void)
+{
+    int failures = 0;
+    char root[4096], store[4096], log_path[4096];
+    test_make_tmpdir(root, sizeof(root), "dev_proof_coverage", "nul");
+    dpc_isolate("nul");
+    (void)snprintf(store, sizeof(store), "%s/store", root);
+    (void)snprintf(log_path, sizeof(log_path), "%s/test.log", root);
+    uint8_t emitted[DPC_GROUPS][32];
+    TEST_CASE("dev_proof_coverage: NUL cannot hide the next refusal") {
+        ASSERT(dpc_fixture(store, log_path, emitted));
+        FILE *f = fopen(log_path, "ab");
+        ASSERT(f != NULL);
+        static const char tail[] = "x\0\nOBSERVATION REFUSE "
+            "group=test_coverage_alpha reason=bad\n";
+        ASSERT(fwrite(tail, 1, sizeof(tail) - 1, f) == sizeof(tail) - 1);
+        ASSERT(fclose(f) == 0);
+        struct zcl_dev_coverage_log_row rows[DPC_GROUPS];
+        uint32_t count = 0;
+        char why[160] = {0};
+        ASSERT(!zcl_dev_coverage_log_rows(log_path, DPC_GROUPS, rows,
+                                          DPC_GROUPS, &count, why, sizeof(why)));
+        ASSERT(strcmp(why, ZCL_DEV_COVERAGE_WHY_LOG_INVALID) == 0);
+        f = fopen(log_path, "wb");
+        ASSERT(f != NULL);
+        ASSERT(fputs("OBSERVATION UNQUALIFIED group=test_coverage_alpha "
+                     "reason=external_input_denylist coverage=missing", f) >= 0);
+        ASSERT(fclose(f) == 0);
+        ASSERT(zcl_dev_coverage_log_rows(log_path, 1, rows, DPC_GROUPS,
+                                         &count, why, sizeof(why)));
+        ASSERT(count == 1 && rows[0].unqualified);
+    }
+    TEST_END
+    dpc_restore();
+    (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
 static bool dpc_unqualified_line(FILE *f, const char *group,
                                  const char *coverage)
 {
@@ -817,6 +855,7 @@ int test_dev_proof_coverage(void)
     int failures = 0;
     failures += test_dpc_inspect();
     failures += test_dpc_real_log_shape();
+    failures += test_dpc_nul_record();
     failures += test_dpc_unqualified_rows();
     failures += test_dpc_round_trip();
     failures += test_dpc_zero_rows();

@@ -93,7 +93,9 @@ struct zcl_dev_coverage_binding {
  * under --collect-observations). An unqualified row still counts
  * toward the executed set; it carries no key and no root, and it refuses as
  * a conflict when the pair's CAS retains an eligible FAIL for that group.
- * An OBSERVATION REFUSE line refuses derivation. `expected` is the
+ * An OBSERVATION REFUSE line refuses derivation. An embedded NUL anywhere
+ * in the log refuses as invalid; a bounded complete final observation
+ * without LF is accepted at clean EOF. `expected` is the
  * receipt's test-dimension ran count; when it is zero, `log_path` is not
  * opened and zero rows parse. Rows are returned in first-seen log order;
  * the canonical blob sorts them. */

@@ -189,15 +189,30 @@ static bool cov_log_account_line(const char *at,
  * foreign line may be arbitrarily long (make echoes multi-kilobyte source
  * lists), so the tail of an over-long line is skipped as a continuation,
  * never mistaken for a line start and never a reason to refuse the log.
- * Only an over-long or unterminated canonical line is invalid. */
+ * Embedded NUL invalidates any record. A bounded final canonical record
+ * without LF is parsed at clean EOF; incomplete fields still refuse. */
 #define COV_LOG_LINE_BYTES 1024u
+static size_t cov_log_chunk(FILE *f, char line[COV_LOG_LINE_BYTES])
+{
+    size_t len = 0;
+    int byte;
+    while (len < COV_LOG_LINE_BYTES - 1u && (byte = fgetc(f)) != EOF) {
+        line[len++] = (char)byte;
+        if (byte == '\n') break;
+    }
+    line[len] = 0;
+    return len;
+}
+
 static bool cov_log_scan(FILE *f, struct zcl_dev_coverage_log_row *rows,
     uint32_t rows_cap, uint32_t *count, char *why, size_t why_len)
 {
     char line[COV_LOG_LINE_BYTES];
     bool continuation = false;
-    while (fgets(line, sizeof(line), f)) {
-        size_t len = strlen(line);
+    size_t len;
+    while ((len = cov_log_chunk(f, line)) != 0) {
+        if (memchr(line, 0, len))
+            return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_LOG_INVALID);
         bool terminated = len > 0 && line[len - 1] == '\n';
         bool line_start = !continuation;
         continuation = !terminated;
@@ -205,7 +220,7 @@ static bool cov_log_scan(FILE *f, struct zcl_dev_coverage_log_row *rows,
             cov_line_has_prefix(line, "OBSERVATION COVERAGE "))
             continue; /* group output, suite verdicts, the runner's own
                        * coverage summary */
-        if (!terminated)
+        if (!terminated && !(feof(f) && !ferror(f) && len < sizeof(line) - 1u))
             return cov_fail(why, why_len, ZCL_DEV_COVERAGE_WHY_LOG_INVALID);
         if (!cov_log_account_line(line, rows, count, rows_cap,
                                   why, why_len))
