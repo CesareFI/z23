@@ -37,6 +37,15 @@ static bool copy_str(char *dst, size_t cap, const char *v)
     return n >= 0 && (size_t)n < cap;
 }
 
+static bool copy_tu(char *dst, size_t cap, const char *v)
+{
+    if (copy_str(dst, cap, v))
+        return true;
+    dst[0] = '\0';
+    fprintf(stderr, "sem-replay: planner TU field exceeds capacity %zu\n", cap);
+    return false;
+}
+
 struct pctx {
     struct sr_plan *p;
     bool first_page;
@@ -48,7 +57,7 @@ struct pctx {
 
 static void row_flush(struct pctx *c)
 {
-    if (!c->row_open)
+    if (!c->row_open || c->failed)
         return;
     char line[1400];
     snprintf(line, sizeof(line), "%s\t%s\t%s\t%s", c->row_path, c->row_aff,
@@ -64,26 +73,18 @@ static bool on_tu(struct pctx *c, const char *path, const char *v)
     if (strstr(path, "tus[].") == NULL)
         return false;
     if (key_is(path, "tus[].path")) {
-        char tu_path[sizeof(c->row_path)];
-        if (!copy_str(tu_path, sizeof(tu_path), v)) {
-            c->failed = true;
-            c->row_open = false;
-            c->row_path[0] = '\0';
-            fprintf(stderr, "sem-replay: TU path exceeds response capacity\n");
-            return true;
-        }
         row_flush(c);
-        c->row_open = true;
-        memcpy(c->row_path, tu_path, strlen(tu_path) + 1);
+        c->failed |= !copy_tu(c->row_path, sizeof(c->row_path), v);
+        c->row_open = !c->failed;
         copy_str(c->row_aff, sizeof(c->row_aff), "?");
         copy_str(c->row_br, sizeof(c->row_br), "?");
         c->row_reason[0] = '\0';
     } else if (key_is(path, "tus[].affected")) {
-        copy_str(c->row_aff, sizeof(c->row_aff), v);
+        c->failed |= !copy_tu(c->row_aff, sizeof(c->row_aff), v);
     } else if (key_is(path, "tus[].broadened")) {
-        copy_str(c->row_br, sizeof(c->row_br), v);
+        c->failed |= !copy_tu(c->row_br, sizeof(c->row_br), v);
     } else if (key_is(path, "tus[].reason")) {
-        copy_str(c->row_reason, sizeof(c->row_reason), v);
+        c->failed |= !copy_tu(c->row_reason, sizeof(c->row_reason), v);
     }
     return true;
 }
@@ -256,6 +257,9 @@ static bool plan_page(const char *planner, const char *repo,
     if (!ok)
         snprintf(c->p->error, sizeof(c->p->error), "planner exit %d at offset %ld",
                  rc, offset);
+    if (c->failed)
+        snprintf(c->p->error, sizeof(c->p->error), "planner TU field overflow at offset %ld",
+                 offset);
     free(out);
     free(input);
     return ok;

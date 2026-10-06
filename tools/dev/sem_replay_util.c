@@ -444,6 +444,7 @@ bool sr_split_words(const char *line, size_t len, struct sr_strv *out)
 /* ── JSON flattening ──────────────────────────────────────────────────── */
 
 struct flat {
+    bool failed;
     char path[1024];
     size_t mark[ZJRP_MAX_DEPTH + 1]; /* path length at each level */
     bool array[ZJRP_MAX_DEPTH + 1];
@@ -490,16 +491,24 @@ static const char *flat_decode(struct flat *f, const char *text,
                                const zjsonp_event *ev)
 {
     size_t need = zjsonp_str_decode(text, ev, NULL, 0);
-    if (need == SIZE_MAX)
+    if (need == SIZE_MAX) {
+        f->failed = true;
         return "";
+    }
     if (need + 1 > f->scratch_cap) {
         char *nb = zcl_realloc(f->scratch, need + 1, "sem_replay_json_scratch");
-        if (nb == NULL)
+        if (nb == NULL) {
+            f->failed = true;
             return "";
+        }
         f->scratch = nb;
         f->scratch_cap = need + 1;
     }
-    (void)zjsonp_str_decode(text, ev, f->scratch, need + 1);
+    if (zjsonp_str_decode(text, ev, f->scratch, need + 1) != need ||
+        memchr(f->scratch, 0, need) != NULL) {
+        f->failed = true;
+        return "";
+    }
     f->scratch[need] = '\0';
     return f->scratch;
 }
@@ -518,7 +527,8 @@ static void flat_scalar(struct flat *f, const char *text,
     }
     if (f->depth > 0 && f->array[f->depth])
         flat_append(f, "[]", 2);
-    cb(ctx, f->path, value);
+    if (!f->failed)
+        cb(ctx, f->path, value);
     f->path[f->mark[f->depth]] = '\0';
 }
 
@@ -526,8 +536,10 @@ static void flat_key(struct flat *f, const char *text, const zjsonp_event *ev)
 {
     char key[256];
     size_t n = zjsonp_str_decode(text, ev, key, sizeof(key) - 1);
-    if (n == SIZE_MAX || n >= sizeof(key))
-        n = 0;
+    if (n == SIZE_MAX || n >= sizeof(key) || memchr(key, 0, n) != NULL) {
+        f->failed = true;
+        return;
+    }
     key[n] = '\0';
     f->path[f->mark[f->depth]] = '\0';
     flat_append(f, key, n);
@@ -549,8 +561,15 @@ bool sr_json_flatten(const char *text, size_t len, sr_json_cb cb, void *ctx)
             flat_key(&f, text, &ev);
         else
             flat_scalar(&f, text, &ev, cb, ctx);
+        if (f.failed)
+            break;
     }
     free(f.scratch);
+    if (f.failed) {
+        fprintf(stderr, "sem-replay: JSON string decode refused at byte %zu\n",
+                zjsonp_pos(&p));
+        return false;
+    }
     if (st != ZJRP_DONE)
         fprintf(stderr, "sem-replay: JSON %s at byte %zu\n",
                 zjsonp_status_name(st), zjsonp_pos(&p));

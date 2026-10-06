@@ -541,6 +541,142 @@ static int srt_tu_paths(const struct srt_fx *fx)
     return rc != 0;
 }
 
+/* Run the public plan reader with real JSON flattening and a fixed clock. */
+static bool srt_plan_probe(const struct srt_fx *fx)
+{
+    static const char source[] =
+        "/* Observe exact replay TU fields and page refusal. */\n"
+        "#include \"tools/dev/sem_replay_plan.c\"\n"
+        "#include \"platform/clock.h\"\n"
+        "int64_t clock_now_monotonic_ns(void) { return 0; }\n"
+        "int main(int argc, char **argv) {\n"
+        " struct sr_plan p; struct sr_strv files = {0};\n"
+        " if (argc != 2) return 2;\n"
+        " bool ok = sr_plan_run(argv[1], NULL, &files, \"facts\", NULL, &p);\n"
+        " printf(\"%d %d %zu %zu %s\\n\", ok, p.ok, p.tus_affected.n, p.tu_rows.n, p.error);\n"
+        " for (size_t i = 0; i < p.tu_rows.n; i++) puts(p.tu_rows.v[i]);\n"
+        " for (size_t i = 0; i < p.tus_affected.n; i++) puts(p.tus_affected.v[i]);\n"
+        " sr_plan_free(&p); return 0;\n"
+        "}\n";
+    char src[PATH_MAX + 32], bin[PATH_MAX + 32];
+    if (!srt_write(fx->tools, "plan-fields.c", source))
+        return false;
+    snprintf(src, sizeof src, "%s/plan-fields.c", fx->tools);
+    snprintf(bin, sizeof bin, "%s/plan-fields", fx->tools);
+    const char *cc[] = {"cc", "-std=c23", "-O1", "-D_DEFAULT_SOURCE",
+        "-D_POSIX_C_SOURCE=200809L", "-I.", "-Iplatform/modules/base/include",
+        "-Iplatform/modules/platform/include", "-Iplatform/modules/sha3/include",
+        "-Icontexts/commons/packages/zjsonp/include", "-Icontexts/commons/packages/zutf8/include",
+        "-o", bin, src, "tools/dev/sem_replay_util.c", "platform/modules/base/src/safe_alloc.c",
+        "platform/modules/sha3/src/sha3.c", "contexts/commons/packages/zjsonp/src/zjsonp.c",
+        "contexts/commons/packages/zutf8/src/zutf8.c", NULL};
+    int rc = srt_run(cc);
+    if (rc != 0)
+        printf("(plan field probe compile exit %d: %s) ", rc, g_srt_out);
+    return rc == 0;
+}
+
+static void srt_plan_expected(char expected[3600], const char *const v[4],
+                              size_t field, bool fits)
+{
+    if (!fits) {
+        snprintf(expected, 3600, "0 0 1 1 planner TU field overflow at offset 0\n"
+            "src/keep.c\ttrue\tfalse\tkeep\nsrc/keep.c\n");
+        return;
+    }
+    const char *first = "src/keep.c", *second = "src/next.c\n";
+    if (field == 0) { first = v[0]; second = "src/keep.c\n"; }
+    if (field == 1) second = "";
+    snprintf(expected, 3600, "1 1 %d 2 \nsrc/keep.c\ttrue\tfalse\tkeep\n"
+        "%s\t%s\t%s\t%s\n%s\n%s", field == 1 ? 1 : 2,
+        v[0], v[1], v[2], v[3], first, second);
+}
+
+/* The first valid row survives refusal; the oversized row and later rows do not. */
+static int srt_plan_field_case(const struct srt_fx *fx, size_t field, int length, bool fits)
+{
+    int failures = 0;
+    char value[1025], reply[1800], expected[3600];
+    char probe[PATH_MAX + 32], planner[PATH_MAX + 32];
+    const char *v[] = {"src/next.c", "true", "false", "changed"};
+    memset(value, 'a', (size_t)length);
+    value[length] = '\0';
+    v[field] = value;
+    snprintf(probe, sizeof probe, "%s/plan-fields", fx->tools);
+    snprintf(planner, sizeof planner, "%s/fx-fields", fx->tools);
+    const char *later = fits ? "" : ",{\"path\":\"src/later.c\",\"affected\":true,"
+        "\"broadened\":false,\"reason\":\"later\"}";
+    snprintf(reply, sizeof reply, SRT_ENVELOPE
+        "\"facts\":{\"tus\":[{\"path\":\"src/keep.c\",\"affected\":true,"
+        "\"broadened\":false,\"reason\":\"keep\"},"
+        "{\"path\":\"%s\",\"affected\":\"%s\",\"broadened\":\"%s\",\"reason\":\"%s\"}%s]}}}",
+        v[0], v[1], v[2], v[3], later);
+    srt_plan_expected(expected, v, field, fits);
+    TEST("replay plan reader preserves fitting TU fields and refuses overflow") {
+        printf("(field=%zu bytes=%d) ", field, length);
+        ASSERT(srt_write(fx->tools, "fx-fields.facts.json", reply));
+        const char *argv[] = {probe, planner, NULL};
+        ASSERT_EQ(srt_run(argv), 0);
+        const char *result = strstr(g_srt_out, expected);
+        ASSERT(result != NULL);
+        ASSERT_STR_EQ(result, expected);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+/* Refuse a malformed first row before it or a later row enters the plan. */
+static int srt_plan_decode_case(const struct srt_fx *fx, const char *key,
+                                size_t field, const char *value)
+{
+    int failures = 0;
+    char reply[1800], probe[PATH_MAX + 32], planner[PATH_MAX + 32];
+    const char *v[] = {"src/next.c", "true", "false", "changed"};
+    v[field] = value;
+    snprintf(probe, sizeof probe, "%s/plan-fields", fx->tools);
+    snprintf(planner, sizeof planner, "%s/fx-fields", fx->tools);
+    snprintf(reply, sizeof reply, SRT_ENVELOPE
+        "\"facts\":{\"tus\":[{\"%s\":\"%s\",\"affected\":\"%s\","
+        "\"broadened\":\"%s\",\"reason\":\"%s\"},"
+        "{\"path\":\"src/later.c\",\"affected\":true,"
+        "\"broadened\":false,\"reason\":\"later\"}]}}}",
+        key, v[0], v[1], v[2], v[3]);
+    TEST("replay plan reader refuses decoded NUL and invalid strings") {
+        printf("(key=%s field=%zu) ", key, field);
+        ASSERT(srt_write(fx->tools, "fx-fields.facts.json", reply));
+        const char *argv[] = {probe, planner, NULL};
+        ASSERT_EQ(srt_run(argv), 0);
+        const char *expected = "0 0 0 0 planner exit 0 at offset 0\n";
+        const char *result = strstr(g_srt_out, expected);
+        ASSERT(result != NULL);
+        ASSERT_STR_EQ(result, expected);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int srt_plan_fields(const struct srt_fx *fx)
+{
+    static const int caps[] = {1024, 8, 8, 128};
+    if (!srt_plan_probe(fx) || !srt_cc(fx, "fx-fields", k_planner))
+        return 1;
+    int failures = 0;
+    for (size_t i = 0; i < sizeof caps / sizeof caps[0]; i++) {
+        failures += srt_plan_field_case(fx, i, caps[i], false);
+        failures += srt_plan_field_case(fx, i, caps[i] - 1, true);
+        char value[1033] = "ok\\u0000";
+        memset(value + 8, 'a', (size_t)caps[i]);
+        value[8 + caps[i]] = '\0';
+        failures += srt_plan_decode_case(fx, "path", i, value);
+    }
+    failures += srt_plan_decode_case(fx, "path\\u0000suffix", 0, "src/next.c");
+    failures += srt_plan_decode_case(fx, "path", 3, "ok\xff");
+    failures += srt_plan_decode_case(fx, "path", 3, "ok\\ud800");
+    return failures;
+}
+
 /* Compile the real reader with deterministic read results and time. */
 static bool srt_reader_fixture(const struct srt_fx *fx, char bin[PATH_MAX])
 {
@@ -616,7 +752,8 @@ static bool srt_setup(struct srt_fx *fx)
     /* Without objcopy the replay cannot split code from debug changes and
      * files a changed object as unknown, which it treats as code. */
     fx->objcopy = srt_run(probe) == 0;
-    return srt_find_tool(fx) && srt_mkdir_p(fx->tools) && srt_reader_errors(fx) && srt_tu_paths(fx) == 0 && srt_tools(fx) && srt_history(fx);
+    return srt_find_tool(fx) && srt_mkdir_p(fx->tools) && srt_reader_errors(fx) && srt_tu_paths(fx) == 0 &&
+           srt_plan_fields(fx) == 0 && srt_tools(fx) && srt_history(fx);
 }
 
 /* ── running the replay ──────────────────────────────────────────────── */
