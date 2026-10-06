@@ -2316,3 +2316,46 @@ record and PR draft verify in the candidate's ignored
 `.cache/wallet-publication/` directory. The final manifest SHA256 is
 `5aee46103455293ca515f639818004e1e375af7126962fa82d7c4caba76fb240`.
 No external publication or reviewer-request action was attempted.
+
+### Wallet backup result-path admission candidate qualified
+
+Branch `agent/upstream-wallet-backup-output-path-bound-20261006`, signed head
+`6aa1690668d28b7ec4ada92b90365ea90fad562e`, stacks the independently
+qualified fleet fixture on upstream base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. Its wallet-only review is four
+files, +63/-18. `wallet_backup_run_once()` now constructs and admits the exact
+destination and caller-visible result path before directory creation or
+snapshot I/O. An internal path beyond the service bound or a caller result
+buffer too small for the complete path fails before a backup is written; an
+admitted path is copied byte-for-byte. Valid backup destinations, snapshot
+contents, table verification, no-overwrite behavior, durability, encryption,
+rotation, consensus, monetary policy, PoW, upgrade rules, transparent validity
+and shielded validity are unchanged.
+
+The deterministic RED regression shows the prior implementation returning
+success, writing a backup, and returning only an 8-byte truncated path. GREEN
+requires a non-ok result with an explanation and proves the destination remains
+empty with no success event. The focused wallet-backup and wallet-backup-port
+groups pass 2/2 with zero skips, and ASan/UBSan/LSan passes the same groups 2/2.
+Focused compilation uses GCC 14.2.0 and the sanitizer lane uses Clang 18.1.3.
+The admission refactor reduces `wbs_run_once_impl` complexity from 35 to 32 and
+only that shrink-only baseline pin changes. The cap gate covers 68,756
+functions; architecture covers five authorities, six contexts and 63 modules;
+documentation covers 612 Markdown files and 152 bound claims; package anatomy
+covers 80 packages; the generated inventory covers 1,517 capabilities and
+1,187 registered roots. The candidate-only security scan is CLEAN.
+
+The fresh unprivileged exact proof passes all 215 lint gates in 198.098s and all
+35 impact-selected groups in 215.245s. It is cold and records zero failures,
+skips, cache hits, unobserved cases or load-flaky outcomes, no eligible donor and
+`receipt_reused=false`; foreground time is 429.275s. Receipt SHA256 is
+`497b785b0f906a938e62ac0d5b79d0ea84970208a436af7bb1f52707ad098177`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-wallet-backup-output-path-proof-20261006`.
+
+Local bundle, wallet-only mbox, deterministic RED/GREEN and sanitizer logs,
+exact receipt and logs, CLEAN candidate-only security scan, qualification
+record and PR draft verify in the candidate's ignored
+`.cache/wallet-publication/` directory. The final manifest SHA256 is
+`5a093581ffac5cba293fe38a6ec55d77aff9a7db0f56989477ffc2e2190423de`.
+No external publication or reviewer-request action was attempted.
