@@ -342,6 +342,16 @@ int test_dev_train(void)
             if (strcmp(json_get_str(&paths->children[i]), "shared.txt") == 0)
                 saw_shared = true;
         ASSERT(saw_shared);
+        char stack_dir[700], conflict[8192];
+        ASSERT(snprintf(stack_dir, sizeof(stack_dir), "%s/z23-stackbeta",
+                        parent) < (int)sizeof(stack_dir));
+        const char *head[] = {"rev-parse", "--verify", "CHERRY_PICK_HEAD", NULL};
+        ASSERT(dvt_git_capture(stack_dir, head, conflict, sizeof(conflict)));
+        conflict[strcspn(conflict, "\r\n")] = '\0';
+        ASSERT_STR_EQ(conflict, sha_c1);
+        const char *unmerged[] = {"ls-files", "--unmerged", "--", "shared.txt", NULL};
+        ASSERT(dvt_git_capture(stack_dir, unmerged, conflict, sizeof(conflict)));
+        ASSERT(strstr(conflict, "\tshared.txt\n") != NULL);
         zcl_command_reply_free(&reply);
         json_free(&input);
         PASS();
