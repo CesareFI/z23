@@ -219,6 +219,37 @@ static int row_matches(const struct digest_row *row, const struct stat *st)
     return same_snapshot(&cached, st);
 }
 
+/* A cache row must be complete before any C-string parsing. */
+static int cache_read_line(FILE *file, char *line, size_t cap)
+{
+    size_t used = 0;
+    line[0] = '\0';
+    for (;;) {
+        int byte = fgetc(file);
+        if (byte == EOF) {
+            if (ferror(file)) return -1;
+            return used != 0;
+        }
+        if (byte == '\n') return 1;
+        if (byte == 0 || used + 1 >= cap) return -1;
+        line[used++] = (char)byte;
+        line[used] = '\0';
+    }
+}
+
+static void cache_release_path(char *path)
+{
+    free(path);
+}
+
+static void cache_discard(void)
+{
+    for (size_t i = 0; i < g_row_count; i++)
+        cache_release_path(g_rows[i].path);
+    g_row_count = 0;
+    fprintf(stderr, "source-identity-batch: incomplete digest cache discarded\n");
+}
+
 static void cache_load(void)
 {
     if (g_cache_ready)
@@ -228,20 +259,20 @@ static void cache_load(void)
     if (file == nullptr)
         return;
     char line[8192];
-    while (fgets(line, sizeof line, file) != nullptr) {
+    int status;
+    while ((status = cache_read_line(file, line, sizeof line)) > 0) {
         struct digest_row row;
         char hex[2 * ZSHA256_DIGEST_LEN + 1u];
         char path[4096];
         unsigned long long dev = 0, ino = 0, size = 0;
         unsigned int mode = 0;
         long long mtime_sec = 0, mtime_nsec = 0, ctime_sec = 0, ctime_nsec = 0;
+        int end = 0;
         int matched = sscanf(line,
-                             "%llu %llu %u %llu %lld %lld %lld %lld %64s %4095[^\n]",
+                             "%llu %llu %u %llu %lld %lld %lld %lld %64s %4095[^\n]%n",
                              &dev, &ino, &mode, &size, &mtime_sec, &mtime_nsec,
-                             &ctime_sec, &ctime_nsec, hex, path);
-        if (matched != 10 || strlen(hex) != 2 * ZSHA256_DIGEST_LEN)
-            continue;
-        if (strchr(path, '\n') != nullptr)
+                             &ctime_sec, &ctime_nsec, hex, path, &end);
+        if (matched != 10 || strlen(hex) != 2 * ZSHA256_DIGEST_LEN || line[end] != '\0')
             continue;
         memset(&row, 0, sizeof row);
         row.path = strdup(path);
@@ -256,7 +287,7 @@ static void cache_load(void)
         row.ctime_sec = (int64_t)ctime_sec;
         row.ctime_nsec = (int64_t)ctime_nsec;
         if (!zcl_hex_decode(hex, row.digest, ZSHA256_DIGEST_LEN)) {
-            free(row.path);
+            cache_release_path(row.path);
             continue;
         }
         if (g_row_count == g_row_cap) {
@@ -264,7 +295,7 @@ static void cache_load(void)
             struct digest_row *grown = zcl_realloc(g_rows, next * sizeof(*g_rows),
                                                    "digest cache");
             if (grown == nullptr) {
-                free(row.path);
+                cache_release_path(row.path);
                 continue;
             }
             g_rows = grown;
@@ -272,7 +303,8 @@ static void cache_load(void)
         }
         g_rows[g_row_count++] = row;
     }
-    fclose(file);
+    if (fclose(file) != 0) status = -1;
+    if (status < 0) cache_discard();
     if (g_row_count > 1)
         qsort(g_rows, g_row_count, sizeof(*g_rows), row_cmp);
     g_rows_sorted = 1;

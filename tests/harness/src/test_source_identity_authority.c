@@ -707,6 +707,52 @@ static int sia_include_search_semantics(void)
 }
 #endif
 
+#if !defined(_WIN32)
+/* Corrupt cache framing must not qualify metadata-matched digest reuse. */
+static int sia_digest_cache_framing(void)
+{
+    int failures = 0;
+    char work[512] = {0}, root[PATH_MAX], cmd[PATH_MAX * 3], out[256];
+    TEST("digest cache rejects NUL and continuation records") {
+        ASSERT(getcwd(root, sizeof(root)) != NULL);
+        test_make_tmpdir(work, sizeof(work), "sia", "cache-framing");
+        char path[PATH_MAX];
+        ASSERT(snprintf(path, sizeof(path), "%s/input", work) < (int)sizeof(path));
+        ASSERT(sia_write_file(path, "abc"));
+        ASSERT(snprintf(cmd, sizeof(cmd),
+            "cd '%s' && printf 'input\\0' | '%s/build/bin/source-identity-batch' "
+            "hash --cache cache --report-bytes 2>&1 | tr '\\000' '\\n'",
+            work, root) < (int)sizeof(cmd));
+        ASSERT(sia_capture(cmd, out, sizeof(out)));
+        ASSERT(strstr(out, "content_bytes_read=3") != NULL);
+        ASSERT(snprintf(path, sizeof(path), "%s/cache", work) < (int)sizeof(path));
+        FILE *f = fopen(path, "rb");
+        ASSERT(f != NULL);
+        char row[8192];
+        size_t n = fread(row, 1, sizeof(row), f);
+        bool complete = feof(f) && !ferror(f);
+        ASSERT_EQ(fclose(f), 0);
+        ASSERT(complete && n > 0 && row[n - 1] == '\n');
+        for (int kind = 0; kind < 5; kind++) {
+            f = fopen(path, "wb");
+            ASSERT(f != NULL);
+            if (kind == 4) ASSERT_EQ(fwrite(row, 1, n, f), n);
+            if (kind == 2) for (int i = 0; i < 8191; i++) ASSERT(fputc('x', f) != EOF);
+            ASSERT_EQ(fwrite(row, 1, n - 1, f), n - 1);
+            if (kind == 1 || kind == 4) ASSERT_EQ(fwrite("\0extra", 1, 6, f), 6);
+            if (kind != 3) ASSERT(fputc('\n', f) != EOF);
+            ASSERT_EQ(fclose(f), 0);
+            ASSERT(sia_capture(cmd, out, sizeof(out)));
+            ASSERT(strstr(out, kind == 1 || kind == 2 || kind == 4 ?
+                          "content_bytes_read=3" : "content_bytes_read=0") != NULL);
+        }
+        PASS();
+    } _test_next:;
+    if (work[0]) test_rm_rf_recursive(work);
+    return failures;
+}
+#endif
+
 int test_source_identity_authority(void)
 {
     int failures = 0;
@@ -718,6 +764,7 @@ int test_source_identity_authority(void)
     failures += sia_healthcheck_reader_refuses_ambiguity();
     failures += sia_precommit_source_action();
 #if !defined(_WIN32)
+    failures += sia_digest_cache_framing();
     failures += sia_include_namespace_closure();
     failures += sia_include_search_semantics();
 #endif
