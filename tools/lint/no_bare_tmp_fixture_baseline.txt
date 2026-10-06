@@ -36,7 +36,6 @@ tests/harness/src/test_chain_state_validator.c 8
 tests/harness/src/test_chainstate_legacy_reader.c 2
 tests/harness/src/test_chaos_harness.c 2
 tests/harness/src/test_cli_auth_robust.c 1
-tests/harness/src/test_cli_render.c 1
 tests/harness/src/test_cold_start_driver.c 2
 tests/harness/src/test_command_registry_catalog.c 3
 tests/harness/src/test_confine.c 1

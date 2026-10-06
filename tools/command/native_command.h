@@ -17,6 +17,14 @@ extern "C" {
 
 bool zcl_native_command_is_root(const char *word);
 
+#ifdef ZCL_TESTING
+/* Exercise the next-action builder's parser without a separate CLI binary.
+ * parsed must point to fresh storage without owned allocations. Initializes
+ * it even for NULL/empty input; caller releases it with json_free(). */
+bool zcl_native_next_input_read_for_test(const char *next_input,
+                                        struct json_value *parsed);
+#endif
+
 /* Resolve argv under a canonical root through the registry and print exactly
  * one bounded JSON document (branch menu, discovery document, common result
  * envelope, or structured unknown-command error). Returns a contract exit code

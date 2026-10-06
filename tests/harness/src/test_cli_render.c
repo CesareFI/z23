@@ -26,6 +26,8 @@
 #include "test/test_core.h"
 
 #include "command/cli_render.h"
+#include "command/native_command.h"
+#include "json/json.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -872,11 +874,37 @@ static int test_e2e_width_and_row_cap(const char *home)
     return failures;
 }
 
+/* A defined non-null scalar stands in for dirty stack storage without
+ * invoking undefined behavior in the mutant. Removing the parser's init
+ * leaves JSON_INT here when absent/empty input short-circuits json_read. */
+static int test_next_input_cleanup(const char *name, const char *input)
+{
+    int failures = 0;
+    TEST(name) {
+        struct json_value parsed = {.type = JSON_INT, .val.i = 42};
+        bool accepted = zcl_native_next_input_read_for_test(input, &parsed);
+        ASSERT(!accepted);
+        ASSERT(parsed.type == JSON_NULL);
+        ASSERT(parsed.val.i == 0);
+        ASSERT(parsed.keys == NULL);
+        ASSERT(parsed.children == NULL);
+        ASSERT(parsed.num_children == 0);
+        ASSERT(parsed.children_cap == 0);
+        json_free(&parsed);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── group entry ───────────────────────────────────────────────────── */
 
 int test_cli_render(void)
 {
     int failures = 0;
+    failures += test_next_input_cleanup(
+        "next action: absent input initializes storage before cleanup", NULL);
+    failures += test_next_input_cleanup(
+        "next action: empty input initializes storage before cleanup", "");
     failures += test_env_resolution();
     failures += test_menu_render();
     failures += test_menu_row_cap();
@@ -894,13 +922,15 @@ int test_cli_render(void)
                "e2e half (run `make` to rebuild)\n", CR_BIN,
                stale ? stale : "(unknown)");
     } else {
-        char home[256];
-        snprintf(home, sizeof(home), "/tmp/zcl_cr_home_%d", (int)getpid());
-        if (mkdir(home, 0700) == 0 || errno == EEXIST) {
+        char home[PATH_MAX];
+        if (test_mkdtemp(home, sizeof(home), "cli_render_home")) {
             failures += test_e2e_pipe_byte_identity(home);
             failures += test_e2e_forced_human(home);
             failures += test_e2e_width_and_row_cap(home);
-            rmdir(home);
+            test_cleanup_tmpdir(home);
+        } else {
+            fprintf(stderr, "cli_render: cannot create home fixture\n");
+            failures++;
         }
     }
 

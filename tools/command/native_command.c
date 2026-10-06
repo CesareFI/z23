@@ -2773,6 +2773,25 @@ static void nc_print_error_build_error(const char *code, const char *phase,
     json_free(&blockers);
 }
 
+/* Initialize fresh caller-owned storage even when parsing is skipped, so
+ * the next-action builder can unconditionally release it. */
+static bool nc_next_input_read(const char *next_input,
+                                struct json_value *parsed)
+{
+    json_init(parsed);
+    return next_input && next_input[0] &&
+           json_read(parsed, next_input, strlen(next_input)) &&
+           parsed->type == JSON_OBJ;
+}
+
+#ifdef ZCL_TESTING
+bool zcl_native_next_input_read_for_test(const char *next_input,
+                                        struct json_value *parsed)
+{
+    return nc_next_input_read(next_input, parsed);
+}
+#endif
+
 /* Append the single valid next-action entry (if any) to `next`. */
 static void nc_print_error_build_next(const char *command,
                                       const char *next_command,
@@ -2783,9 +2802,7 @@ static void nc_print_error_build_next(const char *command,
 {
     if (next_command && next_command[0]) {
         struct json_value parsed;
-        if (next_input && next_input[0] &&
-            json_read(&parsed, next_input, strlen(next_input)) &&
-            parsed.type == JSON_OBJ &&
+        if (nc_next_input_read(next_input, &parsed) &&
             nc_next_input_valid(command, next_command, &parsed)) {
             (void)json_push_kv_str(item, "command", next_command);
             (void)json_push_kv(item, "input", &parsed);
