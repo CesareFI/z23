@@ -1843,6 +1843,60 @@ worktree's ignored evidence directory. Manifest SHA256 is
 `2e93d85faac2ef031ed3952d7753abbfaa6b62e96f633a827ca66253105a1c8d`.
 No external publication or reviewer-request action was attempted.
 
+### Wallet backup source-path exact-copy candidate qualified
+
+Branch `agent/upstream-wallet-backup-source-path-bound-20261006`, signed head
+`af973bcab5f69eb0d626868bcb21c8842fad8c94`, stacks the independently
+qualified fleet fixture on upstream base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. Its wallet-only review is three
+files, +17/-5. The SQLite wallet-backup adapter now returns a source database
+path only when the caller buffer can hold the complete path and terminator. An
+undersized destination is cleared and refused, so backup callers cannot compare
+or attach a truncated pathname as if it named the actual source database.
+Backup contents, encryption, no-overwrite behavior, durability ordering,
+consensus, monetary policy, PoW, upgrade rules, transparent validity and
+shielded validity are unchanged.
+
+The deterministic RED regression fails on the prior source because an 8-byte
+destination is reported successful and retains a nonempty truncated path.
+GREEN requires both refusal and cleared output. The direct adapter group passes
+1/1; the broader wallet-backup selection passes 2/2; and ASan/UBSan/LSan passes
+the same two groups 2/2, all with zero skips. Focused, sanitizer and exact-proof
+production lanes use GCC 14.2.0. The changed translation unit separately passes
+strict C23 syntax checking with Clang 18.1.3 and `-Wall -Wextra -Werror
+-pedantic`. The cap-15 complexity gate covers 68,754 functions and all 4,009
+ratchet pins; architecture covers five authorities, six contexts and 63
+modules; documentation covers 612 Markdown files and 152 bound claims; package
+anatomy covers 80 packages; the generated inventory covers 1,517 capabilities
+and 1,187 registered roots. The candidate-only security scan is CLEAN.
+
+The fresh unprivileged exact proof passes all 215 lint gates in 186.715s and all
+35 impact-selected groups in 213.791s. It is cold and records zero failures,
+skips, cache hits, unobserved cases or load-flaky outcomes, no eligible donor and
+`receipt_reused=false`; foreground time is 425.577s. Receipt SHA256 is
+`0b73adb6bcc7e6a07748cc028fb80fdb7738c79b5b3f0ef38eb7a3555d97ac54`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-wallet-backup-source-path-proof-20261006`.
+
+The first exact-proof step refused before lint or tests because the fresh clone
+had not reconfigured its generation hook path. The documented
+`make install-hooks` route installed and verified the checkout-local hooks; the
+explicit `dev.proof.retry` and next `dev.proof.step` then passed. A later
+optional coverage query was refused once with
+`PROOF_COVERAGE_MANIFEST_MISSING`; the policy-5 exact receipt remains the proof
+authority, and the unavailable optional manifest is not claimed or retried.
+
+Local bundle, wallet-only mbox, deterministic RED/GREEN and sanitizer logs,
+exact receipt and logs, strict-compiler evidence, CLEAN candidate-only security
+scan, qualification record and PR draft verify in the candidate's ignored
+`.cache/wallet-publication/` directory. The final manifest SHA256 is
+`b722b00ab0566823b7078cb075a491fd48b996d32b54a455fb96a1c58a990d88`.
+The local qualification branch includes proof prerequisite `4e0055659`; its PR
+draft explicitly requires transplanting only the wallet commit onto current
+upstream main and rerunning exact proof before publication, so the unrelated
+fleet fixture is never included. No external publication or reviewer-request
+action was attempted.
+
 ### Recovery target exact-path admission candidate qualified
 
 Branch `agent/upstream-wallet-recovery-datadir-bound-20261006`, signed head
