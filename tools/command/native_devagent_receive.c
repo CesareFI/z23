@@ -245,6 +245,9 @@
 #include "platform/directory_compat.h"
 #include "platform/directory_watcher.h"
 #include "platform/file_metadata.h"
+#include "platform/file_sync.h"
+#include "platform/private_file.h"
+#include "platform/rng.h"
 #include "platform/os_proc.h"
 #include "platform/path_compat.h"
 #include "platform/private_directory.h"
@@ -562,17 +565,35 @@ static bool rcv_read_file(const char *path, char *out, size_t cap)
     return true;
 }
 
-/* Install small file contents by rename, so a crash never leaves a half
- * brief for the queue to hand an executor. */
+static int (*g_rcv_sync)(int) = platform_file_sync;
+static int (*g_rcv_close)(FILE *) = fclose;
+void zcl_devagent_receive_test_file_ops(int (*sync)(int), int (*close)(FILE *));
+void zcl_devagent_receive_test_file_ops(int (*sync)(int), int (*close)(FILE *))
+{
+    g_rcv_sync = sync ? sync : platform_file_sync;
+    g_rcv_close = close ? close : fclose;
+}
+static bool rcv_stream_finish(FILE *f)
+{
+    bool ok = fflush(f) == 0 && g_rcv_sync(fileno(f)) == 0;
+    int closed = g_rcv_close(f);
+    return ok && closed == 0;
+}
+/* Publish whole flushed bytes, then acknowledge the parent-directory barrier. */
 static bool rcv_write_atomic(const char *path, const char *text, size_t len)
 {
-    char tmp[4096];
+    char tmp[4096], resolved[4096], parent[4096];
+    uint64_t nonce = 0;
     FILE *f;
-    if (!path || !text)
+    if (!path || !text || !rng_fill((uint8_t *)&nonce, sizeof(nonce)) ||
+        !platform_private_destination_resolve(path, resolved, sizeof(resolved),
+                                              parent, sizeof(parent)))
         return false;
-    if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
+    int n = snprintf(tmp, sizeof(tmp), "%s.tmp-%016llx", resolved,
+                     (unsigned long long)nonce);
+    if (n < 0 || (size_t)n >= sizeof(tmp))
         return false;
-    f = fopen(tmp, "wb");
+    f = fopen(tmp, "wbx");
     if (!f)
         return false;
     if (len > 0 && fwrite(text, 1, len, f) != len) {
@@ -580,15 +601,20 @@ static bool rcv_write_atomic(const char *path, const char *text, size_t len)
         (void)remove(tmp);
         return false;
     }
-    if (fclose(f) != 0) {
+    if (!rcv_stream_finish(f)) {
         (void)remove(tmp);
         return false;
     }
-    if (rename(tmp, path) != 0) {
+    if (rename(tmp, resolved) != 0) {
         (void)remove(tmp);
         return false;
     }
-    return true;
+    return platform_private_parent_flush(parent);
+}
+bool zcl_devagent_receive_test_write(const char *path, const char *text);
+bool zcl_devagent_receive_test_write(const char *path, const char *text)
+{
+    return rcv_write_atomic(path, text, strlen(text));
 }
 
 /* JSON string escape for the small sibling inputs this leaf builds. */

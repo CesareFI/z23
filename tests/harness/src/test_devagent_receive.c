@@ -1375,6 +1375,66 @@ _test_next:;
 }
 #endif /* !defined(_WIN32) */
 
+#if !defined(_WIN32)
+void zcl_devagent_receive_test_file_ops(int (*sync)(int), int (*close)(FILE *));
+bool zcl_devagent_receive_test_write(const char *, const char *);
+static int rtx_sync_eio(int fd) { (void)fd; errno = EIO; return -1; }
+static int rtx_close_short(FILE *f)
+{
+    int rc = fclose(f);
+    errno = ENOSPC;
+    return rc == 0 ? EOF : rc;
+}
+static int test_receive_install_failure(bool short_close)
+{
+    int failures = 0;
+    TEST(short_close ? "short close retains intake files without queueing"
+                     : "sync refusal retains intake files without queueing") {
+        struct rcv_drive_opts o;
+        struct rcv_beat_stats st = {0};
+        char body[4096], old[8192], got[8192];
+        const char *tails[] = {"received", "brief", "evidence"};
+        rtx_isolate(short_close ? "close-failure" : "sync-failure");
+        ASSERT(rtx_mint("chatgpt", "send", 3600, NULL, 0));
+        rtx_direction(body, sizeof(body), "hex_codec", "Install whole files.");
+        ASSERT(rtx_deliver("chatgpt", "box-a", "job-atomic", body, 1));
+        rtx_opts(&o, 1);
+        ASSERT_EQ(zcl_devagent_receive_drive(&o, &st), 1);
+        int files = rtx_count_dir("receive/brief");
+        for (size_t i = 0; i < 3; ++i) {
+            char tail[128];
+            snprintf(tail, sizeof(tail), "receive/brief/job-atomic.%s", tails[i]);
+            ASSERT(rtx_read(tail, old, sizeof(old)));
+            zcl_devagent_receive_test_file_ops(short_close ? NULL : rtx_sync_eio,
+                                               short_close ? rtx_close_short : NULL);
+            /* Exercise the same writer directly, retaining exact prior bytes. */
+            char path[1600];
+            rtx_path(path, sizeof(path), tail);
+            ASSERT(!zcl_devagent_receive_test_write(path, "NEW\n"));
+            ASSERT(rtx_read(tail, got, sizeof(got)));
+            ASSERT_STR_EQ(got, old);
+            ASSERT_EQ(rtx_count_dir("receive/brief"), files);
+        }
+        ASSERT(rtx_deliver("chatgpt", "box-a", "job-failed", body, 2));
+        memset(&st, 0, sizeof(st));
+        ASSERT_EQ(zcl_devagent_receive_drive(&o, &st), 1);
+        ASSERT_EQ(st.admitted, 0);
+        ASSERT_EQ(rtx_queue_count("queued", "job-failed"), 0);
+        ASSERT_EQ(rtx_answers("job-failed", "RECEIVE_STATE_UNWRITABLE"), 1);
+        zcl_devagent_receive_test_file_ops(NULL, NULL);
+        char path[1600];
+        rtx_path(path, sizeof(path), "receive/brief/job-atomic.received");
+        ASSERT(zcl_devagent_receive_test_write(path, "NEW\n"));
+        ASSERT(rtx_read("receive/brief/job-atomic.received", got, sizeof(got)));
+        ASSERT_STR_EQ(got, "NEW\n");
+        PASS();
+    }
+_test_next:;
+    zcl_devagent_receive_test_file_ops(NULL, NULL);
+    rtx_restore();
+    return failures;
+}
+#endif
 int test_devagent_receive(void);
 int test_devagent_receive(void)
 {
@@ -1385,6 +1445,8 @@ int test_devagent_receive(void)
     failures += test_receive_answer_fields();
     failures += test_receive_queue_order();
     failures += test_receive_preflight();
+    failures += test_receive_install_failure(false);
+    failures += test_receive_install_failure(true);
 
     TEST("a granted directive becomes one queue row and one accept")
     {
