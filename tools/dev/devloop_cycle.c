@@ -6,6 +6,7 @@
 
 #include "base/hex.h"
 #include "crypto/sha3.h"
+#include "zutf8/zutf8.h"
 #include "platform/directory_compat.h"
 #include "platform/positioned_file.h"
 #include "platform/time_compat.h"
@@ -61,9 +62,12 @@ static bool appendf(char *out, size_t cap, size_t *pos,
 static bool append_string(char *out, size_t cap, size_t *pos,
                           const char *value)
 {
+    value = value ? value : "";
+    if (!zutf8_validate(value))
+        return false;
     if (!appendf(out, cap, pos, "\""))
         return false;
-    for (const unsigned char *p = (const unsigned char *)(value ? value : "");
+    for (const unsigned char *p = (const unsigned char *)value;
          *p; p++) {
         if (*p == '"' || *p == '\\') {
             if (!appendf(out, cap, pos, "\\%c", *p))
@@ -884,6 +888,21 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
         return 0;
     return pos;
 }
+
+#ifdef ZCL_TESTING
+size_t zcl_devloop_cycle_test_error(const char *, const char *, char *, size_t);
+size_t zcl_devloop_cycle_test_error(const char *error, const char *capsule,
+                                   char *out, size_t cap)
+{
+    static const struct zcl_devloop_plan plan = {.action_name = "verify", .reason = "fixture"};
+    struct vcs_anchor_fields vcs = {.attempted = true};
+    const char *files[] = {"contexts/a\xff.c"};
+    int n = snprintf(vcs.error, sizeof(vcs.error), "%s", error);
+    if (n < 0 || (size_t)n >= sizeof(vcs.error)) return 0;
+    return cycle_json(&plan, files, 1, "failed", "verify", 0, capsule,
+                      &vcs, out, cap);
+}
+#endif
 
 static int finish_cycle(const struct zcl_devloop_plan *plan,
                         const char *const *files, size_t file_count,

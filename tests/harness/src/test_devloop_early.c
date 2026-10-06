@@ -36,6 +36,7 @@
 #include "devloop.h"
 #include "devloop_early.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "platform/directory_compat.h"
 #include "platform/environment_compat.h"
 #include "platform/time_compat.h"
@@ -1549,9 +1550,36 @@ static int de_test_restart(void)
     return failures;
 }
 
+extern size_t zcl_devloop_cycle_test_error(const char *, const char *,
+                                           char *, size_t);
+static int de_test_cycle_encoding(void)
+{
+    int failures = 0;
+    char out[4096] = {0};
+    const char *bad = "vcs_open failed for repo_root=/tmp/a\xff" "b";
+    const char *good = "vcs_open failed for repo_root=/tmp/é\"\\\n\001";
+    struct json_value doc = {0};
+    TEST("devloop cycle: malformed VCS error refuses, valid text survives and previews retain substitution") {
+        ASSERT_EQ(zcl_devloop_cycle_test_error(bad, "a\xff" "b", out, sizeof(out)), 0);
+        ASSERT(!json_valid(out, strlen(out)));
+        size_t n = zcl_devloop_cycle_test_error(good, "a\xff" "b", out, sizeof(out));
+        ASSERT(n > 0 && n < sizeof(out));
+        ASSERT(zutf8_validate_n(out, n));
+        ASSERT(json_read(&doc, out, n));
+        ASSERT_STR_EQ(de_json_str(&doc, "vcs_error"), good);
+        ASSERT_STR_EQ(de_json_str(&doc, "why_not_live"), "a?b");
+        ASSERT_STR_EQ(json_get_str(json_at(json_get(&doc, "files"), 0)), "contexts/a?.c");
+        ASSERT_EQ(zcl_devloop_cycle_test_error(good, "a", out, 1), 0);
+        PASS();
+    } _test_next:;
+    json_free(&doc);
+    return failures;
+}
+
 int test_devloop_early(void)
 {
     int failures = 0;
+    failures += de_test_cycle_encoding();
     failures += de_test_skips();
     failures += de_test_restart();
     return failures;
