@@ -16,6 +16,7 @@
 #include "command/native_dev_index_ingest.h"
 #include "command/native_dev_index_parse.h"
 #include "command/native_dev_index_search.h"
+#include "config/command_catalog.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "platform/clock.h"
@@ -101,10 +102,7 @@ static int64_t dvi_fake_wall(void *self)
     return atomic_load(&((struct dvi_fake_clock *)self)->wall_ms);
 }
 
-/* Drives one dev.index.* handler with a hand-built request carrying the
- * documented CLI spelling of the overrides ("index" and "state-root",
- * hyphenated), as nc_split_flag in native_command.c hands them over. Calling
- * the handler directly avoids needing a ZCL_DEV_BUILD-wired handler table. */
+/* Validate declared input keys before invoking the isolated real handler. */
 static bool dvi_dispatch(const char *leaf, const char *index_val,
                          const char *state_root_val,
                          struct zcl_command_reply *reply)
@@ -116,7 +114,15 @@ static bool dvi_dispatch(const char *leaf, const char *index_val,
         (void)json_push_kv_str(&input, "index", index_val);
     if (state_root_val)
         (void)json_push_kv_str(&input, "state-root", state_root_val);
+    const struct zcl_command_spec *spec =
+        zcl_command_registry_find(zcl_command_catalog(), leaf, NULL);
+    char why[192];
+    if (!zcl_command_registry_input_validate(spec, &input, why, sizeof(why))) {
+        json_free(&input);
+        return false;
+    }
     struct zcl_command_request request = {
+        .spec = spec,
         .input = &input,
         .view = "normal",
     };
@@ -125,10 +131,28 @@ static bool dvi_dispatch(const char *leaf, const char *index_val,
         zcl_native_handle_dev_index_ingest(&request, reply);
     else if (strcmp(leaf, "dev.index.status") == 0)
         zcl_native_handle_dev_index_status(&request, reply);
-    else
+    else {
+        json_free(&input);
+        zcl_command_reply_free(reply);
         return false;
+    }
     json_free(&input);
     return true;
+}
+
+static bool dvi_refuses_underscored_root(const char *leaf, const char *root)
+{
+    const struct zcl_command_spec *spec =
+        zcl_command_registry_find(zcl_command_catalog(), leaf, NULL);
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "state_root", root);
+    char why[192];
+    bool accepted =
+        zcl_command_registry_input_validate(spec, &input, why, sizeof(why));
+    json_free(&input);
+    return !accepted && strcmp(why, "unknown input key 'state_root'") == 0;
 }
 
 int test_dev_index(void);
@@ -459,6 +483,9 @@ int test_dev_index(void)
         ASSERT(json_get_int(json_get(&status_reply.data, "index_exists"))
               != 0);
         zcl_command_reply_free(&status_reply);
+
+        ASSERT(dvi_refuses_underscored_root("dev.index.ingest", disp_root));
+        ASSERT(dvi_refuses_underscored_root("dev.index.status", disp_root));
 
         (void)test_rm_rf_recursive(disp_parent);
         PASS();
