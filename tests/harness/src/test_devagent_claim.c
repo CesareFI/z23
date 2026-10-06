@@ -13,11 +13,13 @@
 #include "command/native_command.h"
 #include "config/command_catalog.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "kernel/command_registry.h"
 #include "platform/rng.h"
 #include "util/spawn.h"
 #include "util/file_io.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -482,6 +484,58 @@ _test_next:;
     return failures;
 }
 
+static int dvx_encoding_tests(const char *one)
+{
+    int failures = 0;
+    TEST("claim: invalid UTF-8 and overflow refuse without a record") {
+        char ledger[1024], oversized[1100];
+        (void)snprintf(ledger, sizeof(ledger), "%s/.git/z23-agent-claims.jsonl", one);
+        memset(oversized, '"', sizeof(oversized) - 1);
+        oversized[sizeof(oversized) - 1] = '\0';
+        const char *stories[] = {"a\xff" "b", "valid", oversized};
+        const char *paths[] = {"engine/a.c", "engine/a\xff" "b.c", "engine/a.c"};
+        for (size_t i = 0; i < 3; i++) {
+            const char *files[] = {paths[i], NULL};
+            struct dvx_call c;
+            dvx_claim(&c, one, stories[i], files, false);
+            ASSERT(dvx_run(&c) && !dvx_ok(&c));
+            ASSERT_STR_EQ(c.reply.error.code, "BAD_INPUT");
+            ASSERT_STR_EQ(c.reply.error.phase, "escape");
+            dvx_end(&c);
+            FILE *f = fopen(ledger, "rb");
+            if (f) { int byte = fgetc(f); ASSERT_EQ(fclose(f), 0); ASSERT_EQ(byte, EOF); }
+            else { ASSERT_EQ(errno, ENOENT); }
+        }
+        PASS();
+    }
+
+    TEST("claim: Unicode and escaped controls round-trip in the ledger") {
+        const char *text = "a\xc3\xa9\"\\\n\001b";
+        const char *files[] = {text, NULL};
+        struct dvx_call c;
+        dvx_claim(&c, one, text, files, false);
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        char line[8192];
+        FILE *f = fopen(dvx_str(&c, "ledger"), "rb");
+        ASSERT(f != NULL);
+        size_t n = fread(line, 1, sizeof(line), f);
+        bool complete = feof(f) && !ferror(f);
+        ASSERT_EQ(fclose(f), 0);
+        ASSERT(complete && zutf8_validate_n(line, n) && json_valid(line, n));
+        struct json_value row; json_init(&row);
+        ASSERT(json_read(&row, line, n));
+        ASSERT_STR_EQ(json_get_str(json_get(&row, "story")), text);
+        const struct json_value *stored = json_get(&row, "files");
+        ASSERT(stored && stored->type == JSON_ARR && stored->num_children == 1);
+        ASSERT_STR_EQ(json_get_str(&stored->children[0]), text);
+        json_free(&row); dvx_end(&c);
+        PASS();
+    }
+
+_test_next:;
+    return failures;
+}
+
 int test_devagent_claim(void);
 int test_devagent_claim(void)
 {
@@ -512,6 +566,8 @@ int test_devagent_claim(void)
         const char *wt[] = {"worktree", "add", "-q", "-b", "lane", two, NULL};
         ASSERT(dvx_git(one, wt));
     }
+
+    failures += dvx_encoding_tests(one);
 
     TEST("claim: a first claim is recorded in the shared ledger") {
         struct dvx_call c;

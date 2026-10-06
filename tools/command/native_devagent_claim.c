@@ -88,6 +88,7 @@
 #include "crypto/sha256.h"
 
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "platform/clock.h"
 #include "platform/private_file.h"
 #include "platform/rng.h"
@@ -149,6 +150,10 @@ static bool dvc_git(const char *cwd, const char *const args[],
 
 static bool dvc_json_escape(const char *in, char *out, size_t cap)
 {
+    if (cap == 0) return false;
+    out[0] = '\0';
+    if (!zutf8_validate_n(in, strlen(in)))
+        return false;
     size_t used = 0;
     for (const char *p = in; *p; p++) {
         char tmp[8];
@@ -1159,8 +1164,8 @@ static void dvc_claim(const struct dvc_facts *facts,
     if (!dvc_build_line(ts, expires_unix, story, facts, norm, newline,
                         sizeof(newline))) {
         dvc_fail(reply, "BAD_INPUT", "escape",
-                 "claim line too large for the ledger format",
-                 "input exceeded the ledger line budget");
+                 "claim text is invalid UTF-8 or exceeds the ledger budget",
+                 "use valid UTF-8 within the ledger line budget");
         return;
     }
     size_t kept = 0, replaced = 0, expired = 0;
