@@ -1364,6 +1364,8 @@ int main(int argc, char **argv)
     failures += test_rpc_service_restart();
     failures += test_chain_state_repo();
     failures += test_chain_evidence_controller();
+    { extern int test_chain_evidence_store_load(void);
+      failures += test_chain_evidence_store_load(); }
     failures += test_chain_evidence_live_advance();
     failures += test_long_op();
     failures += test_agent_copy_prove();
