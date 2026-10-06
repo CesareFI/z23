@@ -1843,6 +1843,59 @@ worktree's ignored evidence directory. Manifest SHA256 is
 `2e93d85faac2ef031ed3952d7753abbfaa6b62e96f633a827ca66253105a1c8d`.
 No external publication or reviewer-request action was attempted.
 
+### Wallet backup rotation timestamp-overflow candidate qualified
+
+Branch `agent/upstream-wallet-backup-rotation-overflow-20261006`, signed head
+`e069f1911e4c828d413edaf344114021026ee138`, stacks the independently
+qualified fleet fixture on upstream base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. Its wallet-only review is three
+files, +53/-4. The backup filename parser now rejects conversion range errors,
+negative seconds, invalid microseconds and any seconds/useconds pair that
+cannot fit in its signed 64-bit microsecond sort key before multiplication.
+Malformed embedded timestamps use the existing mtime fallback. Valid backup
+ordering, file format, retention, encryption, write durability, recovery,
+consensus, monetary policy, PoW, upgrade rules, transparent validity and
+shielded validity are unchanged.
+
+The deterministic RED regression creates an ordinary backup and a filename
+whose seconds field is `INT64_MAX`, assigns controlled mtimes, and shows the
+prior unchecked arithmetic sorting the malformed entry incorrectly. The old
+implementation fails the named assertion and the focused lane; GREEN passes
+both wallet-backup groups. The normal lane passes 2/2 groups with zero skips,
+and ASan/UBSan/LSan passes the same 2/2. Strict C23 syntax passes with Clang
+18.1.3 using the repository include map, while repository builds use GCC
+14.2.0. The cap-15 complexity gate covers 68,755 functions with 4,009 exact
+pins. Architecture, documentation counts and claims, package anatomy,
+generated capability inventory, file-size ceiling and candidate security scan
+all pass.
+
+The exact proof passes all 215 lint gates in 186.450s and all 29
+impact-selected groups in 215.880s. It is cold and records zero failures,
+skips, cache hits, unobserved cases or load-flaky outcomes, no eligible donor
+and `receipt_reused=false`; foreground time is 424.856s. Receipt SHA256 is
+`1944345b796f0e5d1f20c7d78e6663ef133696e9603098e801f3ffa9e9358b9d`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-wallet-backup-rotation-overflow-proof-20261006`.
+
+The proof first failed closed before validation on an unqualified memory
+scope, an unwritable root-owned default RAM generation path and a missing
+generated Tor Makefile. The successful attempt ran through `devbuild`, used a
+private absolute RAM scratch root while retaining reservation and free-space
+floors, and copied the exact generated Tor Makefile from the qualified local
+donor. Its SHA256 is
+`11d6d31f9931c04bd7a26301b3df85de3f4ee1e9e52f8a6a72660a27a8fc9cc6`;
+Tor archive, commit and compiler provenance passed before retry. No hook,
+assertion, proof threshold or repository protection was bypassed.
+
+Local bundle, candidate mbox, deterministic RED/GREEN and sanitizer logs,
+exact receipt and logs, qualification record and PR draft verify in the
+candidate's ignored `.cache/wallet-publication/` directory. The final manifest
+SHA256 is
+`2cd461db7c4bd9be77d13eae7495e4e4f4344eeebaf4c0e863ba9a2c98aebfac`.
+The branch is stacked on unrelated prerequisite `4e0055659`; publication must
+transplant only the candidate onto current upstream main and rerun exact proof.
+No external publication or reviewer-request action was attempted.
+
 ### Wallet backup source-path exact-copy candidate qualified
 
 Branch `agent/upstream-wallet-backup-source-path-bound-20261006`, signed head
