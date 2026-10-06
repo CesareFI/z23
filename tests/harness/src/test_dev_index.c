@@ -107,6 +107,7 @@ static bool dvi_dispatch(const char *leaf, const char *index_val,
                          const char *state_root_val,
                          struct zcl_command_reply *reply)
 {
+    zcl_command_reply_init(reply, "");
     struct json_value input;
     json_init(&input);
     json_set_object(&input);
@@ -126,7 +127,6 @@ static bool dvi_dispatch(const char *leaf, const char *index_val,
         .input = &input,
         .view = "normal",
     };
-    zcl_command_reply_init(reply, "");
     if (strcmp(leaf, "dev.index.ingest") == 0)
         zcl_native_handle_dev_index_ingest(&request, reply);
     else if (strcmp(leaf, "dev.index.status") == 0)
