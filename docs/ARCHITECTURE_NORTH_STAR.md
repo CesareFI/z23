@@ -1,9 +1,15 @@
 # Architecture North Star — one ledger per domain, views only
 
+Use this page to distinguish proven headers from derived state, identify
+duplicate writable facts, and judge what the regression evidence establishes.
+Here, a ledger holds verified facts, a frontier is its folded progress, and a
+view reads those facts without maintaining an independently writable copy.
+Before changing sync, boot, import, install, or frontier code, inspect the
+relevant source in your checkout and the evidence limits below. This page is
+the design target, not proof that the whole tree conforms to it.
+
 > **Scoped architecture decision, not a work queue.** Current task selection
-> lives only in [`work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md). The completed
-> architecture quest board was deleted; recover it from Git history if an
-> incident needs its old narrative.
+> lives only in [`work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md).
 >
 > **Read this before touching sync, boot, import, install, or any `*frontier`
 > / `*cursor` / `pindex_*` code.** It is the standing target for how this node
@@ -13,8 +19,8 @@
 ## Verdict: RESCUE, not rewrite
 
 The core is correct and expensive: frozen consensus verifiers (Equihash,
-Sapling), the append-only log + reducer frontier, P2P/Tor, the swarm
-download engine, the bundle format. A rewrite re-earns every parity lesson
+Sapling), the append-only log + reducer frontier, peer-to-peer (P2P)/Tor, the
+swarm download engine, the bundle format. A rewrite re-earns every parity lesson
 (h=478544, BLS infinity, the golden values) to arrive at this same design
 with fresh bugs. **The disease is confined to ~5 seams** (import, install,
 legacy paths). Fix the seams; keep the core.
@@ -29,29 +35,36 @@ trust mechanisms below). The actual disease:
 > three independently-writable copies. One writer updates copy A; a reader
 > checks copy B; they disagree.**
 
-The D8 defect that established this rule: `--importblockindex` PoW-verified the
-headers and wrote `pindex_best_header = 3.19M`, but the install gate read the
-*other* copy (the `validate_headers` stage cursor = 0), so it deferred forever
+The D8 defect that established this rule: `--importblockindex` verified the
+headers' proof of work (PoW) and wrote `pindex_best_header = 3.19M`, but the
+install gate read the *other* copy (the `validate_headers` stage cursor = 0),
+so it deferred forever
 and the node folded from genesis. Same fact, two copies, drift.
 
 ## Two provenance domains — keep them SEPARATE and VISIBLE
 
-State is trusted by two different mechanisms. Never flatten them into one
-number — the difference IS the sovereignty audit trail.
+State is trusted by two different mechanisms. PoW establishes the header
+spine: hash-linked headers with verified PoW. Derived state is the
+UTXO (unspent transaction output), anchor (commitment-tree root), and nullifier
+(spend-detection identifier) sets earned by replaying block bodies.
+A checkpoint is a borrowed state snapshot at height C;
+it is meaningful only if the header at C has real PoW and chains to genesis.
+Never flatten these domains into one number: their difference is the
+sovereignty audit trail.
 
-- **Header spine (PoW).** Cheap, top-down. Hash-linked headers whose PoW is
-  verified. This is what anchors a checkpoint: a borrowed state snapshot at
-  height C is only meaningful if the header at C is real PoW and chains to
-  genesis.
-- **Derived state.** Expensive, bottom-up. UTXO/anchor/nullifier sets earned
-  by replaying block bodies. A bundle *asserts* this at C (hash matches the
-  baked root); a genesis fold *derives* it.
+| Domain | Direction and cost | What establishes it |
+|---|---|---|
+| Header spine | Top-down, cheap | Hash-linked headers with verified PoW. |
+| Derived state | Bottom-up, expensive | Bundle assertion or genesis replay. |
 
-Every derived-state row carries a `self_derived | checkpoint` tag (the
-existing `rewind_bases.self_derived` bit). "Is my tip earned or borrowed?"
-must always be answerable.
+A bundle asserts state at C when its hash matches the baked root; replay from
+genesis derives it.
 
-```
+Every derived-state row must carry a `self_derived | checkpoint` tag.
+The existing `rewind_bases` diagnostic view exposes a `self_derived` boolean
+for its enumerated bases. "Is my tip earned or borrowed?" must be answerable.
+
+```text
   ╔═══════════════════════════╗       ╔═══════════════════════════╗
   ║  HEADER LEDGER (PoW spine)║       ║  STATE LEDGER             ║
   ║  append-only, hash-linked ║       ║  append-only; each row    ║
@@ -80,9 +93,11 @@ succeeds appends the SAME facts to the SAME ledgers:
 2. swarm bodies from a peer at the checkpoint (medium)
 3. genesis fold (slow, sovereign floor — NEVER deleted)
 
-The checkpoint install is not a fragile "wait for a cursor" gate. It is a
-labeled splice: **spine reaches C ⇒ graft asserted state at C ⇒ fold the
-gap C→tip.**
+Checkpoint installation is a labeled splice:
+
+1. Wait for the verified header spine to reach C.
+2. Graft the asserted checkpoint state at C.
+3. Replay block bodies across the gap from C to the tip.
 
 ## The invariants a future LLM MUST obey
 
@@ -110,13 +125,15 @@ gap C→tip.**
 ## Regression evidence
 
 The architecture decision is settled; whole-tree conformance is not yet
-proved. `check_frontier_single_writer.sh` reads
-`arch_frontier_owners.tsv` and, for each declared row, requires exactly one
-file with the owner basename under its configured scan roots. It refuses a
-matched `.c` or `.h` file outside that owner unless the path is in its reviewed
-baseline, but skips test-shaped paths and every `*/include/*` path. The gate
-rejects stale baseline rows; repository policy requires review before adding a
-new row, but the script cannot prove that history property. This is useful
+proved. `tools/scripts/check_frontier_single_writer.sh` delegates to the
+native `build/bin/z23-lint check-frontier-single-writer` gate. It reads
+`tools/scripts/arch_frontier_owners.tsv` and, for each declared row, requires
+exactly one file with the owner basename under its configured scan roots.
+It refuses a matched `.c` or `.h` file outside that owner unless the path is
+in `tools/scripts/frontier_single_writer_baseline.tsv`, but skips test-shaped
+paths and every `*/include/*` path. The gate rejects stale baseline rows;
+repository policy requires review before adding a new row, but the gate cannot
+prove that history property. This is useful
 source-shape evidence only for the declared regular expressions and non-skipped
 paths. It cannot establish runtime reachability, serialization through the
 owner, target database identity, dynamic-key writes, production headers under
