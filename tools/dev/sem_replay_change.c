@@ -54,14 +54,37 @@ static bool git_text(const char *repo, char *const argv[], char **out,
     return rc == 0;
 }
 
+/* The replay's fixed output contract supports one complete SHA-1 object ID. */
+static bool oid_record(const char *text, size_t len, char out[64])
+{
+    out[0] = '\0';
+    if (memchr(text, '\0', len))
+        return false;
+    if (len && text[len - 1] == '\n') {
+        len--;
+        if (len && text[len - 1] == '\r')
+            len--;
+    }
+    if (len != 40)
+        return false;
+    for (size_t i = 0; i < len; i++)
+        if (!memchr("0123456789abcdefABCDEF", text[i], 22))
+            return false;
+    memcpy(out, text, len);
+    out[len] = '\0';
+    return true;
+}
+
 static bool first_line(const char *repo, char *const argv[], char out[64])
 {
+    out[0] = '\0';
     char *text = NULL;
     size_t len = 0;
     bool ok = git_text(repo, argv, &text, &len) && len > 0;
     if (ok) {
-        text[strcspn(text, "\r\n")] = '\0';
-        snprintf(out, 64, "%s", text);
+        ok = oid_record(text, len, out);
+        if (!ok)
+            fprintf(stderr, "sem-replay: invalid or unsupported object ID response\n");
     }
     free(text);
     return ok;

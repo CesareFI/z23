@@ -748,6 +748,94 @@ _test_next:;
     return failures;
 }
 
+/* Build the real reader and capture path with a deterministic clock. */
+static bool srt_replay_probe(const struct srt_fx *fx, const char *text)
+{
+    static const char *const dirs[] = {"tools/dev", "contexts/commons/packages/zjsonp/include",
+        "contexts/commons/packages/zutf8/include", "platform/modules/sha3/include",
+        "platform/modules/base/include", "platform/modules/platform/include"};
+    static const char *const units[] = {"tools/dev/sem_replay_util.c",
+        "contexts/commons/packages/zjsonp/src/zjsonp.c", "contexts/commons/packages/zutf8/src/zutf8.c",
+        "platform/modules/sha3/src/sha3.c", "platform/modules/base/src/safe_alloc.c"};
+    char root[PATH_MAX], source[PATH_MAX + 16], bin[PATH_MAX + 16];
+    char paths[12][PATH_MAX + 96];
+    if (!realpath(".", root) || !srt_write(fx->tools, "probe.c", text))
+        { printf("(probe setup failed) "); return false; }
+    snprintf(source, sizeof(source), "%s/probe.c", fx->tools);
+    snprintf(bin, sizeof(bin), "%s/probe", fx->tools);
+    const char *argv[24] = {"cc", "-std=c23", "-O1", "-D_DEFAULT_SOURCE",
+        "-D_POSIX_C_SOURCE=200809L", "-o", bin, source};
+    size_t n = 8;
+    for (size_t i = 0; i < 6; i++) {
+        snprintf(paths[i], sizeof(paths[i]), "-I%s/%s", root, dirs[i]);
+        argv[n++] = paths[i];
+    }
+    for (size_t i = 0; i < 5; i++) {
+        snprintf(paths[i + 6], sizeof(paths[i + 6]), "%s/%s", root, units[i]);
+        argv[n++] = paths[i + 6];
+    }
+    argv[n] = NULL;
+    int rc = srt_run(argv);
+    if (rc != 0) printf("(probe build exited %d: %s) ", rc, g_srt_out);
+    return rc == 0;
+}
+
+static int test_srt_oid_extent(void)
+{
+    int failures = 0;
+    struct srt_fx fx = {0};
+    char path[PATH_MAX + 16], probe[PATH_MAX + 16], expected[48];
+    static const char driver[] = "/* Purpose: observe exact replay object ID framing. */\n#include \"sem_replay_change.c\"\n"
+        "#include \"platform/clock.h\"\n"
+        "int64_t clock_now_monotonic_ns(void) { return 0; }\n"
+        "int main(int argc, char **argv) { char out[64] = {0}; if (argc != 2) return 2;\n"
+        "char *cmd[] = {\"cat\", argv[1], NULL}; memset(out, 'x', sizeof(out) - 1);\n"
+        "bool ok = first_line(NULL, cmd, out); printf(\"%d:%s\\n\", ok, out); return 0; }\n";
+    static const char oid[] = "0123456789abcdef0123456789abcdef01234567";
+    static const struct { const char *bytes; size_t len; bool valid; } cases[] = {
+        {"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 64, false},
+        {"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n", 65, false},
+        {oid, 40, true},
+        {"0123456789abcdef0123456789abcdef01234567\n", 41, true},
+        {"0123456789abcdef0123456789abcdef01234567\r\n", 42, true},
+        {"0123456789abcdef0123456789abcdef01234567\0junk\n", 46, false},
+        {"0123456789abcdef0123456789abcdef01234567\nextra\n", 47, false},
+        {"0123456789abcdef0123456789abcdef01234567x", 41, false},
+        {oid, 39, false},
+        {"g123456789abcdef0123456789abcdef01234567", 40, false},
+    };
+    test_make_tmpdir(fx.root, sizeof(fx.root), "sem_replay", "oid");
+    snprintf(fx.tools, sizeof(fx.tools), "%s", fx.root);
+    snprintf(path, sizeof(path), "%s/record", fx.root);
+    snprintf(probe, sizeof(probe), "%s/probe", fx.root);
+    const char *argv[] = {probe, path, NULL};
+    snprintf(expected, sizeof(expected), "1:%s\n", oid);
+    TEST("replay: an object ID is complete or refused, never shortened") {
+        ASSERT(srt_replay_probe(&fx, driver));
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            FILE *f = fopen(path, "wb");
+            ASSERT(f != NULL);
+            size_t wrote = fwrite(cases[i].bytes, 1, cases[i].len, f);
+            int closed = fclose(f);
+            ASSERT_EQ(wrote, cases[i].len);
+            ASSERT_EQ(closed, 0);
+            ASSERT_EQ(srt_run(argv), 0);
+            if (cases[i].valid)
+                ASSERT_STR_EQ(g_srt_out, expected);
+            else
+                ASSERT_STR_EQ(g_srt_out,
+                    "sem-replay: invalid or unsupported object ID response\n0:\n");
+        }
+        PASS();
+    }
+_test_next:;
+    if (test_rm_rf_recursive(fx.root) != 0) {
+        printf("(object ID fixture cleanup failed: %s) ", fx.root);
+        failures++;
+    }
+    return failures;
+}
+
 #endif /* !_WIN32 */
 
 int test_sem_replay(void)
@@ -758,6 +846,7 @@ int test_sem_replay(void)
     return 1;
 #else
     int failures = 0;
+    failures += test_srt_oid_extent();
     struct srt_fx fx = {0};
     char state_a[PATH_MAX] = "", state_b[PATH_MAX] = "", state_c[PATH_MAX] = "";
     char dir_a[32], dir_b[32], dir_c[32];
