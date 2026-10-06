@@ -2,7 +2,16 @@
 
 # Developing Z23
 
-This is the detailed developer procedure. The durable mission and authority
+Use this procedure to inspect existing code, make an owned change, check its
+behavior, and prepare an exact, receipt-gated integration checkpoint. Start
+with a checkout whose existing work you have identified and preserved. The
+first-hour section checks the toolchain and builds the development binaries;
+shared hosts also require their installed build scheduler.
+
+C23 is the C language standard used by this project. A receipt records a
+bound observation; it grants only the authority its receiving policy allows.
+An action identifies work with exact inputs; a candidate identifies the
+proposed source. The durable mission and authority
 contract are in [`../AGENTS.md`](../AGENTS.md); current priorities are in
 [`work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md). Current state of the
 maintainer's hosted node belongs only in [`HANDOFF.md`](HANDOFF.md).
@@ -18,7 +27,7 @@ development convenience.
 2. Inspect the exact source and runtime context.
 3. Edit the smallest owned surface.
 4. Receive fast local feedback and continue working.
-5. Consume action-changing RED evidence when it arrives.
+5. Consume action-changing RED (failed-check) evidence when it arrives.
 6. Run the focused proof selected by source impact.
 7. Fetch and integrate current `origin/main`.
 8. Run the integration gates and push a coherent slice.
@@ -53,9 +62,10 @@ make -j"$(nproc)" z23-dev              # the developer binary -> build/bin/z23-d
 ```
 
 Measured on a cold checkout, 28 CPUs: `setup` 3m07, `z23` 1m46, `z23-dev`
-1m38. `make doctor` and `make doctor-env` are seconds. `make first-build-timing`
-re-measures the whole sequence from a fresh clone and `make timings` reads the
-result back, so these numbers are refreshable rather than folklore.
+1m38. `make doctor` and `make doctor-env` are seconds. For another fresh-clone
+measurement, `make first-build-timing` times vendor preparation, setup, the
+default build and the test suite; `make timings` reads that result. It does
+not rerun the doctor checks or the separate `z23-dev` build above.
 
 Those are the numbers with the host to yourself. Walked again on 2026-09-19
 from an empty directory on the same 28-CPU slot while three other lanes were
@@ -65,11 +75,10 @@ and 17m30 including the first green test group and a full `make lint` (212
 gates, 3m23). The compile steps are what stretches; `setup` and the doctors do
 not. Budget for that before concluding a build has hung.
 
-**`--recurse-submodules` is not optional, and leaving it off does not fail
-where you would expect.** `vendor/tor` is a submodule. A plain `git clone`
-leaves it empty, `make setup` and `make z23` both still succeed — they link
-the offline Tor stub and stamp the binary `tor=stub` — and the step that
-stops is `make doctor-env`, which fails with
+**Use `--recurse-submodules` to initialize `vendor/tor`.** A plain
+`git clone` leaves that submodule empty. `make setup` does not establish the
+Tor archives; the default `make z23` path establishes them before linking.
+`make doctor-env` checks the empty submodule before that build and reports
 `MISSING vendor/tor  empty (not initialized; the node would link stub Tor)`.
 `make doctor` passes in that same tree, so the two doctors disagreeing is the
 symptom. If you already cloned without it:
@@ -81,14 +90,15 @@ make tor-full                          # or `make tor-ready` beside a sibling ch
 
 **`make z23-dev` is a separate line on purpose.** `all` — what plain `make`
 builds — is `test_zcl zclassic23 zcl-rpc zclassic23-package-verify` plus the
-POSIX-only binaries and the adapter runner. `z23-dev` is not in it and never
+POSIX-only binaries (for the portable Unix interface) and the adapter
+runner. `z23-dev` is not in it and never
 has been. Every development command in this document is spelled
 `build/bin/z23-dev ...`, so a developer who ran plain `make` and then reached
 section 5 gets "No such file or directory" from a tree that built perfectly.
 Build it explicitly, once, here.
 
 `make setup` already armed this clone's Git hooks — it calls `install-hooks`
-itself (`Makefile:14290`), and the hooks are what refuse an unproven push. Ask
+itself (`Makefile:15296`), and the hooks are what refuse an unproven push. Ask
 what you ended up with, which is read-only and never writes config:
 
 ```bash
@@ -134,7 +144,8 @@ not promise identical settings on every retained host. Each project gets a
 slot admitting several concurrent lanes: Z23's
 slot admits up to `DEVBUILD_Z23_LANES` concurrent jobs (default 3, max 4);
 QEDC's slot admits up to `DEVBUILD_QEDC_LANES` concurrent jobs (default 2,
-max 4); each is one per lane lock. `--wait` waiters are served FIFO through
+max 4); each is one per lane lock. `--wait` waiters are served
+first-in, first-out (FIFO) through
 enqueue-ordered tickets, so a long-queued job is never passed over by a
 newer one; a `dev land` invocation, or `DEVBUILD_PRIORITY=land`, takes the
 next free Z23 lane ahead of ordinary waiters. It refuses admission when the
@@ -156,8 +167,8 @@ mirror of the installed script, with the exact contract in its header;
 exercises lane overlap (Z23 and QEDC), FIFO order, landing priority, and
 the accounting file against that mirror.
 [`../platform/deploy/devbuild-broker`](../platform/deploy/devbuild-broker) is
-a separate, not-yet-installed replacement candidate with a finer-grained
-CPU/RAM/I/O class broker; see
+a separate, not-yet-installed replacement candidate with finer-grained
+processor, random-access memory (RAM), and input/output (I/O) classes; see
 [`../platform/deploy/README.md`](../platform/deploy/README.md) for its status.
 That README is the door to the rest of that directory: which units a host
 runs, which of them a clone gets, and why the remainder stay host-local.
@@ -192,23 +203,17 @@ make install-hooks                     # or make setup
 make hooks-status                      # the path, and the config file that set it
 ```
 
-Running it there is safe: every write and unset the installer makes is
-`--worktree` scoped, so no other checkout moves. Measured on 2026-09-19 in a
+Hook-path writes and unsets are `--worktree` scoped. If needed, the installer
+first announces and enables the shared `extensions.worktreeConfig` setting
+once. Measured on 2026-09-19 in a
 three-worktree repository, installing in each of the three in turn: all three
 stayed armed on their own `build/githooks`, `check-git-hooks-installed` was
 clean in all three after every step, and the shared `.git/config` was never
 written. Hiding one worktree's `build/githooks` stopped that worktree's hooks
 and no other's, which is what "relative, per worktree" means in practice.
 
-This was not always true. Until 2026-09-19 the installer ran an unscoped
-`git config --unset-all core.hooksPath`, which git resolves to the shared
-`.git/config`, and wrote an absolute replacement into the invoking worktree
-alone — so `make setup` in a second worktree disarmed the others, and any
-worktree that inherited the absolute entry ran another checkout's hook binary
-against its own commits. If you are reading an older instruction to run
-`install-hooks` only from the main checkout, or to set `ZCL_GIT_HOOK_ROOT`
-first, that instruction was working around this bug. `ZCL_GIT_HOOK_ROOT` still
-works and still names the checkout to arm; it is no longer a precaution.
+`ZCL_GIT_HOOK_ROOT` names the checkout to arm. Run `install-hooks` in each
+worktree rather than following older instructions to arm only the main one.
 
 `make hooks-status` is the read-only question and never writes config.
 
@@ -238,7 +243,11 @@ build.** `~/.local/bin/z23-dev` is a symlink into
 `~/.local/lib/z23/<sha256>/`, so its name stays put while its target names
 the exact bytes that produced it. Its modification time tells you when the
 link was repointed and nothing about which source it came from. To learn what
-source it actually is, ask both sides for the same identity and compare:
+source it actually is:
+
+1. Capture this checkout's source identity.
+2. Ask the installed binary for its identity.
+3. Compare their `source_id_sha256` values.
 
 ```bash
 tools/dev/source-identity.sh capture-record
@@ -263,7 +272,7 @@ The product and every binary are **`z23`**. You will still see `zclassic23`
 in three places, and all three are aliases or history, not a second thing:
 
 - the `zclassic23` make target is a one-line alias for `z23`
-  (`Makefile:6295`), and `ZCLASSIC23_BIN` already points at `build/bin/z23`;
+  (`Makefile:6913`), and `ZCLASSIC23_BIN` already points at `build/bin/z23`;
 - `build/bin/zclassic23` and `build/bin/zclassic23-dev` are migration
   symlinks to `build/bin/z23` and `build/bin/z23-dev`;
 - the maintainer's host keeps state under `~/.local/state/zclassic23/` and
@@ -323,14 +332,16 @@ worktree layout. Maintain one primary writer per component, preserve unrelated
 dirty work, and use committed identities on `origin/main` as the shared
 integration blackboard.
 
-For fleet optimization, follow the [fleet speed north star](../AGENTS.md#fleet-speed-north-star).
+For fleet optimization, follow the
+[fleet speed north star](../AGENTS.md#fleet-speed-north-star).
 Record the exact action inputs and receiving policy before spending CPU.
 Check qualified peer work and in-flight duplicates first; compare the measured
 cost of discovery, missing-byte transfer, verification, and binding with local
 execution. Dispatch independent missing actions to authorized idle peers.
 Keep fine-grained action identities separate from transfer packs and mappings.
-Report duplicate CPU, bytes, hashes, copies, queue waits, and compiler/linker/test
-launches, together with critical-path time. An unavailable reuse qualifier
+Report duplicate CPU, bytes, hashes, copies, queue waits, and
+compiler/linker/test launches, together with critical-path time. An unavailable
+reuse qualifier
 requires the existing cold path; it is a measured missing rail, not permission
 to admit unsigned verdicts or bypass a gate. Capsules, distributed ThinLTO,
 and QEDC-native emission are experiments until their exact receiving contracts
@@ -558,12 +569,16 @@ C23 Commons acceptance requires it. Architecture and measured evidence live in
 
 ## 5. Build and focused proof
 
-The build profiles keep iteration separate from release proof:
+The build profiles keep iteration separate from release proof. LTO means
+link-time optimization. A translation unit (TU) is a source file compiled
+with its included headers; a build epoch identifies one input generation:
 
-- `DEV_LIVE` — an explicitly allowlisted read-only island;
-- `DEV_RESTART` — incremental isolated development executable;
-- `INTEGRATION` — static non-LTO combined proof;
-- `RELEASE` — clean whole-program LTO and reproducibility path.
+| Profile | Purpose |
+| --- | --- |
+| `DEV_LIVE` | Explicitly allowlisted read-only island |
+| `DEV_RESTART` | Incremental isolated development executable |
+| `INTEGRATION` | Static non-LTO combined proof |
+| `RELEASE` | Clean whole-program LTO and reproducibility path |
 
 `make check-dev-loop-profiles` inspects the enforced profile boundary. Source
 records bind exact bytes, toolchain, flags, and mutation state. Never fabricate
@@ -652,7 +667,8 @@ What the numbers say:
   compile-epoch hash: a new epoch (Makefile/toolchain/flag change) invalidated
   every object even though `-ffile-prefix-map` already normalised cwd for
   non-LTO compiles. After the cache rewrites the depfile target, a comment-only
-  Makefile epoch is a 99.8% hit. Remaining misses are identity (`clientversion.o`),
+  Makefile epoch is a 99.8% hit. Remaining misses are identity
+  (`clientversion.o`),
   the epoch-stamped `test_parallel.o`, links, and toolchain probes. Generated
   headers that rewrite identical bytes are already guarded by
   `templates-no-touch-selftest`.
@@ -695,7 +711,7 @@ make lint-fast
 ```
 
 `t-fast` resolves the substring against registered groups and refuses a missing
-or unknown selector. `lint-fast` is the inner lint (32 gates, ~10 s warm).
+or unknown selector. `lint-fast` is the inner lint's fast gate subset.
 Never run `test_zcl` directly. Do not run full `make lint` on an ordinary
 slice.
 
@@ -705,7 +721,7 @@ fails only in the full `make lint`, because the gates that catch that class of
 change (capability closure, generated-doc drift, the wallclock and POSIX-ERE
 ratchets) are not in `lint-fast`'s subset. Run `make lint-preflight` on that
 kind of change before submitting — it runs exactly those full-lint-only gates
-and finishes in well under the ~212-gate umbrella's time.
+and selects those gates from the full lint umbrella.
 
 ### Module mode — run a test group without relinking
 
@@ -714,8 +730,10 @@ and relinks the whole test harness. The link, not the compile, is the cost: the
 harness is one binary over thousands of objects, and it is paid again for every
 one-line edit.
 
-For a translation unit on `engine/composition/hotswap_swappable.def`, module mode skips the
-relink. It compiles that one TU into a module `.so` and loads it into the
+For a translation unit on `engine/composition/hotswap_swappable.def`,
+module mode skips the relink. It compiles that TU, or its declared island,
+into a module `.so`
+and loads it into the
 already-linked harness through the hot-swap loader, then runs the real group:
 
 ```bash
@@ -732,7 +750,8 @@ This is not a test-only shortcut. The module is loaded by
 `hotswap_activate_local()` — the same function the development node runs for
 `ZCL_HOTSWAP_PRELOAD`, with the same publish hooks — so a module that would be
 refused in production is refused here, and the harness then exits rather than
-quietly testing the resident code. Every gate applies: path confinement, ABI
+quietly testing the resident code. Every gate applies: path confinement,
+application binary interface (ABI)
 version, the swappable allowlist, leaf uniqueness, the module self-test,
 probe-before-publish against the leaf's declared output schema, and the
 all-or-nothing registry batch that re-checks READY plus read-only per leaf.
@@ -755,7 +774,8 @@ copy. Before you treat any verdict as proof, re-run `make t-fast ONLY=<group>`
 
 What it cannot cover, and why:
 
-- **Anything not on `engine/composition/hotswap_swappable.def`.** That allowlist is
+- **Anything not on `engine/composition/hotswap_swappable.def`.** That
+  allowlist is
   restricted to controller/view/condition shape leaves; reducers, consensus,
   validation, storage, networking, wallet state and supervisors can never be
   swapped, so groups covering them are always a rebuild.
@@ -799,8 +819,9 @@ build/bin/mutation-campaign --file=<any .c> --list   # enumerate only; no build
 
 ### Reading fleet truth
 
-Run `z23 dev fleet truth` from any checkout to see `origin/main` and every locally
-known `origin/agent/*` lane in one result. It reports exact remote heads,
+Run `z23 dev fleet truth` from any checkout to see `origin/main` and every
+locally known `origin/agent/*` lane in one result. It reports exact remote
+heads,
 attached worktrees, each lane's remote/unpublished/dirty file union, and red
 lint checks from current `.cache/agent-receipts` evidence. A missing receipt is
 `unobserved`; a valid receipt for another HEAD or tree fingerprint is `stale`.
@@ -922,7 +943,7 @@ stand-in sensor and planner programs. It checks that a facts reply that
 leaves out the changed TU exits 3 and names the TU in `MISSES.tsv`, and that
 a correct narrowing produces the exact hand-computed counts. The method and
 its limits are in
-[`work/SEMANTIC_MANIFEST.md`](./work/SEMANTIC_MANIFEST.md#replay-on-real-history).
+[the replay method](./work/SEMANTIC_MANIFEST.md#replay-on-real-history).
 
 ### Proving a permissionless cold join
 
@@ -946,7 +967,7 @@ are the reason the target prints propositions instead of a checkmark: the
 narrow, true form of each claim is asserted, and where the flattering form does
 not hold the transcript says so instead of asserting it away. The propositions,
 and which are narrower than the story, are enumerated at the top of
-[`tests/harness/src/test_cold_join_sovereign.c`](../tests/harness/src/test_cold_join_sovereign.c).
+[the cold-join fixture](../tests/harness/src/test_cold_join_sovereign.c).
 
 For an exact push checkpoint, commit first. The notification hook makes a
 best-effort detached request to the checkout's development service and returns;
@@ -985,6 +1006,7 @@ kernel lock, session and root before enqueueing work. With no qualified owner,
 it refuses with `PROOF_EXISTING_WATCHER_REQUIRED` and leaves watcher state
 unchanged; use the foreground step above. The hook does not activate a watcher.
 Preserve live owners and use native status and stop commands for lifecycle work.
+CAS means content-addressed store: objects are identified by their bytes.
 The proof binds the local commit and advertised
 remote base to exact source/CAS and mutation roots, changed-set and impact
 policy, compiler/flags/environment/build graph, and complete generated,
@@ -1000,7 +1022,8 @@ identity to match the sealed candidate before planning, selection, or reuse.
 It rejects older receipts as `receipt_schema_old`; missing mandatory lint
 remains `receipt_lint_required`. The worker
 clears inherited Make execution overrides and lint cache diagnostics, and
-forces fresh lint using each gate's declared policy before building a generation.
+forces fresh lint using each gate's declared policy before building a
+generation.
 The test dimension is cold the same way: the runner starts with `--no-cache`,
 the worker clears `ZCL_TEST_CACHE`, `ZCL_TEST_CACHE_DUMP` and
 `ZCL_TESTCACHE_STORE_ROOT`, the checkout's `.zvcs/objects` verdict store is
@@ -1026,8 +1049,9 @@ retained bytes and interrupted retries. The output-store path is a control,
 not part of the test input key.
 The vendor builder retains `vendor/.build.lock` as a regular-file kernel lock
 across runs; its inherited lock descriptor coordinates builders until process
-exit. Preserve this inode. The root-anchored tracked ignore treats this generated
-control as output, while unrelated untracked source still refuses proof admission.
+exit. Preserve this inode. The root-anchored tracked ignore treats this
+generated control as output, while unrelated untracked source still refuses
+proof admission.
 
 `make lint-fast` remains available for feedback while editing. The generation
 is handed the built artifacts the
@@ -1081,7 +1105,8 @@ against your own checkout. A need row naming an unregistered group, an unknown
 need kind, or an empty value is a refusal, not a skipped row. This exists
 because a proof generation deliberately builds no node runtime binaries and
 carries no operator fixture, so `test_onion_pair_watch_live` can only report
-`UNOBSERVED` (`PAIR_PROBE=ENV_MISSING_BINARY`) and `test_self_folded_anchor_heavy`
+`UNOBSERVED` (`PAIR_PROBE=ENV_MISSING_BINARY`) and
+`test_self_folded_anchor_heavy`
 can only `SKIP` there — verdicts the suite accounting refuses, which used to
 fail every universal-closure proof with `test_accounting_incomplete` even when
 zero groups failed. An omitted group is counted by the runner as gated and is
@@ -1162,7 +1187,8 @@ make readme-svg-check    # the README figures still match what this binary print
 ```
 
 `commons-demo` is deliberately outside `make ci`: it spawns three real
-regtest daemons, mines a regtest chain and runs confined package builds. The README's
+regtest daemons, mines a regtest chain and runs confined package builds. The
+README's
 demo, proof and topology figures are rendered from a recording that same run
 writes — `ZCL_COMMONS_DEMO_RECORD=1 make commons-demo` refreshes
 `docs/assets/z23-commons-demo.{strip,facts}`, and `make readme-svg` redraws the
@@ -1215,7 +1241,8 @@ changes tracked source stops for inspection before any picks.
 
 Authors leave generated package roots, dependency pins, registry projections,
 and `docs/CAPABILITY_INVENTORY.jsonl` out of their commits. The integrator runs
-`devbuild --wait bash tools/scripts/stack_tip_refresh.sh` once at the assembled stack tip.
+`devbuild --wait bash tools/scripts/stack_tip_refresh.sh` once at the
+assembled stack tip.
 It rederives the registry and dependent pins, then runs the canonical
 documented-count gate. If its only failures are numeric count mismatches,
 it updates only those values in `docs/CODEBASE_MAP.md` and makes a signed
@@ -1236,7 +1263,11 @@ Helper builds may regenerate tracked view headers before checking; inspect
 `git status` and `git diff` afterwards, including after a refusal. Check mode
 does not report these prerequisite changes. The refresh display compares
 content only; it is not a staging allowlist or a report of mode/link changes.
-The script also provides `devbuild --wait bash tools/scripts/stack_tip_refresh.sh --selftest`.
+The script also provides a self-test:
+
+```bash
+devbuild --wait bash tools/scripts/stack_tip_refresh.sh --selftest
+```
 
 Before committing:
 
@@ -1264,7 +1295,8 @@ Before committing:
 9. Verify local HEAD, `origin/main`, and the remote branch SHA agree.
 
 A resident loop lands the same way through the native async queue
-(`z23-dev dev land submit|status|step|drive|cancel`, `tools/command/native_dev_land.c`):
+(`z23-dev dev land submit|status|step|drive|cancel`,
+`tools/command/native_dev_land.c`):
 one driver steps that queue at a time, since `step` holds a per-queue lock for
 its whole run and a second driver that finds it held gets `STEP_BUSY`
 (retryable) and steps again shortly rather than racing the first driver's
@@ -1286,8 +1318,8 @@ and `remote_base` inputs for `dev proof step`. Its short row detail names the
 pair and points to that structured action, so even a long worktree path does
 not truncate the handoff. Any worker with access to that checkout can run
 the foreground step through `devbuild --wait`; the next landing step consumes
-its signed receipt. Landing does not start a resident proof watcher by default. An
-operator who explicitly wants the prior watcher path can set
+its signed receipt. Landing does not start a resident proof watcher by
+default. An operator who explicitly wants the prior watcher path can set
 `ZCL_LAND_START_PROOF_WATCHER=1` for that landing step.
 
 `dev land` refuses a malformed or legacy queue record by record number on
@@ -1441,8 +1473,9 @@ signed — re-prove), `signature_invalid` (the record was edited after signing),
 `signer_key_unreadable` (this box has a key file that is not a private 32-byte
 seed).
 
-The source-identity capture that seals a proof's evidence (`zcl_dev_source_cas_capture`
-/ `zcl_dev_source_identity_capture` in `tools/dev/dev_source_identity.c`) runs
+The source-identity capture that seals a proof's evidence
+(`zcl_dev_source_cas_capture` / `zcl_dev_source_identity_capture` in
+`tools/dev/dev_source_identity.c`) runs
 under real host load and can legitimately take longer than one fixed budget.
 Its evidence tokens name the exact failure rather than folding every case into
 one undifferentiated string: `source_identity_timeout` (the capture exceeded
@@ -1518,7 +1551,8 @@ mission. Otherwise continue through the ordered queue.
 
 ## Measuring the MVP experiment
 
-The 144-loop plan of record is also an experiment: what does it cost, in wall
+MVP means minimum viable product. The 144-loop plan of record is also an
+experiment: what does it cost, in wall
 time and tokens, to take z23 from that plan to MVP? `build/bin/z23-mvp-ledger`
 (sources `tools/dev/mvp_ledger*.c`, test group `mvp_ledger`) answers it from
 evidence rather than from memory. It is built by `make dev-bin`.
@@ -1557,7 +1591,7 @@ git show origin/main:tools/dev/test_group_catalog.def > catalog.def
   `evidence=` names it.
 - `snapshot` and `kpi` each append one row to `snapshots.tsv` / `kpi.tsv`.
   The KPI is verified MVP progress per token: base loops verified after t0,
-  over the TCU the whole system spent.
+  over the ledger's weighted token count (TCU) for the whole system.
 - `xp` scores that same KPI as a game and prints the leaderboard, writing
   `xp.tsv` and `xp_events.tsv` beside `kpi.tsv`; `--json` prints the same
   numbers as one JSON object for a board post. Every point traces to a
@@ -1597,7 +1631,7 @@ A range is proved by its right-hand side alone. `a` is where the work
 started; only `b` says where it ended up.
 
 The KPI line and the `kpi.tsv` row carry the split, so nobody has to guess
-which kind of verification a number is made of:
+which kind of verification a number is made of. MTCU means a million TCU:
 
 ```text
 kpi: 19 verified loops (4 landed, 8 sweep, +4 sub-rows) for 123076043 TCU = 0.154 loops/MTCU, 6477686 TCU/loop
