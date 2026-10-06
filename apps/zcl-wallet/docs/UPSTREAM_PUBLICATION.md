@@ -2143,3 +2143,51 @@ Base58 and public-key branches are superseded by qualified review heads; and
 the remaining wallet-scan/backup heads are already ancestors of upstream main.
 The older reflex-fixture proof branch is no longer a prerequisite for the compact
 public-key candidate and remains general proof-infrastructure reference work.
+
+### Wallet identity operator-lane admission candidate qualified
+
+Branch `agent/upstream-wallet-identity-lane-bound-20261006`, signed head
+`42b325d030bf0c582516793e468746120701a77e`, stacks the independently
+qualified fleet fixture on upstream base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. Its wallet-only review is three
+files, +35/-5. `wallet_identity_ensure()` now validates the caller's complete
+operator-lane string before generating or persisting an identity. Empty,
+nonprintable and overlong lanes fail closed; the exact 15-byte maximum remains
+accepted byte-for-byte. Identity format, authorization policy, consensus,
+monetary policy, PoW, upgrade rules, transparent validity and shielded validity
+are unchanged.
+
+The canonical RED regression fails on the prior source because a 16-byte lane
+is admitted and silently truncated into the 15-byte persisted field. GREEN
+also proves refused overlong and newline-bearing inputs leave no identity row,
+while the exact maximum persists unchanged. The focused transaction-intent
+group passes 1/1 with zero skips, and ASan/UBSan/LSan passes the same group 1/1.
+The cap-15 complexity gate covers 68,756 functions; architecture covers five
+authorities, six contexts and 63 modules; documentation covers 612 Markdown
+files and 152 bound claims; package anatomy covers 80 packages. The exact proof
+uses GCC 14.2.0 production/test builds and Clang 18.1.3 syntax/lint lanes.
+
+The first proof attempt failed closed before qualification because the fresh
+bundle clone did not yet have per-worktree hooks armed. The documented
+`make install-hooks` route installed and verified `build/githooks`; the explicit
+retry then passed cold with all 215 lint gates in 185.129s and all 74
+impact-selected runtime groups in 263.2s. It records zero failures, skips,
+cache hits, unobserved cases or load-flaky outcomes, no eligible donor and
+`receipt_reused=false`; foreground time is 471.823s. Receipt SHA256 is
+`f3c243b9d53a2c0539a84d9baff927e37e12f01f21b5fef4b3c9b4673a74e9f5`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-wallet-identity-lane-proof-local-20261006`.
+
+The safety layer refused one compound proof-preparation command containing a
+recursive removal of an empty submodule path; it did not execute and was not
+retried. A later unprimed dev build entered the offline vendor-bootstrap path
+and was stopped; those bytes are not qualification evidence. The successful
+path used verified local donor archives, preserved every source checkout and
+did not alter a repository protection.
+
+Local bundle, wallet-only mbox, deterministic RED/GREEN and sanitizer logs,
+exact receipt/logs, CLEAN candidate-only security scan, qualification record
+and PR draft verify in the candidate's ignored
+`.cache/wallet-publication/` directory. The final manifest SHA256 is
+`9e200d59d3eb9bebdfd07f34aa994990f8ecdf67e87bae6ac10d4c182c08fa12`.
+No external publication or reviewer-request action was attempted.
