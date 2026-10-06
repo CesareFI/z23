@@ -30,3 +30,17 @@ zlog warn "low disk"
 ## License
 
 Apache-2.0. See LICENSE.
+
+## Tests
+
+Compile `src/zlog.c` and `tests/test_zlog.c` with `-Iinclude`, C23 and
+ASan/UBSan. The registered suite includes plain, tagged, threshold and filtered
+CLI cases with writable, buffered refusing and unbuffered refusing streams.
+An emitted log whose stream fails returns 1; a filtered log with no stream
+error returns 0. Diagnostics on failed stderr may not be delivered. The POSIX
+fixture reports unavailable required coverage and exits 1 on `_WIN32`.
+Close-only delivery failures are not qualified by these tests.
+
+`tests/test_zlog.c:191` registers these CLI rows, including usage and unknown
+level diagnostics with writable and refusing stderr. The final stream check
+is in `app/main.c:17`.

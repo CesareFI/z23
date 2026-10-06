@@ -14,6 +14,15 @@ static void stderr_emit(void *ctx, const char *line)
     fputs(line, stderr);
 }
 
+static int finish_output(FILE *out, int status)
+{
+    if (fflush(out) == EOF || ferror(out)) {
+        fputs("zlog: write error\n", stderr);
+        return 1;
+    }
+    return status;
+}
+
 int main(int argc, char **argv)
 {
     const char *tag = NULL;
@@ -40,5 +49,5 @@ int main(int argc, char **argv)
     zlog_sink sink = { stderr_emit, NULL, zlog_level_parse(threshold),
                        true, tag };
     zlog_write(&sink, level, argv[i + 1]);
-    return 0;
+    return finish_output(stderr, 0);
 }
