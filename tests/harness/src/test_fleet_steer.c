@@ -28,6 +28,7 @@
 #include "config/command_catalog.h"
 #include "controllers/rpc_client.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "kernel/command_registry.h"
 #include "platform/clock.h"
 #include "platform/private_directory.h"
@@ -4934,11 +4935,38 @@ static int fmx_t_intake_read_error(void) {
     } _test_next:;
     return failures; }
 #endif
+extern bool zcl_fleet_steer_test_input(unsigned, const char *, const char *, char *, size_t);
+static int fmx_t_encoding(unsigned mode)
+{
+    int failures = 0;
+    struct json_value doc = {0};
+    char text[4096];
+    const char *valid = "é\"\\\n\001";
+    TEST(mode == 2 ? "board lookup refuses invalid UTF-8" : "mail composer refuses invalid UTF-8") {
+        bool body_refused = mode == 2 || !zcl_fleet_steer_test_input(mode, "a\xff" "b", "ref", text, sizeof(text));
+        bool ref_refused = !zcl_fleet_steer_test_input(mode, "body", "a\xff" "b", text, sizeof(text));
+        ASSERT(body_refused && ref_refused);
+        ASSERT(zcl_fleet_steer_test_input(mode, valid, valid, text, sizeof(text)));
+        ASSERT(zutf8_validate_n(text, strlen(text)));
+        ASSERT(json_read(&doc, text, strlen(text)));
+        if (mode != 2) ASSERT_STR_EQ(json_get_str(json_get(&doc, "body")), valid);
+        ASSERT_STR_EQ(json_get_str(json_get(&doc, mode == 2 ? "id" : "ref")), valid);
+        ASSERT(!zcl_fleet_steer_test_input(mode, valid, valid, text, 1));
+        PASS();
+    }
+_test_next:;
+    json_free(&doc);
+    return failures;
+}
+
 int test_fleet_steer(void);
 int fmx_task_projection_checks(void);
 int test_fleet_steer(void)
 {
     int failures = 0;
+    failures += fmx_t_encoding(0);
+    failures += fmx_t_encoding(1);
+    failures += fmx_t_encoding(2);
     failures += fmx_t_intake_records();
 #if !defined(_WIN32)
     failures += fmx_t_intake_read_error();

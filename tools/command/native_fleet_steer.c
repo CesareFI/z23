@@ -196,6 +196,7 @@
 #include "crypto/random_secret.h"
 #include "fleet_enrol.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "kernel/command_registry.h"
 #include "platform/clock.h"
 #include "platform/directory_compat.h"
@@ -349,7 +350,7 @@ static char fmc_hex_digit(unsigned v)
 static bool fmc_escape(const char *in, char *out, size_t cap)
 {
     size_t o = 0;
-    if (!in || !out || cap == 0)
+    if (!in || !out || cap == 0 || !zutf8_validate(in))
         return false;
     for (; *in; in++) {
         unsigned char c = (unsigned char)*in;
@@ -4238,6 +4239,14 @@ static const char *fmc_sender_resolve(const struct zcl_command_request *req,
  * refusal scanners. The binding rides the row beside the name so the
  * receiver can check who actually sent it. False when any budget runs
  * out. */
+static bool fmc_board_input(char *input, size_t cap, const char *ref)
+{
+    char escaped[256];
+    if (!fmc_escape(ref, escaped, sizeof(escaped))) return false;
+    int n = snprintf(input, cap, "{\"id\":\"%s\"}", escaped);
+    return n > 0 && (size_t)n < cap;
+}
+
 static bool fmc_post_input(char *input, size_t cap, const char *to,
                            const char *kind, const char *body,
                            const char *ref, const struct fmc_sender *s)
@@ -4269,6 +4278,17 @@ static bool fmc_post_input(char *input, size_t cap, const char *to,
     }
     return n > 0 && (size_t)n < cap;
 }
+
+#if defined(ZCL_TESTING)
+bool zcl_fleet_steer_test_input(unsigned mode, const char *body, const char *ref, char *out, size_t cap);
+bool zcl_fleet_steer_test_input(unsigned mode, const char *body, const char *ref, char *out, size_t cap)
+{
+    struct fmc_sender sender = {0};
+    if (mode == 2) return fmc_board_input(out, cap, ref);
+    if (mode == 1) { memcpy(sender.from, "sender", 7); memset(sender.binding, 'a', sizeof(sender.binding) - 1); }
+    return fmc_post_input(out, cap, "receiver", "directive", body, ref, &sender);
+}
+#endif
 
 /* Post one directive through the mail sibling. Returns the accepted seq,
  * or -1 with `why` (caller buffer) naming the sibling's refusal. The code
@@ -4824,18 +4844,9 @@ static void fmc_evidence_board(const struct zcl_command_request *req,
 {
     struct fmc_sub sub;
     char input[512];
-    char eref[256];
-    int n;
     const struct json_value *post;
-    if (!fmc_escape(ref, eref, sizeof(eref))) {
-        fmc_fail(reply, "BAD_INPUT", "ref too large to encode",
-                 "escape budget");
-        return;
-    }
-    n = snprintf(input, sizeof(input), "{\"id\":\"%s\"}", eref);
-    if (n <= 0 || (size_t)n >= sizeof(input)) {
-        fmc_fail(reply, "BAD_INPUT", "ref too large to encode",
-                 "input bound");
+    if (!fmc_board_input(input, sizeof(input), ref)) {
+        fmc_fail(reply, "BAD_INPUT", "ref cannot be encoded", "text or input bound");
         return;
     }
     fmc_sub_begin(&sub, "zcl.fleet_board_post.v1", req, "fleet.board.show");
