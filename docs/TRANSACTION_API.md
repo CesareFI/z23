@@ -1,9 +1,16 @@
 # Z23 transaction API
 
-This is the map from a human intention (pay, shield, register a name, anchor a
-release, settle a swap) to the exact typed command that can create the
-corresponding ZClassic transaction. The machine-readable catalog is the source
-of truth; this page explains how to use it safely.
+Use this page to find the typed command for a ZClassic payment, name
+registration, release anchor, or swap, inspect its inputs, and follow its
+plan/commit workflow. The machine-readable catalog owns the exact contracts.
+
+Start with the `z23` executable and its transaction catalog. Discovery is
+read-only. To move value, you also need an explicitly scoped wallet, a current
+custody snapshot (the bound wallet-state observation), and owner authorization
+for the commit. Vault-intent planning requires encrypted, unlocked custody and
+a verified encrypted wallet backup less than 24 hours old. Check the selected
+type's availability and network policy before creating a plan. A plan prepares
+an operation; a commit authorizes its value-moving or broadcast step.
 
 ## Table of contents
 
@@ -23,7 +30,16 @@ of truth; this page explains how to use it safely.
 
 ## Big picture
 
-There are three layers, and none changes legacy ZClassic consensus:
+There are three layers, and none changes legacy ZClassic consensus (the rules
+for accepting chain transactions). ZCL is the chain's currency. Transparent
+payments expose their inputs and outputs; Sapling is the shielded payment
+format. The mempool holds admitted transactions awaiting a block. `OP_RETURN`
+stores application data in an unspendable output. P2SH means pay-to-script-hash;
+an HTLC is a hash/time-locked contract used by the swap workflow.
+
+The application records below include tokens (ZSLP), names (ZNAM),
+identity records (ZID), directory records (ZDIR), and digest anchors (ZANC).
+ZCODE release anchors commit a root derived from signed software releases.
 
 ```text
 human intent
@@ -40,8 +56,10 @@ ZCL transaction bytes --------> mempool -> block -> confirmation
 ```
 
 The catalog describes semantic transaction shapes, not aliases. For example,
-all `t→z`, `z→z`, and `z→t` payments use one command but appear as three types
-because their privacy and chain behavior differ. Conversely, an atomic-swap
+all transparent-to-Sapling (`t→z`), Sapling-to-Sapling (`z→z`), and
+Sapling-to-transparent (`z→t`) payments share the vault-intent plan/commit
+commands but appear as three types because their privacy and chain behavior
+differ. Conversely, an atomic-swap
 funding flow uses two commands—create the HTLC contract, then pay its returned
 P2SH address—but appears as one composite type.
 
@@ -50,21 +68,49 @@ create a vault session, approve a plan, or broadcast a transaction.
 
 ## First call for an agent
 
-Use the native interface when operating the node:
+Use the native interface when operating the node. These discovery calls grant
+no wallet or broadcast authority:
 
-```bash
-z23 yardsale guide
-z23 app transaction-types list
-z23 app transaction-types wire
-z23 app transaction-types show --type=znam_register
-z23 app transaction-types guide --type=znam_register
-z23 app transaction-types command core.wallet.transaction.send
-z23 discover describe app.names.register
-z23 discover schema app.names.register
-```
+| `availability` | Meaning |
+|---|---|
+| `ready` | The catalog names an executable workflow; check its network policy. |
+| `process_only` | The node parses, validates, connects, indexes, and displays it, but exposes no constructor. |
+| `contained` | Code exists, but policy contains the named capability. |
+| `planned` | No end-to-end broadcast path exists; do not present it as done. |
 
-`z23 yardsale guide` is the one-call map for paying ZCL at the min-relay fee
-and selling a 1/1 collectible through yardsale, the package swarm, or an onion
+1. List the semantic types (what the transaction does) and wire formats (how
+   its bytes are encoded).
+
+   ```bash
+   z23 app transaction-types list
+   z23 app transaction-types wire
+   ```
+
+2. Select a type by `id`, reject `planned`, and check its `network_policy`.
+   For example, inspect name registration:
+
+   ```bash
+   z23 app transaction-types show --type=znam_register
+   z23 app transaction-types guide --type=znam_register
+   ```
+
+3. Inspect the selected command's description and input schema (its allowed
+   keys). Do not invent flags or infer a wallet scope from an example.
+
+   ```bash
+   z23 discover describe app.names.register
+   z23 discover schema app.names.register
+   ```
+
+4. If you start with a command instead of an intention, reverse-map it first:
+
+   ```bash
+   z23 app transaction-types command core.wallet.transaction.send
+   ```
+
+For payments and selling, `z23 yardsale guide` is the one-call map for paying
+ZCL at the min-relay fee (the minimum fee required for relay) and selling a 1/1
+collectible through yardsale, the package swarm, or an onion
 shop. It grants no authority. See [`SELL.md`](./SELL.md).
 
 Public read-only clients may use the REST mirror:
@@ -84,9 +130,12 @@ is the full `zcl.transaction_type.v2` contract. The collection also reports
 assess proof coverage without parsing all catalog rows. It also names the
 reverse lookup command and counts the explicitly audited alternate routes and
 non-chain dispositions.
-`core.wallet.transaction.list` is different: it is
-wallet history, not the type catalog. `app.protocols` describes broader
-application protocols, not an exhaustive transaction inventory.
+
+| Command | What it describes |
+|---|---|
+| `app.transaction-types.list` | Semantic transaction types and proof coverage. |
+| `core.wallet.transaction.list` | One wallet's transaction history. |
+| `app.protocols` | Broader application protocol contracts. |
 
 A full member keeps its primary `test_group` and also exposes
 `supplemental_test_groups`. Supplemental groups are required when one claim
@@ -95,10 +144,6 @@ workflow or direct-interpreter group while adding `test_simnet_contract` for
 the mined chain lifecycle. `make transaction-lab-proof` derives and
 deduplicates both sources, so a future proof cannot silently replace one axis
 with another.
-
-An AI should select by `id`, reject `planned`, respect `network_policy`, then
-inspect the named command's current input schema. It must not synthesize flags
-or infer a wallet scope from examples.
 
 ## One-call AI guide
 
@@ -169,7 +214,7 @@ explanation.
 
 | Field | Meaning |
 |---|---|
-| `availability` | `ready`, `process_only`, `contained`, or `planned`. |
+| `availability` | Workflow status, defined in [First call for an agent](#first-call-for-an-agent). |
 | `transaction_role` | A direct chain transaction, overlay transaction, or multi-command composite. |
 | `chain_encoding` | The actual chain shape: standard script, Sapling, OP_RETURN, P2SH HTLC, and so on. |
 | `lifecycle` | Whether the operation is plan/commit, build/sign/broadcast, receive-only processing, or a two-party ceremony. |
@@ -182,21 +227,14 @@ explanation.
 | `evidence_status` | `demonstrated` when checked-in evidence exists; otherwise explicit `blocked`. |
 | `mainnet_live_proven` | Derived from `proof_level == live_confirmed`; currently false for every type. Monetary mainnet statistics come only from the notebook ledger. |
 
-`process_only` is not zero support: the node can parse, validate, connect, index,
-and display the transaction, but agents cannot create a new one. `contained`
-means code exists but policy deliberately refuses the named network. `planned`
-means no end-to-end broadcast path exists and must never be presented as done.
-
 ## Consensus wire and script catalog
 
 The transaction inventory has two independent axes:
 
-```text
-semantic intent                         consensus structure
---------------                         -------------------
-pay, shield, ZNAM, ZCODE, ZSLP, ...    version + serialized fields + scripts
-app transaction-types list/show/guide  app transaction-types wire
-```
+| Axis | Describes | Commands |
+|---|---|---|
+| Semantic intent | Payment, shielding, or an application record. | `app transaction-types list`, `show`, `guide` |
+| Consensus structure | Version, serialized fields, and scripts. | `app transaction-types wire` |
 
 The semantic side is a finite list of applications currently recognized by
 this binary. The structural side is what prevents that list from becoming a
@@ -209,9 +247,11 @@ z23 app transaction-types wire
 The `zcl.transaction_wire_catalog.v1` response derives four wire families from
 the transaction serializer and consensus version constants. It also says
 whether each family is current, historical-only, or impossible on mainnet;
-nullable height bounds, a public example txid when one exists, the evidence
+nullable height bounds, a public example txid (transaction identifier) when
+one exists, the evidence
 level, and exact reproducing test groups prevent a format row from being
-mistaken for a live-mainnet claim.
+mistaken for a live-mainnet claim. Simnet is an isolated simulated chain;
+Sprout is the legacy shielded format. PHGR13 and Groth16 name its proof formats.
 
 | Wire family | Version/group | Mainnet status | Additional shielded structure |
 |---|---|---|---|
@@ -235,16 +275,17 @@ solver result are pinned by `test_transaction_wire_evidence`: `pubkey`,
 honestly marked `mainnet_example_status=not_pinned`; its positive builder,
 solver, signature-count, and P2SH wrapping vectors remain covered by
 `test_multisig` and `test_domain_consensus_script_standard`. “Not pinned” is
-not “impossible” or “unsupported”—it means the checked-in evidence is a
-deterministic solver vector rather than a claimed historical mainnet example.
+not “impossible” or “unsupported”—it means the checked-in evidence is
+a deterministic solver vector rather than a claimed historical mainnet example.
 
 Application meaning is intentionally open-ended. Consensus permits arbitrary
 scripts, unknown or future OP_RETURN tags, and opaque 512-byte Sapling memos.
 The node processes a consensus-valid transaction without inventing application
 semantics. Unknown OP_RETURN data is indexed by tag and payload digest; an
 opaque memo is decoded only when an explicit codec recognizes it. The wire
-catalog lists recognized codecs and marks coverage honestly. ZPAY now names its
-typed compose and inspect commands plus the existing owner-authorized Sapling
+catalog lists recognized codecs and marks coverage honestly. ZPAY, the payment
+memo envelope, names its typed compose and inspect commands plus the existing
+owner-authorized Sapling
 send step; optional ZID signing remains unavailable through agent input so an
 identity seed never enters command context.
 
@@ -258,11 +299,11 @@ human index:
 | Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `transparent_multi_recipient`, `sapling_mixed_recipient`, `raw_custom_transaction`, `transparent_p2sh_multisig_spend`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Identity-bound transparent, Sapling, and mixed-pool payments use one durable vault-intent lifecycle, whether they have one recipient or fifty. P2SH multisig is ready; composition accepts public keys only and its signer uses resident owner-wallet keys. Coinbase and Sprout are process-only; Sprout evidence pins complete canonical mainnet transactions before and after Sapling activation plus contextual JoinSplit signature and PHGR13/Groth16 proof verification, without exposing a deprecated constructor. |
 | ZSLP tokens | `zslp_genesis`, `zslp_mint`, `zslp_send`, `zslp_burn` | Identity-bound durable plan/commit. Planning prepares exact signed bytes and atomically claims the token/baton and fee inputs; commit names only custody scope plus plan ID. |
 | ZNAM names | `znam_register`, `znam_update`, `znam_transfer`, `znam_renew`, `znam_set_record`, `znam_set_text` | Identity-bound durable plan/commit. Planning prepares exact signed OP_RETURN bytes, atomically claims every funding input plus the maximum fee, and preserves owner checks; commit names only custody scope plus plan ID. |
-| Messaging | `sapling_onchain_memo` | On-chain ZMSG uses an encrypted Sapling memo; P2P messaging is off-chain. |
+| Messaging | `sapling_onchain_memo` | ZMSG is the on-chain messaging codec and uses an encrypted Sapling memo; peer-to-peer (P2P) messaging is off-chain. |
 | Payments | `zpay_memo_envelope` | `app payments zpay compose` creates an exact anonymous invoice/payment/receipt memo; `core wallet shielded send` owns the value-moving plan/commit, and `app payments zpay inspect` strictly decodes, authenticates, and checks network/time policy. |
 | Identity/directory | `zid_anchor`, `zid_rotate`, `zid_revoke`, `zdir_register`, `zdir_deregister` | Explicit custody-bound plan/commit paths with exact-input + maximum-fee reservation; all five production codec shapes have isolated owner-funded mined-and-projected proofs. Public receipts omit identity, hostname, owner, address, endpoint, and raw-transaction fields. |
 | Anchors/ZCODE | `zanc_digest_anchor`, `zanc_epoch_anchor`, `zcode_release_anchor` | Generic ZANC commits an explicit SHA2/SHA3 digest through a typed compose → raw owner plan/commit workflow; epoch-ZANC commits the declared catalog range and ZCODE folds signed releases. Every exact command-produced OP_RETURN shape has isolated mined proof. |
-| Blog | `blog_anchor` | `app blog anchor` durably plans/commits the strict ZBLG v1 transaction for an existing verified event. The plan requires explicit custody scope and idempotency; new event signing remains broker-contained. |
+| Blog | `blog_anchor` | `app blog anchor` durably plans/commits ZBLG v1, the blog-event anchor format, for an existing verified event. The plan requires explicit custody scope and idempotency; new event signing remains broker-contained. |
 | Atomic swaps | `htlc_initiate`, `htlc_participate`, `htlc_redeem`, `htlc_refund` | Contract preparation plus explicit funding; redeem/refund settle the ZCL leg. |
 | Commerce | `store_transparent_payment`, `store_shielded_payment`, `yardsale_atomic_purchase`, `market_purchase` | Exact transparent and shielded store payments are isolated-mined and reconciled against their bound one-time order identity; the shielded command remains isolated-only. The exact jointly signed Yardsale controller broadcast is isolated-mined with exact settlement and fee accounting. File-market plan/commit/retrieve mines its exact memo payment before proving authenticated delivery, verified assembly, and atomic publication. |
 
@@ -289,7 +330,8 @@ catalog -> exact command schema -> current bound custody snapshot
    match its persisted `test` operator lane, is never aggregated into the
    dev/prod portfolio, and cannot draw from either portfolio wallet.
 4. Create the typed plan and preserve its wallet identity, outputs, maximum
-   fee, expiry, snapshot root, and idempotency identity exactly. Some plans are
+   fee, expiry, snapshot root, and idempotency identity (the retry key) exactly.
+   Some plans are
    pure previews; durable vault and market-purchase plans intentionally mutate
    only reservation state so concurrent commitments cannot oversubscribe the
    wallet. Planning never broadcasts value.
@@ -362,10 +404,12 @@ Once the next-block height is beyond those exact bytes' consensus expiry, the
 status reconciler marks `TX_EXPIRED_UNCONFIRMED`, removes the stale wallet
 transaction, and releases only that txid's note reservations. A later payment
 must use a fresh plan and receives a new transaction ID.
-For a fully shielded transaction, wallet history and txindex are not sufficient
-confirmation authorities: either projection may lag or omit a transaction with
+For a fully shielded transaction, wallet history and txindex (the transaction
+index) are not sufficient confirmation authorities: either projection may lag
+or omit a transaction with
 no transparent inputs or outputs. Before applying expiry, the reconciler looks
-up the exact durable transaction's Sapling nullifiers in the canonical
+up the exact durable transaction's Sapling nullifiers (note-spend identifiers)
+in the canonical
 nullifier set, reads the active block at the revealed height, and requires the
 exact txid in that block body. Exact body evidence corrects an earlier local
 `expired` or `conflicted` observation to `confirmed`/`finalized` and atomically
@@ -423,10 +467,12 @@ guide explicitly advertises an asynchronous route.
 
 ## Parallel transaction readiness
 
-One large UTXO can contain enough value for many payments while still allowing
-only one of them to reserve that input at a time. Ask the broker whether an
+One large UTXO (unspent transaction output) can contain enough value for many
+payments while still allowing only one of them to reserve that input at a
+time. Ask the broker whether an
 explicitly scoped wallet already has enough independent, reservation-eligible
-transparent UTXOs for the intended concurrency:
+transparent UTXOs for the intended concurrency. Values ending in `_zat` use
+zatoshis: 100,000,000 zatoshis equal 1 ZCL.
 
 ```bash
 z23 metaverse agent liquidity --input='{
@@ -507,7 +553,7 @@ Resolve each freshly created wallet address to its resident public key without
 exporting a private key, then compose a 2-of-3 policy from those public keys:
 
 ```bash
-z23 core wallet address public-key --address=<wallet-owned-address>
+z23 core wallet address public-key --address='<wallet-owned-address>'
 
 z23 core wallet transaction multisig compose --input='{
   "required_signatures":2,
@@ -595,17 +641,15 @@ procedure and safety cap are in
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 The exact 39-row mainnet posture and the owner-reviewed Sapling campaign are in
-[`work/LIVE_TRANSACTION_DEMONSTRATIONS.md`](./work/LIVE_TRANSACTION_DEMONSTRATIONS.md).
+[Live transaction demonstrations](./work/LIVE_TRANSACTION_DEMONSTRATIONS.md).
 
-The current complete inventory is **39/39 isolated cases passing**, with **38
+The checked-in baseline records **39/39 isolated cases passing**, with **38
 simulated-chain confirmations** plus **1 process-only consensus-verified**
 legacy Sprout case, **0 live-mainnet confirmations**, and **0 ZCL** live
 recipient value or fees. Sprout's canonical mainnet fixtures pin full
 transactions and proof verification, but no deprecated constructor is exposed;
 therefore the 38/39 simulated-chain bar is a policy boundary, not missing send
-support. The earlier 33/33 result was complete for the catalog as then declared;
-the later audit found ZBLG, made the gap explicit, then added its typed
-plan/commit and mined proof rather than hiding it.
+support.
 
 For one transparent payment with multiple recipients, use the same canonical
 custody engine application workflows use. Amounts are decimal strings and the
@@ -616,12 +660,13 @@ printf '%s' '{"wallet_scope":"dev","route":"transparent","idempotency_key":"paym
   z23 vault intent plan --input=-
 
 z23 vault intent commit --input='{"wallet_scope":"dev","plan_id":"<64hex-from-plan>","confirm":true}'
-z23 vault intent status --plan_id=<64hex-from-plan>
+z23 vault intent status --plan_id='<64hex-from-plan>'
 ```
 
 The required idempotency key makes a retry return the same plan; reusing that
-key for different effects fails closed. The plan reserves recipient value plus the maximum fee and binds the exact
-outputs, selected inputs, wallet instance, genesis, tip, current money snapshot
+key for different effects fails closed. The plan reserves recipient value plus
+the maximum fee and binds the exact outputs, selected inputs, wallet instance,
+genesis, tip, current money snapshot
 and expiry. Commit revalidates those bindings and is idempotent. This is the
 developer-facing multi-recipient API; the legacy `sendmany` RPC is compatibility
 surface, not the custody workflow agents should build against.
@@ -755,10 +800,11 @@ the same transaction ID.
 Future developers make one coherent feature slice:
 
 1. Add one semantic row to
-   `engine/controllers/include/controllers/transaction_types.def`. Reuse a type id
-   only if the on-chain meaning is unchanged; aliases are component commands,
+   `engine/controllers/include/controllers/transaction_types.def`. Reuse a type
+   id only if the on-chain meaning is unchanged; aliases are component commands,
    not new semantic types.
-2. Add or update the typed native builder/reader in `engine/composition/commands/*.def`.
+2. Add or update the typed native builder/reader in
+   `engine/composition/commands/*.def`.
    Every non-empty command named by the catalog is test-checked against the
    live command registry and exposed through `app transaction-types guide`.
 3. Query the new leaf with `app transaction-types command <path>`. A canonical
