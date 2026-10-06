@@ -11,6 +11,8 @@
  * length publishes only on success. Clear secret scratch on every exit. */
 zcl_status zcl_jni_read_bytes(JNIEnv *env, jbyteArray input, uint8_t *bytes,
                               size_t capacity, size_t *length);
+zcl_status zcl_jni_read_exact_bytes(JNIEnv *env, jbyteArray input, uint8_t *bytes,
+                                    size_t length);
 /* Public results only. Secret outputs use managed-owned destinations whose
  * finally cleanup is established before JNI, including a failed region copy. */
 jbyteArray zcl_jni_new_bytes(JNIEnv *env, const uint8_t *bytes, size_t length);

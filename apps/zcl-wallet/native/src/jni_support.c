@@ -22,6 +22,22 @@ zcl_status zcl_jni_read_bytes(JNIEnv *env, jbyteArray input, uint8_t *bytes,
     return ZCL_OK;
 }
 
+zcl_status zcl_jni_read_exact_bytes(JNIEnv *env, jbyteArray input, uint8_t *bytes,
+                                    size_t length)
+{
+    if (env == NULL || input == NULL || bytes == NULL)
+        return ZCL_INVALID_ARGUMENT;
+    if ((*env)->ExceptionCheck(env))
+        return ZCL_INVALID_ARGUMENT;
+    const jsize count = (*env)->GetArrayLength(env, input);
+    if ((*env)->ExceptionCheck(env))
+        return ZCL_INVALID_ARGUMENT;
+    if (count < 0 || (size_t)count != length)
+        return ZCL_OUT_OF_RANGE;
+    (*env)->GetByteArrayRegion(env, input, 0, count, (jbyte *)bytes);
+    return (*env)->ExceptionCheck(env) ? ZCL_INVALID_ARGUMENT : ZCL_OK;
+}
+
 jbyteArray zcl_jni_new_bytes(JNIEnv *env, const uint8_t *bytes, size_t length)
 {
     if (env == NULL || bytes == NULL || length > (size_t)INT32_MAX)

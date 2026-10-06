@@ -5350,3 +5350,28 @@ copied. GREEN stops after the four header/IV calls; removing only the exact-IV
 check restores RED. Focused Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0 tests
 pass, followed by the complete 145/140 TLS-OFF matrix and both static analyzers.
 TLS remains quarantined; no Android runtime or device claim is made.
+
+## Exact ciphertext admission before native copy — 2026-10-06
+
+Record packing now derives the exact ciphertext length from the admitted public
+wallet header and uses a shared exact-length JNI reader. A mismatched managed
+array is refused after its length query, before encrypted payload bytes enter
+native scratch. The lower record packer retains its authoritative format and
+profile checks.
+
+| Hazard | Review |
+| --- | --- |
+| Secret lifetime | Mismatched 0-, 1-, 31-, 33- and 48-byte ciphertext arrays now perform no region copy. The complete 48-byte ciphertext scratch and all other record scratch spans remain wiped on every exit. |
+| Exact copying | The helper reads only when the immutable Java array length equals the header-derived entropy length plus the fixed 16-byte tag. Accepted arrays still use one length and one region operation. |
+| Integer safety | Parsed entropy lengths are 16..32, so the fixed tag addition is bounded to 32..48. JNI signed lengths are checked before conversion. |
+| Exceptions | Entry and length-query exceptions refuse without copying. A region exception can partially touch scratch, returns failure, remains pending, and is followed by full scratch retirement. |
+| Mutation resistance | Weakening equality to accept a short array causes zero-filled native tail bytes to be packed under the expected length; the deterministic regression rejects that behavior. |
+| Complexity | Production remains M<=10 across 606 functions; tests remain M<=15 across 1,860 functions without suppression. |
+| Authority | Record format, encryption, recovery, storage, transaction validity, monetary policy and consensus are unchanged. |
+
+Canonical RED observes a ciphertext region read for every mismatched in-capacity
+array. GREEN stops after the fifth JNI call, the ciphertext length query; the
+exactness mutation restores unsafe packing and fails. Focused Clang 20.1.2
+ASan/UBSan/LSan and GCC 14.2.0 tests pass, followed by the complete 145/140
+TLS-OFF matrix and both analyzers. TLS remains quarantined; no Android runtime
+or device claim is made.

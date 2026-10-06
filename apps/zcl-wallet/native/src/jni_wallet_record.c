@@ -77,17 +77,18 @@ Java_org_zclassic_wallet_core_NativeCore_packWalletRecord(JNIEnv *env, jclass ty
 {
     (void)type;
     uint8_t header[80] = {0}, iv[12] = {0}, ciphertext[48] = {0}, record[140] = {0};
-    size_t header_len = 0, iv_len = 0, ciphertext_len = 0, record_len = 0;
+    size_t header_len = 0, iv_len = 0, entropy_len = 0, record_len = 0;
     jbyteArray output = NULL;
     if (zcl_jni_read_bytes(env, header_input, header, sizeof(header), &header_len) != ZCL_OK)
         goto cleanup;
-    if (admit_wallet_header(header, header_len, NULL) != ZCL_OK)
+    if (admit_wallet_header(header, header_len, &entropy_len) != ZCL_OK)
         goto cleanup;
     if (zcl_jni_read_bytes(env, iv_input, iv, sizeof(iv), &iv_len) != ZCL_OK)
         goto cleanup;
     if (iv_len != sizeof(iv))
         goto cleanup;
-    if (zcl_jni_read_bytes(env, ciphertext_input, ciphertext, sizeof(ciphertext), &ciphertext_len) != ZCL_OK)
+    const size_t ciphertext_len = entropy_len + ZCL_WALLET_TAG_BYTES;
+    if (zcl_jni_read_exact_bytes(env, ciphertext_input, ciphertext, ciphertext_len) != ZCL_OK)
         goto cleanup;
     if (zcl_wallet_record_pack(header, header_len, iv, iv_len, ciphertext, ciphertext_len,
                                record, sizeof(record), &record_len) != ZCL_OK)

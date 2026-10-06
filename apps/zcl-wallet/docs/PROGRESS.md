@@ -8654,3 +8654,21 @@ TLS-OFF gate passes both analyzers, all 145 Clang and 140 GCC tests, production
 M<=10 and test M<=15. Record format, recovery, storage, transaction validity,
 monetary policy and consensus are unchanged. No Android runtime or device claim
 is made.
+
+## Production continuation: exact ciphertext admitted before native copy — 2026-10-06
+
+JNI wallet-record packing now retains the parsed header entropy length and uses
+a shared exact-length reader for the encrypted payload. Mismatched in-capacity
+arrays previously copied their bytes into native scratch before the lower
+packer refused them. They now stop after the ciphertext length query with no
+payload read. Exact arrays retain one length and one region operation, full
+scratch cleanup, and the lower authoritative record validation.
+
+Canonical RED observes six JNI calls; GREEN observes five. Weakening equality
+to accept a short array lets zero-filled native tail bytes be packed under the
+expected length and is rejected by the regression. Saved hashes verify exact
+restoration. Focused Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0 tests pass. The
+exact-tree TLS-OFF gate passes both analyzers, all 145 Clang and 140 GCC tests,
+production M<=10 and test M<=15. Record format, recovery, storage, transaction
+validity, monetary policy and consensus are unchanged. No Android runtime or
+physical-device claim is made.

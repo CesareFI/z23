@@ -374,9 +374,19 @@ static void invalid_iv_admission(void)
     }
 }
 
+static void invalid_ciphertext_admission(void)
+{
+    const jsize lengths[] = {0, 1, 31, 33, 48};
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        prepare(0); inputs[2].length = lengths[i];
+        CHECK(!run(false) && !pending && reference_count == 0 && vm_calls == 5);
+    }
+}
+
 int main(void)
 {
     exact_results(); vm_failures(); pending_and_null(); invalid_inputs(); invalid_iv_admission();
+    invalid_ciphertext_admission();
     puts("JNI record reference and exception checks passed");
     return 0;
 }
