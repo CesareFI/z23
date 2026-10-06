@@ -253,6 +253,7 @@
 #include "sha3/sha3.h"
 #include "services/muse_run_audit.h"
 #include "util/log_macros.h"
+#include "zutf8/zutf8.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -595,6 +596,8 @@ static bool rcv_escape(const char *in, char *out, size_t cap)
 {
     size_t used = 0;
     if (!in || !out || cap == 0)
+        return false;
+    if (!zutf8_validate_n(in, strlen(in)))
         return false;
     for (; *in; in++) {
         unsigned char c = (unsigned char)*in;
@@ -1463,24 +1466,44 @@ static void rcv_ref_known(struct rcv_ctx *c, const char *ref,
  * key=value lines with no path and no slash of any kind: the mail leaf
  * refuses a body carrying a filesystem path, and the brief lives outside
  * the checkout by design. Best-effort — the queue row is the record. */
+/* Checked composer; false leaves no usable document. No dispatch here. */
+bool zcl_devagent_receive_answer_input(const char *to, const char *ref,
+    const char *kind, const char *body, const char *receiver, char *input, size_t cap);
+bool zcl_devagent_receive_answer_input(const char *to, const char *ref,
+    const char *kind, const char *body, const char *receiver, char *input, size_t cap)
+{
+    char ebody[8192], eref[256], eto[128], ekind[128], ereceiver[256];
+    int n;
+    if (!input || !cap) return false;
+    input[0] = '\0';
+    if (!rcv_escape(body, ebody, sizeof(ebody)) ||
+        !rcv_escape(rcv_ref_ok(ref) ? ref : "", eref, sizeof(eref)) ||
+        !rcv_escape(to && to[0] ? to : "*", eto, sizeof(eto)) ||
+        !rcv_escape(kind, ekind, sizeof(ekind)) ||
+        !rcv_escape(receiver, ereceiver, sizeof(ereceiver)))
+        return false;
+    n = snprintf(input, cap,
+                 "{\"action\":\"post\",\"to\":\"%s\",\"kind\":\"%s\","
+                 "\"body\":\"%s\",\"ref\":\"%s\",\"from\":\"%s\"}",
+                 eto, ekind, ebody, eref, ereceiver);
+    if (n < 0 || (size_t)n >= cap) {
+        input[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
 static void rcv_answer(struct rcv_ctx *c, const struct rcv_row *v,
                        const char *kind, const char *body)
 {
     struct rcv_sub sub;
-    char ebody[8192], eref[256], eto[128];
     char input[RCV_INPUT_CAP];
-    const char *to = (v->from && v->from[0]) ? v->from : "*";
-    if (c->dry)
+    if (c->dry) return;
+    if (!zcl_devagent_receive_answer_input(v->from, v->ref, kind, body,
+                                          c->receiver, input, sizeof(input))) {
+        LOG_WARN(RCV_LOG, "answer refused: invalid encoding or capacity");
         return;
-    if (!rcv_escape(body, ebody, sizeof(ebody)) ||
-        !rcv_escape(rcv_ref_ok(v->ref) ? v->ref : "", eref, sizeof(eref)) ||
-        !rcv_escape(to, eto, sizeof(eto)))
-        return;
-    if (snprintf(input, sizeof(input),
-                 "{\"action\":\"post\",\"to\":\"%s\",\"kind\":\"%s\","
-                 "\"body\":\"%s\",\"ref\":\"%s\",\"from\":\"%s\"}",
-                 eto, kind, ebody, eref, c->receiver) >= (int)sizeof(input))
-        return;
+    }
     rcv_sub_begin(&sub, "zcl.agent_mail.v1", "dev.agent.mail");
     if (sub.valid && rcv_sub_input(&sub, input)) {
         zcl_native_handle_dev_agent_mail(&sub.request, &sub.reply);

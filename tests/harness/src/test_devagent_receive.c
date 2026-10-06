@@ -23,12 +23,15 @@
 #include "kernel/command_registry.h"
 #include "platform/directory_watcher.h"
 #include "platform/time_compat.h"
+#include "zutf8/zutf8.h"
 
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+bool zcl_devagent_receive_answer_input(const char *, const char *, const char *,
+    const char *, const char *, char *, size_t);
 #if !defined(_WIN32)
 #include <dirent.h>
 #include <fcntl.h>
@@ -907,11 +910,80 @@ static long long rtx_queued_prio(const char *ref, char *dep, size_t cap)
     return prio;
 }
 
+static int test_receive_answer_refusal(bool receiver, const char *value,
+                                      const char *name)
+{
+    int failures = 0;
+    char out[1024] = "stale";
+    TEST(name) {
+        ASSERT(!zcl_devagent_receive_answer_input("ok", "bad/ref",
+            receiver ? "problem" : value, "body",
+            receiver ? value : "box-a", out, sizeof(out)));
+        ASSERT_STR_EQ(out, "");
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int test_receive_answer_text(bool receiver)
+{
+    int failures = 0;
+    char out[1024];
+    const char *text = "caf\xc3\xa9\n\t\001\"\\";
+    struct json_value v = {0};
+    TEST(receiver ? "answer receiver round-trips Unicode and controls"
+                  : "answer kind round-trips Unicode and controls") {
+        ASSERT(zcl_devagent_receive_answer_input("ok", "bad/ref",
+            receiver ? "problem" : text, "body",
+            receiver ? text : "box-a", out, sizeof(out)));
+        ASSERT(zutf8_validate_n(out, strlen(out)));
+        ASSERT(json_read(&v, out, strlen(out)));
+        ASSERT_STR_EQ(json_get_str(json_get(&v, receiver ? "from" : "kind")), text);
+        PASS();
+    }
+_test_next:;
+    json_free(&v);
+    return failures;
+}
+
+static int test_receive_answer_fields(void)
+{
+    char oversized[257];
+    memset(oversized, 'a', sizeof(oversized) - 1);
+    oversized[sizeof(oversized) - 1] = '\0';
+    return test_receive_answer_refusal(false, "a\xff" "b", "answer kind refuses FF")
+        + test_receive_answer_refusal(true, "a\xff" "b", "answer receiver refuses FF")
+        + test_receive_answer_text(false)
+        + test_receive_answer_text(true)
+        + test_receive_answer_refusal(false, NULL, "answer kind refuses NULL")
+        + test_receive_answer_refusal(true, NULL, "answer receiver refuses NULL")
+        + test_receive_answer_refusal(false, oversized, "answer kind refuses capacity overflow")
+        + test_receive_answer_refusal(true, oversized, "answer receiver refuses capacity overflow");
+}
+
 /* muse-priority and muse-depends-on reach the queue row the worker claims
  * by (priority, seq) and dependency; a malformed one refuses by name. */
 static int test_receive_queue_order(void)
 {
     int failures = 0;
+    TEST("invalid-ref answer refuses FF sender and preserves Unicode controls") {
+        char out[1024] = "stale";
+        const char *body = "caf\xc3\xa9\n\t\001\"\\";
+        struct json_value v = {0};
+        ASSERT(!zcl_devagent_receive_answer_input("a\xff" "b", "bad/ref", "problem", body, "box-a", out, sizeof(out)));
+        ASSERT_STR_EQ(out, "");
+        ASSERT(zcl_devagent_receive_answer_input("caf\xc3\xa9", "bad/ref", "problem", body, "box-a", out, sizeof(out)));
+        ASSERT(zutf8_validate_n(out, strlen(out)));
+        ASSERT(json_read(&v, out, strlen(out)));
+        ASSERT_STR_EQ(json_get_str(json_get(&v, "body")), body);
+        ASSERT_STR_EQ(json_get_str(json_get(&v, "to")), "caf\xc3\xa9");
+        ASSERT_STR_EQ(json_get_str(json_get(&v, "ref")), "");
+        json_free(&v);
+        ASSERT(!zcl_devagent_receive_answer_input("ok", "bad/ref", "problem", body, "box-a", out, 8));
+        ASSERT_STR_EQ(out, "");
+        PASS();
+    }
 
     TEST("muse-priority and muse-depends-on ride into the queue row")
     {
@@ -1310,6 +1382,7 @@ int test_devagent_receive(void)
 
 #if !defined(_WIN32)
     failures += test_receive_intake_paging();
+    failures += test_receive_answer_fields();
     failures += test_receive_queue_order();
     failures += test_receive_preflight();
 
