@@ -394,6 +394,148 @@ _test_next:;
     return failures;
 }
 
+static bool fo_record_tail(FILE *f, int kind)
+{
+    if (kind == 2)
+        return fwrite("\0junk\n", 1, 6, f) == 6;
+    if (kind == 3) {
+        for (size_t i = 0; i < FO_LINE_CAP; i++)
+            if (fputc('x', f) == EOF)
+                return false;
+    }
+    if (kind == 4 && fputs("\textra", f) < 0)
+        return false;
+    if (kind == 5 && fputs("\nshort", f) < 0)
+        return false;
+    if (kind == 7)
+        return fputs("\r\n", f) >= 0;
+    if (kind == 1 || kind == 3 || kind == 4)
+        return fputc('\n', f) != EOF;
+    return true;
+}
+
+static bool fo_record_fixture(const char *path, int kind)
+{
+    const char row[] = "2026-09-01T09:00:00Z\tresult\tnode1\tt1\tverify\tstory\t"
+        "grok\tharness\tmodel\thigh\t1\t1\t1\t0\t1\t1\t1\tLAND\t0\t0\t0\tnote";
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    bool ok = fputs("header\n", f) >= 0 &&
+        fwrite(row, 1, sizeof(row) - 1, f) == sizeof(row) - 1 &&
+        fo_record_tail(f, kind);
+    int closed = fclose(f);
+    return ok && closed == 0;
+}
+
+static int test_fleet_observe_record(int kind, bool expected, const char *location,
+                                     const char *name)
+{
+    int failures = 0;
+    char path[PATH_MAX] = "";
+
+    TEST(name) {
+        int fd = test_mkstemp(path, sizeof(path), "fo_records");
+        struct fo_row rows[2];
+        size_t count = 99;
+        char err[256];
+        ASSERT(fd >= 0);
+        ASSERT_EQ(close(fd), 0);
+        ASSERT(fo_record_fixture(path, kind));
+        bool ok = fo_read_ledger(path, rows, 2, &count, err, sizeof(err));
+        ASSERT_EQ(ok, expected);
+        ASSERT_EQ(count, expected ? (size_t)1 : (size_t)0);
+        if (location)
+            ASSERT(strstr(err, location) != NULL);
+        PASS();
+    }
+_test_next:;
+    if (path[0])
+        (void)unlink(path);
+    return failures;
+}
+
+static int test_fleet_observe_read_error(void)
+{
+    int failures = 0;
+    char path[PATH_MAX] = "";
+    TEST("ledger refuses a directory read without publishing a count") {
+        struct fo_row rows[2];
+        size_t count = 99;
+        char err[256];
+        ASSERT(test_mkdtemp(path, sizeof(path), "fo_read_error") != NULL);
+        ASSERT(!fo_read_ledger(path, rows, 2, &count, err, sizeof(err)));
+        ASSERT_EQ(count, (size_t)0);
+        ASSERT(err[0] != '\0');
+        PASS();
+    }
+_test_next:;
+    if (path[0])
+        (void)rmdir(path);
+    return failures;
+}
+
+static int test_fleet_observe_open_diagnostic(void)
+{
+    int failures = 0;
+    char path[PATH_MAX] = "";
+    TEST("ledger open failure identifies the requested path") {
+        struct fo_row row;
+        size_t count = 99;
+        char err[PATH_MAX + 64], expected[PATH_MAX + 64];
+        ASSERT(test_mkdtemp(path, sizeof(path), "fo_missing") != NULL);
+        ASSERT_EQ(rmdir(path), 0);
+        ASSERT(!fo_read_ledger(path, &row, 1, &count, err, sizeof(err)));
+        ASSERT_EQ(count, (size_t)0);
+        (void)snprintf(expected, sizeof(expected), "cannot open ledger '%s'", path);
+        ASSERT(strcmp(err, expected) == 0);
+        PASS();
+    }
+_test_next:;
+    if (path[0])
+        (void)rmdir(path);
+    return failures;
+}
+
+static int test_fleet_observe_cap_diagnostic(void)
+{
+    int failures = 0;
+    char path[PATH_MAX] = "";
+    TEST("ledger row-cap failure identifies the configured cap") {
+        int fd = test_mkstemp(path, sizeof(path), "fo_cap");
+        struct fo_row row;
+        size_t count = 99;
+        char err[256];
+        ASSERT(fd >= 0);
+        ASSERT_EQ(close(fd), 0);
+        ASSERT(fo_record_fixture(path, 1));
+        ASSERT(!fo_read_ledger(path, &row, 0, &count, err, sizeof(err)));
+        ASSERT_EQ(count, (size_t)0);
+        ASSERT(strcmp(err, "rows.tsv:2: more rows than the 0-row cap") == 0);
+        PASS();
+    }
+_test_next:;
+    if (path[0])
+        (void)unlink(path);
+    return failures;
+}
+
+static int test_fleet_observe_records(void)
+{
+    int failures = 0;
+    failures += test_fleet_observe_record(0, true, NULL, "ledger accepts complete EOF");
+    failures += test_fleet_observe_record(1, true, NULL, "ledger accepts LF");
+    failures += test_fleet_observe_record(7, true, NULL, "ledger accepts CRLF");
+    failures += test_fleet_observe_record(2, false, ":2:", "ledger refuses NUL");
+    failures += test_fleet_observe_record(3, false, ":2:", "ledger refuses overlong record");
+    failures += test_fleet_observe_record(4, false, ":2:", "ledger refuses extra field");
+    failures += test_fleet_observe_record(5, false, ":3:", "ledger refuses short row");
+    failures += test_fleet_observe_read_error();
+    failures += test_fleet_observe_open_diagnostic();
+    failures += test_fleet_observe_cap_diagnostic();
+    return failures;
+}
+
 int test_fleet_observe(void)
 {
     int failures = 0;
@@ -401,6 +543,7 @@ int test_fleet_observe(void)
     failures += test_fleet_observe_ready_accounting();
     failures += test_fleet_observe_parse();
     failures += test_fleet_observe_check();
+    failures += test_fleet_observe_records();
     failures += test_fleet_observe_dev_know();
     return failures;
 }

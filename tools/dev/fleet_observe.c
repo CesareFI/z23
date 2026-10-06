@@ -293,37 +293,63 @@ size_t fo_classify(const struct fo_pair *pair, struct fo_observation *out2)
 
 /* ── ledger file reading ──────────────────────────────────────────────── */
 
+static void fo_open_err(char *err, size_t cap, const char *path)
+{
+    if (err && cap)
+        (void)snprintf(err, cap, "cannot open ledger '%s'",
+                       path ? path : "(null)");
+}
+
+static void fo_cap_err(char *err, size_t err_cap, size_t line_no, size_t cap)
+{
+    if (err && err_cap)
+        (void)snprintf(err, err_cap,
+                       "rows.tsv:%zu: more rows than the %zu-row cap",
+                       line_no, cap);
+}
+
+/* Return one complete bounded physical record, EOF, or a framing/read error. */
+static int fo_read_record(FILE *f, char *line, size_t *len)
+{
+    int ch;
+    *len = 0;
+    while ((ch = fgetc(f)) != EOF) {
+        if (ch == '\n')
+            break;
+        if (ch == 0 || *len == FO_LINE_CAP - 1)
+            return -1;
+        line[(*len)++] = (char)ch;
+    }
+    if (ferror(f))
+        return -1;
+    line[*len] = '\0';
+    return ch == EOF && *len == 0 ? 0 : 1;
+}
+
 bool fo_read_ledger(const char *path, struct fo_row *rows, size_t cap,
                     size_t *count_out, char *err, size_t err_cap)
 {
     FILE *f;
     char line[FO_LINE_CAP];
     size_t line_no = 0, count = 0;
+    size_t len;
+    int status;
 
     if (count_out)
         *count_out = 0;
     f = path ? fopen(path, "r") : NULL;
     if (!f) {
-        if (err && err_cap)
-            (void)snprintf(err, err_cap, "cannot open ledger '%s'",
-                           path ? path : "(null)");
+        fo_open_err(err, err_cap, path);
         return false;
     }
-    while (fgets(line, sizeof(line), f)) {
-        size_t len = strlen(line);
-
+    while ((status = fo_read_record(f, line, &len)) > 0) {
         line_no++;
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+        while (len > 0 && line[len - 1] == '\r')
             line[--len] = '\0';
-        if (line_no == 1)
-            continue; /* header */
-        if (len == 0)
-            continue; /* trailing blank line */
+        if (line_no == 1 || len == 0)
+            continue; /* header or trailing blank line */
         if (count >= cap) {
-            if (err && err_cap)
-                (void)snprintf(err, err_cap,
-                               "rows.tsv:%zu: more rows than the %zu-row cap",
-                               line_no, cap);
+            fo_cap_err(err, err_cap, line_no, cap);
             (void)fclose(f);
             return false;
         }
@@ -333,7 +359,12 @@ bool fo_read_ledger(const char *path, struct fo_row *rows, size_t cap,
         }
         count++;
     }
-    (void)fclose(f);
+    int close_status = fclose(f);
+    if (status < 0 || close_status != 0) {
+        fo_err(err, err_cap, status < 0 ? line_no + 1 : line_no,
+               "invalid, overlong, or unreadable physical record");
+        return false;
+    }
     if (count_out)
         *count_out = count;
     return true;
