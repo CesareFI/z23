@@ -66,3 +66,14 @@ destructor accounting.
 ## License
 
 Apache-2.0 (see LICENSE).
+
+The registered suite checks complete empty/nonempty CLI traces and real
+buffered and unbuffered output refusal. Output errors return 2. This fixture
+uses POSIX streams: on `_WIN32` unavailable required coverage fails explicitly
+instead of producing a passing suite. It does not qualify close-only delivery
+errors at process teardown.
+
+`tests/test_zlru.c:512` registers read-error, usage, capacity, allocation and
+key-bound diagnostic controls. Its allocation controls reuse the existing
+refusing allocator callbacks. `tests/test_zlru.c:480` checks refusal of both
+the result and the error diagnostic. The finish check is in `app/main.c:39`.

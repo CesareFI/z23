@@ -36,6 +36,14 @@ static int read_input(FILE *in, size_t *len) {
   return 0;
 }
 
+static int finish_output(FILE *out, int status) {
+  if (fflush(out) == EOF || ferror(out)) {
+    fprintf(stderr, "zlru: write error\n");
+    return 2;
+  }
+  return status;
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     fprintf(stderr, "usage: zlru CAPACITY < keys\n");
@@ -43,7 +51,7 @@ int main(int argc, char **argv) {
   }
   char *end = NULL;
   unsigned long cap = strtoul(argv[1], &end, 10);
-  if (!end || *end || cap < 1 || cap > MAX_CAPACITY) {
+  if (*end || cap < 1 || cap > MAX_CAPACITY) {
     fprintf(stderr, "zlru: capacity must be 1..%u\n", MAX_CAPACITY);
     return 2;
   }
@@ -93,5 +101,5 @@ int main(int argc, char **argv) {
   printf("# %zu keys: %zu hits, %zu misses, hit rate %.3f\n",
          hits + misses, hits, misses,
          hits + misses ? (double)hits / (double)(hits + misses) : 0.0);
-  return 0;
+  return finish_output(stdout, 0);
 }
