@@ -5328,3 +5328,25 @@ only the new predicate restores RED. Focused Clang 20.1.2 ASan/UBSan/LSan and
 GCC 14.2.0 tests pass, followed by the complete 145/140 TLS-OFF matrix and both
 static analyzers. TLS remains quarantined; no Android runtime or device claim
 is made.
+
+## Record-pack IV admission before ciphertext copy — 2026-10-06
+
+`packWalletRecord` now requires the bounded IV copy to have the exact 12-byte
+record-format length before reading encrypted wallet payload bytes. The lower
+record packer retains its unchanged authoritative header, IV and ciphertext
+validation for admitted inputs.
+
+| Hazard | Review |
+| --- | --- |
+| Secret lifetime | Zero-, one- and eleven-byte IVs now cause zero ciphertext-array reads. Header, IV, ciphertext and record scratch spans retain complete final cleanup on every exit. |
+| Bounds and conversion | The comparison uses the existing `size_t` IV length and `sizeof(iv)`; no arithmetic or signed conversion is added. |
+| JNI exceptions | Header and IV length/region exceptions keep their pending state and cleanup. Ciphertext exceptions remain covered after exact IV admission. |
+| Record semantics | Valid 12-byte IVs and all ciphertext/profile checks reach the same lower packer. Record bytes, encryption and parser behavior are unchanged. |
+| Complexity | Production remains M<=10 across 605 functions; tests remain M<=15 across 1,859 functions without suppression. |
+| Authority | Recovery, storage durability, keys, transaction validity, monetary policy and consensus are unchanged. |
+
+Canonical RED observes six JNI calls for each short IV because ciphertext is
+copied. GREEN stops after the four header/IV calls; removing only the exact-IV
+check restores RED. Focused Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0 tests
+pass, followed by the complete 145/140 TLS-OFF matrix and both static analyzers.
+TLS remains quarantined; no Android runtime or device claim is made.

@@ -8638,3 +8638,19 @@ exact-tree TLS-OFF gate passes both analyzers, all 145 Clang and 140 GCC tests,
 production M<=10 and test M<=15. Recovery semantics, keys, storage, transaction
 validity, monetary policy and consensus are unchanged. No Android runtime or
 physical-device claim is made.
+
+## Production continuation: invalid record IV refused before ciphertext copy — 2026-10-06
+
+JNI wallet-record packing now requires the copied IV to be exactly 12 bytes
+before reading the encrypted payload. Zero-, one- and eleven-byte IVs previously
+caused ciphertext to enter native scratch before the lower packer refused them.
+They now stop after four bounded header/IV JNI operations, with unchanged full
+scratch retirement and lower authoritative validation for admitted input.
+
+Canonical RED observes six JNI calls; GREEN observes four. Removing only the
+new check restores RED, and saved source/test hashes verify exact restoration.
+Focused Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0 tests pass. The exact-tree
+TLS-OFF gate passes both analyzers, all 145 Clang and 140 GCC tests, production
+M<=10 and test M<=15. Record format, recovery, storage, transaction validity,
+monetary policy and consensus are unchanged. No Android runtime or device claim
+is made.

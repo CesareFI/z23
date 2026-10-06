@@ -365,9 +365,18 @@ static void invalid_inputs(void)
     }
 }
 
+static void invalid_iv_admission(void)
+{
+    const jsize lengths[] = {0, 1, 11};
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        prepare(0); inputs[1].length = lengths[i];
+        CHECK(!run(false) && !pending && reference_count == 0 && vm_calls == 4);
+    }
+}
+
 int main(void)
 {
-    exact_results(); vm_failures(); pending_and_null(); invalid_inputs();
+    exact_results(); vm_failures(); pending_and_null(); invalid_inputs(); invalid_iv_admission();
     puts("JNI record reference and exception checks passed");
     return 0;
 }
