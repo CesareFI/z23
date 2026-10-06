@@ -268,6 +268,28 @@ static int test_dev_orient_query(void)
         }
         ASSERT_EQ((long long)facts->num_children, dvo_int(&c, "count"));
         dvo_end(&c);
+
+        static const struct { const char *query, *key, *field; } cases[] = {
+            {"gate_wiring_assertion_a", "gate_wiring_assertion_a", "key"},
+            {"Adding a lint gate touches three files",
+             "gate_wiring_three_files", "claim"},
+            {"tools/lint/arm_symbol_single_baseline.txt",
+             "arm_symbol_baseline_artifact_id", "path"}};
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            dvo_begin(&c);
+            (void)json_push_kv_str(&c.input, "query", cases[i].query);
+            ASSERT(dvo_run(&c));
+            ASSERT(dvo_ok(&c));
+            facts = dvo_arr(&c, "facts");
+            ASSERT(facts != NULL);
+            ASSERT_EQ(facts->num_children, 1);
+            ASSERT_EQ(dvo_int(&c, "count"), 1);
+            ASSERT_EQ(dvo_int(&c, "matched"), 1);
+            ASSERT_STR_EQ(dvo_row_str(&facts->children[0], "key"), cases[i].key);
+            ASSERT(strstr(dvo_row_str(&facts->children[0], cases[i].field),
+                          cases[i].query) != NULL);
+            dvo_end(&c);
+        }
         PASS();
     } _test_next:;
     return failures;
