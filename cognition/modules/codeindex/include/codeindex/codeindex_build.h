@@ -29,7 +29,8 @@ bool codeindex_rebuild(struct codeindex *ci);
 /* Compute whether the on-disk store is stale w.r.t. the current tree. Exact
  * roots are sealed at rebuild; warm checks compare path/inode/size/mtime/ctime
  * cache keys so a same-size edit with restored mtime still invalidates without
- * making every query O(total source bytes). Returns false on a hard error. */
+ * making every query O(total source bytes). Returns false on a hard error.
+ * The stale output is optional; when supplied, it is true on refusal. */
 bool codeindex_is_stale(struct codeindex *ci, bool *stale);
 
 

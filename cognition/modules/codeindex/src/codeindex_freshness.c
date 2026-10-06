@@ -66,6 +66,7 @@ static bool store_is_stale_profile(struct codeindex *ci,
 
 bool codeindex_is_stale(struct codeindex *ci, bool *stale)
 {
+    if (stale) *stale = true;
     if (!ci || !ci->store) LOG_FAIL("codeindex", "null arg to is_stale");
     return store_is_stale_profile(ci, true, stale);
 }
