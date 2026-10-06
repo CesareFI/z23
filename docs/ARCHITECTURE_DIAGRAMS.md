@@ -1,33 +1,72 @@
+<!-- Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. -->
+
 # Z23 Architecture Diagrams
 
-> **Note:** For the canonical architecture (the Prime Directive, the Ten Laws of Beauty, the eight shapes, and current-vs-target status) see [`FRAMEWORK.md`](./FRAMEWORK.md). The diagrams below remain useful references for the **current** boot sequence and subsystem topology. See also [`adr/0001-personal-sovereignty-stack.md`](./adr/0001-personal-sovereignty-stack.md) for the pivot rationale.
+Use this page to trace startup, peer communication, block validation, and
+transactions (transfers of value). A **wallet** holds keys and tracks payments;
+**HTTP** (Hypertext Transfer Protocol) carries the web requests shown below.
+You need the source checkout to follow the symbols and a Mermaid-compatible
+viewer to render the diagrams. For a first node build, read
+[GETTING_STARTED.md](./GETTING_STARTED.md).
 
-Mermaid diagrams for the core subsystems. Render with any Mermaid-compatible viewer (GitHub, Obsidian, mermaid.live).
+1. Render a diagram in your Mermaid-compatible viewer.
+2. Follow its arrows through the named functions, stages, and events.
+3. Read the owning source before treating a branch as an operating procedure.
+
+These are subsystem sketches; an arrow groups related work rather than
+promising that every startup or synchronization path takes that branch.
+
+| Reference | Use it for |
+| --- | --- |
+| This page | Current subsystem flow and source entry points |
+| [FRAMEWORK.md](./FRAMEWORK.md) | Canonical architecture and current/target status |
+| [Sovereignty ADR](./adr/0001-personal-sovereignty-stack.md) | Architecture rationale |
+
+In the diagrams, `EV_*` names are observable events, not commands. A
+**reducer** advances chain state through stages; a **tip** is the end of the
+active chain. A **datadir** is the node's data directory. SQLite is the
+embedded database used by the node; a coins **view** supplies reads and a
+**cache** keeps coins in memory. **UTXO** means unspent transaction output.
+A **snapshot** saves state for later import.
 
 ---
 
 ## Boot Sequence
 
+**CLI** means command-line interface. **P2P** means peer-to-peer networking;
+**RPC** means remote procedure call, served over HTTP. **Tor** carries onion
+services, addressed by `.onion` names. `pthread` denotes a native thread.
+The **activation controller** coordinates chain activation; `connman`
+manages peer connections.
+**SHA3-256** is the hash used to check snapshot bytes. Ports below are
+defaults; `-port=` and `-rpcport=` override them. A full-Tor build starts Tor
+by default without `-tor`. `-no-tor` disables it on non-serving lanes; network-
+serving lanes refuse that option. A stub-Tor build refuses `-tor` unless the
+non-serving development lane uses `-allow-tor-stub-dev`, which does not run Tor.
+Startup opens `coins_view_sqlite` on the shared `node.db` connection, then
+binds `coins_view_kv` as the read view beneath the coins cache, backed by
+`coins_kv` in `progress.kv`.
+
 ```mermaid
 flowchart TD
-    START([z23 start]) --> PARSE[Parse CLI flags<br/>-datadir, -port, -tor, etc.]
-    PARSE --> ACTIVATION[Activation Controller<br/>state = BOOT_PENDING]
+    START([z23 with node options]) --> PARSE[Parse CLI flags<br/>-datadir=, -port=, -tor]
+    PARSE --> ACTIVATION[Activation Controller<br/>state = ACTIVATION_BOOT_PENDING]
 
-    ACTIVATION --> DB_OPEN[Open SQLite databases<br/>node.db, coins.db]
-    DB_OPEN -->|EV_BOOT_DB_OPEN| COINS[Initialize coins layer<br/>coins_view_sqlite + cache]
-    COINS -->|EV_BOOT_COINS_OPEN| UTXO_CHECK{UTXO snapshot<br/>available?}
+    ACTIVATION --> DB_OPEN[Open storage<br/>node.db + consensus.db]
+    DB_OPEN -->|EV_BOOT_DB_OPEN| UTXO_CHECK{UTXO snapshot<br/>available?}
 
     UTXO_CHECK -->|yes| UTXO_IMPORT[Import UTXO snapshot<br/>SHA3-256 verify]
-    UTXO_CHECK -->|no| BLOCK_INDEX
-    UTXO_IMPORT -->|EV_BOOT_UTXO_IMPORT| BLOCK_INDEX
+    UTXO_CHECK -->|no| COINS
+    UTXO_IMPORT -->|EV_BOOT_UTXO_IMPORT| COINS
+    COINS[Open coins_view_sqlite<br/>bind coins_view_kv + cache] --> BLOCK_INDEX
 
     BLOCK_INDEX[Load block index<br/>flat file + SQLite] -->|EV_BOOT_BLOCK_INDEX| CHAIN_VALIDATE
 
     CHAIN_VALIDATE[Chain state validator<br/>coins vs index agreement]
     CHAIN_VALIDATE -->|BOOT_OK| ACTIVATE
-    CHAIN_VALIDATE -->|REIMPORT| RECOVERY{Recovery policy<br/>allows?}
-    CHAIN_VALIDATE -->|WIPE_WAIT| RECOVERY
-    CHAIN_VALIDATE -->|RESET_CHAIN| RECOVERY
+    CHAIN_VALIDATE -->|BOOT_RECOVER_REIMPORT| RECOVERY{Recovery policy<br/>allows?}
+    CHAIN_VALIDATE -->|BOOT_RECOVER_WIPE_WAIT| RECOVERY
+    CHAIN_VALIDATE -->|BOOT_RECOVER_RESET_CHAIN| RECOVERY
 
     RECOVERY -->|allow| UTXO_RECOVERY[UTXO recovery service<br/>wipe/reimport/rebuild]
     RECOVERY -->|refuse| FAIL([Boot failed<br/>EV_BOOT_VALIDATION_FAILED])
@@ -38,9 +77,9 @@ flowchart TD
     SERVICES[Start services]
     SERVICES --> P2P[P2P connman<br/>port 8033]
     SERVICES --> RPC[RPC httpserver<br/>port 18232]
-    SERVICES --> TOR{Tor enabled?}
+    SERVICES --> TOR{Full Tor linked<br/>and no -no-tor?}
     SERVICES --> WALLET[Wallet sync]
-    SERVICES --> BG_VAL{bg validation<br/>enabled?}
+    SERVICES --> BG_VAL{Background validation<br/>enabled?}
 
     TOR -->|yes| TOR_BOOT[Bootstrap Tor<br/>generate .onion]
     TOR -->|no| READY
@@ -54,17 +93,30 @@ flowchart TD
     WALLET --> READY
     BG_START --> READY
 
-    READY([EV_NODE_READY<br/>Node operational])
+    READY([EV_NODE_READY<br/>Services started])
 ```
 
 ---
 
 ## P2P Network Flow
 
+**VERSION/VERACK** exchange protocol information and acknowledge the peer.
+**Headers** hold block metadata; full blocks also contain transactions.
+**DNS** (Domain Name System) resolves hostnames; **IP** (Internet Protocol)
+addresses locate peers. **Mainnet** is the public chain, rather than testnet.
+`getheaders`, `getdata`, and `inv` are wire messages requesting headers,
+requesting objects, and announcing objects. **FlyClient** checks sampled
+headers using **MMB** (Merkle Mountain Belt) inclusion proofs and **PoW**
+(proof of work). A snapshot **manifest** describes transferred chunks;
+**chainwork** measures accumulated work, and **finality** constrains snapshot
+height. **Delta sync** downloads blocks after the snapshot. **Relay** forwards
+announcements; a **token bucket** meters bytes. Ban scores use a configurable
+threshold, whose default is 100.
+
 ```mermaid
 flowchart TD
     subgraph Discovery
-        SEEDS[Hardcoded .onion seeds<br/>no DNS seeder is used]
+        SEEDS[Hardcoded .onion seeds<br/>no mainnet DNS seeder is used]
         DIRECTORY[Fetch /directory.json<br/>from .onion peers]
         ADDNODE[Manual addnode]
     end
@@ -116,7 +168,7 @@ flowchart TD
     end
 
     subgraph Scoring["Peer Scoring"]
-        MISBEHAVE[Misbehavior detected] -->|EV_PEER_MISBEHAVE| SCORE{Score >= 100?}
+        MISBEHAVE[Misbehavior detected] -->|EV_PEER_MISBEHAVE| SCORE{Score >= threshold?}
         SCORE -->|yes| BAN[Ban peer<br/>EV_PEER_BANNED]
         SCORE -->|no| CONTINUE[Continue]
     end
@@ -125,6 +177,16 @@ flowchart TD
 ---
 
 ## Block Validation Pipeline
+
+**Merkle root** is the block's commitment to its transactions. Transparent
+**scripts** authorize spends with **ECDSA** signatures on secp256k1.
+**Sapling** and **Sprout** are shielded transaction systems; **Groth16** is
+the Sapling proof system. The **turnstile** checks shielded pool balances.
+A **reorganization** switches to a winning branch by unwinding old changes;
+a **side chain** is a branch outside the active chain. A **checkpoint**
+compares state with a compiled commitment. A **flush**
+persists cached changes. The staged reducer path and the `connect_block`
+detail below are conceptual views, not two successive validation passes.
 
 ```mermaid
 flowchart TD
@@ -190,11 +252,18 @@ flowchart TD
 
 ## Wallet Transaction Lifecycle
 
+The **mempool** holds accepted transactions awaiting a block. **Coin
+selection** chooses inputs; a **t-address** is transparent and a **z-address**
+is shielded. A **zk-SNARK** is a shielded proof, and an **IVK** (incoming
+viewing key) allows trial decryption of received notes. **Confirmation**
+count tracks block inclusion; **maturity** controls when an output can be
+spent. `z_sendmany` is an RPC method, called as `z23 z_sendmany ...`.
+
 ```mermaid
 flowchart TD
     subgraph Create["Transaction Creation"]
-        USER[User: z23 rpc z_sendmany<br/>from, to, amount] --> SELECT[Coin selection<br/>BnB / knapsack]
-        SELECT --> TRANSPARENT{Shielded<br/>output?}
+        USER[User: z23 z_sendmany<br/>from, recipients] --> SELECT[Coin selection<br/>descending-value candidates]
+        SELECT --> TRANSPARENT{Shielded address<br/>involved?}
         TRANSPARENT -->|t-addr to t-addr| BUILD_T[Build transparent tx<br/>inputs, outputs, change]
         TRANSPARENT -->|involves z-addr| BUILD_S[Build Sapling tx<br/>spend proofs, output proofs]
         BUILD_T --> SIGN_T[Sign inputs<br/>ECDSA secp256k1]
@@ -229,7 +298,7 @@ flowchart TD
     end
 
     subgraph Query["Balance Query"]
-        CONF_N --> BALANCE[z23 core wallet balance<br/>transparent + shielded]
+        CONF_N --> BALANCE[z23 core wallet balance<br/>wallet balance]
         CONF_N --> LIST[z23 core wallet transaction list<br/>history with confirmations]
     end
 ```
@@ -238,10 +307,20 @@ flowchart TD
 
 ## Onion Service Architecture
 
+The **hidden service listener** accepts HTTP requests arriving through Tor.
+Handlers dispatch through C calls; the explorer returns **HTML** (web page
+markup), while status and directory endpoints return **JSON** (structured
+data). **ZSLP** is the token protocol used by
+the store. These are selected routes; the app mounts are registered in
+`core/modules/net/include/net/site_routes.def`.
+The `/blog` mount renders post and index HTML from `node.db`. If its handler
+returns no response, the onion dispatcher sends HTTP 503; it does not serve
+HTML files from `{datadir}/blog/` as a fallback.
+
 ```mermaid
 flowchart TD
     subgraph Tor["Embedded Tor (pthread)"]
-        TOR_BOOT[Bootstrap Tor circuit] --> ONION_GEN[Generate .onion address<br/>optional vanity prefix]
+        TOR_BOOT[Bootstrap Tor circuit] --> ONION_GEN[Load or create .onion identity]
         ONION_GEN --> DYNHOST[core/modules/net/src/onion_service.c<br/>hidden service listener]
     end
 
@@ -254,9 +333,9 @@ flowchart TD
     ROUTE_HTTP -->|/explorer/*| EXPLORER[Block explorer<br/>HTML + charts]
     ROUTE_HTTP -->|/directory.json| DIRECTORY[Peer directory<br/>.onion + clearnet IP + height]
     ROUTE_HTTP -->|/store| STORE[ZSLP token store<br/>store_handle_request]
-    ROUTE_HTTP -->|/blog| BLOG[Static blog files<br/>from datadir]
+    ROUTE_HTTP -->|/blog| BLOG[Render blog posts<br/>from node.db]
 
-    STATUS --> CONTROLLERS[C function call<br/>no HTTP overhead]
+    STATUS --> CONTROLLERS[C handler dispatch]
     EXPLORER --> CONTROLLERS
     CONTROLLERS --> NODE[Node state<br/>chain, wallet, mempool]
 
