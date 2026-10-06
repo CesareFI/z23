@@ -2,9 +2,14 @@
 
 # Getting Started With Z23
 
-This is the generic, fresh-machine setup guide: build the binary, then run it
-either as a **production** full node + block explorer, or as an isolated
-**development** instance. [`README.md`](../README.md) is the project overview;
+This is the generic, fresh-machine setup guide: build Z23 from source, then run
+a ZClassic full node with its block explorer (web view of the chain), or start
+an isolated development instance. First, prepare
+the compiler and build utilities listed for your platform below; the first build
+also needs internet access. A full node validates the chain and serves other
+peers.
+
+[`README.md`](../README.md) is the project overview;
 [`docs/BUILD.md`](BUILD.md) is the focused build reference (vendored-library
 sources/versions, fast dev-compile targets, sanitizer profiles), and
 [`docs/DEVELOPING.md`](DEVELOPING.md) is the model-neutral developer workflow.
@@ -17,11 +22,13 @@ it as your only mainnet node yet.
 
 Windows developers should start with [`WINDOWS.md`](WINDOWS.md). It separates
 the native MSYS2 UCRT64 portability lane from the currently supported WSL2
-full-node build and service lane.
+full-node build and service lane. WSL2 means Windows Subsystem for Linux 2.
 
 ---
 
 ## Build
+
+Z23 is written in C23, the 2023 edition of the C language standard.
 
 **Prerequisites on Linux:**
 
@@ -40,12 +47,12 @@ full-node build and service lane.
   shielded — see ["The proving parameters"](#the-proving-parameters-optional--a-node-syncs-and-validates-without-them)
   below.
 
-No other external dependencies: everything else is stock `cc`/`ld`/`make`
-and libc.
+Project dependencies are built from pinned sources. The resulting node uses
+the platform system libraries; see the dependency audit below.
 
-**Prerequisites on macOS:** install Apple's command-line developer tools and
-the GNU build utilities used by the source-identity and build-lease checks.
-The node is compiled as a native Mach-O executable; no virtual machine or
+**Prerequisites on macOS:** install Apple's command-line developer tools and the
+GNU build utilities used by the source-identity and build-lease checks. Mach-O
+is macOS's native executable format. The node uses it; no virtual machine or
 Linux compatibility layer is involved.
 
 ```bash
@@ -64,6 +71,11 @@ find are not sufficient for either.
 
 **Get the source and build:**
 
+1. Clone the source and enter the checkout.
+2. Check prerequisites with `make doctor`.
+3. Prepare local hooks and the compilation database with `make setup`.
+4. Build the public node with four parallel jobs (`-j4`).
+
 ```bash
 git clone https://github.com/z23c/z23.git
 cd z23
@@ -79,18 +91,20 @@ bootstrap exists but stays unpublished until its signing gate is met).
 
 This bounded command is suitable for a 16 GB machine, including a slow disk.
 Increase `-j4` only after observing available memory and I/O wait. Use
-`make -j4 all` only when you also need the monolithic test harness and every
-auxiliary command-line tool. The
-published node is a C23 executable with pinned project dependencies linked
-statically; it does not inherit GTK/WebKit or the C++ LevelDB runtime from the
-build host. The build fails closed if the ELF or Mach-O dependency audit finds
-an unapproved dynamic library.
+`make -j4 all` when you also need the test harness, RPC helpers and package
+verifier.
+Other auxiliary programs have separate targets. The published node is a C23
+executable with pinned project dependencies linked statically; it does not
+inherit GTK/WebKit or the C++ LevelDB runtime from the build host. The build
+fails closed if the ELF (Linux executable format) or Mach-O audit finds an
+unapproved dynamic library.
 
 For a binary intended to move between x86-64 Linux machines, use
 `make portable`. It needs no container or root access: it downloads a
-checksum-pinned GLIBC 2.31 sysroot, rebuilds all linked archives through that
-boundary, forces the baseline x86-64/SSE2 CPU, and executes a typed command
-under the old loader before declaring success.
+checksum-pinned
+GLIBC 2.31 sysroot (C library and headers for the target), rebuilds all linked
+archives through that boundary, forces the baseline x86-64/SSE2 CPU, and
+executes a typed command under the old loader before declaring success.
 
 At runtime, block-file startup scanning uses the node's storage classification.
 Rotating disks and storage that could not be classified use one reader;
@@ -100,26 +114,28 @@ No cache-pinning helper or privileged RAM setup is required for this policy.
 number of files. Invalid values fall back to the automatic policy.
 
 On rotational disks, an existing block-index projection can be prefetched in
-sequential 64 KiB reads before replay. Automatic SQLite cache sizing admits
-the projection plus 25% growth only when it fits within one eighth of host
-RAM, one quarter of available RAM, one quarter of observed cgroup headroom,
-and a 2 GiB ceiling. Small projections keep the existing cache policy;
-insufficient memory skips this optimization. `ZCL_BIP_PAGE_CACHE_KIB`
-preserves explicit cache control. Prefetch uses a 64 KiB buffer and the
-reclaimable operating-system cache; it does not pin memory or make RAM the
-durable storage authority. SQLite still owns page validation, WAL recovery,
-and writes. Slow-disk startup timing remains to be measured for this path.
+sequential 64 KiB reads before replay. Automatic SQLite cache sizing admits the
+projection plus 25% growth only when it fits within one eighth of host RAM, one
+quarter of available RAM, one quarter of observed cgroup headroom, and a 2 GiB
+ceiling. Small projections keep the existing cache policy; insufficient memory
+skips this optimization. `ZCL_BIP_PAGE_CACHE_KIB` preserves explicit cache
+control. Prefetch uses a 64 KiB buffer and the reclaimable operating-system
+cache; it does not pin memory or make RAM the durable storage authority. SQLite
+still owns page validation, write-ahead log (WAL) recovery, and writes.
+Slow-disk startup timing remains to be measured for this path.
 
 The first build needs internet access once: `make` auto-runs `make vendor`,
 which fetches pinned third-party source tarballs (OpenSSL, libevent, LevelDB,
-zlib, SQLite, the canonical Zcash Sapling prover), verifies each against a
-pinned SHA-256, and compiles them locally into `vendor/lib/`. After that,
-archives are cached and builds are offline. Exact versions, hashes, and the
-vendoring model are in [`docs/BUILD.md`](BUILD.md).
+zlib and SQLite, plus secp256k1 for Darwin or Windows), verifies each against a
+pinned SHA-256 digest (content hash), and compiles them into `vendor/lib/`.
+After that, archives are cached and builds are offline. Exact versions, hashes,
+and the vendoring model are in [`docs/BUILD.md`](BUILD.md).
 
-**Tor is bundled, and it is on.** A plain `make` builds the pinned embedded
-Tor and links it: the node reaches the onion network and publishes its own
-`.onion` with no flag. The first build compiles Tor once (about two minutes
+**Tor is bundled, and it is on.** Tor provides the onion network; a
+`.onion` address identifies a service reachable through it. A plain `make`
+builds the pinned embedded Tor and links it: the node reaches the onion
+network and publishes its own `.onion` with no flag. The first build compiles
+Tor once (about two minutes
 on a 32-core box, dominated by its `configure`, so a small box is not much
 slower); after that the archives are cached under `vendor/tor/` and reused,
 and a new worktree hardlinks them from the checkout it was created from
@@ -138,17 +154,25 @@ loud line while building, `zclassic23 -version` reports `tor: stub`, the
 binary refuses `-tor`, the onion flags and onion-node mode at runtime, and
 no ship or install step will package it.
 
-**Fast compile-check inner loop** (no link, good for verifying a change
-compiles before a full build):
+**Fast compile-check inner loop** (compiles without linking an executable, for
+verifying a change compiles before a full build):
 
 ```bash
 make -j"$(getconf _NPROCESSORS_ONLN)" build-only
 ```
 
-**Where the binaries land:** `build/bin/z23` (the node),
-`build/bin/zclassic-cli` (RPC client), `build/bin/zcl-rpc` (RPC helper).
+**Where the binaries land:** RPC (remote procedure call) commands query or
+control a running node.
+
+| Binary | Purpose | Build target |
+| --- | --- | --- |
+| `build/bin/z23` | Full node | `make z23` |
+| `build/bin/zclassic-cli` | RPC client | `make zclassic-cli` |
+| `build/bin/zcl-rpc` | RPC helper | `make zcl-rpc` |
+
 `make -j4 z23` builds only `z23`; `zclassic-cli` and `zcl-rpc` need
-`make -j4 all`.
+`make -j4 all` or their individual targets (`make zclassic-cli` and
+`make zcl-rpc`).
 
 **Sanity check:**
 
@@ -166,11 +190,13 @@ make lint            # defensive-coding + doc-accuracy gates
 
 ### Platform capability boundary
 
+P2P (peer-to-peer) services connect nodes to one another.
+
 | Host | Public node | Development loop | Resident hot swap | Machine mesh |
 | --- | --- | --- | --- | --- |
-| Linux | Full node | Full native workflow | Eligible read-only C23 leaves | Noise transport + DHT identity |
+| Linux | Full node | Full native workflow | Eligible read-only C23 leaves | Noise authenticated transport + DHT (distributed hash table) identity |
 | WSL2 | Full Linux node; keep the checkout on WSL ext4 | Linux workflow | Linux workflow | Noise transport + DHT identity |
-| macOS arm64 | Native node; `make macos-acceptance` | Kernel-attested focused tests; native kqueue directory watcher | Unavailable; rebuild/restart | Noise transport works; DHT identity requires on-chain provisioning |
+| macOS arm64 | Native node; `make macos-acceptance` | Kernel-attested focused tests; native kqueue (event notification) directory watcher | Unavailable; rebuild/restart | Noise transport works; DHT identity requires on-chain provisioning |
 | Windows MSYS2 UCRT64 | Native `z23.exe` portability lane | `make windows-acceptance` | Unavailable; rebuild/restart | Not yet measured |
 
 Windows setup and the boundary between native MSYS2 and WSL2 are documented in
@@ -184,45 +210,40 @@ databases, and native cryptography. The authenticated Noise transport works
 natively and is armed with `-noisetransport`; private-machine mesh pairing then
 needs only a provisioned on-chain DHT identity (`zcode network delegate`), the
 same cross-platform prerequisite as Linux. The separate package verifier uses
-qualified Seatbelt confinement: its filesystem is scoped, network access is
-denied, rlimits are enforced, and `--require-full-isolation` succeeds. This is
-not resident-node confinement. Linux Landlock/seccomp resident confinement,
-signal-context self-backtraces, native hot-swap activation, and consensus
-snapshot export that requires `O_TMPFILE` still report unavailable or refuse
-safely on macOS. The directory watcher now uses kqueue on macOS. `make macos-acceptance`
-validates the closed matrix in `engine/composition/platform/macos_capabilities.def`, unions
-its capability evidence with the eight declarative required baseline groups,
-and executes the resulting 41 exact registered groups. It refuses any
-self-skip or unobserved eligible environment. After that verdict it uses the
-canonical release cutter to create a temporary four-member `darwin-arm64`
-runtime, verifies the macOS 14 floor, Mach-O dependency boundary and closed
-checksums, then executes the packaged node's node-free code guide. This proves
-local packaging and execution, not installation, notarization, publication or
-chain sync. The `self_backtrace` group in
-that union proves the fail-closed macOS capability boundary; it does not claim
-Linux signal-context backtraces on Darwin. Intel macOS has not yet been
-measured.
+Seatbelt, macOS's sandbox mechanism, for qualified confinement: its filesystem
+is scoped, network access is denied, rlimits are enforced, and
+`--require-full-isolation` succeeds. This is not resident-node confinement.
+Linux Landlock/seccomp resident confinement, signal-context self-backtraces,
+native hot-swap activation, and consensus snapshot export that requires
+`O_TMPFILE` still report unavailable or refuse safely on macOS. The directory
+watcher uses kqueue on macOS. `make macos-acceptance`
+validates the closed matrix in
+`engine/composition/platform/macos_capabilities.def`, unions its capability
+evidence with the eight declarative required baseline groups, and executes the
+resulting exact registered groups. It refuses any self-skip or unobserved
+eligible environment. After that verdict it uses the canonical release cutter to
+create a temporary five-member `darwin-arm64` runtime, verifies the macOS 14
+floor, Mach-O dependency boundary and closed checksums, then executes the
+packaged node's node-free code guide. This proves local packaging and execution,
+not installation, notarization, publication or chain sync. The `self_backtrace`
+group in that union proves the fail-closed macOS capability boundary; it does
+not claim Linux signal-context backtraces on Darwin. Intel macOS has not yet
+been measured.
 
 Focused tests and proof identity checks do not substitute a reconstructed
-pathname for `fexecve`. The arm64 dev/test executor reads the embedded
-CodeDirectory identity through the already-open thin Mach-O descriptor, maps
-the locator path with `POSIX_SPAWN_START_SUSPENDED`, and resumes the child only
-after the kernel reports the same CodeDirectory hash for that mapped process.
-A replacement therefore remains suspended and is killed before executing.
-This development-only rail does not change the fail-closed production A/B and
+pathname for `fexecve` (execution through an open file descriptor). The arm64
+dev/test executor reads the embedded CodeDirectory identity (signed executable
+code identity) through the already-open thin Mach-O descriptor, maps the locator
+path with `POSIX_SPAWN_START_SUSPENDED`, and resumes the child only after the
+kernel reports the same CodeDirectory hash for that mapped process. A
+replacement therefore remains suspended and is killed before executing. This
+development-only rail does not change the fail-closed production A/B and
 hot-activation boundary.
 
-Embedded full Tor is not in that list. It was, because the build pinned Darwin
-to the offline stub regardless of whether the Tor archives existed; that pin is
-gone, and `make tor-full` now points Tor's configure at this repository's
-vendored OpenSSL, libevent, and zlib rather than at the system trees macOS does
-not ship. The archives — not the host OS — select what the node links, on every
-host. This build path **has been observed to complete on an arm64 Mac** (`make tor-full`,
-~110 s, producing `vendor/tor/libtor.a` from vendored OpenSSL/libevent/zlib).
-Until it is measured on Intel macOS, treat embedded Tor there as untested; a
-Mac that cannot build it can fall back to `make ZCL_TOR=stub`, which keeps
-ordinary node operation available but publishes no onion service and
-cannot be shipped.
+Embedded Tor links the archives under `vendor/tor/`, built from the vendored
+OpenSSL, libevent and zlib. `make tor-full` forces a rebuild. A development
+build can use `make ZCL_TOR=stub`; it publishes no onion service and cannot
+be shipped. Intel macOS remains unmeasured.
 
 ### Your one obvious next action
 
@@ -267,7 +288,13 @@ You will see it in `z23 status`. Nothing else is affected: the node still
 follows the chain, validates shielded proofs, and relays. If you only run a
 node, you can stop reading here.
 
-To send shielded, put the files on the machine yourself. The node looks in
+To send shielded:
+
+1. Locate the four files below on a machine you control or obtain a copy.
+2. Put them in the parameter directory.
+3. Verify their hashes with the command below before starting the node.
+
+The node looks in
 `$HOME/.zcash-params` by default; `-paramsdir=<dir>` points it somewhere else.
 Four files are required (the fifth some distributions ship,
 `sprout-proving.key`, is not):
@@ -308,8 +335,9 @@ verifying keys are compiled in and the proving keys are not.
 
 ## Run in production
 
-Start a full node with the default datadir (`~/.zclassic-c23`) and default
-ports (P2P `8033`, RPC `18232`):
+Start a full node with the default datadir (directory for node state),
+`~/.zclassic-c23`, and default
+ports (P2P `8033`; RPC `18232`):
 
 ```bash
 build/bin/z23
@@ -448,11 +476,11 @@ The node **is its own web server** — no nginx/reverse proxy. The explorer
 - **Over the onion service** — on by default; the explorer is served on the
   node's `.onion`, visible via `z23 status`. No certificate needed. (A
   `-no-tor` or `ZCL_TOR=stub` build has no onion address to serve it on.)
-- **Over HTTPS on clearnet** — drop a TLS certificate/key at
-  `<datadir>/ssl/fullchain.pem` and `<datadir>/ssl/privkey.pem`; the HTTPS
-  explorer starts on port `8443` once the node is near tip. Without a cert
-  the node logs that the explorer is not on clearnet and stays onion-only —
-  expected on a default build.
+- **Over HTTPS on clearnet** — drop a TLS (Transport Layer Security)
+  certificate/key at `<datadir>/ssl/fullchain.pem` and
+  `<datadir>/ssl/privkey.pem`; the HTTPS explorer starts on port `8443`
+  once the node is near tip. Without a cert the node logs that the explorer
+  is not on clearnet and stays onion-only — expected on a default build.
 
 Full runbook (DNS, Let's Encrypt, the no-sudo-after-setup port-forwarder for
 public `443`, and troubleshooting a site that stopped loading) is in
@@ -490,8 +518,9 @@ the acceptance bar: [`docs/METAVERSE.md`](METAVERSE.md) and
 
 ### Running as a durable service
 
-The repo ships a ready-to-use, already-generic `systemd --user` unit and a
-one-time setup script — use them rather than hand-writing a unit:
+The repository ships a `systemd --user` unit (a service managed by your
+user account) and a one-time setup script; use them rather than
+hand-writing a unit:
 
 ```bash
 sudo bash platform/deploy/setup.sh              # one-time: installs the unit, enables linger
@@ -499,13 +528,17 @@ systemctl --user start zclassic23
 systemctl --user status zclassic23
 ```
 
-`platform/deploy/setup.sh` installs [`platform/deploy/zclassic23.service`](../platform/deploy/zclassic23.service)
+`platform/deploy/setup.sh` installs the
+[tracked unit](../platform/deploy/zclassic23.service)
 to `~/.config/systemd/user/zclassic23.service` and enables
 [`loginctl` linger](https://www.freedesktop.org/software/systemd/man/loginctl.html)
 so the service survives logout/reboot. The unit already uses
-`%h`-relative paths and the default platform/ports/datadir, so it works unmodified
-after `git clone` into `~/zclassic23`; if you cloned elsewhere, edit the
-`ExecStart=`/`ReadWritePaths=` lines to match. Operator-specific flags
+`%h`-relative paths and the default ports and datadir, so it works unmodified
+with a checkout at `~/zclassic23`. The clone command above creates `~/z23`
+if run from your home directory; adjust all checkout paths in the unit,
+including `ExecStartPre=`, `ExecStart=` and `ReadWritePaths=`, to match.
+The launcher also requires `build/bin/zcl-nodectl` (`make zcl-nodectl`).
+Operator-specific flags
 (a stable external IP, seed peers) go in `~/.config/zclassic23/env` — copy
 [`platform/deploy/zclassic23.env.example`](../platform/deploy/zclassic23.env.example) and edit
 it; the unit sources this file optionally, so a fresh clone without it still
@@ -694,8 +727,9 @@ make -j"$(getconf _NPROCESSORS_ONLN)" t-fast ONLY=<group>  # one focused test gr
 These are the `make fast-rebuild` and `make t-fast ONLY=<group>` targets; the
 parallel invocations above are the documented developer forms.
 
-The dev binary lives at `build/bin/z23-dev` — a fast non-LTO local
-build, for iteration only; never use it for production/release.
+The dev binary lives at `build/bin/z23-dev` — a fast local build without
+link-time optimization (LTO), for iteration only; never use it for
+production/release.
 
 ### Running the full test suite and lint
 
