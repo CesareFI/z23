@@ -2228,3 +2228,51 @@ and PR draft verify in the candidate's ignored
 `.cache/wallet-publication/` directory. The final manifest SHA256 is
 `9e200d59d3eb9bebdfd07f34aa994990f8ecdf67e87bae6ac10d4c182c08fa12`.
 No external publication or reviewer-request action was attempted.
+
+### Backup restore datadir exact-copy candidate qualified
+
+Branch `agent/upstream-wallet-backup-restore-datadir-bound-20261006`, signed
+head `1dfbc7676be8c330f6d74a676bb2dd60ce9e0260`, stacks the independently
+qualified fleet fixture on upstream base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. Its wallet-only review is three
+files, +39/-1. The backup-file restore command now rejects a supplied datadir
+that cannot fit byte-for-byte in its native target buffer. It returns invalid
+input with `DATADIR_TOO_LONG` before plan-token generation, backup inspection,
+locking or mutation. Valid paths and the existing missing-datadir default are
+unchanged, as are backup validation, no-overwrite behavior, durability,
+recovery derivation, consensus, monetary policy, PoW, upgrade rules,
+transparent validity and shielded validity.
+
+The deterministic RED regression fails on the prior production source because
+a 1,024-byte caller path is truncated to a different 1,023-byte target and the
+handler proceeds to backup inspection, returning `RESTORE_REFUSED`. GREEN
+requires invalid input, the named `DATADIR_TOO_LONG` refusal and
+`mutated=false`. The focused wallet-recovery-safety group passes 1/1 with zero
+skips, and ASan/UBSan/LSan passes the same group 1/1. Focused compilation uses
+GCC 14.2.0 and the sanitizer lane uses Clang 18.1.3. The cap-15 complexity gate
+covers 68,755 functions; architecture covers five authorities, six contexts
+and 63 modules; documentation covers 612 Markdown files and 152 bound claims;
+package anatomy covers 80 packages; the generated inventory covers 1,517
+capabilities and 1,187 registered roots. The candidate-only security scan is
+CLEAN.
+
+The fresh unprivileged exact proof passes all 215 lint gates in 198.606s and all
+67 impact-selected groups in 270.191s. It is cold and records zero failures,
+skips, cache hits, unobserved cases or load-flaky outcomes, no eligible donor and
+`receipt_reused=false`; foreground time is 478.014s. Receipt SHA256 is
+`fd36cd93b53e4be4fa22b087a4233c61e03628e614500b891ff04665128f2980`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-wallet-backup-restore-datadir-proof-20261006`.
+
+Two setup invocations failed closed before qualification evidence: the proof
+user could not traverse the bundle's original `/root` path, and GNU Make could
+not return to an inaccessible parent when invoked with `-C`. The successful
+path copied the local bundle into the proof-owned directory and invoked Make
+from that directory. No hook, assertion, validation or permission was bypassed.
+
+Local bundle, wallet-only mbox, RED/GREEN and sanitizer logs, exact receipt and
+logs, CLEAN candidate-only security scan, qualification record and PR draft
+verify in the candidate's ignored `.cache/wallet-publication/` directory. The
+final manifest SHA256 is
+`0e3694451c312fa806cfc43c210ed83ff500aa5845a4b66d4c073f7846270ab2`.
+No external publication or reviewer-request action was attempted.
