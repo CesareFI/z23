@@ -7,6 +7,7 @@
 #define memory_cleanse jr_memory_cleanse
 #define json_init jr_json_init
 #define json_free jr_json_free
+#define json_test_live_blocks jr_json_test_live_blocks
 #define json_set_null jr_json_set_null
 #define json_set_bool jr_json_set_bool
 #define json_set_int jr_json_set_int
@@ -64,6 +65,7 @@
 #undef json_set_null
 #undef json_free
 #undef json_init
+#undef json_test_live_blocks
 #undef memory_cleanse
 
 static size_t jr_cleanse_calls;
