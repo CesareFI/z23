@@ -8620,3 +8620,21 @@ production M<=10 and test M<=15. Valid encryption, deterministic recovery,
 storage durability, no-overwrite behavior, transaction validity, monetary
 policy and consensus are unchanged. No Android runtime or physical-device
 claim is made.
+
+## Production continuation: invalid confirmation entropy refused before phrase copy — 2026-10-06
+
+JNI recovery-phrase confirmation now applies the existing BIP39 entropy-profile
+predicate before copying the managed phrase. Unsupported in-capacity entropy
+lengths previously caused both secrets to enter native scratch before the
+lower confirmation owner refused them. They now stop after the two bounded
+entropy JNI operations, with zero phrase reads and unchanged complete scratch
+retirement. Supported profiles and the lower authoritative mnemonic check are
+unchanged.
+
+Canonical RED observes four JNI calls; GREEN observes two. Removing only the
+new predicate restores RED, and saved source/test hashes verify exact
+restoration. Focused Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0 tests pass. The
+exact-tree TLS-OFF gate passes both analyzers, all 145 Clang and 140 GCC tests,
+production M<=10 and test M<=15. Recovery semantics, keys, storage, transaction
+validity, monetary policy and consensus are unchanged. No Android runtime or
+physical-device claim is made.

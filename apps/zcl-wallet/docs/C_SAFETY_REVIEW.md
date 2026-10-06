@@ -5305,3 +5305,26 @@ check restores RED. The storage JNI and deterministic fuzz-regression suites
 pass under Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0, followed by the complete
 145/140 TLS-OFF matrix and both static analyzers. TLS remains quarantined. This
 fake-VM evidence makes no ART, emulator, hardware or physical-device claim.
+
+## Recovery-confirmation entropy admission before phrase copy — 2026-10-06
+
+`confirmRecoveryPhrase` now applies the existing BIP39 entropy-profile
+predicate immediately after its bounded entropy copy and before reading the
+managed recovery phrase. The lower mnemonic confirmation owner retains its
+unchanged authoritative validation for admitted inputs.
+
+| Hazard | Review |
+| --- | --- |
+| Secret lifetime | Unsupported 1-, 15-, 17- and 31-byte entropy inputs now cause zero phrase length/region reads. The complete 32-byte entropy and 215-byte phrase scratch spans retain final cleanup on every path. |
+| Predicate ownership | JNI reuses `zcl_entropy_length_valid`; supported 16/20/24/28/32-byte profiles and exact mnemonic confirmation semantics are unchanged. |
+| JNI exceptions | Entropy length/region exceptions retain their pending state and cleanup. Phrase exceptions remain covered after entropy admission. No JNI call follows an observed exception. |
+| Output and allocation | The boolean entry allocates no Java or native object and publishes no secret bytes. |
+| Complexity | Production remains M<=10 across 605 functions; tests remain M<=15 across 1,858 functions without suppression. |
+| Recovery and consensus | 12-word recovery, checksum validation, key derivation, storage, transaction validity, monetary policy and consensus are unchanged. |
+
+Canonical RED observes four JNI calls for an unsupported entropy profile,
+including the phrase copy. GREEN stops after the two entropy calls; removing
+only the new predicate restores RED. Focused Clang 20.1.2 ASan/UBSan/LSan and
+GCC 14.2.0 tests pass, followed by the complete 145/140 TLS-OFF matrix and both
+static analyzers. TLS remains quarantined; no Android runtime or device claim
+is made.

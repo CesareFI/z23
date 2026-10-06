@@ -480,10 +480,12 @@ static void invalid_inputs(void)
 static void invalid_entropy_profiles(void)
 {
     const jsize invalid[] = {1, 15, 17, 31};
-    for (unsigned operation = 4; operation <= 6; ++operation) {
+    for (unsigned operation = 3; operation <= 6; ++operation) {
         for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
             prepare(); entropy.length = invalid[i];
-            CHECK(!run(operation) && !pending && entropy_reads == 1 && random_calls == 0);
+            CHECK(!run(operation) && !pending &&
+                vm_calls == (operation == 6 ? 4u : 2u) &&
+                entropy_reads == 1 && random_calls == 0);
         }
     }
 }

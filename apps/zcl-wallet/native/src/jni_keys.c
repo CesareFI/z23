@@ -152,6 +152,8 @@ Java_org_zclassic_wallet_core_NativeCore_confirmRecoveryPhrase(JNIEnv *env, jcla
     jboolean result = JNI_FALSE;
     if (zcl_jni_read_bytes(env, entropy_input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
         goto cleanup;
+    if (!zcl_entropy_length_valid(entropy_len))
+        goto cleanup;
     if (read_phrase(env, phrase_input, phrase, sizeof(phrase), &phrase_len) != ZCL_OK)
         goto cleanup;
     if (zcl_mnemonic_confirm(entropy, entropy_len, phrase, phrase_len) == ZCL_OK)
