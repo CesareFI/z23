@@ -6,10 +6,19 @@
 #include <stdio.h>
 #include <string.h>
 
+static void agent_impact_note_group_loss(struct agent_impact_acc *acc)
+{
+    acc->groups_lost = true;
+}
+
 void agent_impact_add_group(struct agent_impact_acc *acc, const char *group)
 {
     if (!acc || !group || !group[0])
         return;
+    if (strlen(group) >= ZCL_AGENT_IMPACT_GROUP_MAX) {
+        agent_impact_note_group_loss(acc);
+        return;
+    }
     for (size_t i = 0; i < acc->groups_len; i++) {
         if (strcmp(acc->groups[i], group) == 0)
             return;
@@ -21,6 +30,8 @@ void agent_impact_add_group(struct agent_impact_acc *acc, const char *group)
                  "%s", group);
         acc->groups[i] = acc->group_storage[i];
         acc->groups_len++;
+    } else {
+        agent_impact_note_group_loss(acc);
     }
 }
 
@@ -60,8 +71,8 @@ static bool agent_impact_match_any_pattern(const char *path,
     return false;
 }
 
-static void agent_impact_add_group_list(struct agent_impact_acc *acc,
-                                        const char *groups)
+void agent_impact_add_group_list(struct agent_impact_acc *acc,
+                                  const char *groups)
 {
     if (!acc || !groups)
         return;
@@ -77,8 +88,10 @@ static void agent_impact_add_group_list(struct agent_impact_acc *acc,
             p++;
         size_t len = (size_t)(p - start);
         char group[ZCL_AGENT_IMPACT_GROUP_MAX];
-        if (len == 0 || len >= sizeof(group))
+        if (len >= sizeof(group)) {
+            agent_impact_note_group_loss(acc);
             continue;
+        }
         memcpy(group, start, len);
         group[len] = 0;
         agent_impact_add_group(acc, group);

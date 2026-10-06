@@ -18,9 +18,16 @@ struct agent_impact_acc {
     bool docs_only;
     bool consensus_risk;
     bool agent_api_changed;
+    bool groups_lost; /* Sticky loss of a unique or overlong token. */
 };
 
+/* Zero-initialize acc. NULL/empty inputs and duplicates are no-ops. A full
+ * accumulator or token >= GROUP_MAX sets groups_lost, retaining stored groups
+ * and their order. Later additions never clear loss; this is not admission. */
 void agent_impact_add_group(struct agent_impact_acc *acc, const char *group);
+/* Same loss contract; space, tab and comma delimit tokens. Continues after
+ * rejected tokens. NULL inputs are no-ops. */
+void agent_impact_add_group_list(struct agent_impact_acc *acc, const char *groups);
 bool agent_impact_path_is_direct_development_contract(const char *path);
 bool agent_impact_apply_shared_rules(const char *path,
                                      struct agent_impact_acc *acc);

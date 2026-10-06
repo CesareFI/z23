@@ -11427,9 +11427,73 @@ static int test_pw_orphan_gitdir_record_framing(void)
 }
 #endif
 
+static int test_ic_rule_group_capacity(void)
+{
+    int failures = 0;
+    TEST("impact composition: rule group loss distinguishes duplicates from overflow") {
+        for (int list = 0; list < 2; list++) {
+            struct agent_impact_acc acc = {0};
+            for (size_t i = 0; i < ZCL_AGENT_IMPACT_MAX_GROUPS; i++) {
+                char group[16];
+                snprintf(group, sizeof(group), "group_%zu", i);
+                agent_impact_add_group(&acc, group);
+                ASSERT(strcmp(acc.groups[i], group) == 0);
+            }
+            ASSERT(acc.groups_len == ZCL_AGENT_IMPACT_MAX_GROUPS);
+            ASSERT(!acc.groups_lost);
+            agent_impact_add_group(NULL, "ignored");
+            agent_impact_add_group(&acc, "");
+            agent_impact_add_group_list(&acc, NULL);
+            if (list) agent_impact_add_group_list(&acc, " ,\tgroup_0,group_31 ");
+            else agent_impact_add_group(&acc, "group_0");
+            ASSERT(!acc.groups_lost);
+            if (list) agent_impact_add_group_list(&acc, "group_32");
+            else agent_impact_add_group(&acc, "group_32");
+            ASSERT(acc.groups_lost);
+            ASSERT(acc.groups_len == ZCL_AGENT_IMPACT_MAX_GROUPS);
+            ASSERT(strcmp(acc.groups[31], "group_31") == 0);
+            agent_impact_add_group(&acc, "group_0");
+            ASSERT(acc.groups_lost);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_ic_rule_group_length(void)
+{
+    int failures = 0;
+    TEST("impact composition: direct and parsed overlong groups report sticky loss") {
+        char group[ZCL_AGENT_IMPACT_GROUP_MAX + 1];
+        memset(group, 'x', sizeof(group) - 1);
+        group[sizeof(group) - 1] = 0;
+        for (int list = 0; list < 2; list++) {
+            struct agent_impact_acc acc = {0};
+            group[ZCL_AGENT_IMPACT_GROUP_MAX - 1] = 0;
+            if (list) agent_impact_add_group_list(&acc, group);
+            else agent_impact_add_group(&acc, group);
+            ASSERT(acc.groups_len == 1 && !acc.groups_lost);
+            group[ZCL_AGENT_IMPACT_GROUP_MAX - 1] = 'x';
+            if (list) agent_impact_add_group_list(&acc, group);
+            else agent_impact_add_group(&acc, group);
+            ASSERT(acc.groups_len == 1 && acc.groups_lost);
+            ASSERT(strlen(acc.groups[0]) == ZCL_AGENT_IMPACT_GROUP_MAX - 1);
+            char tokens[sizeof(group) + 16];
+            snprintf(tokens, sizeof(tokens), "%s ,\tvalid,valid ", group);
+            agent_impact_add_group_list(&acc, tokens);
+            ASSERT(acc.groups_len == 2 && acc.groups_lost);
+            ASSERT(strcmp(acc.groups[1], "valid") == 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_impact_composition(void)
 {
     int failures = 0;
+    failures += test_ic_rule_group_capacity();
+    failures += test_ic_rule_group_length();
     ic_isolate_state_root();
     failures += test_ic_fuzz_sensor_binding_parser();
     failures += test_ic_foreground_proof_command();
