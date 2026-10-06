@@ -119,18 +119,17 @@ static int test_candidate_pool(void) {
     /* Authenticate a mixture extending beyond the active frontier.  Result
      * selection must return exactly the closest authenticated k, in order,
      * and must never leak any unverified entry. */
-    for (uint32_t i = 0; i < 40; i += 2)
+    uint8_t expected[VCS_ZCODE_DHT_K][32];
+    uint8_t unverified[20][32];
+    uint32_t expected_count = 0;
+    for (uint32_t i = 0; i < 40; i += 2) {
+      if (expected_count < VCS_ZCODE_DHT_K)
+        memcpy(expected[expected_count++], lookup->candidates[i].node_id, 32);
+      memcpy(unverified[i / 2], lookup->candidates[i + 1].node_id, 32);
       (void)vcs_zcode_dht_lookup_insert(
           lookup, lookup->candidates[i].node_id,
           VCS_ZCODE_DHT_CANDIDATE_AUTHENTICATED, 1000 + i);
-    uint8_t expected[VCS_ZCODE_DHT_K][32];
-    uint32_t expected_count = 0;
-    for (uint32_t i = 0; i < lookup->candidate_count &&
-                         expected_count < VCS_ZCODE_DHT_K;
-         i++)
-      if (vcs_zcode_dht_lookup_candidate_authenticated(
-              lookup->candidates[i].state))
-        memcpy(expected[expected_count++], lookup->candidates[i].node_id, 32);
+    }
     ASSERT_EQ(expected_count, VCS_ZCODE_DHT_K);
     lookup->completed = true;
     lookup->termination = VCS_ZCODE_DHT_TERMINATION_SHORTLIST_STABLE;
@@ -140,8 +139,11 @@ static int test_candidate_pool(void) {
         (struct vcs_zcode_dht_time){.wall_unix = 20, .monotonic_s = 20},
         &result));
     ASSERT_EQ(result.count, VCS_ZCODE_DHT_K);
-    for (uint32_t i = 0; i < result.count; i++)
+    for (uint32_t i = 0; i < result.count; i++) {
       ASSERT(memcmp(result.node_ids[i], expected[i], 32) == 0);
+      for (size_t j = 0; j < 20; j++)
+        ASSERT(memcmp(result.node_ids[i], unverified[j], 32) != 0);
+    }
 
     free(table);
     free(service);
