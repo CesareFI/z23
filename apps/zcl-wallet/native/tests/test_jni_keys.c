@@ -501,6 +501,8 @@ static void invalid_headers(void)
         CHECK(!run(6) && !pending && vm_calls == 2 &&
             entropy_reads == 0 && random_calls == 0);
     }
+    prepare(); entropy.length = 20;
+    CHECK(!run(6) && !pending && entropy_reads == 1 && random_calls == 0);
     prepare(); entropy.data.bytes[0] = 1;
     CHECK(!run(6) && random_calls == 1 && !pending);
 }

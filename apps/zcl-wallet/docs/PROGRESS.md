@@ -8509,6 +8509,22 @@ M=15. Valid recovery, key derivation, 12-word semantics, address generation,
 storage, transaction validity, consensus and monetary rules remain unchanged.
 No Android runtime or physical-device claim is made.
 
+## Production continuation: recovered entropy matched before RNG — 2026-10-06
+
+JNI recovered-address derivation now carries the parsed public header's entropy
+length through admission and compares it with the copied supported entropy span
+before random blinding acquisition. A 16-byte wallet header paired with a valid
+20-byte entropy profile previously consumed random bytes before the lower
+recovery owner refused it. It now leaves the provider untouched, while the
+lower owner retains its authoritative parse and equality check.
+
+Canonical RED observes the random call. GREEN observes one entropy read and
+zero random calls; removing only the match restores RED. Focused Clang 20 and
+GCC 14 sanitizer lanes and the exact-tree TLS-OFF gate pass both analyzers, all
+145/140 tests and complexity limits. Recovery, address identity, record format,
+storage, transaction validity, monetary policy and consensus are unchanged. No
+Android runtime or physical-device claim is made.
+
 ## Production continuation: malformed record headers refused before payload copy — 2026-10-06
 
 JNI `packWalletRecord` now validates its bounded public header before reading

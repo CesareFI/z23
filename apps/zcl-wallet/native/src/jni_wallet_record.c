@@ -3,10 +3,13 @@
 #include "mnemonic_words.h"
 #include "zcl_wallet_record.h"
 
-static zcl_status admit_wallet_header(const uint8_t *header, size_t length)
+static zcl_status admit_wallet_header(const uint8_t *header, size_t length,
+    size_t *entropy_length)
 {
     zcl_wallet_info info = {0};
     const zcl_status status = zcl_wallet_header_parse(header, length, &info);
+    if (status == ZCL_OK && entropy_length != NULL)
+        *entropy_length = info.entropy_len;
     zcl_secure_zero(&info, sizeof(info));
     return status;
 }
@@ -44,15 +47,17 @@ Java_org_zclassic_wallet_core_NativeCore_recoveredWalletAddress(JNIEnv *env, jcl
 {
     (void)type;
     uint8_t entropy[32] = {0}, blinding[32] = {0}, header[80] = {0}, address[35] = {0};
-    size_t entropy_len = 0, header_len = 0;
+    size_t entropy_len = 0, header_len = 0, expected_entropy_len = 0;
     bool ready = false;
     if (zcl_jni_read_bytes(env, header_input, header, sizeof(header), &header_len) != ZCL_OK)
         goto cleanup;
-    if (admit_wallet_header(header, header_len) != ZCL_OK)
+    if (admit_wallet_header(header, header_len, &expected_entropy_len) != ZCL_OK)
         goto cleanup;
     if (zcl_jni_read_bytes(env, entropy_input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
         goto cleanup;
     if (!zcl_entropy_length_valid(entropy_len))
+        goto cleanup;
+    if (entropy_len != expected_entropy_len)
         goto cleanup;
     if (zcl_random_bytes(blinding, sizeof(blinding)) != ZCL_OK)
         goto cleanup;
@@ -76,7 +81,7 @@ Java_org_zclassic_wallet_core_NativeCore_packWalletRecord(JNIEnv *env, jclass ty
     jbyteArray output = NULL;
     if (zcl_jni_read_bytes(env, header_input, header, sizeof(header), &header_len) != ZCL_OK)
         goto cleanup;
-    if (admit_wallet_header(header, header_len) != ZCL_OK)
+    if (admit_wallet_header(header, header_len, NULL) != ZCL_OK)
         goto cleanup;
     if (zcl_jni_read_bytes(env, iv_input, iv, sizeof(iv), &iv_len) != ZCL_OK)
         goto cleanup;

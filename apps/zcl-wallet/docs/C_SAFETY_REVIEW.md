@@ -5258,3 +5258,24 @@ inputs in all three entries. GREEN observes one entropy copy and zero random
 calls; removing the three checks restores RED. Focused Clang 20 and GCC 14
 ASan/UBSan/LSan tests and the complete 145/140 TLS-OFF matrix pass. No Android
 runtime or physical-device claim is made.
+
+## Recovered-address entropy match before random acquisition — 2026-10-06
+
+`recoveredWalletAddress` now retains the parsed public header's declared
+entropy length through JNI admission and compares it with the copied supported
+entropy span before requesting random blinding bytes. The lower recovery owner
+still re-parses the header and repeats the exact length check.
+
+| Hazard | Review |
+| --- | --- |
+| Secret and provider lifetime | A supported but header-mismatched entropy span is fully wiped and causes zero random-provider calls. Matching spans keep one provider call. |
+| Bounds and conversion | Both lengths are `size_t` values already bounded to at most 32; no signed conversion or arithmetic is added. |
+| Header ownership | The shared admission helper publishes the entropy length only after successful parsing and wipes the full parsed-info scratch. Record packing passes no output pointer and is unchanged. |
+| Recovery semantics | Mismatch retains deterministic refusal. Matching header, entropy, network and derived-address verification remain owned by the lower recovery function. |
+| Complexity and authority | Production remains M<=10 across 605 functions; tests remain M<=15 across 1,858 functions. Consensus, monetary rules, storage and TLS are unchanged. |
+
+Canonical RED invokes randomness for a 16-byte header paired with a supported
+20-byte entropy span. GREEN performs one entropy copy and zero random calls;
+removing only the equality check restores RED. Both affected JNI suites pass
+under Clang 20 and GCC 14 ASan/UBSan/LSan, followed by the complete 145/140
+TLS-OFF matrix. No Android runtime or physical-device claim is made.
