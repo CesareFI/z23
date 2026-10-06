@@ -11,6 +11,8 @@
 #include "base/safe_alloc.h"
 #include "json/json.h"
 #include "platform/directory_compat.h"
+#include "platform/file_sync.h"
+#include "platform/private_file.h"
 
 #include "dev/test_group_catalog.h"
 
@@ -136,23 +138,57 @@ static bool dvm_pending_present(const char *root, char *rel, size_t rel_cap)
     return ok;
 }
 
+/* Publish recovery evidence only after its whole staged image is flushed. */
+static bool dvm_pending_write(const char *dir, const char *path,
+                               const char *bytes, size_t len)
+{
+    char stage[PATH_MAX];
+    int n = snprintf(stage, sizeof(stage), "%s.XXXXXX", path);
+    if (n < 0 || (size_t)n >= sizeof(stage)) {
+        fprintf(stderr, "dev.agent.mutate: recovery path too long: %s\n", path);
+        return false;
+    }
+    int fd = mkstemp(stage);
+    if (fd < 0) {
+        fprintf(stderr, "dev.agent.mutate: cannot stage recovery file: %s\n", path);
+        return false;
+    }
+    FILE *f = fdopen(fd, "wb");
+    if (!f) {
+        (void)close(fd); (void)unlink(stage);
+        fprintf(stderr, "dev.agent.mutate: cannot open recovery stream: %s\n", path);
+        return false;
+    }
+    bool ok = fwrite(bytes, 1, len, f) == len;
+    ok = ok && fflush(f) == 0 && platform_file_sync(fd) == 0;
+    if (fclose(f) != 0) ok = false;
+    if (ok) ok = rename(stage, path) == 0;
+    if (!ok) (void)unlink(stage);
+    if (ok) ok = platform_private_parent_flush(dir);
+    if (!ok) fprintf(stderr, "dev.agent.mutate: recovery write failed: %s\n", path);
+    return ok;
+}
+
 static bool dvm_pending_arm(const char *root, const char *rel,
                             const char *bytes, size_t len)
 {
-    char dir[PATH_MAX], path[PATH_MAX], blob[PATH_MAX];
+    char dir[PATH_MAX], path[PATH_MAX], blob[PATH_MAX], parent[PATH_MAX];
     if (!dvm_join(dir, sizeof(dir), root, DVM_PENDING_DIR) ||
+        !dvm_join(parent, sizeof(parent), root, "build") ||
         !dvm_join(path, sizeof(path), root, DVM_PENDING_PATH) ||
         !dvm_join(blob, sizeof(blob), root, DVM_PENDING_BYTES))
         return false;
     /* build/ already exists in any checkout that produced this binary; the
      * subdirectory is the only thing that may be missing. */
-    if (!platform_directory_ensure(dir, 0755))
+    if (!platform_directory_ensure(dir, 0755) || !platform_private_parent_flush(parent)) {
+        fprintf(stderr, "dev.agent.mutate: cannot persist recovery directory: %s\n", dir);
         return false;
+    }
     /* Bytes first, then the path marker: the marker's presence is what a
      * later run keys on, so it must never point at a blob that is not on
      * disk yet. */
-    return dvm_write_file(blob, bytes, len) &&
-           dvm_write_file(path, rel, strlen(rel));
+    return dvm_pending_write(dir, blob, bytes, len) &&
+           dvm_pending_write(dir, path, rel, strlen(rel));
 }
 
 static bool dvm_pending_restore(const char *root, char *rel, size_t rel_cap,

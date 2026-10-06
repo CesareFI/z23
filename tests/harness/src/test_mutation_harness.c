@@ -30,6 +30,79 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "platform/file_sync.h"
+static unsigned tmh_sync_count, tmh_sync_fail;
+static int tmh_sync(int fd)
+{
+    if (++tmh_sync_count == tmh_sync_fail) {
+        errno = EIO;
+        return -1;
+    }
+    return platform_file_sync(fd);
+}
+/* Compile the actual writer with only its storage barrier intercepted. */
+#define platform_file_sync tmh_sync
+#define zcl_native_handle_dev_agent_mutate tmh_mutate_command
+#include "../../../tools/command/native_devagent_mutate_command.c"
+#undef zcl_native_handle_dev_agent_mutate
+#undef platform_file_sync
+
+static bool tmh_exact(const char *path, const char *expected)
+{
+    char bytes[128] = {0};
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    size_t n = fread(bytes, 1, sizeof(bytes), f);
+    bool ok = !ferror(f) && n == strlen(expected);
+    if (fclose(f) != 0) ok = false;
+    return ok && memcmp(bytes, expected, n) == 0;
+}
+
+static int tmh_pending_case(unsigned fail)
+{
+    int failures = 0;
+    char root[512] = {0}, build[600], dir[700], blob[800], marker[800], source[800];
+    const char *original = "int example(void){return 1;}\n";
+    ASSERT(test_mkdtemp(root, sizeof(root), "pending-arm") != NULL);
+    ASSERT(dvm_join(build, sizeof(build), root, "build"));
+    ASSERT(platform_directory_ensure(build, 0700));
+    ASSERT(dvm_join(dir, sizeof(dir), root, "tools"));
+    ASSERT(platform_directory_ensure(dir, 0700));
+    ASSERT(dvm_join(source, sizeof(source), root, "tools/example.c"));
+    ASSERT(dvm_write_file(source, original, strlen(original)));
+    ASSERT(dvm_join(dir, sizeof(dir), root, DVM_PENDING_DIR));
+    ASSERT(platform_directory_ensure(dir, 0700));
+    ASSERT(dvm_join(blob, sizeof(blob), root, DVM_PENDING_BYTES));
+    ASSERT(dvm_join(marker, sizeof(marker), root, DVM_PENDING_PATH));
+    ASSERT(dvm_write_file(blob, original, strlen(original)));
+    tmh_sync_count = 0; tmh_sync_fail = fail;
+    bool armed = dvm_pending_arm(root, "tools/example.c", original, strlen(original));
+    tmh_sync_fail = 0;
+    ASSERT_EQ(armed, fail == 0);
+    ASSERT_EQ(tmh_sync_count, fail ? fail : 2u);
+    ASSERT(tmh_exact(blob, original));
+    ASSERT(tmh_exact(source, original));
+    if (fail) ASSERT_EQ(access(marker, F_OK), -1);
+    else ASSERT(tmh_exact(marker, "tools/example.c"));
+_test_next:;
+    tmh_sync_fail = 0;
+    /* The helper removes files, then each owned directory from the leaf up. */
+    if (root[0]) {
+        (void)dvm_join(dir, sizeof(dir), root, "tools"); test_cleanup_tmpdir(dir);
+        (void)dvm_join(dir, sizeof(dir), root, DVM_PENDING_DIR);
+        test_cleanup_tmpdir(dir);
+        (void)dvm_join(build, sizeof(build), root, "build");
+        test_cleanup_tmpdir(build); test_cleanup_tmpdir(root);
+    }
+    return failures;
+}
+
+static int tmh_pending_tests(void)
+{
+    (void)tmh_sync; /* Keep the failing-first fixture buildable on the old writer. */
+    return tmh_pending_case(1) + tmh_pending_case(2) + tmh_pending_case(0);
+}
+
 /* ── the fixture ─────────────────────────────────────────────────────── */
 
 /* Two rules, one watched and one not. `tmh_in_range` is driven at both ends
@@ -252,7 +325,7 @@ _test_next:;
 int test_mutation_harness(void);
 int test_mutation_harness(void)
 {
-    int failures = 0;
+    int failures = tmh_pending_tests();
 
     /* Everything the cleanup at the bottom touches is declared and zeroed
      * here: an ASSERT jumps straight to that label, so nothing below may be
