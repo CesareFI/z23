@@ -94,7 +94,9 @@ enum mesh_pairing_reason mesh_pairing_service_revoke(
 bool mesh_pairing_service_list(
     struct node_db *ndb, int64_t now, struct mesh_pairing_public_view *out,
     size_t max, size_t *count, struct db_mesh_pairing_counts *counts);
-/* Same redacted view, starting `skip` rows into paired_at,pairing_id order. */
+/* Same redacted view, starting `skip` rows into paired_at,pairing_id order.
+ * Returns false on membership read failure, with *count zero and out
+ * unchanged. A successfully read empty page returns true with zero count. */
 bool mesh_pairing_service_list_after(
     struct node_db *ndb, int64_t now, size_t skip,
     struct mesh_pairing_public_view *out, size_t max, size_t *count,

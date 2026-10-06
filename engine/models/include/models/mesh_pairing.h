@@ -64,6 +64,13 @@ int db_mesh_pairing_list(struct node_db *ndb, struct db_mesh_pairing *out,
  * list. A skip past the table returns 0. */
 int db_mesh_pairing_list_after(struct node_db *ndb, struct db_mesh_pairing *out,
                                size_t max, size_t skip);
+/* Same page order, with explicit failure reporting: count (including zero)
+ * on success, -1 on invalid arguments or prepare/bind/step/finalize failure.
+ * max is in 1..INT_MAX and skip must fit int64_t. Invalid arguments leave
+ * out unchanged; read failure may leave partial output, which must not be
+ * consumed. The legacy list functions retain their row-count behavior. */
+int db_mesh_pairing_list_after_checked(
+    struct node_db *ndb, struct db_mesh_pairing *out, size_t max, size_t skip);
 bool db_mesh_pairing_count_states(struct node_db *ndb, int64_t now,
                                   struct db_mesh_pairing_counts *out);
 

@@ -15,7 +15,7 @@ DEFINE_MODEL_CALLBACKS(mesh_machine_observation)
 static bool mesh_machine_pairing_id_valid(const char *value)
 {
     uint8_t decoded[32];
-    return value && strlen(value) == MESH_PAIRING_ID_HEX &&
+    return value && strnlen(value, MESH_PAIRING_ID_HEX + 1) == MESH_PAIRING_ID_HEX &&
            zcl_hex_decode_lower(value, decoded, sizeof(decoded));
 }
 
@@ -232,6 +232,67 @@ int db_mesh_machine_observation_list_after(
         }
         count++;
     }
+    AR_FINALIZE(st);
+    return count;
+}
+
+static int mesh_machine_observations_read_selected(
+    sqlite3_stmt *st, struct db_mesh_machine_observation *out, size_t max)
+{
+    int count = 0;
+    for (;;) {
+        int step = AR_STEP_ROW_READONLY(st);
+        if (step == SQLITE_DONE)
+            return count;
+        if (step != SQLITE_ROW || (size_t)count >= max) {
+            LOG_ERROR("mesh_machine_observation",
+                      "by_ids: failed or oversized read: %d", step);
+            return -1;
+        }
+        memset(&out[count], 0, sizeof(out[count]));
+        if (!mesh_machine_observation_read(&out[count], st, 0)) {
+            LOG_ERROR("mesh_machine_observation", "by_ids: malformed durable row");
+            return -1;
+        }
+        count++;
+    }
+}
+
+int db_mesh_machine_observation_list_by_ids(
+    struct node_db *ndb, const char *const *pairing_ids, size_t id_count,
+    struct db_mesh_machine_observation *out, size_t max)
+{
+    if (!ndb || !ndb->open || id_count > DB_MESH_OBSERVATION_ID_MAX ||
+        max < id_count || max > INT_MAX || (id_count && (!pairing_ids || !out))) {
+        LOG_ERROR("mesh_machine_observation", "by_ids: bad arguments");
+        return -1;
+    }
+    for (size_t i = 0; i < id_count; i++) {
+        if (!mesh_machine_pairing_id_valid(pairing_ids[i])) {
+            LOG_ERROR("mesh_machine_observation", "by_ids: invalid pairing id");
+            return -1;
+        }
+    }
+    if (id_count == 0)
+        return 0;
+    sqlite3_stmt *st = NULL;
+    AR_PREPARE_RET(ndb, st,
+        "SELECT pairing_id,receipt_wire,receipt_root,status,observed_unix,"
+        "expires_unix,received_unix FROM mesh_machine_observations "
+        "WHERE pairing_id IN ("
+        "?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,"
+        "?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32) "
+        "ORDER BY pairing_id", -1);
+    for (size_t i = 0; i < id_count; i++) {
+        int bound = sqlite3_bind_text(st, (int)i + 1, pairing_ids[i],
+                                     MESH_PAIRING_ID_HEX, SQLITE_TRANSIENT);
+        if (bound != SQLITE_OK) {
+            LOG_ERROR("mesh_machine_observation", "by_ids: bind failed: %d", bound);
+            AR_FINALIZE(st);
+            return -1;
+        }
+    }
+    int count = mesh_machine_observations_read_selected(st, out, max);
     AR_FINALIZE(st);
     return count;
 }

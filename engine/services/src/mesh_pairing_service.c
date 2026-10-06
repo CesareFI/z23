@@ -271,12 +271,14 @@ bool mesh_pairing_service_list_after(
         LOG_ERROR("mesh_pairing", "list_after: allocate %zu rows failed", max);
         return false;
     }
-    int found = db_mesh_pairing_list_after(ndb, rows, max, skip);
+    int found = db_mesh_pairing_list_after_checked(ndb, rows, max, skip);
+    if (found < 0)
+        LOG_ERROR("mesh_pairing", "list_after: membership read failed");
     for (int i = 0; i < found; i++)
         mesh_pairing_public_project(&rows[i], now, &out[i]);
     free(rows);
     *count = found > 0 ? (size_t)found : 0;
-    return true;
+    return found >= 0;
 }
 
 static void mesh_pairing_revoke_digest(

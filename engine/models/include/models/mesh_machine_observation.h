@@ -56,4 +56,17 @@ int db_mesh_machine_observation_list_after(
     struct node_db *ndb, struct db_mesh_machine_view *out, size_t max,
     int64_t now, size_t skip);
 
+/* Read only observations for the supplied IDs; at most 32 IDs are accepted.
+ * Returns the observation count or -1 on invalid arguments/read failure.
+ * Missing observations produce no row; match returned rows by pairing_id,
+ * never by position. Expired observations remain visible.
+ * Invalid arguments leave out unchanged. max must be at least id_count and
+ * no greater than INT_MAX;
+ * zero IDs return 0 without touching out. Other failures may leave partial
+ * output, which must not be consumed after a -1 result. */
+#define DB_MESH_OBSERVATION_ID_MAX 32u
+int db_mesh_machine_observation_list_by_ids(
+    struct node_db *ndb, const char *const *pairing_ids, size_t id_count,
+    struct db_mesh_machine_observation *out, size_t max);
+
 #endif /* ZCL_MODELS_MESH_MACHINE_OBSERVATION_H */

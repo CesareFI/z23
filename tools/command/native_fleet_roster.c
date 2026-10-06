@@ -16,6 +16,8 @@
  * and reads two projections. It never dials, never probes, never writes,
  * and never asks a running node anything — an operator can point it at a
  * copied datadir and the copy's hash still describes it afterwards.
+ * Membership is selected once; observations are fetched for those exact IDs,
+ * so later membership insertions cannot shift the observation window.
  *
  * INPUT (zcl.fleet_roster_input.v1)
  *   datadir   optional string; defaults to the CLI's resolved datadir.
@@ -66,6 +68,7 @@
 #include "session/mesh_status_proto.h"
 
 #include "base/safe_alloc.h"
+#include "util/log_macros.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
 
@@ -305,7 +308,7 @@ static int64_t roster_fleet_award(const struct mesh_pairing_public_view *views,
  * reports as unobserved rather than unreachable. */
 static void roster_match_evidence(const struct mesh_pairing_public_view *views,
                                   size_t view_count,
-                                  const struct db_mesh_machine_view *machines,
+                                  const struct db_mesh_machine_observation *machines,
                                   size_t machine_count,
                                   struct roster_evidence *out)
 {
@@ -314,13 +317,11 @@ static void roster_match_evidence(const struct mesh_pairing_public_view *views,
         out[i].status = MESH_STATUS_RECEIPT_INTERNAL;
         out[i].observed_unix = 0;
         for (size_t j = 0; j < machine_count; j++) {
-            if (strcmp(machines[j].pairing.pairing_id, views[i].pairing_id) != 0)
+            if (strcmp(machines[j].pairing_id, views[i].pairing_id) != 0)
                 continue;
-            if (!machines[j].has_observation)
-                break;
             out[i].present = true;
-            out[i].status = machines[j].observation.status;
-            out[i].observed_unix = machines[j].observation.observed_unix;
+            out[i].status = machines[j].status;
+            out[i].observed_unix = machines[j].observed_unix;
             break;
         }
     }
@@ -342,21 +343,35 @@ static const char *roster_identity_collision(
 }
 
 static bool roster_read_evidence(
-    struct node_db *ndb, int64_t now, size_t skip,
+    struct node_db *ndb,
     const struct mesh_pairing_public_view *views, size_t view_count,
     struct roster_evidence *evidence)
 {
-    struct db_mesh_machine_view *machines =
+    const char *ids[ROSTER_ROW_MAX];
+    for (size_t i = 0; i < view_count; i++)
+        ids[i] = views[i].pairing_id;
+    struct db_mesh_machine_observation *machines =
         zcl_calloc(ROSTER_ROW_MAX, sizeof(*machines), "roster_machines");
     int count = -1;
     if (machines)
-        count = db_mesh_machine_observation_list_after(
-            ndb, machines, ROSTER_ROW_MAX, now, skip);
+        count = db_mesh_machine_observation_list_by_ids(
+            ndb, ids, view_count, machines, ROSTER_ROW_MAX);
     if (count >= 0)
         roster_match_evidence(views, view_count, machines, (size_t)count,
                               evidence);
     free(machines);
     return count >= 0;
+}
+
+/* The service reports membership read failure explicitly and projects only
+ * successful pages. A successfully read empty page remains valid. */
+static bool roster_read_membership(
+    struct node_db *ndb, int64_t now, size_t skip,
+    struct mesh_pairing_public_view *views, size_t *view_count,
+    struct db_mesh_pairing_counts *counts)
+{
+    return mesh_pairing_service_list_after(ndb, now, skip, views, ROSTER_ROW_MAX,
+                                            view_count, counts);
 }
 
 void zcl_native_handle_fleet_roster(const struct zcl_command_request *request,
@@ -393,8 +408,8 @@ void zcl_native_handle_fleet_roster(const struct zcl_command_request *request,
 
     now = platform_time_wall_unix();
     memset(&counts, 0, sizeof(counts));
-    if (!mesh_pairing_service_list_after(&ndb, now, skip, views, ROSTER_ROW_MAX,
-                                         &view_count, &counts)) {
+    if (!roster_read_membership(&ndb, now, skip, views,
+                                 &view_count, &counts)) {
         zcl_native_node_db_close_readonly(&db, &ndb);
         roster_fail(reply, "ROSTER_STORE_UNREADABLE",
                     "the mesh pairing store could not be read, so this "
@@ -419,7 +434,7 @@ void zcl_native_handle_fleet_roster(const struct zcl_command_request *request,
         return;
     }
 
-    bool observed = roster_read_evidence(&ndb, now, skip, views, view_count,
+    bool observed = roster_read_evidence(&ndb, views, view_count,
                                           evidence);
     zcl_native_node_db_close_readonly(&db, &ndb);
     if (!observed) {

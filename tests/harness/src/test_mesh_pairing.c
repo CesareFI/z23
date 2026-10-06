@@ -26,6 +26,7 @@
 #include "vcs/zcode_dht_delegation.h"
 
 #include <stdio.h>
+#include <limits.h>
 #include <string.h>
 
 static void mesh_fill32(uint8_t out[32], uint8_t value)
@@ -348,7 +349,8 @@ static int mesh_roster_interrupt_observation(unsigned event, void *arg,
     (void)statement;
     const char *sql = text;
     if (event == SQLITE_TRACE_STMT && sql &&
-        strstr(sql, "LEFT JOIN mesh_machine_observations")) {
+        (strstr(sql, "LEFT JOIN mesh_machine_observations") ||
+         strstr(sql, "FROM mesh_machine_observations"))) {
         mesh_roster_denied_reads++;
         sqlite3_interrupt(arg);
     }
@@ -530,6 +532,487 @@ static int test_mesh_observation_boundary(unsigned which)
         (void)sqlite3_trace_v2(ndb.db, 0, NULL, NULL);
         node_db_close(&ndb);
     }
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+struct mesh_roster_insert_fault {
+    struct node_db *writer;
+    struct db_mesh_pairing row;
+    unsigned attempts;
+    bool inserted;
+};
+
+static struct mesh_roster_insert_fault mesh_roster_between;
+
+static int mesh_roster_insert_trace(unsigned event, void *arg,
+                                    void *statement, void *text)
+{
+    (void)arg;
+    (void)statement;
+    const char *sql = text;
+    if (event == SQLITE_TRACE_STMT && sql &&
+        strstr(sql, "mesh_machine_observations") &&
+        mesh_roster_between.attempts == 0) {
+        mesh_roster_between.attempts++;
+        mesh_roster_between.inserted = db_mesh_pairing_insert(
+            mesh_roster_between.writer, &mesh_roster_between.row);
+    }
+    return 0;
+}
+
+static int mesh_roster_insert_extension(sqlite3 *db, char **error,
+                                         const sqlite3_api_routines *api)
+{
+    (void)error;
+    (void)api;
+    return sqlite3_trace_v2(db, SQLITE_TRACE_STMT, mesh_roster_insert_trace, NULL);
+}
+
+static bool mesh_roster_observed(const struct zcl_command_reply *reply,
+                                 size_t index, int64_t at)
+{
+    const struct json_value *rows = json_get(&reply->data, "rows");
+    const struct json_value *facts = json_get(json_at(rows, index), "verified");
+    for (size_t i = 0; i < json_size(facts); i++) {
+        const struct json_value *fact = json_at(facts, i);
+        const char *name = json_get_str(json_get(fact, "fact"));
+        if (name && strcmp(name, "reachable") == 0)
+            return json_get_bool(json_get(fact, "observed")) &&
+                   (at == 0 || json_get_int(json_get(fact, "observed_unix")) == at);
+    }
+    return false;
+}
+
+static bool mesh_roster_page_fixture(struct node_db *ndb, const char *path,
+                                     int64_t wall,
+                                     char ids[][MESH_PAIRING_ID_HEX + 1], unsigned members)
+{
+    if (!node_db_open(ndb, path))
+        return false;
+    for (unsigned i = 0; i < members; i++) {
+        struct db_mesh_pairing row = {0};
+        mesh_fill32(row.network_genesis, 0x11);
+        mesh_fill32(row.peer_master_pubkey, (uint8_t)(0x40u + i));
+        mesh_fill32(row.peer_noise_pubkey, (uint8_t)(0x80u + i));
+        row.capability_mask = MESH_PAIRING_CAP_STATUS_READ;
+        row.delegation_sequence = 1;
+        row.paired_at = wall - 80 + i;
+        row.expires_at = wall + 86400;
+        if (!db_mesh_pairing_insert(ndb, &row))
+            return false;
+        memcpy(ids[i], row.pairing_id, sizeof(ids[i]));
+        if (i % ROSTER_PAGE == 0 || i % ROSTER_PAGE == ROSTER_PAGE - 1) {
+            struct db_mesh_machine_observation observed;
+            int64_t at = wall - 2 - 2 * (i / ROSTER_PAGE) +
+                         (i % ROSTER_PAGE == ROSTER_PAGE - 1);
+            if (!mesh_observation_fixture(&row, at, "{}", &observed) ||
+                !db_mesh_machine_observation_save(ndb, &observed))
+                return false;
+        }
+    }
+    return true;
+}
+
+static int test_mesh_roster_selected_evidence(unsigned which)
+{
+    static const char *const names[] = {
+        "ops.mesh.roster: an insertion between queries retains selected evidence",
+        "ops.mesh.roster: a member without observation stays unobserved",
+        "ops.mesh.roster: an exactly-full last page has no continuation",
+        "ops.mesh.roster: later-page insertion retains each selected identity"
+    };
+    int failures = 0;
+    struct node_db ndb = {0};
+    struct zcl_command_reply reply = {0};
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_pairing", "selected-evidence");
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    TEST(names[which]) {
+        int64_t wall = platform_time_wall_unix();
+        unsigned skip = which == 3 ? ROSTER_PAGE : 0;
+        unsigned members = ROSTER_PAGE + skip;
+        char ids[2 * ROSTER_PAGE][MESH_PAIRING_ID_HEX + 1];
+        ASSERT(mesh_roster_page_fixture(&ndb, path, wall, ids, members));
+        memset(&mesh_roster_between, 0, sizeof(mesh_roster_between));
+        if (which == 0 || which == 3) {
+            mesh_roster_between.writer = &ndb;
+            struct db_mesh_pairing *row = &mesh_roster_between.row;
+            mesh_fill32(row->network_genesis, 0x11);
+            mesh_fill32(row->peer_master_pubkey, 0xe1);
+            mesh_fill32(row->peer_noise_pubkey, 0xe2);
+            row->capability_mask = MESH_PAIRING_CAP_STATUS_READ;
+            row->delegation_sequence = 1;
+            row->paired_at = wall - 100;
+            row->expires_at = wall + 86400;
+            ASSERT_EQ(sqlite3_auto_extension((void (*)(void))mesh_roster_insert_extension),
+                      SQLITE_OK);
+        }
+        bool passed = roster_call(&reply, dir, skip != 0, skip);
+        (void)sqlite3_cancel_auto_extension((void (*)(void))mesh_roster_insert_extension);
+        if (which == 0 || which == 3) {
+            printf("[between-query attempts=%u inserted=%d] ",
+                   mesh_roster_between.attempts, mesh_roster_between.inserted);
+            ASSERT_EQ(mesh_roster_between.attempts, 1);
+            ASSERT(mesh_roster_between.inserted);
+        }
+        ASSERT(passed);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "row_count")), ROSTER_PAGE);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "total")), members);
+        for (unsigned i = 0; i < ROSTER_PAGE; i++)
+            ASSERT_STR_EQ(roster_row_id(&reply, i), ids[skip + i]);
+        if (which == 1)
+            ASSERT(!mesh_roster_observed(&reply, 1, 0));
+        if (which == 2) {
+            ASSERT(!json_get_bool(json_get(&reply.data, "truncated")));
+            ASSERT(json_get(&reply.data, "next_resume_after") == NULL);
+        }
+        ASSERT(mesh_roster_observed(&reply, 0, wall - 2 - 2 * (skip / ROSTER_PAGE)));
+        ASSERT(mesh_roster_observed(&reply, ROSTER_PAGE - 1,
+                                    wall - 1 - 2 * (skip / ROSTER_PAGE)));
+        if (which == 3) {
+            for (unsigned i = 1; i < ROSTER_PAGE - 1; i++)
+                ASSERT(!mesh_roster_observed(&reply, i, 0));
+        }
+        PASS();
+    } _test_next:;
+    (void)sqlite3_cancel_auto_extension((void (*)(void))mesh_roster_insert_extension);
+    memset(&mesh_roster_between, 0, sizeof(mesh_roster_between));
+    zcl_command_reply_free(&reply);
+    if (ndb.open)
+        node_db_close(&ndb);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int test_mesh_roster_by_ids_contract(bool invalid_id)
+{
+    int failures = 0;
+    struct node_db ndb = {0};
+    static struct db_mesh_machine_observation out[2];
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_pairing", "by-ids-contract");
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    TEST(invalid_id ? "mesh observations by IDs: invalid IDs preserve output"
+                    : "mesh observations by IDs: insufficient capacity preserves output") {
+        int64_t wall = platform_time_wall_unix();
+        char ids[ROSTER_PAGE][MESH_PAIRING_ID_HEX + 1];
+        ASSERT(mesh_roster_page_fixture(&ndb, path, wall, ids, ROSTER_PAGE));
+        char bad[MESH_PAIRING_ID_HEX + 1];
+        memset(bad, 'A', MESH_PAIRING_ID_HEX);
+        bad[MESH_PAIRING_ID_HEX] = '\0';
+        const char *selected[] = { invalid_id ? bad : ids[0], ids[ROSTER_PAGE - 1] };
+        memset(out, 0xa5, sizeof(out));
+        ASSERT_EQ(db_mesh_machine_observation_list_by_ids(
+                      &ndb, selected, 2, out, invalid_id ? 2 : 1), -1);
+        ASSERT(mesh_buffer_is(out, sizeof(out), 0xa5));
+        PASS();
+    } _test_next:;
+    if (ndb.open)
+        node_db_close(&ndb);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int test_mesh_roster_success_page(unsigned which)
+{
+    static const char *const names[] = {
+        "ops.mesh.roster: empty page past end passes",
+        "ops.mesh.roster: one-row page passes",
+        "ops.mesh.roster: exactly-full page passes"
+    };
+    int failures = 0;
+    struct node_db ndb = {0};
+    struct zcl_command_reply reply = {0};
+    static struct mesh_pairing_public_view views[ROSTER_PAGE];
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_pairing", "success-page");
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    TEST(names[which]) {
+        int64_t wall = platform_time_wall_unix();
+        unsigned members = which == 1 ? 1 : ROSTER_PAGE;
+        size_t skip = which == 0 ? members : 0;
+        size_t expected = which == 0 ? 0 : members;
+        char ids[ROSTER_PAGE][MESH_PAIRING_ID_HEX + 1];
+        ASSERT(mesh_roster_page_fixture(&ndb, path, wall, ids, members));
+        struct db_mesh_pairing_counts counts;
+        size_t count = SIZE_MAX;
+        bool read = mesh_pairing_service_list_after(
+            &ndb, wall, skip, views, ROSTER_PAGE, &count, &counts);
+        int code = sqlite3_errcode(ndb.db);
+        printf("[sqlite=%s page=%u read=%d rows=%zu errcode=%d] ",
+               sqlite3_libversion(), which, read, count, code);
+        ASSERT(read);
+        ASSERT_EQ(count, expected);
+        for (size_t i = 0; i < count; i++)
+            ASSERT_STR_EQ(views[i].pairing_id, ids[i]);
+        node_db_close(&ndb);
+        ASSERT(roster_call(&reply, dir, true, (int64_t)skip));
+        ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_PASSED);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "row_count")), (int64_t)expected);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "total")), members);
+        ASSERT(!json_get_bool(json_get(&reply.data, "truncated")));
+        ASSERT(json_get(&reply.data, "next_resume_after") == NULL);
+        for (size_t i = 0; i < expected; i++)
+            ASSERT_STR_EQ(roster_row_id(&reply, i), ids[i]);
+        PASS();
+    } _test_next:;
+    if (ndb.open)
+        node_db_close(&ndb);
+    zcl_command_reply_free(&reply);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int test_mesh_roster_by_ids_large_capacity(void)
+{
+    int failures = 0;
+    struct node_db ndb = {0};
+    static struct db_mesh_machine_observation out;
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_pairing", "by-ids-large");
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    TEST("mesh observations by IDs: capacity above INT_MAX preserves output") {
+        ASSERT(node_db_open(&ndb, path));
+        memset(&out, 0xa5, sizeof(out));
+        ASSERT_EQ(db_mesh_machine_observation_list_by_ids(
+                      &ndb, NULL, 0, &out, (size_t)INT_MAX + 1), -1);
+        ASSERT(mesh_buffer_is(&out, sizeof(out), 0xa5));
+        PASS();
+    } _test_next:;
+    if (ndb.open)
+        node_db_close(&ndb);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static unsigned mesh_roster_membership_interrupts;
+static bool mesh_roster_membership_partial;
+
+static int mesh_roster_membership_trace(unsigned event, void *arg,
+                                        void *statement, void *text)
+{
+    (void)text;
+    const char *sql = sqlite3_sql(statement);
+    unsigned trigger = mesh_roster_membership_partial ? SQLITE_TRACE_ROW : SQLITE_TRACE_STMT;
+    if (event == trigger && sql && strstr(sql, "FROM mesh_pairings ORDER BY") &&
+        mesh_roster_membership_interrupts == 0) {
+        mesh_roster_membership_interrupts++;
+        sqlite3_interrupt(arg);
+    }
+    return 0;
+}
+
+static int mesh_roster_membership_extension(sqlite3 *db, char **error,
+                                             const sqlite3_api_routines *api)
+{
+    (void)error;
+    (void)api;
+    return sqlite3_trace_v2(db, SQLITE_TRACE_STMT | SQLITE_TRACE_ROW,
+                           mesh_roster_membership_trace, db);
+}
+
+static int test_mesh_roster_membership_refusal(unsigned which)
+{
+    static const char *const names[] = {
+        "ops.mesh.roster: refuses membership prepare failure after a valid count",
+        "ops.mesh.roster: refuses membership step failure after a valid count",
+        "ops.mesh.roster: refuses a partial membership read"
+    };
+    int failures = 0;
+    struct node_db ndb = {0};
+    struct zcl_command_reply reply = {0};
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_pairing", "membership-refusal");
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    TEST(names[which]) {
+        int64_t wall = platform_time_wall_unix();
+        char ids[ROSTER_PAGE][MESH_PAIRING_ID_HEX + 1];
+        ASSERT(mesh_roster_page_fixture(&ndb, path, wall, ids, ROSTER_PAGE));
+        if (which == 0) {
+            ASSERT(node_db_exec(&ndb,
+                "PRAGMA foreign_keys=OFF; DROP TABLE mesh_pairings;"
+                "CREATE TABLE mesh_pairings(pairing_id TEXT PRIMARY KEY,"
+                "revoked_at INTEGER,expires_at INTEGER);"
+                "INSERT INTO mesh_pairings VALUES('countable',0,9223372036854775807)"));
+        }
+        struct db_mesh_pairing_counts counts;
+        ASSERT(db_mesh_pairing_count_states(&ndb, wall, &counts));
+        ASSERT_EQ(counts.total, which == 0 ? 1 : ROSTER_PAGE);
+        node_db_close(&ndb);
+        mesh_roster_membership_interrupts = 0;
+        mesh_roster_membership_partial = which == 2;
+        if (which != 0)
+            ASSERT_EQ(sqlite3_auto_extension((void (*)(void))mesh_roster_membership_extension),
+                      SQLITE_OK);
+        bool passed = roster_call(&reply, dir, false, 0);
+        (void)sqlite3_cancel_auto_extension((void (*)(void))mesh_roster_membership_extension);
+        printf("[count=%lld interrupts=%u status=%d rows=%lld] ",
+               (long long)counts.total, mesh_roster_membership_interrupts,
+               reply.status, (long long)json_get_int(json_get(&reply.data, "row_count")));
+        if (which != 0)
+            ASSERT_EQ(mesh_roster_membership_interrupts, 1);
+        ASSERT(!passed);
+        ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_FAILED);
+        ASSERT_STR_EQ(reply.error.code, "ROSTER_STORE_UNREADABLE");
+        ASSERT(reply.error.message[0] != '\0');
+        ASSERT(json_get(&reply.data, "rows") == NULL);
+        PASS();
+    } _test_next:;
+    (void)sqlite3_cancel_auto_extension((void (*)(void))mesh_roster_membership_extension);
+    mesh_roster_membership_interrupts = 0;
+    mesh_roster_membership_partial = false;
+    zcl_command_reply_free(&reply);
+    if (ndb.open)
+        node_db_close(&ndb);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int test_mesh_pairing_service_read_failure(unsigned which)
+{
+    static const char *const names[] = {
+        "mesh pairing service: preparation failure returns false",
+        "mesh pairing service: initial step failure returns false",
+        "mesh pairing service: partial step failure returns false"
+    };
+    int failures = 0;
+    struct node_db ndb = {0};
+    static struct mesh_pairing_public_view views[ROSTER_PAGE];
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_pairing", "service-read-failure");
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    TEST(names[which]) {
+        int64_t wall = platform_time_wall_unix();
+        char ids[ROSTER_PAGE][MESH_PAIRING_ID_HEX + 1];
+        ASSERT(mesh_roster_page_fixture(&ndb, path, wall, ids, ROSTER_PAGE));
+        if (which == 0)
+            ASSERT(node_db_exec(&ndb,
+                "PRAGMA foreign_keys=OFF; DROP TABLE mesh_pairings;"
+                "CREATE TABLE mesh_pairings(pairing_id TEXT PRIMARY KEY,"
+                "revoked_at INTEGER,expires_at INTEGER);"
+                "INSERT INTO mesh_pairings VALUES('countable',0,9223372036854775807)"));
+        mesh_roster_membership_interrupts = 0;
+        mesh_roster_membership_partial = which == 2;
+        if (which != 0)
+            ASSERT_EQ(sqlite3_trace_v2(ndb.db, SQLITE_TRACE_STMT | SQLITE_TRACE_ROW,
+                                     mesh_roster_membership_trace, ndb.db), SQLITE_OK);
+        memset(views, 0xa5, sizeof(views));
+        struct db_mesh_pairing_counts counts;
+        size_t count = SIZE_MAX;
+        bool read = mesh_pairing_service_list_after(
+            &ndb, wall, 0, views, ROSTER_PAGE, &count, &counts);
+        if (which != 0)
+            ASSERT_EQ(mesh_roster_membership_interrupts, 1);
+        ASSERT(!read);
+        ASSERT_EQ(count, 0);
+        ASSERT(mesh_buffer_is(views, sizeof(views), 0xa5));
+        PASS();
+    } _test_next:;
+    if (ndb.open) {
+        (void)sqlite3_trace_v2(ndb.db, 0, NULL, NULL);
+        node_db_close(&ndb);
+    }
+    mesh_roster_membership_interrupts = 0;
+    mesh_roster_membership_partial = false;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static const struct {
+    const char *name;
+    const char *sql;
+} mesh_pairing_malformed_cases[] = {
+    { "short blob", "UPDATE mesh_pairings SET network_genesis=X'00'" },
+    { "NULL blob", "UPDATE mesh_pairings SET peer_master_pubkey=NULL" },
+    { "overlong pairing ID", "UPDATE mesh_pairings SET pairing_id=pairing_id||'a'" },
+    { "wrong-type pairing ID", "UPDATE mesh_pairings SET pairing_id=CAST(pairing_id AS BLOB)" },
+    { "overlong blob", "UPDATE mesh_pairings SET peer_noise_pubkey=zeroblob(33)" },
+    { "wrong-type blob", "UPDATE mesh_pairings SET network_genesis='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'" },
+    { "embedded-NUL pairing ID", "UPDATE mesh_pairings SET pairing_id=pairing_id||char(0)||'a'" },
+    { "NULL integer", "UPDATE mesh_pairings SET delegation_sequence=NULL" },
+    { "wrong-type integer", "UPDATE mesh_pairings SET capability_mask='not an integer'" },
+    { "NULL revoked_at", "UPDATE mesh_pairings SET revoked_at=NULL" },
+};
+
+/* raw-sql-ok:test-fixture -- weakens only an isolated replacement table to
+ * plant readable rows that the normal schema's constraints would reject. */
+static bool mesh_pairing_malformed_fixture(struct node_db *ndb,
+                                           const char *path, int64_t wall,
+                                           unsigned which)
+{
+    char ids[1][MESH_PAIRING_ID_HEX + 1];
+    if (!mesh_roster_page_fixture(ndb, path, wall, ids, 1))
+        return false;
+    if (!node_db_exec(ndb,
+        "PRAGMA foreign_keys=OFF;"
+        "CREATE TEMP TABLE mesh_pairing_saved AS SELECT * FROM mesh_pairings;"
+        "DROP TABLE mesh_pairings;"
+        "CREATE TABLE mesh_pairings("
+        "pairing_id TEXT,network_genesis BLOB,peer_master_pubkey BLOB,"
+        "peer_noise_pubkey BLOB,capability_mask INTEGER,"
+        "delegation_sequence INTEGER,paired_at INTEGER,expires_at INTEGER,"
+        "revoked_at INTEGER,revocation_generation INTEGER);"
+        "INSERT INTO mesh_pairings SELECT * FROM mesh_pairing_saved;"
+        "DROP TABLE mesh_pairing_saved;"))
+        return false;
+    return node_db_exec(ndb, mesh_pairing_malformed_cases[which].sql);
+}
+
+static int test_mesh_pairing_malformed_row(unsigned which, unsigned layer)
+{
+    static const char *const layers[] = { "model", "service", "roster CLI" };
+    int failures = 0;
+    struct node_db ndb = {0};
+    struct zcl_command_reply reply = {0};
+    char dir[256], path[320], label[160];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_pairing", "malformed-row");
+    snprintf(path, sizeof(path), "%s/node.db", dir);
+    snprintf(label, sizeof(label), "mesh pairing malformed %s: %s refuses",
+             mesh_pairing_malformed_cases[which].name, layers[layer]);
+    TEST(label) {
+        int64_t wall = platform_time_wall_unix();
+        ASSERT(mesh_pairing_malformed_fixture(&ndb, path, wall, which));
+        struct db_mesh_pairing_counts counts;
+        /* NULL revoked_at already fails the counts invariant; its direct
+         * model case proves decoding rather than that earlier refusal. */
+        if (which != 9) {
+            ASSERT(db_mesh_pairing_count_states(&ndb, wall, &counts));
+            ASSERT_EQ(counts.total, 1);
+            ASSERT_EQ(counts.active, 1);
+        }
+        if (layer == 0) {
+            struct db_mesh_pairing row;
+            int found = db_mesh_pairing_list_after_checked(&ndb, &row, 1, 0);
+            printf("[model count=%d] ", found);
+            ASSERT_EQ(found, -1);
+        } else if (layer == 1) {
+            struct mesh_pairing_public_view view;
+            memset(&view, 0xa5, sizeof(view));
+            size_t count = SIZE_MAX;
+            bool read = mesh_pairing_service_list_after(
+                &ndb, wall, 0, &view, 1, &count, &counts);
+            printf("[service read=%d count=%zu] ", read, count);
+            ASSERT(!read);
+            ASSERT_EQ(count, 0);
+            ASSERT(mesh_buffer_is(&view, sizeof(view), 0xa5));
+        } else {
+            node_db_close(&ndb);
+            bool passed = roster_call(&reply, dir, false, 0);
+            printf("[roster passed=%d status=%d rows=%lld] ", passed,
+                   reply.status,
+                   (long long)json_get_int(json_get(&reply.data, "row_count")));
+            ASSERT(!passed);
+            ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_FAILED);
+            ASSERT_STR_EQ(reply.error.code, "ROSTER_STORE_UNREADABLE");
+            ASSERT(reply.error.message[0] != '\0');
+            ASSERT(json_get(&reply.data, "rows") == NULL);
+        }
+        PASS();
+    } _test_next:;
+    zcl_command_reply_free(&reply);
+    if (ndb.open)
+        node_db_close(&ndb);
     test_cleanup_tmpdir(dir);
     return failures;
 }
@@ -887,10 +1370,24 @@ int test_mesh_pairing(void)
         PASS();
     }
 
+    for (unsigned which = 0; which < 10; which++)
+        for (unsigned layer = 0; layer < (which == 9 ? 1u : 3u); layer++)
+            failures += test_mesh_pairing_malformed_row(which, layer);
     failures += test_mesh_observation_interrupted_step();
     failures += test_mesh_roster_page();
+    for (unsigned which = 0; which < 3; which++)
+        failures += test_mesh_roster_success_page(which);
+    failures += test_mesh_roster_by_ids_large_capacity();
     failures += test_mesh_roster_observation_refusal(true);
     failures += test_mesh_roster_observation_refusal(false);
+    for (unsigned which = 0; which < 3; which++)
+        failures += test_mesh_roster_membership_refusal(which);
+    for (unsigned which = 0; which < 3; which++)
+        failures += test_mesh_pairing_service_read_failure(which);
+    failures += test_mesh_roster_by_ids_contract(false);
+    failures += test_mesh_roster_by_ids_contract(true);
+    for (unsigned which = 0; which < 4; which++)
+        failures += test_mesh_roster_selected_evidence(which);
     for (unsigned which = 0; which < 10; which++) {
         if (which == 4 && SIZE_MAX <= (uint64_t)INT64_MAX) {
             printf("mesh observations: unrepresentable-offset case unavailable on this size_t\n");

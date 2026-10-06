@@ -6,6 +6,7 @@
 #include "base/bytes.h"
 #include "base/hex.h"
 #include "crypto/sha3.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 #include <limits.h>
@@ -177,6 +178,79 @@ int db_mesh_pairing_list_after(struct node_db *ndb, struct db_mesh_pairing *out,
             AR_BIND_INT(st, 2, (int64_t)skip);
         } while (0),
         mesh_pairing_read(&out[count], st));
+}
+
+static bool mesh_pairing_read_checked(struct db_mesh_pairing *out,
+                                      sqlite3_stmt *st)
+{
+    if (sqlite3_column_type(st, 0) != SQLITE_TEXT)
+        LOG_FAIL("mesh_pairing", "checked read: pairing ID is not text");
+    const char *id = (const char *)sqlite3_column_text(st, 0);
+    if (!id || sqlite3_column_bytes(st, 0) != MESH_PAIRING_ID_HEX ||
+        !mesh_pairing_hex_id(id))
+        LOG_FAIL("mesh_pairing", "checked read: malformed pairing ID");
+
+    struct db_mesh_pairing row = {0};
+    memcpy(row.pairing_id, id, MESH_PAIRING_ID_HEX);
+    uint8_t *blobs[] = {
+        row.network_genesis, row.peer_master_pubkey, row.peer_noise_pubkey
+    };
+    for (int col = 1; col <= 3; col++) {
+        if (sqlite3_column_type(st, col) != SQLITE_BLOB ||
+            sqlite3_column_bytes(st, col) != 32)
+            LOG_FAIL("mesh_pairing", "checked read: malformed blob column %d", col);
+        const void *data = sqlite3_column_blob(st, col);
+        if (!data)
+            LOG_FAIL("mesh_pairing", "checked read: missing blob column %d", col);
+        memcpy(blobs[col - 1], data, 32);
+    }
+    /* The table DDL makes all six integer columns NOT NULL, including the
+     * revocation columns whose zero defaults must not be invented for NULL. */
+    for (int col = 4; col <= 9; col++)
+        if (sqlite3_column_type(st, col) != SQLITE_INTEGER)
+            LOG_FAIL("mesh_pairing", "checked read: malformed integer column %d", col);
+    row.capability_mask = (uint64_t)sqlite3_column_int64(st, 4);
+    row.delegation_sequence = (uint64_t)sqlite3_column_int64(st, 5);
+    row.paired_at = sqlite3_column_int64(st, 6);
+    row.expires_at = sqlite3_column_int64(st, 7);
+    row.revoked_at = sqlite3_column_int64(st, 8);
+    row.revocation_generation = (uint64_t)sqlite3_column_int64(st, 9);
+    *out = row;
+    return true;
+}
+
+int db_mesh_pairing_list_after_checked(
+    struct node_db *ndb, struct db_mesh_pairing *out, size_t max, size_t skip)
+{
+    if (!ndb || !ndb->open || !out || max == 0 || max > INT_MAX ||
+        (uint64_t)skip > (uint64_t)INT64_MAX) {
+        LOG_ERROR("mesh_pairing", "checked list: bad arguments");
+        return -1;
+    }
+    sqlite3_stmt *st = NULL;
+    AR_PREPARE_RET(ndb, st,
+        "SELECT " MESH_PAIRING_COLS " FROM mesh_pairings "
+        "ORDER BY paired_at,pairing_id LIMIT ? OFFSET ?", -1);
+    int status = sqlite3_bind_int64(st, 1, (int64_t)max);
+    if (status == SQLITE_OK)
+        status = sqlite3_bind_int64(st, 2, (int64_t)skip);
+    if (status != SQLITE_OK) {
+        LOG_ERROR("mesh_pairing", "checked list: bind failed: %d", status);
+        AR_FINALIZE(st);
+        return -1;
+    }
+    int count = 0;
+    while ((status = AR_STEP_ROW_READONLY(st)) == SQLITE_ROW && (size_t)count < max) {
+        if (!mesh_pairing_read_checked(&out[count], st))
+            break;
+        count++;
+    }
+    int finalized = sqlite3_finalize(st);
+    if (status != SQLITE_DONE || finalized != SQLITE_OK) {
+        LOG_ERROR("mesh_pairing", "checked list: step=%d finalize=%d", status, finalized);
+        return -1;
+    }
+    return count;
 }
 
 bool db_mesh_pairing_count_states(struct node_db *ndb, int64_t now,
