@@ -6,6 +6,7 @@
 #include "sha3/sha3.h"
 #include "util/safe_alloc.h"
 #include "vcs/semantic_manifest.h"
+#include "zutf8/zutf8.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -526,8 +527,26 @@ static bool fx_facts_json(const struct zcl_devloop_facts_verdict *v,
     w->ok = w->ok && t.ok;
     fw_raw(w, "}}");
     free(t.out);
+    /* Include the plan prefix, not only strings emitted by this writer. */
+    if (w->ok && !zutf8_validate_n(w->out, w->at))
+        w->ok = false;
+    if (!w->ok) w->out[0] = '\0';
     return w->ok;
 }
+
+#ifdef ZCL_TESTING
+bool zcl_devloop_test_facts_json(const struct zcl_devloop_facts_report *r,
+                                const struct zcl_devloop_plan *p,
+                                char *out, size_t out_sz)
+{
+    if (out != NULL && out_sz > 0) out[0] = '\0';
+    if (r == NULL || p == NULL || out == NULL || out_sz == 0) return false;
+    struct fxw w = {.out = out, .cap = out_sz, .ok = true};
+    struct zcl_devloop_facts_verdict v = {.reason = ""};
+    fw_raw(&w, "{\"fixture\":true");
+    return fx_facts_json(&v, r, p, 0, &w);
+}
+#endif
 
 /* Plan with the facts evidence and render the plan document with the
  * facts object spliced in before its closing brace; 0 on any failure. */

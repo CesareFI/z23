@@ -57,6 +57,7 @@
 #include "vcs/vcs_manifest.h"
 
 #include "devloop.h"
+#include "devloop_facts.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -977,6 +978,93 @@ static int sft_t_plan_command(const char *root)
     return failures;
 }
 
+static int sft_t_json_value(const char *out, size_t field, const char *text)
+{
+    int failures = 0;
+    struct json_value doc = {0};
+    TEST_CASE("semantic_facts: JSON preserves Unicode and escaped report text") {
+        ASSERT(json_read(&doc, out, strlen(out)));
+        const struct json_value *facts = json_get(&doc, "facts");
+        const struct json_value *obj[] = {json_at(json_get(facts, "tus"), 0),
+            json_at(json_get(facts, "tus"), 0), json_get(facts, "universe"),
+            json_at(json_get(json_get(facts, "make_guards"), "skipped"), 0),
+            json_get(json_get(facts, "make_guards"), "plan")};
+        const char *keys[] = {"path", "detail", "detail", "guard", "command"};
+        ASSERT_STR_EQ(json_get_str(json_get(obj[field], keys[field])), text);
+        for (const unsigned char *p = (const unsigned char *)out; *p; p++) {
+            if (*p == 0xc3) { ASSERT_EQ(*++p, 0xa9); }
+            else { ASSERT(*p >= 0x20 && *p < 0x80); }
+        }
+    } TEST_END
+    json_free(&doc);
+    return failures;
+}
+
+static int sft_t_json_row(struct zcl_devloop_plan *plan, const char *text,
+                           bool valid)
+{
+    int failures = 0;
+    char out[16384];
+    struct zcl_devloop_facts_tu_verdict tu = {.reason = ""};
+    struct zcl_devloop_facts_guard guard = {0};
+    struct zcl_devloop_facts_report r = {.reason = "", .obligations_reason = "",
+                                        .tus = &tu, .ntus = 1,
+                                        .guards = &guard, .nguards = 1};
+    TEST_CASE("semantic_facts: JSON refuses invalid UTF-8 across the whole report") {
+        char *fields[] = {tu.path, tu.detail, r.detail, guard.guard,
+                          r.make_premise.command};
+        for (size_t k = 0; k < sizeof(fields) / sizeof(fields[0]); k++) {
+            strcpy(fields[k], text);
+            memset(out, 'X', sizeof(out));
+            bool ok = zcl_devloop_test_facts_json(&r, plan, out, sizeof(out));
+            ASSERT_EQ(ok, valid);
+            if (ok) failures += sft_t_json_value(out, k, text);
+            else { ASSERT_EQ(out[0], '\0'); }
+            fields[k][0] = '\0';
+        }
+    } TEST_END
+    return failures;
+}
+
+static int sft_t_json(struct zcl_devloop_plan *plan)
+{
+    int failures = 0;
+    const char *text[] = {"plain", "\xc3\xa9\"\\\n\001", "\xff", "\xc0\xaf",
+                          "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xc3"};
+    for (size_t i = 0; i < sizeof(text) / sizeof(text[0]); i++)
+        failures += sft_t_json_row(plan, text[i], i < 2);
+    return failures;
+}
+
+static int sft_t_json_prefix(const char *root)
+{
+    int failures = 0;
+    char out[65536];
+    const char *files[] = {"docs/x\xc3\xa9.md"};
+    struct json_value doc = {0};
+    TEST_CASE("semantic_facts: complete JSON refuses a malformed non-C filename") {
+        size_t n = zcl_devloop_plan_json_facts(root, files, 1, "nofacts", 0,
+                                               out, sizeof(out));
+        ASSERT(n > 0);
+        ASSERT_EQ(n, strlen(out));
+        ASSERT(json_read(&doc, out, n));
+        ASSERT_STR_EQ(json_get_str(json_at(json_get(&doc, "files"), 0)), files[0]);
+        const struct json_value *facts = json_get(&doc, "facts");
+        ASSERT(facts != NULL);
+        const struct json_value *tus = json_get(facts, "tus");
+        ASSERT(tus != NULL);
+        ASSERT_EQ(tus->type, JSON_ARR);
+        ASSERT_EQ(json_size(tus), 0);
+        files[0] = "docs/x\xff.md";
+        memset(out, 'X', sizeof(out));
+        ASSERT_EQ(zcl_devloop_plan_json_facts(root, files, 1, "nofacts", 0,
+                                              out, sizeof(out)), 0);
+        ASSERT_EQ(out[0], '\0');
+    } TEST_END
+    json_free(&doc);
+    return failures;
+}
+
 int test_semantic_facts(void)
 {
     int failures = 0;
@@ -992,6 +1080,8 @@ int test_semantic_facts(void)
         ASSERT(sft_write_tree(root, SFT_BASE));
     } TEST_END
     if (failures == 0) {
+        failures += sft_t_json(plan);
+        failures += sft_t_json_prefix(root);
         failures += sft_t_narrowing_table(root, plan);
         failures += sft_t_narrowing_fewer(root, plan);
         failures += sft_t_narrowing_refusals(root, plan);

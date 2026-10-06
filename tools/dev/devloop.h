@@ -792,11 +792,22 @@ bool zcl_devloop_plan_add_closure_facts(
  * the working tree. Adds a "facts" object naming the verdict, the
  * obligations with their reasons and the TU universe with its identities
  * (the entries from tu_offset that fit one page). Returns bytes
- * written, or 0 on overflow/bad args. */
+ * written, or 0 on overflow, bad arguments or malformed UTF-8 anywhere in
+ * the complete reply. Byte truncation of report text that splits a UTF-8
+ * character also refuses the complete reply; dev.change.plan reports
+ * INVALID_FILE_SET when this function returns 0. */
 size_t zcl_devloop_plan_json_facts(const char *repo_root,
                                    const char *const *files, size_t file_count,
                                    const char *facts_dir, size_t tu_offset,
                                    char *out, size_t out_sz);
+
+#ifdef ZCL_TESTING
+struct zcl_devloop_facts_report;
+/* Render a fixture report; false clears a non-NULL out when out_sz > 0. */
+bool zcl_devloop_test_facts_json(const struct zcl_devloop_facts_report *r,
+                                const struct zcl_devloop_plan *p,
+                                char *out, size_t out_sz);
+#endif
 
 /* Planner internals the facts walk shares (devloop_plan.c). */
 bool zcl_devloop_plan_fold_file(struct zcl_devloop_plan *plan,
