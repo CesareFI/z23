@@ -4508,6 +4508,21 @@ static bool dp_orphan_lint_dead(long pid)
     return kill((pid_t)pid, 0) != 0 && errno == ESRCH;
 }
 
+static bool dp_orphan_gitdir_record_read(FILE *f, char *line, size_t cap)
+{
+    size_t len = fread(line, 1, cap, f);
+    bool complete = len < cap && !ferror(f);
+    int close_rc = fclose(f);
+    if (!complete || close_rc != 0 || memchr(line, '\0', len) != NULL)
+        return false;
+    if (len > 0 && line[len - 1] == '\n') len--;
+    if (len > 0 && line[len - 1] == '\r') len--;
+    if (memchr(line, '\n', len) != NULL || memchr(line, '\r', len) != NULL)
+        return false;
+    line[len] = '\0';
+    return true;
+}
+
 /* `entry/.git` is a regular file reading `gitdir: <path>` where `<path>`
  * does not exist and its basename is this entry's own tag: git's worktree
  * remove deleted the admin dir but not the tree, so warm_reapable()'s own
@@ -4525,12 +4540,7 @@ static bool dp_orphan_gitdir_pruned(const char *entry_path, const char *tag)
     FILE *f = fopen(gitfile, "r");
     if (!f) return false;
     char line[PATH_MAX + 16];
-    bool got = fgets(line, sizeof(line), f) != NULL;
-    (void)fclose(f);
-    if (!got) return false;
-    size_t len = strlen(line);
-    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
-        line[--len] = 0;
+    if (!dp_orphan_gitdir_record_read(f, line, sizeof(line))) return false;
     static const char prefix[] = "gitdir: ";
     if (strncmp(line, prefix, sizeof(prefix) - 1) != 0) return false;
     const char *target = line + sizeof(prefix) - 1;

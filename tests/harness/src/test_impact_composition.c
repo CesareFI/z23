@@ -11353,6 +11353,80 @@ static int test_ic_proof_request_exact_extent(void)
 }
 #endif
 
+#if !defined(_WIN32)
+static bool ic_orphan_gitdir_record_write(const char *gitfile, const char *root,
+                                         const char *tag, const char *tail,
+                                         size_t tail_len, bool oversized)
+{
+    char body[8192];
+    int n = snprintf(body, sizeof(body), "gitdir: %s/missing/%s", root, tag);
+    if (n <= 0 || (size_t)n >= sizeof(body)) return false;
+    size_t len = (size_t)n;
+    if (tail_len > sizeof(body) - len) return false;
+    memcpy(body + len, tail, tail_len);
+    len += tail_len;
+    if (oversized) {
+        memset(body + len, 'x', sizeof(body) - len);
+        len = sizeof(body);
+    }
+    FILE *f = fopen(gitfile, "wb");
+    if (!f) return false;
+    size_t wrote = fwrite(body, 1, len, f);
+    int close_rc = fclose(f);
+    return wrote == len && close_rc == 0;
+}
+
+static int test_pw_orphan_gitdir_record_framing(void)
+{
+    int failures = 0;
+    TEST("proof pool: malformed gitdir records retain the generation; "
+         "exact final records qualify with or without a newline") {
+        static const char hidden[] = "\0unverified-suffix\n";
+        static const struct {
+            const char *tail;
+            size_t len;
+        } cases[] = {
+            { "", 0 }, { "\n", 1 }, { "\r\n", 2 },
+            { hidden, sizeof(hidden) - 1 }, { "\nextra\n", 7 }, { "\n", 1 }
+        };
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            char root[4096], pool[4096], entry[4096], gitfile[4096];
+            char tag[33];
+            ASSERT(test_mkdtemp(root, sizeof(root), "orphan_gitdir_record") != NULL);
+            int n = snprintf(pool, sizeof(pool), "%s/.z23p", root);
+            ASSERT(n > 0 && (size_t)n < sizeof(pool));
+            ASSERT(mkdir(pool, 0700) == 0);
+            ic_orphan_tag(tag, 'a');
+            n = snprintf(entry, sizeof(entry), "%s/%s", pool, tag);
+            ASSERT(n > 0 && (size_t)n < sizeof(entry));
+            ASSERT(mkdir(entry, 0700) == 0);
+            n = snprintf(gitfile, sizeof(gitfile), "%s/.git", entry);
+            ASSERT(n > 0 && (size_t)n < sizeof(gitfile));
+            ASSERT(ic_orphan_gitdir_record_write(gitfile, root, tag,
+                                                  cases[i].tail, cases[i].len,
+                                                  i == 5));
+            const struct timespec old[2] = {
+                { .tv_sec = (time_t)1 },
+                { .tv_sec = (time_t)1 }
+            };
+            ASSERT(utimensat(AT_FDCWD, entry, old, 0) == 0);
+            size_t removed = 0;
+            uint64_t bytes = 0;
+            ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+            zcl_dev_proof_test_generation_pool_reap(root, pool, "", &removed, &bytes);
+            ASSERT(unsetenv("ZCL_DEVLOOP_TEST_PROCESS") == 0);
+            struct stat st;
+            int exists = lstat(entry, &st);
+            ASSERT(i < 3 ? (exists != 0 && errno == ENOENT && removed == 1)
+                         : (exists == 0 && removed == 0));
+            ASSERT(test_rm_rf_recursive(root) == 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
+
 int test_impact_composition(void)
 {
     int failures = 0;
@@ -11523,6 +11597,7 @@ int test_impact_composition(void)
     failures += test_pw_identity_mismatch_stays_cold_with_its_reason();
     failures += test_pw_live_donor_is_never_seeded_from();
     failures += test_pw_authoritative_proof_refuses_same_uid_donor();
+    failures += test_pw_orphan_gitdir_record_framing();
     failures += test_ic_proof_request_exact_extent();
     failures += test_ic_proof_text_readers_refuse_nul();
     failures += test_pw_plan_rejects_hidden_fields();
