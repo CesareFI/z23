@@ -18,12 +18,32 @@
 #include "command/native_command.h"
 #include "config/command_catalog.h"
 #include "fleetfacts/fleet_facts.h"
+#include "base/hex.h"
+#include "sha3/sha3.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 
 #include <string.h>
 
 #define FFT_PATH "dev.fleet.know"
+
+static bool fft_root_matches(const struct zcl_fleet_fact_v1 *row)
+{
+    static const char domain[] = "zcl.fleet_fact.v1";
+    const char *const fields[] = {
+        row->subject, row->relation, row->object, row->context
+    };
+    struct sha3_256_ctx hash;
+    uint8_t digest[32];
+    char expected[65];
+    sha3_256_init(&hash);
+    sha3_256_write(&hash, (const uint8_t *)domain, sizeof(domain));
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++)
+        sha3_256_write(&hash, (const uint8_t *)fields[i], strlen(fields[i]) + 1);
+    sha3_256_finalize(&hash, digest);
+    zcl_hex_encode(digest, sizeof(digest), expected);
+    return strcmp(row->provenance, expected) == 0;
+}
 
 /* ── one in-process invocation of the leaf ─────────────────────────────── */
 
@@ -132,6 +152,8 @@ static int test_fleet_facts_table(void)
         ASSERT(zcl_fleet_facts_get(0, &a));
         ASSERT(zcl_fleet_facts_get(1, &b));
         ASSERT(strcmp(a.provenance, b.provenance) != 0);
+        ASSERT(fft_root_matches(&a));
+        ASSERT(fft_root_matches(&b));
         PASS();
     }
 
