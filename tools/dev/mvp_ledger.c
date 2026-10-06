@@ -606,7 +606,11 @@ static void mvl_read_meta(const char *dir, const char *id, char *desc,
     if (!f)
         return;
     n = fread(raw, 1, sizeof raw - 1, f);
-    (void)fclose(f);
+    bool complete = fgetc(f) == EOF && !ferror(f);
+    if (fclose(f) != 0)
+        complete = false;
+    if (!complete)
+        return;
     raw[n] = '\0';
     json_init(&root);
     if (json_read(&root, raw, n)) {

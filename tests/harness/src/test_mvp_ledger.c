@@ -1369,11 +1369,65 @@ _test_next:;
     return failures;
 }
 
+static int test_mvp_ledger_meta_extent(void)
+{
+    int failures = 0;
+    char tmp[PATH_MAX] = "", sess[PATH_MAX], subs[PATH_MAX];
+    char raw[4097], path[PATH_MAX], err[MVL_ERR_CAP] = "";
+    struct mvl_agents agents = {0};
+    TEST("metadata requires the complete JSON file, including its tail") {
+        ASSERT(test_mkdtemp(tmp, sizeof tmp, "mvlmeta") != NULL);
+        mvl_build_session(tmp);
+        (void)snprintf(sess, sizeof sess, "%s/sess", tmp);
+        (void)snprintf(subs, sizeof subs, "%s/sess/subagents", tmp);
+        memset(raw, ' ', sizeof raw);
+        memcpy(raw, "{\"description\":\"x\"}", 19);
+        raw[4095] = '!';
+        raw[4096] = '\0';
+        mvl_write_file(subs, "agent-a1.meta.json", raw);
+        ASSERT(mvl_agents_alloc(&agents));
+        ASSERT(mvl_scan_session(sess, NULL, &agents, err, sizeof err));
+        ASSERT_EQ(agents.count, (size_t)4);
+        ASSERT_STR_EQ(agents.rows[0].agent_id, "a1");
+        ASSERT_STR_EQ(agents.rows[0].description, "-");
+        mvl_agents_free(&agents);
+        mvl_write_file(subs, "agent-a1.meta.json", "{\"description\":\"x\"}");
+        ASSERT(mvl_agents_alloc(&agents));
+        ASSERT(mvl_scan_session(sess, NULL, &agents, err, sizeof err));
+        ASSERT_STR_EQ(agents.rows[0].description, "x");
+        mvl_agents_free(&agents);
+        raw[4095] = '\0';
+        mvl_write_file(subs, "agent-a1.meta.json", raw);
+        ASSERT(mvl_agents_alloc(&agents));
+        ASSERT(mvl_scan_session(sess, NULL, &agents, err, sizeof err));
+        ASSERT_STR_EQ(agents.rows[0].description, "x");
+        mvl_agents_free(&agents);
+        mvl_write_file(subs, "agent-a1.meta.json", "{\"description\":\"x\"}!");
+        ASSERT(mvl_agents_alloc(&agents));
+        ASSERT(mvl_scan_session(sess, NULL, &agents, err, sizeof err));
+        ASSERT_STR_EQ(agents.rows[0].description, "-");
+        mvl_agents_free(&agents);
+        (void)snprintf(path, sizeof path, "%s/agent-a1.meta.json", subs);
+        ASSERT_EQ(unlink(path), 0);
+        ASSERT_EQ(mkdir(path, 0700), 0);
+        ASSERT(mvl_agents_alloc(&agents));
+        ASSERT(mvl_scan_session(sess, NULL, &agents, err, sizeof err));
+        ASSERT_STR_EQ(agents.rows[0].description, "-");
+        PASS();
+    }
+_test_next:;
+    mvl_agents_free(&agents);
+    if (tmp[0])
+        test_rm_rf_recursive(tmp);
+    return failures;
+}
+
 int test_mvp_ledger(void)
 {
     int failures = 0;
     failures += test_mvp_ledger_classify();
     failures += test_mvp_ledger_agents();
+    failures += test_mvp_ledger_meta_extent();
     failures += test_mvp_ledger_refusals();
     failures += test_mvp_ledger_plan();
     failures += test_mvp_ledger_join();
