@@ -190,8 +190,17 @@ static int test_fleet_facts_table(void)
                                      ZCL_FLEET_FACTS_MAX_ROWS, &well));
         ASSERT(!well.unknown);
         ASSERT(well.total <= all.total);
-        for (size_t i = 0; i < well.row_count; i++)
+        static const char *const objects[] = {
+            "verification", "gate-fixing", "finishing-rebase",
+            "scoped-implementation",
+        };
+        ASSERT_EQ(well.total, (size_t)4);
+        ASSERT_EQ(well.row_count, (size_t)4);
+        ASSERT(!well.truncated);
+        for (size_t i = 0; i < well.row_count; i++) {
             ASSERT_STR_EQ(well.rows[i].relation, "handles_well");
+            ASSERT_STR_EQ(well.rows[i].object, objects[i]);
+        }
         /* A relation the subject has no row for is UNKNOWN, not empty. */
         struct zcl_fleet_facts_answer_v1 none;
         ASSERT(zcl_fleet_facts_query("sonnet", "lives_at", NULL,
@@ -226,6 +235,14 @@ static int test_fleet_facts_table(void)
         ASSERT(saw_seam);
         PASS();
     }
+
+_test_next:;
+    return failures;
+}
+
+static int test_fleet_facts_traps(void)
+{
+    int failures = 0;
 
     TEST("fleet_facts: proof-lock trap_signature is stray-lane-watcher and landing-worktree trap_signature is stale-installed-hook") {
         struct zcl_fleet_facts_answer_v1 lock, hook;
@@ -514,6 +531,7 @@ int test_fleet_facts(void)
 {
     int failures = 0;
     failures += test_fleet_facts_table();
+    failures += test_fleet_facts_traps();
     failures += test_fleet_facts_leaf();
     failures += test_fleet_historical_limits();
     return failures;

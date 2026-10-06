@@ -2805,7 +2805,7 @@ tests/harness/src/test_file_tree_ops.c:test_update_only:20
 tests/harness/src/test_fingerprint.c:test_fingerprint:53
 tests/harness/src/test_fleet_board.c:fb_rpc_verify_item:17
 tests/harness/src/test_fleet_board.c:test_fleet_board_rpc_verification:31
-tests/harness/src/test_fleet_facts.c:test_fleet_facts_table:24
+tests/harness/src/test_fleet_facts.c:test_fleet_facts_table:11
 tests/harness/src/test_fleet_ledger.c:test_fleet_ledger:40
 tests/harness/src/test_fold_inram_crash_proof.c:fip_proof1_ab_equivalence:25
 tests/harness/src/test_fold_inram_crash_proof.c:fip_proof2_crash_resume:30
