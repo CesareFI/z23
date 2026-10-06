@@ -11071,6 +11071,11 @@ static int test_pw_next_proof_seeds_from_the_finished_generation(void)
         /* Reuse preserves this generation's seed, whether it was linked or
          * privately copied. Identity is device+inode, not donor inode alone. */
         ASSERT(ic_generation_stat_equal(&seed_b_st, &gen_b_st));
+#if !defined(__APPLE__)
+        /* The non-Apple seed path hard-links immutable objects. */
+        ASSERT(gen_b_st.st_dev == donor_b_st.st_dev);
+        ASSERT(gen_b_st.st_ino == donor_b_st.st_ino);
+#endif
         ASSERT(gen_b_st.st_size == (off_t)(sizeof("int b;\n") - 1));
         ASSERT(donor_b_st.st_size == gen_b_st.st_size);
         ASSERT(ic_file_has(gen_b, "int b;\n"));
