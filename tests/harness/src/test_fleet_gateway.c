@@ -1920,11 +1920,14 @@ static bool gw_mkdirp(const char *path)
  * verdict NULL means no receipt (crash); rc NULL means no rc line. */
 static char g_gw_saved_path[9000];
 static char g_gw_fake_prog[1100];
+static char g_gw_saved_direct[16];
+static bool g_gw_had_direct;
 
 static bool gw_fake_setup(void)
 {
     char base[512], bindir[1024], path[9000];
     const char *old = getenv("PATH");
+    const char *direct = getenv("ZCL_QUEUE_DIRECT");
     test_make_tmpdir(base, sizeof(base), "fleet_gateway", "life_bin");
     if (snprintf(bindir, sizeof(bindir), "%s/bin", base) < 0)
         return false;
@@ -1938,7 +1941,21 @@ static bool gw_fake_setup(void)
         return false;
     if (snprintf(path, sizeof(path), "%s:%s", bindir, old) < 0)
         return false;
-    return setenv("PATH", path, 1) == 0;
+    g_gw_had_direct = direct != NULL;
+    if (g_gw_had_direct) {
+        if (strlen(direct) >= sizeof(g_gw_saved_direct))
+            return false;
+        memcpy(g_gw_saved_direct, direct, strlen(direct) + 1);
+    }
+    if (setenv("ZCL_QUEUE_DIRECT", "1", 1) != 0)
+        return false;
+    if (setenv("PATH", path, 1) == 0)
+        return true;
+    if (g_gw_had_direct)
+        (void)setenv("ZCL_QUEUE_DIRECT", g_gw_saved_direct, 1);
+    else
+        (void)unsetenv("ZCL_QUEUE_DIRECT");
+    return false;
 }
 
 static bool gw_fake_write_wait(const char *verdict, const char *rc, int code,
@@ -2013,6 +2030,10 @@ static void gw_path_restore(void)
 {
     if (g_gw_saved_path[0])
         setenv("PATH", g_gw_saved_path, 1);
+    if (g_gw_had_direct)
+        setenv("ZCL_QUEUE_DIRECT", g_gw_saved_direct, 1);
+    else
+        unsetenv("ZCL_QUEUE_DIRECT");
 }
 
 /* Warm pool worktree plus pool.txt under the isolated queue dir. */
