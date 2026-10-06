@@ -114,11 +114,32 @@ int test_zcode_dht_frame_auth(void) {
       /* Appended last so previously published keys keep their indices. */
       ASSERT_EQ(VCS_ZCODE_DHT_REJECT_UNAUTHORIZED,
                 VCS_ZCODE_DHT_REJECT_BACKPRESSURE - 1);
-      /* Every published position names itself; none hits "unknown". */
-      for (int i = 0; i < VCS_ZCODE_DHT_REJECT_COUNT; i++)
-        ASSERT(strcmp(vcs_zcode_dht_reject_reason_string(
+      static const struct {
+        enum vcs_zcode_dht_reject_reason reason;
+        const char *name;
+      } published[] = {
+          {VCS_ZCODE_DHT_REJECT_MALFORMED, "malformed"},
+          {VCS_ZCODE_DHT_REJECT_PLAINTEXT, "plaintext"},
+          {VCS_ZCODE_DHT_REJECT_DELEGATION, "delegation"},
+          {VCS_ZCODE_DHT_REJECT_IDENTITY, "identity"},
+          {VCS_ZCODE_DHT_REJECT_SIGNATURE, "signature"},
+          {VCS_ZCODE_DHT_REJECT_SESSION, "wrong-session"},
+          {VCS_ZCODE_DHT_REJECT_REPLAY, "replay"},
+          {VCS_ZCODE_DHT_REJECT_UNSOLICITED, "unsolicited"},
+          {VCS_ZCODE_DHT_REJECT_EXPIRED, "expired"},
+          {VCS_ZCODE_DHT_REJECT_POISONED, "poisoned-contacts"},
+          {VCS_ZCODE_DHT_REJECT_RATE, "rate-limit"},
+          {VCS_ZCODE_DHT_REJECT_CAP, "capacity"},
+          {VCS_ZCODE_DHT_REJECT_UNAUTHORIZED, "unauthorized"},
+          {VCS_ZCODE_DHT_REJECT_BACKPRESSURE, "backpressure"}};
+      ASSERT_EQ(VCS_ZCODE_DHT_REJECT_COUNT,
+                sizeof(published) / sizeof(published[0]));
+      for (size_t i = 0; i < sizeof(published) / sizeof(published[0]); i++) {
+        ASSERT_EQ(published[i].reason, i);
+        ASSERT_STR_EQ(vcs_zcode_dht_reject_reason_string(
                           (enum vcs_zcode_dht_reject_reason)i),
-                      "unknown") != 0);
+                      published[i].name);
+      }
     }
 _test_next:;
   printf("\n=== zcode_dht_frame_auth subset complete: %d failure(s) ===\n",
