@@ -160,11 +160,137 @@ static bool pngw_read_chunk(FILE *f, char type_out[5], uint8_t **data_out,
     return true;
 }
 
-int test_test_png_writer(void);
-int test_test_png_writer(void)
+static int pngw_test_overflow_refusal(void)
 {
     int failures = 0;
+    static const uint8_t one_px[4] = {1, 2, 3, 4};
+    size_t scratch_len = 77;
+    PNGW_CHECK("build_idat_channels: UINT32_MAX x UINT32_MAX RGBA refuses",
+               build_idat_channels(one_px, UINT32_MAX, UINT32_MAX, 4u,
+                                   &scratch_len) == NULL && scratch_len == 0);
+    scratch_len = 77;
+    PNGW_CHECK("build_idat_channels: 2^31-1 x 2^31+1 RGBA refuses",
+               build_idat_channels(one_px, 0x7FFFFFFFu, 0x80000001u,
+                                   4u, &scratch_len) == NULL && scratch_len == 0);
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof(path), "png_writer_overflow");
+    if (fd < 0) return failures + 1;
+    static const char sentinel[] = "keep";
+    bool seeded = write(fd, sentinel, sizeof(sentinel)) == sizeof(sentinel);
+    close(fd);
+    bool refused = !pngw_under_test_write_rgba(
+        path, one_px, 0x7FFFFFFFu, 0x80000001u);
+    char actual[sizeof(sentinel) + 1] = {0};
+    FILE *file = fopen(path, "rb");
+    size_t count = file ? fread(actual, 1, sizeof(actual), file) : 0;
+    if (file) fclose(file);
+    unlink(path);
+    PNGW_CHECK("png_write_rgba: overflow refuses and preserves existing file",
+               seeded && refused && count == sizeof(sentinel) &&
+               memcmp(actual, sentinel, sizeof(sentinel)) == 0);
+    return failures;
+}
 
+static int pngw_check_multiple_blocks(const uint8_t *bidat, size_t bidat_len,
+                                       const uint8_t *bexpected, size_t bfiltered_len)
+{
+    int failures = 0;
+    bool blocks_ok = true;
+    size_t pos = 2, consumed = 0;
+    for (int blk = 0; blk < 5 && blocks_ok; blk++) {
+        if (pos + 5 > bidat_len) { blocks_ok = false; break; }
+        uint8_t bt = bidat[pos++];
+        bool is_final = (bt & 0x01) != 0;
+        bool expect_final = (blk == 4);
+        uint16_t len = pngw_rd_le16(&bidat[pos]);
+        uint16_t nlen = pngw_rd_le16(&bidat[pos + 2]);
+        pos += 4;
+        uint16_t expect_len = expect_final ? 8160 : 65535;
+        if (is_final != expect_final) blocks_ok = false;
+        if (len != expect_len) blocks_ok = false;
+        if (nlen != (uint16_t)(~len & 0xFFFFu)) blocks_ok = false;
+        if (pos + len > bidat_len) { blocks_ok = false; break; }
+        if (memcmp(&bidat[pos], bexpected + consumed, len) != 0)
+            blocks_ok = false;
+        pos += len;
+        consumed += len;
+    }
+    PNGW_CHECK("build_idat: multi-block framing (BFINAL only on block 5, "
+               "65535-byte cap, NLEN, payload) all correct",
+               blocks_ok);
+    PNGW_CHECK("build_idat: multi-block consumed all filtered bytes",
+               consumed == bfiltered_len);
+    PNGW_CHECK("build_idat: multi-block trailer position == idat_len-4",
+               pos == bidat_len - 4);
+    PNGW_CHECK("build_idat: multi-block trailing Adler32 matches adler32(expected)",
+               pos + 4 == bidat_len &&
+                   pngw_rd_be32(&bidat[pos]) == adler32(bexpected, bfiltered_len));
+
+    return failures;
+}
+
+static int pngw_check_rgb_ihdr(FILE *f, uint32_t w, uint32_t h)
+{
+    int failures = 0;
+    char ihdr_type[5];
+    uint8_t *ihdr_data = NULL;
+    uint32_t ihdr_len = 0;
+    bool ihdr_ok = pngw_read_chunk(f, ihdr_type, &ihdr_data, &ihdr_len);
+    PNGW_CHECK("png_write_rgb small round-trip: IHDR parses + CRC verifies",
+               ihdr_ok);
+    PNGW_CHECK("png_write_rgb small round-trip: IHDR type/len correct",
+               ihdr_ok && memcmp(ihdr_type, "IHDR", 4) == 0 &&
+                   ihdr_len == 13);
+    PNGW_CHECK("png_write_rgb small round-trip: IHDR width/height/depth/"
+               "colortype/compression/filter/interlace all correct",
+               ihdr_ok && ihdr_len == 13 &&
+                   pngw_rd_be32(&ihdr_data[0]) == w &&
+                   pngw_rd_be32(&ihdr_data[4]) == h &&
+                   memcmp(ihdr_data + 8, (const uint8_t[]){8,2,0,0,0}, 5) == 0);
+    if (ihdr_data) png_release_buffer(ihdr_data);
+
+    return failures;
+}
+
+static int pngw_check_rgb_data(FILE *f, const uint8_t *expected, size_t filtered_len)
+{
+    int failures = 0;
+    char idat_type[5];
+    uint8_t *idat_data = NULL;
+    uint32_t idat_len = 0;
+    bool idat_ok = pngw_read_chunk(f, idat_type, &idat_data, &idat_len);
+    PNGW_CHECK("png_write_rgb small round-trip: IDAT parses + CRC verifies",
+               idat_ok && memcmp(idat_type, "IDAT", 4) == 0);
+    if (idat_ok && idat_data) {
+        uint8_t decoded[64];
+        size_t dec_len = pngw_inflate_stored(idat_data, idat_len,
+                                              decoded, sizeof(decoded));
+        PNGW_CHECK("png_write_rgb small round-trip: IDAT decodes back to "
+                   "the exact original pixel bytes",
+                   dec_len == filtered_len &&
+                       memcmp(decoded, expected, filtered_len) == 0);
+    }
+    if (idat_data) png_release_buffer(idat_data);
+
+    char iend_type[5];
+    uint8_t *iend_data = NULL;
+    uint32_t iend_len = 0;
+    bool iend_ok = pngw_read_chunk(f, iend_type, &iend_data, &iend_len);
+    PNGW_CHECK("png_write_rgb small round-trip: IEND parses (len 0) + CRC verifies",
+               iend_ok && iend_len == 0 &&
+                   memcmp(iend_type, "IEND", 4) == 0);
+    if (iend_data) png_release_buffer(iend_data);
+
+    uint8_t trailing;
+    PNGW_CHECK("png_write_rgb small round-trip: nothing follows IEND",
+               fread(&trailing, 1, 1, f) == 0 && feof(f));
+
+    return failures;
+}
+
+static int pngw_test_crc(void)
+{
+    int failures = 0;
     /* ───────────────────────── crc32_init / crc32_update ───────────────────────── */
     {
         PNGW_CHECK("crc32: empty input is the XOR identity (0)",
@@ -200,6 +326,12 @@ int test_test_png_writer(void)
                    crc32_table[1] == 0x77073096u);
     }
 
+    return failures;
+}
+
+static int pngw_test_adler(void)
+{
+    int failures = 0;
     /* ───────────────────────────────── adler32 ───────────────────────────────── */
     {
         PNGW_CHECK("adler32: empty input == 1 (a=1,b=0)",
@@ -217,22 +349,26 @@ int test_test_png_writer(void)
                    adler32(big, sizeof(big)) == 0xA49759EAu);
     }
 
+    return failures;
+}
+
+static int pngw_test_byte_writers(void)
+{
+    int failures = 0;
     /* ─────────────────── zcl_write_u32_be / zcl_write_u16_le ─────────────────── */
     {
         uint8_t b4[4];
         zcl_write_u32_be(b4, 0x11223344u);
         PNGW_CHECK("put_be32: 0x11223344 -> {11,22,33,44}",
-                   b4[0] == 0x11 && b4[1] == 0x22 && b4[2] == 0x33 &&
-                       b4[3] == 0x44);
+                   memcmp(b4, (const uint8_t[]){0x11,0x22,0x33,0x44}, 4) == 0);
 
         zcl_write_u32_be(b4, 0);
         PNGW_CHECK("put_be32: 0 -> all-zero bytes",
-                   b4[0] == 0 && b4[1] == 0 && b4[2] == 0 && b4[3] == 0);
+                   memcmp(b4, (const uint8_t[4]){0}, 4) == 0);
 
         zcl_write_u32_be(b4, 0xFFFFFFFFu);
         PNGW_CHECK("put_be32: UINT32_MAX -> all-0xFF bytes",
-                   b4[0] == 0xFF && b4[1] == 0xFF && b4[2] == 0xFF &&
-                       b4[3] == 0xFF);
+                   memcmp(b4, (const uint8_t[]){0xFF,0xFF,0xFF,0xFF}, 4) == 0);
 
         uint8_t b2[2];
         zcl_write_u16_le(b2, 0x1234u);
@@ -247,11 +383,16 @@ int test_test_png_writer(void)
                    b2[0] == 0xFF && b2[1] == 0xFF);
     }
 
+    return failures;
+}
+
+static int pngw_test_chunk(void)
+{
+    int failures = 0;
     /* ───────────────────────────────── write_chunk ───────────────────────────────── */
     {
-        char path[128];
-        strcpy(path, "/tmp/zcl_png_writer_chunk_XXXXXX");
-        int fd = mkstemp(path);
+        char path[PATH_MAX];
+        int fd = test_mkstemp(path, sizeof(path), "png_writer_chunk");
         PNGW_CHECK("write_chunk: fixture mkstemp ok", fd >= 0);
         static const uint8_t data[4] = {0xDE, 0xAD, 0xBE, 0xEF};
         if (fd >= 0) {
@@ -263,6 +404,8 @@ int test_test_png_writer(void)
                 PNGW_CHECK("write_chunk: zero-length chunk write returns true",
                            write_chunk(f, "IEND", NULL, 0));
                 fclose(f);
+            } else {
+                close(fd);
             }
 
             FILE *rf = fopen(path, "rb");
@@ -280,7 +423,7 @@ int test_test_png_writer(void)
                            ok1 && memcmp(type, "TEST", 4) == 0);
                 PNGW_CHECK("write_chunk: readback data bytes match",
                            ok1 && clen == 4 && memcmp(cdata, data, 4) == 0);
-                if (cdata) free(cdata);
+                if (cdata) png_release_buffer(cdata);
 
                 char type2[5];
                 uint8_t *cdata2 = NULL;
@@ -292,7 +435,7 @@ int test_test_png_writer(void)
                            ok2 && clen2 == 0);
                 PNGW_CHECK("write_chunk: readback zero-length chunk type == \"IEND\"",
                            ok2 && memcmp(type2, "IEND", 4) == 0);
-                if (cdata2) free(cdata2);
+                if (cdata2) png_release_buffer(cdata2);
 
                 fclose(rf);
             }
@@ -301,9 +444,8 @@ int test_test_png_writer(void)
 
         /* Failure path: fwrite onto a read-only stream must make
          * write_chunk report false (no silent partial-write success). */
-        char rpath[128];
-        strcpy(rpath, "/tmp/zcl_png_writer_ro_XXXXXX");
-        int rfd = mkstemp(rpath);
+        char rpath[PATH_MAX];
+        int rfd = test_mkstemp(rpath, sizeof(rpath), "png_writer_ro");
         PNGW_CHECK("write_chunk failure fixture: mkstemp ok", rfd >= 0);
         if (rfd >= 0) {
             close(rfd);
@@ -320,6 +462,12 @@ int test_test_png_writer(void)
         }
     }
 
+    return failures;
+}
+
+static int pngw_test_idat_single(void)
+{
+    int failures = 0;
     /* ───────────────────────────────── build_idat ───────────────────────────────── */
     {
         /* (A) Single-block image: filtered_len (39) well under the
@@ -359,9 +507,18 @@ int test_test_png_writer(void)
             PNGW_CHECK("build_idat: from-scratch decoder round-trips single-block content",
                        dec_len == filtered_len &&
                            memcmp(decoded, expected, filtered_len) == 0);
-            free(idat);
+            png_release_buffer(idat);
         }
 
+    }
+
+    return failures;
+}
+
+static int pngw_test_idat_multi(void)
+{
+    int failures = 0;
+    {
         /* (B) Multi-block image: filtered_len (270300) forces 5 stored
          * blocks (4 x 65535 + 1 x 8160), exercising the 65535-byte cap,
          * per-block NLEN, and BFINAL placement only on the LAST block. */
@@ -389,36 +546,7 @@ int test_test_png_writer(void)
                 PNGW_CHECK("build_idat: multi-block idat_len == 2+5*5+270300+4",
                            bidat_len == expect_idat_len);
 
-                bool blocks_ok = true;
-                size_t pos = 2, consumed = 0;
-                for (int blk = 0; blk < 5 && blocks_ok; blk++) {
-                    if (pos + 5 > bidat_len) { blocks_ok = false; break; }
-                    uint8_t bt = bidat[pos++];
-                    bool is_final = (bt & 0x01) != 0;
-                    bool expect_final = (blk == 4);
-                    uint16_t len = pngw_rd_le16(&bidat[pos]);
-                    uint16_t nlen = pngw_rd_le16(&bidat[pos + 2]);
-                    pos += 4;
-                    uint16_t expect_len = expect_final ? 8160 : 65535;
-                    if (is_final != expect_final) blocks_ok = false;
-                    if (len != expect_len) blocks_ok = false;
-                    if (nlen != (uint16_t)(~len & 0xFFFFu)) blocks_ok = false;
-                    if (pos + len > bidat_len) { blocks_ok = false; break; }
-                    if (memcmp(&bidat[pos], bexpected + consumed, len) != 0)
-                        blocks_ok = false;
-                    pos += len;
-                    consumed += len;
-                }
-                PNGW_CHECK("build_idat: multi-block framing (BFINAL only on block 5, "
-                           "65535-byte cap, NLEN, payload) all correct",
-                           blocks_ok);
-                PNGW_CHECK("build_idat: multi-block consumed all filtered bytes",
-                           consumed == bfiltered_len);
-                PNGW_CHECK("build_idat: multi-block trailer position == idat_len-4",
-                           pos == bidat_len - 4);
-                PNGW_CHECK("build_idat: multi-block trailing Adler32 matches adler32(expected)",
-                           pos + 4 == bidat_len &&
-                               pngw_rd_be32(&bidat[pos]) == adler32(bexpected, bfiltered_len));
+                failures += pngw_check_multiple_blocks(bidat, bidat_len, bexpected, bfiltered_len);
 
                 uint8_t *bdecoded = zcl_malloc(bfiltered_len, "pngw_test_bdecoded");
                 PNGW_CHECK("build_idat: multi-block decode-buffer alloc ok",
@@ -429,18 +557,30 @@ int test_test_png_writer(void)
                     PNGW_CHECK("build_idat: from-scratch decoder round-trips multi-block content",
                                bdec_len == bfiltered_len &&
                                    memcmp(bdecoded, bexpected, bfiltered_len) == 0);
-                    free(bdecoded);
+                    png_release_buffer(bdecoded);
                 }
-                free(bidat);
+                png_release_buffer(bidat);
             }
         }
-        if (bpixels) free(bpixels);
-        if (bexpected) free(bexpected);
+        if (bpixels) png_release_buffer(bpixels);
+        if (bexpected) png_release_buffer(bexpected);
 
+    }
+
+    return failures;
+}
+
+static int pngw_test_idat_empty(void)
+{
+    int failures = 0;
+    {
         /* (C) Degenerate 0x0 image: filtered_len == 0 forces the
-         * "num_blocks == 0 -> forced to 1" fallback in build_idat. */
+         * "num_blocks == 0 -> forced to 1" fallback in build_idat. A real
+         * (non-NULL) pixel pointer keeps the row loop's zero-length
+         * memcpys clear of the C standard's invalid-argument corner. */
         size_t zlen = 0;
-        uint8_t *zidat = build_idat_channels(NULL, 0, 0, 3u, &zlen);
+        static const uint8_t zpx[1] = {0};
+        uint8_t *zidat = build_idat_channels(zpx, 0, 0, 3u, &zlen);
         PNGW_CHECK("build_idat: 0x0 image still returns non-NULL", zidat != NULL);
         if (zidat) {
             PNGW_CHECK("build_idat: 0x0 image idat_len == 2+5+0+4 == 11", zlen == 11);
@@ -452,34 +592,55 @@ int test_test_png_writer(void)
                            pngw_rd_le16(&zidat[5]) == 0xFFFF);
             PNGW_CHECK("build_idat: 0x0 image trailer == adler32 of empty input (1)",
                        zlen == 11 && pngw_rd_be32(&zidat[7]) == 1);
-            free(zidat);
+            png_release_buffer(zidat);
         }
 
+    }
+
+    return failures;
+}
+
+static int pngw_test_idat_oom(void)
+{
+    int failures = 0;
+    {
+        const uint32_t w = 4, h = 3;
+        const uint8_t pixels[36] = {0};
         /* (D) OOM path 1: the filtered-scanline allocation fails. */
         zcl_alloc_fault_fail_next("png_filtered");
-        size_t oom1_len = 0xdeadbeef; /* poisoned: must stay untouched on NULL */
+        size_t oom1_len = 0xdeadbeef; /* poisoned: must be cleared on NULL */
         uint8_t *oom1 = build_idat_channels(pixels, w, h, 3u, &oom1_len);
         PNGW_CHECK("build_idat: png_filtered alloc failure returns NULL",
                    oom1 == NULL);
-        PNGW_CHECK("build_idat: png_filtered alloc failure leaves *out_len untouched",
-                   oom1_len == 0xdeadbeef);
+        PNGW_CHECK("build_idat: png_filtered alloc failure clears *out_len",
+                   oom1_len == 0);
         zcl_alloc_fault_clear();
-        if (oom1) free(oom1);
+        if (oom1) png_release_buffer(oom1);
 
         /* (E) OOM path 2: the filtered allocation succeeds but the IDAT
          * buffer allocation fails (must not leak `filtered` — covered
          * functionally by returning NULL cleanly under the injected
          * fault rather than crashing/asserting). */
         zcl_alloc_fault_fail_next("png_idat");
-        size_t oom2_len = 0xdeadbeef; /* poisoned: must stay untouched on NULL */
+        size_t oom2_len = 0xdeadbeef; /* poisoned: must be cleared on NULL */
         uint8_t *oom2 = build_idat_channels(pixels, w, h, 3u, &oom2_len);
         PNGW_CHECK("build_idat: png_idat alloc failure returns NULL", oom2 == NULL);
-        PNGW_CHECK("build_idat: png_idat alloc failure leaves *out_len untouched",
-                   oom2_len == 0xdeadbeef);
+        PNGW_CHECK("build_idat: png_idat alloc failure clears *out_len",
+                   oom2_len == 0);
         zcl_alloc_fault_clear();
-        if (oom2) free(oom2);
+        if (oom2) png_release_buffer(oom2);
     }
 
+    return failures;
+}
+
+static int pngw_test_rgb_arguments(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof(path), "png_writer_arguments");
+    if (fd < 0) return failures + 1;
+    close(fd);
     /* ───────────────────────────────── png_write_rgb ───────────────────────────────── */
     {
         /* Edge / defensive-argument cases. */
@@ -487,15 +648,27 @@ int test_test_png_writer(void)
                    !pngw_under_test_write_rgb(NULL, (const uint8_t *)"", 1, 1));
         static const uint8_t one_px[3] = {1, 2, 3};
         PNGW_CHECK("png_write_rgb: NULL pixels returns false",
-                   !pngw_under_test_write_rgb("/tmp/zcl_png_writer_unused.png", NULL, 1, 1));
+                   !pngw_under_test_write_rgb(path, NULL, 1, 1));
         PNGW_CHECK("png_write_rgb: width==0 returns false",
-                   !pngw_under_test_write_rgb("/tmp/zcl_png_writer_unused.png", one_px, 0, 1));
+                   !pngw_under_test_write_rgb(path, one_px, 0, 1));
         PNGW_CHECK("png_write_rgb: height==0 returns false",
-                   !pngw_under_test_write_rgb("/tmp/zcl_png_writer_unused.png", one_px, 1, 0));
-        PNGW_CHECK("png_write_rgb: unopenable path (missing directory) returns false",
-                   !pngw_under_test_write_rgb("/nonexistent_dir_zzz_png_writer_test/out.png",
-                                  one_px, 1, 1));
+                   !pngw_under_test_write_rgb(path, one_px, 1, 0));
+        char child[PATH_MAX + 16];
+        snprintf(child, sizeof(child), "%s/out.png", path);
+        PNGW_CHECK("png_write_rgb: path beneath a regular file returns false",
+                   !pngw_under_test_write_rgb(child, one_px, 1, 1));
 
+    }
+
+    unlink(path);
+    return failures;
+}
+
+static int pngw_test_encode(void)
+{
+    int failures = 0;
+    {
+        static const uint8_t one_px[3] = {1,2,3};
         size_t encoded_len = 0;
         uint8_t encoded[72] = {0};
         PNGW_CHECK("png_encode_rgb: query reports exact one-pixel size",
@@ -517,94 +690,60 @@ int test_test_png_writer(void)
                        one_px, 1u, 1u, encoded, sizeof(encoded) - 1u,
                        &encoded_len) && encoded_len == sizeof(encoded));
 
-        /* Full round trip: small (single-block IDAT) image. */
-        {
-            const uint32_t w = 4, h = 3;
-            size_t row_bytes = (size_t)w * 3;
-            size_t filtered_len = (size_t)h * (1 + row_bytes);
-            uint8_t pixels[36];
-            for (size_t i = 0; i < sizeof(pixels); i++)
-                pixels[i] = (uint8_t)(i * 5 + 11);
-            uint8_t expected[39];
-            pngw_build_expected_filtered(pixels, w, h, expected);
-
-            char path[128];
-            strcpy(path, "/tmp/zcl_png_writer_rt_XXXXXX");
-            int fd = mkstemp(path);
-            PNGW_CHECK("png_write_rgb small round-trip: fixture mkstemp ok", fd >= 0);
-            if (fd >= 0) {
-                close(fd);
-                PNGW_CHECK("png_write_rgb small round-trip: write succeeds",
-                           pngw_under_test_write_rgb(path, pixels, w, h));
-
-                FILE *f = fopen(path, "rb");
-                PNGW_CHECK("png_write_rgb small round-trip: file reopens for readback",
-                           f != NULL);
-                if (f) {
-                    static const uint8_t want_sig[8] = {137, 80, 78, 71,
-                                                         13, 10, 26, 10};
-                    uint8_t sig[8];
-                    bool sig_ok = fread(sig, 1, 8, f) == 8 &&
-                                  memcmp(sig, want_sig, 8) == 0;
-                    PNGW_CHECK("png_write_rgb small round-trip: PNG signature matches",
-                               sig_ok);
-
-                    char ihdr_type[5];
-                    uint8_t *ihdr_data = NULL;
-                    uint32_t ihdr_len = 0;
-                    bool ihdr_ok = pngw_read_chunk(f, ihdr_type, &ihdr_data, &ihdr_len);
-                    PNGW_CHECK("png_write_rgb small round-trip: IHDR parses + CRC verifies",
-                               ihdr_ok);
-                    PNGW_CHECK("png_write_rgb small round-trip: IHDR type/len correct",
-                               ihdr_ok && memcmp(ihdr_type, "IHDR", 4) == 0 &&
-                                   ihdr_len == 13);
-                    PNGW_CHECK("png_write_rgb small round-trip: IHDR width/height/depth/"
-                               "colortype/compression/filter/interlace all correct",
-                               ihdr_ok && ihdr_len == 13 &&
-                                   pngw_rd_be32(&ihdr_data[0]) == w &&
-                                   pngw_rd_be32(&ihdr_data[4]) == h &&
-                                   ihdr_data[8] == 8 && ihdr_data[9] == 2 &&
-                                   ihdr_data[10] == 0 && ihdr_data[11] == 0 &&
-                                   ihdr_data[12] == 0);
-                    if (ihdr_data) free(ihdr_data);
-
-                    char idat_type[5];
-                    uint8_t *idat_data = NULL;
-                    uint32_t idat_len = 0;
-                    bool idat_ok = pngw_read_chunk(f, idat_type, &idat_data, &idat_len);
-                    PNGW_CHECK("png_write_rgb small round-trip: IDAT parses + CRC verifies",
-                               idat_ok && memcmp(idat_type, "IDAT", 4) == 0);
-                    if (idat_ok && idat_data) {
-                        uint8_t decoded[64];
-                        size_t dec_len = pngw_inflate_stored(idat_data, idat_len,
-                                                              decoded, sizeof(decoded));
-                        PNGW_CHECK("png_write_rgb small round-trip: IDAT decodes back to "
-                                   "the exact original pixel bytes",
-                                   dec_len == filtered_len &&
-                                       memcmp(decoded, expected, filtered_len) == 0);
-                    }
-                    if (idat_data) free(idat_data);
-
-                    char iend_type[5];
-                    uint8_t *iend_data = NULL;
-                    uint32_t iend_len = 0;
-                    bool iend_ok = pngw_read_chunk(f, iend_type, &iend_data, &iend_len);
-                    PNGW_CHECK("png_write_rgb small round-trip: IEND parses (len 0) + CRC verifies",
-                               iend_ok && iend_len == 0 &&
-                                   memcmp(iend_type, "IEND", 4) == 0);
-                    if (iend_data) free(iend_data);
-
-                    uint8_t trailing;
-                    PNGW_CHECK("png_write_rgb small round-trip: nothing follows IEND",
-                               fread(&trailing, 1, 1, f) == 0 && feof(f));
-
-                    fclose(f);
-                }
-                unlink(path);
-            }
-        }
     }
 
+    return failures;
+}
+
+static int pngw_test_rgb_roundtrip(void)
+{
+    int failures = 0;
+    /* Full round trip: small (single-block IDAT) image. */
+    {
+        const uint32_t w = 4, h = 3;
+        size_t row_bytes = (size_t)w * 3;
+        size_t filtered_len = (size_t)h * (1 + row_bytes);
+        uint8_t pixels[36];
+        for (size_t i = 0; i < sizeof(pixels); i++)
+            pixels[i] = (uint8_t)(i * 5 + 11);
+        uint8_t expected[39];
+        pngw_build_expected_filtered(pixels, w, h, expected);
+
+        char path[PATH_MAX];
+        int fd = test_mkstemp(path, sizeof(path), "png_writer_rt");
+        PNGW_CHECK("png_write_rgb small round-trip: fixture mkstemp ok", fd >= 0);
+        if (fd >= 0) {
+            close(fd);
+            PNGW_CHECK("png_write_rgb small round-trip: write succeeds",
+                       pngw_under_test_write_rgb(path, pixels, w, h));
+
+            FILE *f = fopen(path, "rb");
+            PNGW_CHECK("png_write_rgb small round-trip: file reopens for readback",
+                       f != NULL);
+            if (f) {
+                static const uint8_t want_sig[8] = {137, 80, 78, 71,
+                                                     13, 10, 26, 10};
+                uint8_t sig[8];
+                bool sig_ok = fread(sig, 1, 8, f) == 8 &&
+                              memcmp(sig, want_sig, 8) == 0;
+                PNGW_CHECK("png_write_rgb small round-trip: PNG signature matches",
+                           sig_ok);
+
+                failures += pngw_check_rgb_ihdr(f, w, h);
+
+                failures += pngw_check_rgb_data(f, expected, filtered_len);
+
+                fclose(f);
+            }
+            unlink(path);
+        }
+    }
+    return failures;
+}
+
+static int pngw_test_rgba(void)
+{
+    int failures = 0;
     /* RGBA is the headless GUI screenshot path. Prove that alpha survives
      * byte-for-byte and that the IHDR advertises PNG color type 6. */
     {
@@ -614,9 +753,8 @@ int test_test_png_writer(void)
         static const uint8_t expected[9] = {
             0x00, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0
         };
-        char path[128];
-        strcpy(path, "/tmp/zcl_png_writer_rgba_XXXXXX");
-        int fd = mkstemp(path);
+        char path[PATH_MAX];
+        int fd = test_mkstemp(path, sizeof(path), "png_writer_rgba");
         PNGW_CHECK("png_write_rgba round-trip: fixture mkstemp ok", fd >= 0);
         if (fd >= 0) {
             close(fd);
@@ -636,7 +774,7 @@ int test_test_png_writer(void)
                 PNGW_CHECK("png_write_rgba round-trip: IHDR uses color type 6",
                            ihdr_ok && len == 13 && data[8] == 8 &&
                                data[9] == 6);
-                free(data);
+                png_release_buffer(data);
                 data = NULL;
                 bool idat_ok = pngw_read_chunk(f, type, &data, &len);
                 uint8_t decoded[16];
@@ -647,13 +785,33 @@ int test_test_png_writer(void)
                            decoded_len == sizeof(expected) &&
                                memcmp(decoded, expected,
                                       sizeof(expected)) == 0);
-                free(data);
+                png_release_buffer(data);
                 fclose(f);
             }
             unlink(path);
         }
     }
 
+    return failures;
+}
+
+int test_test_png_writer(void);
+int test_test_png_writer(void)
+{
+    int failures = 0;
+    failures += pngw_test_crc();
+    failures += pngw_test_adler();
+    failures += pngw_test_byte_writers();
+    failures += pngw_test_chunk();
+    failures += pngw_test_idat_single();
+    failures += pngw_test_idat_multi();
+    failures += pngw_test_idat_empty();
+    failures += pngw_test_idat_oom();
+    failures += pngw_test_rgb_arguments();
+    failures += pngw_test_encode();
+    failures += pngw_test_rgb_roundtrip();
+    failures += pngw_test_rgba();
+    failures += pngw_test_overflow_refusal();
     printf("\n=== test_png_writer: %d failure(s) ===\n", failures);
     return failures;
 }

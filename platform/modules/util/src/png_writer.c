@@ -12,6 +12,11 @@
 #include <string.h>
 #include "util/safe_alloc.h"
 
+static void png_release_buffer(void *buffer)
+{
+    free(buffer);
+}
+
 /* ── CRC32 (PNG uses ISO 3309 / ITU-T V.42 polynomial) ─────── */
 
 static uint32_t crc32_table[256];
@@ -94,6 +99,47 @@ static void encode_chunk(uint8_t **cursor, const char type[4],
 
 /* ── DEFLATE stored blocks inside zlib wrapper ──────────────── */
 
+/* Pre-flight the encoded size before any pixel byte is touched. This is
+ * the single overflow authority for both the buffer-encode path
+ * (png_encode_channels, which has a caller cap to protect) and the
+ * FILE* path (png_write_channels): row_bytes = w * channels,
+ * filtered_len = h * (1 + row_bytes), and the stored-block count all
+ * grow without bound from caller-supplied dimensions, and on 64-bit the
+ * unguarded product wraps size_t. */
+static bool png_layout_sizes(uint32_t width, uint32_t height,
+                               size_t channels, size_t *idat_len,
+                               size_t *png_len)
+{
+    if (width == 0 || height == 0 ||
+        channels == 0 || width > SIZE_MAX / channels)
+        return false;
+    size_t row_bytes = (size_t)width * channels;
+    if (row_bytes == SIZE_MAX || height > SIZE_MAX / (row_bytes + 1u))
+        return false;
+    size_t filtered_len = (size_t)height * (row_bytes + 1u);
+    size_t blocks = filtered_len / 65535u +
+                    (filtered_len % 65535u != 0 ? 1u : 0u);
+    if (filtered_len > SIZE_MAX - 6u) return false;
+    if (blocks > (SIZE_MAX - filtered_len - 6u) / 5u)
+        return false;
+    size_t idat = 2u + blocks * 5u + filtered_len + 4u;
+    if (idat > UINT32_MAX || idat > SIZE_MAX - 57u)
+        return false;
+    *idat_len = idat;
+    *png_len = 57u + idat;
+    return true;
+}
+
+static bool png_encoded_layout(uint32_t width, uint32_t height,
+                               size_t channels, size_t *idat_len,
+                               size_t *png_len)
+{
+    if (idat_len) *idat_len = 0;
+    if (png_len) *png_len = 0;
+    if (!idat_len || !png_len) return false;
+    return png_layout_sizes(width, height, channels, idat_len, png_len);
+}
+
 /* Build the raw filtered scanline data (filter byte 0 = None per row),
  * then wrap in zlib format with stored DEFLATE blocks (type 00).
  *
@@ -101,36 +147,32 @@ static void encode_chunk(uint8_t **cursor, const char type[4],
  * Stored block: [BFINAL|BTYPE=00] [LEN_LE16] [NLEN_LE16] [data...]
  * Max stored block payload: 65535 bytes. */
 
-static uint8_t *build_idat_channels(const uint8_t *pixels, uint32_t w,
-                                    uint32_t h, size_t channels,
-                                    size_t *out_len)
+/* Copy pixel rows into the filtered buffer, one filter byte (None) per
+ * row. Only called after the size authority accepted the dimensions. */
+static void png_fill_filtered_rows(uint8_t *filtered,
+                                   const uint8_t *pixels, uint32_t h,
+                                   size_t row_bytes)
 {
-    /* Filtered data: each row = filter byte (None) + packed pixel bytes. */
-    size_t row_bytes = (size_t)w * channels;
-    size_t filtered_len = (size_t)h * (1 + row_bytes);
-
-    uint8_t *filtered = zcl_malloc(filtered_len, "png_filtered");
-    if (!filtered) return NULL;
-
     for (uint32_t y = 0; y < h; y++) {
         filtered[y * (1 + row_bytes)] = 0x00; /* filter: None */
         memcpy(&filtered[y * (1 + row_bytes) + 1],
                &pixels[y * row_bytes], row_bytes);
     }
+}
 
-    /* Compute Adler32 of the filtered data */
-    uint32_t adler = adler32(filtered, filtered_len);
-
-    /* Count stored blocks needed (max 65535 bytes per block) */
+/* Emit the zlib header, the stored-DEFLATE blocks over the filtered
+ * data, and the Adler32 trailer. Returns false if the emitted length
+ * would exceed idat_cap. */
+static bool png_emit_stored_idat(uint8_t *idat, size_t idat_cap,
+                                 const uint8_t *filtered, size_t filtered_len,
+                                 uint32_t adler)
+{
     size_t max_block = 65535;
-    size_t num_blocks = (filtered_len + max_block - 1) / max_block;
+    size_t num_blocks = filtered_len / max_block + (filtered_len % max_block != 0);
     if (num_blocks == 0) num_blocks = 1;
-
-    /* Total IDAT size: 2 (zlib header) + blocks + 4 (adler32)
-     * Each block: 1 (bfinal/btype) + 2 (len) + 2 (nlen) + payload */
     size_t idat_len = 2 + num_blocks * 5 + filtered_len + 4;
-    uint8_t *idat = zcl_malloc(idat_len, "png_idat");
-    if (!idat) { free(filtered); return NULL; }
+    if (idat_len > idat_cap)
+        return false;
 
     size_t pos = 0;
 
@@ -160,34 +202,59 @@ static uint8_t *build_idat_channels(const uint8_t *pixels, uint32_t w,
     /* Adler32 checksum (big-endian) */
     zcl_write_u32_be(&idat[pos], adler);
     pos += 4;
-
-    free(filtered);
-    *out_len = pos;
-    return idat;
+    return pos == idat_len;
 }
 
-static bool png_encoded_layout(uint32_t width, uint32_t height,
-                               size_t channels, size_t *idat_len,
-                               size_t *png_len)
+static uint8_t *build_idat_channels(const uint8_t *pixels, uint32_t w,
+                                    uint32_t h, size_t channels,
+                                    size_t *out_len)
 {
-    if (!idat_len || !png_len || width == 0 || height == 0 ||
-        channels == 0 || width > SIZE_MAX / channels)
-        return false;
-    size_t row_bytes = (size_t)width * channels;
-    if (row_bytes == SIZE_MAX || height > SIZE_MAX / (row_bytes + 1u))
-        return false;
-    size_t filtered_len = (size_t)height * (row_bytes + 1u);
-    size_t blocks = filtered_len / 65535u +
-                    (filtered_len % 65535u != 0 ? 1u : 0u);
-    if (blocks == 0) blocks = 1u;
-    if (blocks > (SIZE_MAX - filtered_len - 6u) / 5u)
-        return false;
-    size_t idat = 2u + blocks * 5u + filtered_len + 4u;
-    if (idat > UINT32_MAX || idat > SIZE_MAX - 57u)
-        return false;
-    *idat_len = idat;
-    *png_len = 57u + idat;
-    return true;
+    if (out_len) *out_len = 0;
+    if (!pixels || !out_len || channels == 0)
+        return NULL;
+
+    /* Preserve the white-box 0x0 empty-stored-block IDAT. Public entry
+     * points reject zero dimensions; every nonempty IDAT uses the shared
+     * checked layout before allocation or pixel access. */
+    const bool empty_image = (w == 0 && h == 0);
+    size_t layout_idat = 0, layout_png = 0;
+    if (!empty_image &&
+        !png_encoded_layout(w, h, channels, &layout_idat, &layout_png))
+        return NULL;
+
+    /* Filtered data: each row = filter byte (None) + packed pixel bytes.
+     * Provably no wrap for non-empty images: png_encoded_layout validated
+     * both factors; empty images trivially cannot overflow. */
+    size_t row_bytes = (size_t)w * channels;
+    size_t filtered_len = (size_t)h * (1 + row_bytes);
+
+    uint8_t *filtered = zcl_malloc(filtered_len, "png_filtered");
+    if (!filtered) return NULL;
+
+    png_fill_filtered_rows(filtered, pixels, h, row_bytes);
+
+    /* Compute Adler32 of the filtered data */
+    uint32_t adler = adler32(filtered, filtered_len);
+
+    /* Count stored blocks needed (max 65535 bytes per block)
+     * Total IDAT size: 2 (zlib header) + blocks + 4 (adler32)
+     * Each block: 1 (bfinal/btype) + 2 (len) + 2 (nlen) + payload */
+    size_t max_block = 65535;
+    size_t num_blocks = filtered_len / max_block + (filtered_len % max_block != 0);
+    if (num_blocks == 0) num_blocks = 1;
+    size_t idat_len = 2 + num_blocks * 5 + filtered_len + 4;
+    uint8_t *idat = zcl_malloc(idat_len, "png_idat");
+    if (!idat) { png_release_buffer(filtered); return NULL; }
+
+    bool emitted = png_emit_stored_idat(idat, idat_len, filtered,
+                                        filtered_len, adler);
+    png_release_buffer(filtered);
+    if (!emitted || (!empty_image && idat_len != layout_idat)) {
+        png_release_buffer(idat);
+        return NULL;
+    }
+    *out_len = idat_len;
+    return idat;
 }
 
 static bool png_encode_channels(
@@ -195,6 +262,7 @@ static bool png_encode_channels(
     size_t channels, uint8_t color_type,
     uint8_t *output, size_t output_cap, size_t *written)
 {
+    if (written) *written = 0;
     size_t expected_idat = 0, required = 0;
     if (!pixels || !written ||
         !png_encoded_layout(width, height, channels,
@@ -207,7 +275,7 @@ static bool png_encode_channels(
     uint8_t *idat = build_idat_channels(
         pixels, width, height, channels, &idat_len);
     if (!idat || idat_len != expected_idat) {
-        free(idat);
+        png_release_buffer(idat);
         return false;
     }
     static const uint8_t signature[8] = {137,80,78,71,13,10,26,10};
@@ -222,7 +290,7 @@ static bool png_encode_channels(
     encode_chunk(&cursor, "IHDR", ihdr, sizeof(ihdr));
     encode_chunk(&cursor, "IDAT", idat, (uint32_t)idat_len);
     encode_chunk(&cursor, "IEND", NULL, 0u);
-    free(idat);
+    png_release_buffer(idat);
     return (size_t)(cursor - output) == required;
 }
 
@@ -235,12 +303,19 @@ static bool png_write_channels(const char *path, const uint8_t *pixels,
     if (!path || !pixels || width == 0 || height == 0)
         return false;
 
+    /* Refuse absurd dimensions (and size overflow) before creating the
+     * file, so a refusal never leaves a truncated PNG behind. */
+    size_t idat_len = 0;
+    uint8_t *idat = build_idat_channels(pixels, width, height, channels,
+                                        &idat_len);
+    if (!idat) return false;
+
     FILE *f = fopen(path, "wb");
-    if (!f) return false;
+    if (!f) goto cleanup;
 
     /* PNG signature */
     static const uint8_t sig[8] = {137,80,78,71,13,10,26,10};
-    if (fwrite(sig, 1, 8, f) != 8) { fclose(f); return false; }
+    if (fwrite(sig, 1, 8, f) != 8) goto cleanup;
 
     /* IHDR: 8-bit packed RGB/RGBA, no interlace. */
     uint8_t ihdr[13];
@@ -251,22 +326,24 @@ static bool png_write_channels(const char *path, const uint8_t *pixels,
     ihdr[10] = 0;  /* compression */
     ihdr[11] = 0;  /* filter */
     ihdr[12] = 0;  /* interlace */
-    if (!write_chunk(f, "IHDR", ihdr, 13)) { fclose(f); return false; }
+    if (!write_chunk(f, "IHDR", ihdr, 13)) goto cleanup;
 
     /* IDAT: compressed image data */
-    size_t idat_len = 0;
-    uint8_t *idat = build_idat_channels(pixels, width, height, channels,
-                                        &idat_len);
-    if (!idat) { fclose(f); return false; }
     bool ok = write_chunk(f, "IDAT", idat, (uint32_t)idat_len);
-    free(idat);
-    if (!ok) { fclose(f); return false; }
+    if (!ok) goto cleanup;
 
     /* IEND */
-    if (!write_chunk(f, "IEND", NULL, 0)) { fclose(f); return false; }
+    if (!write_chunk(f, "IEND", NULL, 0)) goto cleanup;
 
-    fclose(f);
-    return true;
+    ok = true;
+    goto finish;
+
+cleanup:
+    ok = false;
+finish:
+    png_release_buffer(idat);
+    if (f && fclose(f) != 0) ok = false;
+    return ok;
 }
 
 bool png_write_rgb(const char *path, const uint8_t *pixels,
