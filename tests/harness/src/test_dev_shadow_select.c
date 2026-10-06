@@ -924,9 +924,44 @@ static int ss_test_lint_premise(void)
     return failures;
 }
 
+static int ss_test_corpus_weights_nul(void)
+{
+    int failures = 0;
+    static struct zcl_shadow_corpus c;
+    struct zcl_shadow_weights w = {0};
+    TEST("shadow select: corpus and weights refuse hidden NUL suffixes") {
+        const char corpus[] = "a\treal\tx\t"
+            "7a9f354f3f7996383c0e7c858346ac29a5ad8957\t"
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            "\ta.c\0garbage\n";
+        const char weights[] = "test_group\ttest_a\t7\t1\0garbage\n";
+        char why[64] = "";
+        ASSERT(!zcl_shadow_corpus_parse(corpus, sizeof(corpus) - 1, &c,
+                                        why, sizeof(why)));
+        ASSERT_STR_EQ(why, "corpus_row_invalid_line_1");
+        ASSERT_EQ(c.count, (size_t)0);
+        ASSERT(!zcl_shadow_weights_parse(weights, sizeof(weights) - 1, &w,
+                                         why, sizeof(why)));
+        ASSERT_STR_EQ(why, "weights_row_invalid_line_1");
+        ASSERT(w.rows == NULL && w.count == 0);
+        ASSERT(zcl_shadow_corpus_parse(corpus, sizeof(corpus) - 10, &c,
+                                       why, sizeof(why)));
+        ASSERT_EQ(c.count, (size_t)1);
+        ASSERT_STR_EQ(c.entries[0].files[0], "a.c");
+        ASSERT(zcl_shadow_weights_parse(weights, sizeof(weights) - 10, &w,
+                                        why, sizeof(why)));
+        ASSERT_EQ(w.count, (size_t)1);
+        ASSERT_EQ(w.rows[0].samples, (uint32_t)1);
+        PASS();
+    } _test_next:;
+    zcl_shadow_weights_free(&w);
+    return failures;
+}
+
 int test_dev_shadow_select(void)
 {
     int failures = 0;
+    failures += ss_test_corpus_weights_nul();
     failures += ss_test_lint_premise();
     failures += ss_test_corpus_frozen();
     failures += ss_test_weights();

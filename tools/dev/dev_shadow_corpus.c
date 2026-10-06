@@ -40,7 +40,7 @@ static bool shadow_next_line(const char *text, size_t len, size_t *pos,
 static size_t shadow_split(const char *line, size_t len, char *buf,
                            size_t buf_len, char **fields, size_t cap)
 {
-    if (len + 1 > buf_len) return 0;
+    if (len >= buf_len || memchr(line, '\0', len)) return 0;
     memcpy(buf, line, len);
     buf[len] = '\0';
     size_t n = 0;
