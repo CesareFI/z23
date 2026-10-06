@@ -27,14 +27,11 @@
 
 #include "controllers/agent_security_posture.h"
 #include "models/database.h"
-#include "platform/time_compat.h"
 
 #include <pthread.h>
 #include <sqlite3.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #define AP_CHECK(name, expr) do {                                 \
     printf("agent_posture_trylock: %s... ", (name));              \
@@ -42,25 +39,95 @@
     else { printf("FAIL\n"); failures++; }                        \
 } while (0)
 
-/* ---- lock-holder thread: grabs the connection's own mutex and parks ---- */
+/* SQLite's public seams observe attempted waits on the collector thread. */
+static sqlite3_mutex_methods ap_mutex_methods;
+static sqlite3_vfs *ap_vfs;
+static int (*ap_vfs_sleep)(sqlite3_vfs *, int);
+static bool ap_probes_configured;
+static _Thread_local bool ap_collecting;
+static pthread_mutex_t ap_control = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ap_changed = PTHREAD_COND_INITIALIZER;
+static bool ap_done;
+static int ap_blocking_calls;
+
+static void ap_note_blocking_call(void)
+{
+    pthread_mutex_lock(&ap_control);
+    ap_blocking_calls++;
+    pthread_cond_broadcast(&ap_changed);
+    pthread_mutex_unlock(&ap_control);
+}
+
+static void ap_mutex_enter(sqlite3_mutex *mutex)
+{
+    if (ap_collecting)
+        ap_note_blocking_call();
+    ap_mutex_methods.xMutexEnter(mutex);
+}
+
+static int ap_sleep(sqlite3_vfs *vfs, int microseconds)
+{
+    if (ap_collecting) {
+        ap_note_blocking_call();
+        return microseconds;
+    }
+    return ap_vfs_sleep(vfs, microseconds);
+}
+
+static bool ap_install_probes(void)
+{
+    if (sqlite3_initialize() != SQLITE_OK)
+        return false;
+    if (sqlite3_shutdown() != SQLITE_OK)
+        return false;
+    if (sqlite3_config(SQLITE_CONFIG_GETMUTEX, &ap_mutex_methods) != SQLITE_OK)
+        return false;
+    if (!ap_mutex_methods.xMutexEnter)
+        return false;
+    sqlite3_mutex_methods methods = ap_mutex_methods;
+    methods.xMutexEnter = ap_mutex_enter;
+    if (sqlite3_config(SQLITE_CONFIG_MUTEX, &methods) != SQLITE_OK)
+        return false;
+    ap_probes_configured = true;
+    ap_vfs = sqlite3_vfs_find(NULL);
+    if (!ap_vfs || !ap_vfs->xSleep)
+        return false;
+    ap_vfs_sleep = ap_vfs->xSleep;
+    ap_vfs->xSleep = ap_sleep;
+    return true;
+}
+
+static bool ap_restore_probes(void)
+{
+    if (!ap_probes_configured)
+        return true;
+    if (ap_vfs_sleep)
+        ap_vfs->xSleep = ap_vfs_sleep;
+    if (sqlite3_shutdown() != SQLITE_OK)
+        return false;
+    if (sqlite3_config(SQLITE_CONFIG_MUTEX, &ap_mutex_methods) != SQLITE_OK)
+        return false;
+    ap_probes_configured = false;
+    return true;
+}
+
 struct ap_locker {
     sqlite3 *db;
-    _Atomic int locked;   /* set once the mutex is held */
-    _Atomic int release;  /* main thread sets this to let the holder go */
+    bool locked;
+    bool release;
 };
 
 static void *ap_locker_thread(void *arg)
 {
-    struct ap_locker *lk = (struct ap_locker *)arg;
+    struct ap_locker *lk = arg;
     sqlite3_mutex *m = sqlite3_db_mutex(lk->db);
     sqlite3_mutex_enter(m);
-    atomic_store(&lk->locked, 1);
-    /* Hold until told to release (bounded spin so a stuck test can never
-     * wedge the suite forever). */
-    for (int i = 0; i < 500000 && !atomic_load(&lk->release); i++) {
-        struct timespec ts = { 0, 200000 }; /* 0.2ms */
-        nanosleep(&ts, NULL); /* real-clock: pre-existing bounded poll loop, seeded when check_no_real_clock_test_deadline.sh was introduced */
-    }
+    pthread_mutex_lock(&ap_control);
+    lk->locked = true;
+    pthread_cond_broadcast(&ap_changed);
+    while (!lk->release)
+        pthread_cond_wait(&ap_changed, &ap_control);
+    pthread_mutex_unlock(&ap_control);
     sqlite3_mutex_leave(m);
     return NULL;
 }
@@ -68,22 +135,76 @@ static void *ap_locker_thread(void *arg)
 static bool ap_lock_connection(struct ap_locker *lk, sqlite3 *db,
                                pthread_t *th_out)
 {
-    lk->db = db;
-    atomic_store(&lk->locked, 0);
-    atomic_store(&lk->release, 0);
+    *th_out = (pthread_t){0};
+    *lk = (struct ap_locker){ .db = db };
     if (pthread_create(th_out, NULL, ap_locker_thread, lk) != 0)
         return false;
-    for (int i = 0; i < 500000 && !atomic_load(&lk->locked); i++) {
-        struct timespec ts = { 0, 200000 };
-        nanosleep(&ts, NULL); /* real-clock: pre-existing bounded poll loop, seeded when check_no_real_clock_test_deadline.sh was introduced */
-    }
-    return atomic_load(&lk->locked) != 0;
+    pthread_mutex_lock(&ap_control);
+    while (!lk->locked)
+        pthread_cond_wait(&ap_changed, &ap_control);
+    pthread_mutex_unlock(&ap_control);
+    return true;
 }
 
 static void ap_unlock_connection(struct ap_locker *lk, pthread_t th)
 {
-    atomic_store(&lk->release, 1);
+    pthread_mutex_lock(&ap_control);
+    lk->release = true;
+    pthread_cond_broadcast(&ap_changed);
+    pthread_mutex_unlock(&ap_control);
     pthread_join(th, NULL);
+}
+
+struct ap_collector {
+    struct node_db *ndb;
+    struct agent_security_posture posture;
+};
+
+static void *ap_collect(void *arg)
+{
+    struct ap_collector *c = arg;
+    ap_collecting = true;
+    agent_security_posture_collect(&c->posture, c->ndb);
+    ap_collecting = false;
+    pthread_mutex_lock(&ap_control);
+    ap_done = true;
+    pthread_cond_broadcast(&ap_changed);
+    pthread_mutex_unlock(&ap_control);
+    return NULL;
+}
+
+static int ap_check_cold_busy(struct node_db *ndb, struct ap_locker *lk)
+{
+    int failures = 0;
+    struct ap_collector c = { .ndb = ndb };
+    pthread_t collector;
+    ap_done = false;
+    ap_blocking_calls = 0;
+    bool started = pthread_create(&collector, NULL, ap_collect, &c) == 0;
+    AP_CHECK("cold busy: collector starts", started);
+    if (!started)
+        return failures;
+    pthread_mutex_lock(&ap_control);
+    while (!ap_done && ap_blocking_calls == 0)
+        pthread_cond_wait(&ap_changed, &ap_control);
+    AP_CHECK("cold busy: completes before holder release", ap_done && !lk->release);
+    AP_CHECK("cold busy: no blocking lock or sleep call", ap_blocking_calls == 0);
+    /* Release only after both observations; a defective collector can finish. */
+    if (!ap_done) {
+        lk->release = true;
+        pthread_cond_broadcast(&ap_changed);
+    }
+    pthread_mutex_unlock(&ap_control);
+    pthread_join(collector, NULL);
+    AP_CHECK("cold busy: status is posture_unavailable_busy",
+             strcmp(c.posture.status, "posture_unavailable_busy") == 0);
+    AP_CHECK("cold busy: next_action is retry_status_query",
+             strcmp(c.posture.next_action, "retry_status_query") == 0);
+    AP_CHECK("cold busy: served_from_cache", c.posture.served_from_cache);
+    AP_CHECK("cold busy: node_db_available is false", !c.posture.node_db_available);
+    AP_CHECK("cold busy: no prior snapshot -> cache_age_ms is the sentinel",
+             c.posture.cache_age_ms == -1);
+    return failures;
 }
 
 static int case_collect_nonblocking_scenario(void)
@@ -94,38 +215,31 @@ static int case_collect_nonblocking_scenario(void)
     pthread_t th;
 
     bool opened = node_db_open(&ndb, ":memory:");
-    AP_CHECK("node.db (:memory:) opens", opened);
-    if (!opened)
-        return failures;
+    if (!opened) {
+        printf("agent_posture_trylock: node.db (:memory:) opens... FAIL\n");
+        return 1;
+    }
 
-    /* 1. Contend BEFORE any collect has ever run — proves the very first
-     *    call, with no last-known-good snapshot to fall back on, still
-     *    answers promptly with the labeled busy partial rather than
-     *    blocking. A blocking implementation would stall here until step 3
-     *    releases the lock. */
+    /* 1. Hold the connection mutex before the first collect. Completion and
+     *    blocking-call observations precede release; the cold result must
+     *    be the labeled busy partial. */
     bool locked = ap_lock_connection(&lk, ndb.db, &th);
     AP_CHECK("locker holds the connection mutex (cold)", locked);
+    if (!locked) {
+        node_db_close(&ndb);
+        return failures;
+    }
 
-    struct agent_security_posture cold_busy;
-    int64_t t0 = platform_time_monotonic_ms();
-    agent_security_posture_collect(&cold_busy, &ndb);
-    int64_t elapsed_ms = platform_time_monotonic_ms() - t0;
-    AP_CHECK("cold busy: returns within budget (<500ms)", elapsed_ms < 500);
-    AP_CHECK("cold busy: status is posture_unavailable_busy",
-             strcmp(cold_busy.status, "posture_unavailable_busy") == 0);
-    AP_CHECK("cold busy: next_action is retry_status_query",
-             strcmp(cold_busy.next_action, "retry_status_query") == 0);
-    AP_CHECK("cold busy: served_from_cache", cold_busy.served_from_cache);
-    AP_CHECK("cold busy: node_db_available is false",
-             !cold_busy.node_db_available);
-    AP_CHECK("cold busy: no prior snapshot -> cache_age_ms is the sentinel",
-             cold_busy.cache_age_ms == -1);
+    failures += ap_check_cold_busy(&ndb, &lk);
+    if (failures) {
+        ap_unlock_connection(&lk, th);
+        node_db_close(&ndb);
+        return failures;
+    }
 
     /* 2. Still contended: the labeled partial from step 1 is now cached, so
      *    this call answers from THAT cache with a real (non-sentinel) age
      *    instead of recomputing the same placeholder statelessly. */
-    struct timespec pause = { 0, 5 * 1000 * 1000 }; /* 5ms */
-    nanosleep(&pause, NULL);
 
     struct agent_security_posture still_busy;
     agent_security_posture_collect(&still_busy, &ndb);
@@ -149,6 +263,10 @@ static int case_collect_nonblocking_scenario(void)
      *    placeholder. */
     locked = ap_lock_connection(&lk, ndb.db, &th);
     AP_CHECK("locker holds the connection mutex (warm)", locked);
+    if (!locked) {
+        node_db_close(&ndb);
+        return failures;
+    }
 
     struct agent_security_posture warm_busy;
     agent_security_posture_collect(&warm_busy, &ndb);
@@ -259,9 +377,16 @@ static int case_collect_never_repairs_cec_state(void)
 int test_agent_posture_trylock(void)
 {
     int failures = 0;
+    bool installed = ap_install_probes();
+    AP_CHECK("SQLite contention probes installed", installed);
+    if (!installed) {
+        AP_CHECK("SQLite partial probe setup restored", ap_restore_probes());
+        return failures;
+    }
     failures += case_collect_nonblocking_scenario();
     failures += case_background_validation_height_populates();
     failures += case_collect_never_repairs_cec_state();
+    AP_CHECK("SQLite contention probes restored", ap_restore_probes());
     if (failures == 0)
         printf("test_agent_posture_trylock: ALL PASSED\n");
     else
