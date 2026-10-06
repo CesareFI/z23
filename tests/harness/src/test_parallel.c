@@ -2066,7 +2066,21 @@ static bool exact_selection_valid(bool exact, const char *only)
     return false;
 }
 
-#define BUILD_NEEDS_MAX 18u
+/* Every declared BUILD row contributes at most one distinct target to the
+ * collector, so the bound derives from the same .def the collector reads
+ * (the identical x-macro derivation to tools/dev/dev_proof.h). A hardcoded
+ * 16 drifted out of date when upstream added the clang-manifest rows: the
+ * universal selector reached 17 distinct targets and refused the whole
+ * matrix with "build needs unresolved" before any build or run. */
+enum {
+    TEST_PARALLEL_BUILD_NEED_ROWS = 0
+#define ZCL_TEST_GROUP_NEED(id_, kind_, value_)
+#define ZCL_TEST_GROUP_BUILD_NEED(id_, value_, target_) + 1
+#include "test_group_host_needs.def"
+#undef ZCL_TEST_GROUP_BUILD_NEED
+#undef ZCL_TEST_GROUP_NEED
+};
+#define BUILD_NEEDS_MAX (TEST_PARALLEL_BUILD_NEED_ROWS + 1u)
 
 /* A matched group may declare no BUILD needs; an unmatched selector is
  * instead invalid, even when the collector returns an empty list. */
