@@ -25,6 +25,7 @@
 #include "services/wallet_backup_service.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,14 +57,21 @@ static bool wbs_parse_filename_us(const char *name, int64_t *out_us)
 {
     const char *body = name + strlen(WALLET_BACKUP_FILENAME_PREFIX);
     char *after_ts = NULL;
+    errno = 0;
     long long ts = strtoll(body, &after_ts, 10);
-    if (after_ts == body || *after_ts != '_') return false;
+    if (errno == ERANGE || after_ts == body || *after_ts != '_' || ts < 0)
+        return false;
     const char *usec_start = after_ts + 1;
     char *after_usec = NULL;
+    errno = 0;
     long usec = strtol(usec_start, &after_usec, 10);
-    if (after_usec == usec_start || usec < 0 || usec > 999999) return false;
+    if (errno == ERANGE || after_usec == usec_start ||
+        usec < 0 || usec > 999999)
+        return false;
     /* Whatever follows (".sqlite" or ".sqlite.enc") is already validated
      * by the caller's suffix check; no need to re-check it here. */
+    if (ts > (INT64_MAX - usec) / 1000000LL)
+        return false;
     *out_us = ts * 1000000LL + usec;
     return true;
 }
