@@ -920,7 +920,6 @@ contexts/explorer/views/src/explorer_stats_view.c:render_shielded_section:25
 contexts/explorer/views/src/explorer_tx_view.c:explorer_view_tx:27
 contexts/explorer/views/src/explorer_tx_view.c:explorer_view_tx_rpc:16
 contexts/explorer/views/src/name_gateway_view.c:gw_escape_append:17
-contexts/explorer/views/src/name_view.c:name_view_profile:22
 contexts/explorer/views/src/qr_popup.c:qr_popup_card_render:18
 contexts/explorer/views/src/store_view.c:serve_gated_content:22
 contexts/explorer/views/src/store_view.c:serve_order_status:16

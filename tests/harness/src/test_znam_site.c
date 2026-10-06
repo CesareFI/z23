@@ -25,6 +25,7 @@
 #include "controllers/name_resolver.h"
 #include "controllers/name_gateway_controller.h"
 #include "views/name_gateway_view.h"
+#include "views/name_view.h"
 #include "models/znam.h"
 #include "models/database.h"
 #include "rpc/server.h"
@@ -958,6 +959,48 @@ static int t_profile_record_window(void)
     return failures;
 }
 
+/* Regression: a card that truncates must never push `off` past the body.
+ * The sanitizer lane detects the past-the-array footer write; the length
+ * checks also pin stored bytes rather than snprintf's would-be length. */
+static int t_index_card_truncation_stays_in_bounds(void)
+{
+    int failures = 0;
+    printf("znam site: index card truncation stays in bounds... ");
+    /* Exact overshoot inputs from the contribution: 63-char plain name,
+     * 64 '<' value bytes, 35-char owner, 40 rows. */
+    struct znam_entry entries[40];
+    memset(entries, 0, sizeof(entries));
+    for (int i = 0; i < 40; i++) {
+        memset(entries[i].name, 'a' + (i % 26), sizeof(entries[i].name) - 1);
+        for (int k = 0; k < 64; k++)
+            entries[i].target_value[k] = '<';
+        memset(entries[i].owner_address, 'O', 35);
+        entries[i].target_type = ZNAM_TYPE_TADDR;
+        entries[i].reg_height = 800000;
+    }
+    uint8_t resp[65536] = {0};
+    size_t got = name_view_index(entries, 40, 40, resp, sizeof(resp));
+    bool ok = got >= 9 && got < sizeof(resp) &&
+        memcmp(resp, "HTTP/1.1 ", 9) == 0;
+    TS_CHECK("bounded response", ok);
+    if (!ok) return failures;
+    const char *body = strstr((char *)resp, "\r\n\r\n");
+    const char *length = strstr((char *)resp, "Content-Length: ");
+    size_t advertised = 0;
+    TS_CHECK("body delimiter", body != NULL);
+    TS_CHECK("body length header", length != NULL);
+    if (!body || !length) return failures;
+    body += 4;
+    TS_CHECK("parse body length",
+             sscanf(length, "Content-Length: %zu", &advertised) == 1);
+    TS_CHECK("body stays inside its array", advertised < 36864);
+    TS_CHECK("length matches transmitted bytes",
+             advertised == got - (size_t)(body - (char *)resp));
+    TS_CHECK("no terminating NUL counted", strlen(body) == advertised);
+    if (!failures) printf("OK\n");
+    return failures;
+}
+
 /* ── Index-total honesty ─────────────────────────────────────────────
  *
  * The /names headline used to print how many rows the page happened to
@@ -1038,6 +1081,7 @@ int test_znam_site(void)
     failures += t_pow_gate_single_use();
     failures += t_profile_record_window();
     failures += t_index_total_honesty();
+    failures += t_index_card_truncation_stays_in_bounds();
     failures += t_name_records_rpc();
     failures += t_error_taxonomy();
     failures += t_resolve_rpc_taxonomy();

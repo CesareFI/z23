@@ -227,13 +227,30 @@ int name_view_body_end(char *buf, size_t max)
 
 /* ── Index ──────────────────────────────────────────────────────── */
 
+/* Accumulate snprintf's would-be length without ever stepping past the
+ * buffer. A truncated write reports MORE than the remaining space; adding
+ * that raw value would push `off` past the array — the next snprintf
+ * would then write out of bounds with a wrapped size, and the response
+ * copy would read stack bytes beyond the body (CWE-787 / CWE-200).
+ * Exclude the terminating NUL so Content-Length counts stored bytes. */
+static size_t name_clamp_off(size_t off, int n, size_t cap)
+{
+    if (cap == 0)
+        return 0;
+    cap--;
+    if (n <= 0 || off >= cap)
+        return off < cap ? off : cap;
+    size_t would = (size_t)n;
+    return would >= cap - off ? cap : off + would;
+}
+
 size_t name_view_index(const struct znam_entry *entries, int count,
                        int total, uint8_t *resp, size_t max)
 {
     char body[36864];
     size_t off = 0;
     int n = name_body_start(body, sizeof(body), "ZCL Names");
-    if (n > 0) off = (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
 
     /* The headline states the registry's real size, not how many rows
      * this page chose to render — a wrong total here reads as fact. An
@@ -254,7 +271,7 @@ size_t name_view_index(const struct znam_entry *entries, int count,
             "<code>/n/&lt;name&gt;</code> to resolve one.</p>",
             total, total == 1 ? "" : "s");
     }
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
 
     for (int i = 0; i < count && off < sizeof(body) - 512; i++) {
         char safe_name[128], safe_owner[128], safe_val[280];
@@ -272,7 +289,7 @@ size_t name_view_index(const struct znam_entry *entries, int count,
             safe_name, safe_name,
             znam_type_name(entries[i].target_type), safe_val,
             safe_owner, entries[i].reg_height, safe_name);
-        if (n > 0) off += (size_t)n;
+        off = name_clamp_off(off, n, sizeof(body));
         shown++;
     }
 
@@ -282,11 +299,11 @@ size_t name_view_index(const struct znam_entry *entries, int count,
         n = snprintf(body + off, sizeof(body) - off,
             "<p class='muted'>Showing the %d most recently "
             "registered.</p>", shown);
-        if (n > 0) off += (size_t)n;
+        off = name_clamp_off(off, n, sizeof(body));
     }
 
     n = name_body_end(body + off, sizeof(body) - off);
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
     return name_html_response(body, off, resp, max);
 }
 
@@ -359,7 +376,7 @@ size_t name_view_profile(const struct znam_entry *e,
     html_escape(safe_name, sizeof(safe_name), e->name);
 
     int n = name_body_start(body, sizeof(body), safe_name);
-    if (n > 0) off = (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
 
     char safe_owner[128], safe_val[280];
     html_escape(safe_owner, sizeof(safe_owner), e->owner_address);
@@ -381,12 +398,12 @@ size_t name_view_profile(const struct znam_entry *e,
         "</div>",
         safe_name, znam_type_name(e->target_type), safe_val,
         safe_owner, e->reg_height, expires);
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
 
     if (ntext > 0 || naddr > 0) {
         n = snprintf(body + off, sizeof(body) - off,
             "<div class='card'><h2>Records</h2>");
-        if (n > 0) off += (size_t)n;
+        off = name_clamp_off(off, n, sizeof(body));
         /* Count what actually rendered: the row loop also stops when the
          * body buffer runs short of headroom, so a page can show fewer
          * rows than even its own window arrays hold. The totals are what
@@ -399,7 +416,7 @@ size_t name_view_profile(const struct znam_entry *e,
             n = snprintf(body + off, sizeof(body) - off,
                 "<div class='kv'><b>%s</b><span class='val mono'>%s</span></div>",
                 sk, sv);
-            if (n > 0) off += (size_t)n;
+            off = name_clamp_off(off, n, sizeof(body));
             shown_text++;
         }
         for (int i = 0; i < naddr && off < sizeof(body) - 512; i++) {
@@ -408,7 +425,7 @@ size_t name_view_profile(const struct znam_entry *e,
             n = snprintf(body + off, sizeof(body) - off,
                 "<div class='kv'><b>%s</b><span class='val mono'>%s</span></div>",
                 znam_type_name(addr[i].coin_type), sv);
-            if (n > 0) off += (size_t)n;
+            off = name_clamp_off(off, n, sizeof(body));
             shown_addr++;
         }
         /* Window honesty: when fewer records rendered than the name
@@ -420,16 +437,16 @@ size_t name_view_profile(const struct znam_entry *e,
             n = snprintf(body + off, sizeof(body) - off,
                 "<p class='muted'>Showing the first %d of %d text "
                 "records.</p>", shown_text, total_text);
-            if (n > 0) off += (size_t)n;
+            off = name_clamp_off(off, n, sizeof(body));
         }
         if (total_addr >= 0 && total_addr > shown_addr) {
             n = snprintf(body + off, sizeof(body) - off,
                 "<p class='muted'>Showing the first %d of %d address "
                 "records.</p>", shown_addr, total_addr);
-            if (n > 0) off += (size_t)n;
+            off = name_clamp_off(off, n, sizeof(body));
         }
         n = snprintf(body + off, sizeof(body) - off, "</div>");
-        if (n > 0) off += (size_t)n;
+        off = name_clamp_off(off, n, sizeof(body));
     }
 
     off += name_emit_history(body + off, sizeof(body) - off, hist);
@@ -438,9 +455,9 @@ size_t name_view_profile(const struct znam_entry *e,
         "<p><a href='/n/%s'>open site</a> &middot; "
         "<a href='/names'>&larr; all names</a></p>",
         safe_name);
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
     n = name_body_end(body + off, sizeof(body) - off);
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
     return name_html_response(body, off, resp, max);
 }
 
@@ -452,7 +469,7 @@ size_t name_view_register_form(const char *csrf_tok, int64_t pow_ts,
     char body[32768];
     size_t off = 0;
     int n = name_body_start(body, sizeof(body), "Register a ZCL Name");
-    if (n > 0) off = (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
 
     n = snprintf(body + off, sizeof(body) - off,
         "<h1>Register a ZCL Name</h1>"
@@ -495,9 +512,9 @@ size_t name_view_register_form(const char *csrf_tok, int64_t pow_ts,
         csrf_tok, (long long)pow_ts,
         FAST_SYNC_POW_BITS,
         NAME_REG_POW_JS_1, NAME_REG_POW_JS_2);
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
     n = name_body_end(body + off, sizeof(body) - off);
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
     return name_html_response(body, off, resp, max);
 }
 
@@ -508,7 +525,7 @@ size_t name_view_register_result(const char *name, const char *value,
     char body[20480];
     size_t off = 0;
     int n = name_body_start(body, sizeof(body), "Registration");
-    if (n > 0) off = (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
 
     char safe_name[128], safe_val[280];
     html_escape(safe_name, sizeof(safe_name), name ? name : "");
@@ -537,9 +554,9 @@ size_t name_view_register_result(const char *name, const char *value,
             "<p><a href='/names/register'>&larr; try again</a></p></div>",
             safe_err);
     }
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
     n = name_body_end(body + off, sizeof(body) - off);
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
     return name_html_response(body, off, resp, max);
 }
 
@@ -596,7 +613,7 @@ size_t name_view_resolve_error(const char *name,
     html_escape(safe_type, sizeof(safe_type), requested_type ? requested_type : "");
 
     n = name_body_start(body, sizeof(body), name_error_headline(status));
-    if (n > 0) off = (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
 
     n = snprintf(body + off, sizeof(body) - off,
         "<h1>%s</h1>"
@@ -606,13 +623,13 @@ size_t name_view_resolve_error(const char *name,
         "<p>%s</p>",
         name_error_headline(status), safe_name[0] ? safe_name : "(empty)",
         name_resolve_status_code(status), name_resolve_status_message(status));
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
 
     if (safe_type[0]) {
         n = snprintf(body + off, sizeof(body) - off,
             "<div class='kv'><b>asked for</b><span class='val mono'>%s</span>"
             "</div>", safe_type);
-        if (n > 0) off += (size_t)n;
+        off = name_clamp_off(off, n, sizeof(body));
     }
 
     /* Registered-but-wrong-type is the case with somebody to go ask, so it
@@ -629,19 +646,19 @@ size_t name_view_resolve_error(const char *name,
             "</p>",
             safe_owner, znam_type_name(entry->target_type), safe_val,
             safe_name);
-        if (n > 0) off += (size_t)n;
+        off = name_clamp_off(off, n, sizeof(body));
     } else if (status == NAME_RESOLVE_ABSENT) {
         n = snprintf(body + off, sizeof(body) - off,
             "<p><a href='/names/register'>Claim <b>%s</b></a> — it is "
             "first-come-first-served.</p>", safe_name);
-        if (n > 0) off += (size_t)n;
+        off = name_clamp_off(off, n, sizeof(body));
     }
 
     n = snprintf(body + off, sizeof(body) - off,
         "<p><a href='/names'>&larr; all names</a></p></div>");
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
     n = name_body_end(body + off, sizeof(body) - off);
-    if (n > 0) off += (size_t)n;
+    off = name_clamp_off(off, n, sizeof(body));
 
     return name_coded_error_response(name_resolve_status_http(status),
                                      name_resolve_status_code(status),
