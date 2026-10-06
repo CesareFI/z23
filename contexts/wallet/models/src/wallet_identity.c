@@ -91,13 +91,20 @@ static bool wallet_identity_insert(struct node_db *ndb,
         AR_BIND_INT(st, 4, row->created_at));
 }
 
+static bool wallet_identity_lane_admitted(const char *operator_lane)
+{
+    return operator_lane && operator_lane[0] &&
+           strlen(operator_lane) <= WALLET_OPERATOR_LANE_MAX &&
+           model_string_is_printable(operator_lane);
+}
+
 bool wallet_identity_ensure(struct node_db *ndb,
                             const uint8_t network_genesis[32],
                             const char *operator_lane,
                             struct wallet_identity_row *out)
 {
-    if (!ndb || !ndb->open || !network_genesis || !operator_lane ||
-        !operator_lane[0] || !out)
+    if (!ndb || !ndb->open || !network_genesis ||
+        !wallet_identity_lane_admitted(operator_lane) || !out)
         LOG_FAIL("wallet_identity", "ensure: invalid argument");
 
     struct wallet_identity_row existing;
