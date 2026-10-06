@@ -2042,3 +2042,79 @@ safety review, `pr-file-io-short-read-standalone.md`,
 candidate's ignored evidence directory. Manifest SHA256 is
 `2f75060f996033577caf466ba9bfad78b3dc3c11a971e2531cc65d37af40cc6c`.
 No external publication or reviewer-request action was attempted.
+
+### Isolated fleet-gateway proof fixture qualified
+
+Branch `agent/upstream-fleet-gateway-direct-fixture-20261006`, signed head
+`4e0055659de8ef3140b73442202652500add9696`, is based directly on upstream
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. The canonical queue tests already
+forced direct fake workers because systemd-run is deployment behavior, but the
+fleet-gateway fixture did not. Under isolated exact proof, later gateway shards
+therefore detached their fake workers and never received fixture receipts. The
+fixture now saves the caller's `ZCL_QUEUE_DIRECT`, forces direct workers for its
+lifetime, and restores or unsets the value on teardown and setup failure.
+Production queue and systemd behavior are unchanged. Two files change, +23/-1.
+
+The seven-group gateway family passes 7/7 with zero skips. Changed-path
+ASan/UBSan/LSan shards 03 through 06 pass. The complete sanitizer family is not
+claimed: shard 01 deliberately applies an approximately 3 MiB address-space
+limit that cannot map the ASan runtime. Architecture covers five authorities,
+six contexts and 63 modules; documentation counts cover 612 Markdown files and
+152 bound claims; package anatomy covers 80 packages; generated inventory and
+the cap-15 complexity scan over 68,754 functions pass.
+
+The first complete proof attempt passed all 23 selected runtime groups but its
+six lint failures shared one invalid invocation input: a process-wide `CC=gcc`
+export became the literal multiword zcc wrapper pathname inside shell gates.
+With `CC` unset, the unchanged checkout passes Tor provenance and the prescribed
+retry produces the authoritative cold PASS: all 215 lint gates in 187.084s and
+23/23 selected groups in 152.969s, with zero skips, cache hits, unobserved cases
+or load-flaky outcomes. The foreground proof takes 366.067s, has no eligible
+donor and records `receipt_reused=false`. Receipt SHA256 is
+`fde1bbe354ff5ac6fcdbcb7f47d2407a0920f23b492e3d1b8caa7a4174ed1fe4`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-fleet-gateway-direct-fixture-proof2-20261006`.
+
+Local bundle, mbox, focused/sanitizer/gate evidence, qualification and PR draft
+verify in the candidate's ignored `.cache/wallet-publication/` directory. Bundle
+SHA256 is `ddb29b880996f7bb85190eb4f146c810894d6b82da30e9352984b7b5ee618afd`;
+mbox SHA256 is `1295213442fdff3041bffb928dac5507930deffa11f08ffc7cd0c14d3b6e321c`.
+No external publication or reviewer-request action was attempted.
+
+### Compact wallet public-key verification candidate qualified
+
+Branch `agent/upstream-wallet-pubkey-verify-fleet-qualified-20261006`, signed
+head `11df5a3f134d03ea8cbd164ea2d064b0ab8a5ab4`, stacks the independently
+qualified fleet fixture above on upstream base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. Its wallet-only review is three
+files, +196/-7. The wallet ownership check now fails closed when challenge
+creation or signing refuses, and retires its challenge, SHA context,
+verification hash and signature scratch at their final uses. Successful
+verification, public-key encoding, derivation, consensus, monetary policy, PoW,
+upgrade rules, transparent validity and shielded validity are unchanged.
+
+The canonical deterministic RED observations reproduce the ignored signing
+refusal and partially written random challenge. Removing the fail-closed signing
+branch makes the regression fail; restoring it passes. The registered wallet
+key-derivation group passes 1/1 with zero skips, and the identical wallet source
+and test pass ASan/UBSan/LSan 1/1. Strict GCC 14 and Clang 20 translation-unit
+lanes pass. MinGW checks every Windows-visible translation unit and links the
+strict C23 acceptance programs; native Windows runtime remains unobserved.
+
+The fresh unprivileged exact proof passes all 215 lint gates in 190.999s and all
+317 impact-selected groups in 306.119s. It is cold and records zero failures,
+skips, cache hits, unobserved cases or load-flaky outcomes, no eligible donor and
+`receipt_reused=false`; foreground time is 501.408s. Receipt SHA256 is
+`59f52ba2415859d25550c584c0f81bb64e09fd6ee294906d50783e3be63ec79e`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-wallet-pubkey-fleet-proof-20261006`.
+
+Local bundle, wallet-only mbox, exact receipt/logs, qualification and PR draft
+verify in the candidate's ignored `.cache/wallet-publication/` directory. Bundle
+SHA256 is `7b9e81fdf4e0d5ca6ed6d5525d72160cac435cdac779b2828dee0430d44bb41d`;
+wallet-only mbox SHA256 is
+`fdbeda32fbc0eb1f8e87c6d62d13194862c1cf51a61f9d1202f68b4f89ac9c0d`.
+The narrow generated-inventory target unexpectedly entered the repository's
+parse-time vendor bootstrap and attempted pinned zlib/SQLite acquisition; that
+build was terminated and not retried. Subsequent work used verified local donor
+artifacts only. No external publication or reviewer-request action was attempted.
