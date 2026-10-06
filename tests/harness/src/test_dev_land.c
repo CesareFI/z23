@@ -8749,6 +8749,241 @@ _test_next:;
     return failures;
 }
 
+static int dlx_beat_case(const char *beat, int64_t start, int64_t end,
+                          const char *duration)
+{
+    int failures = 0;
+    TEST("land beat timing: injected intervals retain exact identity") {
+        char wire[768];
+        struct zcl_land_beat b = { beat, "base", "candidate", "tree", 41, 2, start, end };
+        ASSERT(zcl_dev_land_beat_format(&b, wire, sizeof(wire)));
+        ASSERT(strstr(wire, "zcl.dev_land.beat.v1 seq=41 attempt=2") != NULL);
+        ASSERT(strstr(wire, "base=base local=candidate tree=tree") != NULL);
+        ASSERT(strstr(wire, beat) != NULL);
+        ASSERT(strstr(wire, duration) != NULL);
+        ASSERT(!zcl_dev_land_beat_format(&b, wire, 1));
+        ASSERT_STR_EQ(wire, "");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool dlx_beat_duration(const char *duration, size_t width)
+{
+    if (width == 7 && memcmp(duration, "unknown", 7) == 0) return true;
+    if (width == 0 || width > 19) return false;
+    for (size_t i = 0; i < width; i++)
+        if (duration[i] < '0' || duration[i] > '9') return false;
+    return true;
+}
+
+static bool dlx_beat_log_bytes(char *log, size_t len, const char *expected)
+{
+    const char *tag = "zcl.dev_land.beat.v1 ";
+    size_t offset = 0, wanted = strlen(expected);
+    bool found = false;
+    if (memchr(log, 0, len)) return false;
+    log[len] = '\0';
+    while (offset < len) {
+        char *record = log + offset;
+        char *newline = memchr(record, '\n', len - offset);
+        size_t width = newline ? (size_t)(newline - record) : len - offset;
+        record[width] = '\0';
+        bool is_beat = strncmp(record, tag, strlen(tag)) == 0;
+        if (is_beat) {
+            const char *duration = strstr(record, " elapsed_us=");
+            if (!duration) return false;
+            duration += strlen(" elapsed_us=");
+            if (!dlx_beat_duration(duration, width - (size_t)(duration - record)))
+                return false;
+            if (width >= wanted && memcmp(record, expected, wanted) == 0)
+                found = true;
+        } else if (!newline) return false;
+        offset += width;
+        if (newline) offset++;
+    }
+    return found;
+}
+
+static bool dlx_beat_log_record(const char *prefix, const char *beat)
+{
+    char landdir[1200], path[1400], log[32768], expected[768];
+    size_t len = 0;
+    dlx_landdir(landdir, sizeof(landdir));
+    int n = snprintf(path, sizeof(path), "%s/logs/land-1-a1.log", landdir);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return false;
+    if (!dlx_slurp(path, log, sizeof(log) - 1, &len)) return false;
+    n = snprintf(expected, sizeof(expected), "%s beat=%s elapsed_us=", prefix, beat);
+    if (n <= 0 || (size_t)n >= sizeof(expected)) return false;
+    return dlx_beat_log_bytes(log, len, expected);
+}
+
+static int dlx_beat_reader_case(const char *label, const char *wire,
+                                size_t len, bool accepted)
+{
+    int failures = 0;
+    TEST("land beat reader: bounded complete records") {
+        char log[1024];
+        printf("checking beat reader=%s\n", label);
+        ASSERT(len < sizeof(log));
+        memcpy(log, wire, len);
+        log[len] = '\0';
+        ASSERT(dlx_beat_log_bytes(log, len,
+            "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=") == accepted);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_beat_reader_cases(void)
+{
+    static const struct { const char *label, *wire; size_t len; bool accepted; } cases[] = {
+#define DLX_BEAT_READER(label, wire, accepted) { label, wire, sizeof(wire) - 1, accepted }
+        DLX_BEAT_READER("newline", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=1\n", true),
+        DLX_BEAT_READER("EOF", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=1", true),
+        DLX_BEAT_READER("unknown EOF", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=unknown", true),
+        DLX_BEAT_READER("NUL suffix", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=1\n\0garbage", false),
+        DLX_BEAT_READER("torn suffix", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=1\ntorn", false),
+        DLX_BEAT_READER("torn beat", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=1\nzcl.dev_land.beat.v1 seq=2", false),
+        DLX_BEAT_READER("trailing garbage", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=1garbage\n", false),
+        DLX_BEAT_READER("empty duration", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=\n", false),
+        DLX_BEAT_READER("long duration", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=12345678901234567890\n", false),
+        DLX_BEAT_READER("unknown garbage", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=unknown!\n", false),
+        DLX_BEAT_READER("complete unrelated records", "ordinary\nzcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=1\nother\n", true),
+        DLX_BEAT_READER("unrelated beat EOF", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=1\nzcl.dev_land.beat.v1 seq=2 beat=prepare elapsed_us=unknown", true),
+        DLX_BEAT_READER("malformed unrelated beat", "zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=1\nzcl.dev_land.beat.v1 seq=2 beat=prepare elapsed_us=x\n", false),
+        DLX_BEAT_READER("mid-record match", "other zcl.dev_land.beat.v1 seq=1 beat=push elapsed_us=1\n", false),
+        DLX_BEAT_READER("empty log", "", false),
+#undef DLX_BEAT_READER
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+        failures += dlx_beat_reader_case(cases[i].label, cases[i].wire,
+                                         cases[i].len, cases[i].accepted);
+    return failures;
+}
+
+static bool dlx_beat_row_prefix(char *out, size_t cap)
+{
+    struct dlx_call c;
+    if (out && cap) out[0] = '\0';
+    if (!out || !cap) return false;
+    dlx_begin(&c, "status");
+    bool ok = dlx_run(&c) && dlx_ok(&c);
+    const struct json_value *row = json_get(&c.reply.data, "in_flight");
+    int n = 0;
+    if (ok && row) {
+        n = snprintf(out, cap,
+            "zcl.dev_land.beat.v1 seq=1 attempt=1 base=%s local=%s tree=%s",
+            dlx_jstr(row, "base"), dlx_jstr(row, "local"), dlx_jstr(row, "tree"));
+        ok = strlen(dlx_jstr(row, "base")) == 40 &&
+             strlen(dlx_jstr(row, "local")) == 40 &&
+             strlen(dlx_jstr(row, "tree")) == 40;
+    } else ok = false;
+    dlx_end(&c);
+    return ok && n > 0 && (size_t)n < cap;
+}
+
+static bool dlx_beat_fixture(struct dlx_rig *rig, char *prefix, size_t cap)
+{
+    struct dlx_call c;
+    memset(rig, 0, sizeof(*rig));
+    if (prefix && cap) prefix[0] = '\0';
+    dlx_isolate("beat_log");
+    if (!dlx_rig_make(rig, "beat_log_rig")) return false;
+    setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+    setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+    dlx_submit(&c, rig, rig->tip);
+    bool ok = dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    if (!ok) return false;
+    dlx_begin(&c, "step");
+    ok = dlx_run(&c) && dlx_ok(&c) &&
+         dlx_eq_str(dlx_str(&c, "state"), "started");
+    dlx_end(&c);
+    return ok && dlx_beat_row_prefix(prefix, cap);
+}
+
+static bool dlx_beat_publish(void)
+{
+    struct dlx_call c;
+    setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+    unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
+    dlx_begin(&c, "attach");
+    (void)json_push_kv_int(&c.input, "seq", 1);
+    bool ok = dlx_run(&c) && dlx_ok(&c) &&
+              dlx_eq_str(dlx_str(&c, "state"), "attached");
+    dlx_end(&c);
+    if (!ok) return false;
+    dlx_begin(&c, "step");
+    ok = dlx_run(&c) && dlx_ok(&c) &&
+         dlx_eq_str(dlx_str(&c, "state"), "landed");
+    dlx_end(&c);
+    return ok;
+}
+
+static int dlx_beat_production_case(const char *beat)
+{
+    int failures = 0;
+    TEST("land beat logging: isolated production record retains row identity") {
+        struct dlx_rig rig;
+        char prefix[512];
+        ASSERT(dlx_beat_fixture(&rig, prefix, sizeof(prefix)));
+        if (strcmp(beat, "prepare") != 0) ASSERT(dlx_beat_publish());
+        printf("checking production beat=%s\n", beat);
+        ASSERT(dlx_beat_log_record(prefix, beat));
+        PASS();
+    } _test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int dlx_beat_attach_case(void)
+{
+    int failures = 0;
+    TEST("land beat logging: attach proof read records its exact row") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], prefix[512], landdir[1200], path[1400];
+        dlx_isolate("beat_attach");
+        ASSERT(dlx_attach_proven_pair(&rig, "beat_attach", base));
+        ASSERT(dlx_beat_row_prefix(prefix, sizeof(prefix)));
+        dlx_landdir(landdir, sizeof(landdir));
+        ASSERT(snprintf(path, sizeof(path), "%s/logs/land-1-a1.log", landdir) < (int)sizeof(path));
+        ASSERT(dlx_write(path, ""));
+        setenv("ZCL_LAND_PROOF_STUB", "fail", 1);
+        dlx_begin(&c, "attach_publish");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        (void)json_push_kv_str(&c.input, "base", base);
+        (void)json_push_kv_str(&c.input, "head", rig.tip);
+        (void)json_push_kv_int(&c.input, "wait_ms", 100);
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_PROOF_FAILED");
+        dlx_end(&c);
+        ASSERT(dlx_beat_log_record(prefix, "proof_status"));
+        PASS();
+    } _test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int dlx_beat_production_cases(void)
+{
+    return dlx_beat_attach_case() + dlx_beat_production_case("prepare") +
+        dlx_beat_production_case("proof_status") +
+        dlx_beat_production_case("push") +
+        dlx_beat_production_case("fresh_observation");
+}
+
+static int dlx_beat_cases(void)
+{
+    return dlx_beat_case("push", 100, 900, "elapsed_us=800") +
+        dlx_beat_case("fresh_observation", 100, 2100, "elapsed_us=2000") +
+        dlx_beat_case("prepare", 0, 0, "elapsed_us=0") +
+        dlx_beat_case("proof_status", 100, 99, "elapsed_us=unknown") +
+        dlx_beat_case("push", -1, 100, "elapsed_us=unknown");
+}
+
 static int dlx_attest_refusal_cases(void)
 {
     int failures = 0;
@@ -8766,7 +9001,8 @@ static int dlx_attest_refusal_cases(void)
     }
 _test_next:;
     dlx_restore();
-    return failures;
+    return failures + dlx_beat_cases() + dlx_beat_production_cases() +
+        dlx_beat_reader_cases();
 }
 
 static void dlx_join_bad_identity(int kind, struct zcl_land_launcher_capture *c,

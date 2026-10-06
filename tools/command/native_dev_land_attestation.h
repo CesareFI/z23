@@ -7,6 +7,14 @@
 #include <stdint.h>
 #define ZCL_LAND_ATTEST_CAP 2048u
 #define ZCL_LAND_ATTEST_SCHEMA "zcl.dev_land.self_attestation.v1"
+/* Diagnostic same-call intervals only; absent records mean unknown. Not signed
+ * acceptance evidence. Refusal clears out when out and capacity are supplied. */
+struct zcl_land_beat {
+    const char *beat, *base, *local, *tree;
+    long long seq, attempt;
+    int64_t started_us, finished_us;
+};
+bool zcl_dev_land_beat_format(const struct zcl_land_beat *b, char *out, size_t cap);
 /* Self-observation only. UNKNOWN service origin never grants timer authority.
  * Decoder requires independently expected image/source and a bounded age. */
 bool zcl_dev_land_attestation_decode(const char *wire, size_t length,

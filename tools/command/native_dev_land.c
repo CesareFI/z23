@@ -4061,6 +4061,30 @@ static void dl_log(const struct dl_row *row, const char *text)
         (void)dl_append_text(row->log_path, text);
 }
 
+bool zcl_dev_land_beat_format(const struct zcl_land_beat *b, char *out, size_t cap)
+{
+    char duration[32] = "unknown";
+    if (out && cap) out[0] = '\0';
+    if (!b || !out || !cap) return false;
+    if (!b->beat || !b->base || !b->local || !b->tree) return false;
+    if (b->started_us >= 0 && b->finished_us >= b->started_us)
+        (void)snprintf(duration, sizeof(duration), "%lld",
+                      (long long)(b->finished_us - b->started_us));
+    int n = snprintf(out, cap,
+        "zcl.dev_land.beat.v1 seq=%lld attempt=%lld base=%s local=%s tree=%s beat=%s elapsed_us=%s\n",
+        b->seq, b->attempt, b->base, b->local, b->tree, b->beat, duration);
+    if (n <= 0 || (size_t)n >= cap) { out[0] = '\0'; return false; }
+    return true;
+}
+
+static void dl_beat(const struct dl_row *row, const char *beat, int64_t started)
+{
+    char wire[768];
+    struct zcl_land_beat b = { beat, row->base, row->local, row->tree,
+        row->seq, row->attempt, started, platform_time_monotonic_us() };
+    if (zcl_dev_land_beat_format(&b, wire, sizeof(wire))) dl_log(row, wire);
+}
+
 /* ── rebase conflicts on the artifacts every train regenerates ──────────
  *
  * docs/CAPABILITY_INVENTORY.jsonl, docs/API_REFERENCE.md and the
@@ -6427,6 +6451,14 @@ static void dl_step_start(const struct dl_dirs *d, struct dl_row *row,
     dl_start_proof(d, row, regen_note, reply);
 }
 
+static void dl_prepare(const struct dl_dirs *d, struct dl_row *row,
+                         struct zcl_command_reply *reply, char observed_main[80])
+{
+    int64_t started = platform_time_monotonic_us();
+    dl_step_start(d, row, reply, observed_main);
+    dl_beat(row, "prepare", started);
+}
+
 /* The lease adds an expected-old-value comparison; it never grants history
  * replacement. Verify the exact proven pair's fast-forward ancestry first. */
 /* Publication diagnostics are evidence, never acceptance authority. Binary
@@ -6518,8 +6550,10 @@ static bool dl_push_proven_pair(const struct dl_dirs *d,
     const char *push[] = { "git", "-C", d->wt, "push", lease, "origin",
                            refspec, NULL };
     struct zcl_spawn_binary_observation observation = {0};
+    int64_t started = platform_time_monotonic_us();
     (void)zcl_spawn_capture_binary_merged(push, out, out_cap - 1,
                                          DL_GIT_TIMEOUT_MS, &observation);
+    dl_beat(row, "push", started);
     out[observation.output_len] = '\0';
     *recorded = dl_push_diagnostic(d, row, &observation, out);
     return observation.exit_observed && observation.exit_code == 0 &&
@@ -6838,6 +6872,7 @@ static bool dl_publication_remote_observe(const struct dl_dirs *d,
     char scratch[4096 + 96], locator[4096], output[2048];
     char target[65];
     bool ok = false;
+    int64_t started = platform_time_monotonic_us();
     tip[0] = '\0';
     source[0] = '\0';
     if (!dl_publication_target(d, target) ||
@@ -6865,6 +6900,7 @@ static bool dl_publication_remote_observe(const struct dl_dirs *d,
     ok = dl_publication_fetched_objects_check(scratch, row, tip, source);
 done:
     if (!zcl_tree_remove(scratch).ok) ok = false;
+    dl_beat(row, "fresh_observation", started);
     if (!ok) { tip[0] = '\0'; source[0] = '\0'; }
     return ok;
 #endif
@@ -7454,8 +7490,10 @@ static bool dl_resume_proof_read(const struct dl_dirs *d, struct dl_row *row,
                 d->land);
         return false;
     }
+    int64_t started = platform_time_monotonic_us();
     *p = dl_proof_read(d->wt, row->local, row->base, dimension,
                        48, detail, 512);
+    dl_beat(row, "proof_status", started);
     if (*p == DL_PROOF_MISSING) {
         dl_log(row, "proof worker missing; requeueing the persisted pair\n");
         *p = dl_proof_request(d->wt, row->local, row->base, detail, 512);
@@ -7616,7 +7654,7 @@ static void dl_resume_pending_watcher_kick(const struct dl_dirs *d,
         /* A step died between phases. Re-drive from the rebase rather than
          * guessing what the dead step had already done. */
         (void)snprintf(row->phase, sizeof(row->phase), "rebase");
-        dl_step_start(d, row, reply, observed_main);
+        dl_prepare(d, row, reply, observed_main);
         return;
     }
     if (!dl_resume_proof_read(d, row, observed_main, dimension, detail, &p, reply))
@@ -9130,7 +9168,7 @@ static void dl_step(const struct zcl_command_request *req,
     if (have_inflight)
         dl_step_resume(&d, &pick, reply, observed_main);
     else
-        dl_step_start(&d, &pick, reply, observed_main);
+        dl_prepare(&d, &pick, reply, observed_main);
     /* Still under step.lock, after the driven row's own work: rows queued
      * behind a row in flight learn now whether this main left them
      * mergeable, not when they reach the head of the queue. */
@@ -9896,9 +9934,11 @@ static void dl_attach_proof_missing(const struct dl_dirs *d,
 {
     if (waiting) {
         char dimension[48], detail[512];
+        int64_t started = platform_time_monotonic_us();
         enum dl_proof proof = dl_proof_read(d->wt, row->local, row->base,
                                             dimension, sizeof(dimension),
                                             detail, sizeof(detail));
+        dl_beat(row, "proof_status", started);
         if (proof == DL_PROOF_PENDING) {
             dl_fail(reply, "PUBLICATION_PROOF_PENDING", "attach",
                     "the reviewed pair is still proving", detail);
