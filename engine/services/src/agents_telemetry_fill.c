@@ -640,3 +640,35 @@ void agents_dump_state_fill(struct agents_snapshot *snap)
     at_fill_auth(snap, skip ? skip : at_skip_reason(started_ms));
     at_fill_backtrace(snap, skip ? skip : at_skip_reason(started_ms));
 }
+
+enum agents_snapshot_status agents_snapshot_publish(
+    struct agents_snapshot_publication *pub, const struct agents_snapshot *input)
+{
+    if (!pub || !input) return AGENTS_SNAPSHOT_UNAVAILABLE;
+    if (atomic_flag_test_and_set_explicit(&pub->guard, memory_order_acquire))
+        return AGENTS_SNAPSHOT_BUSY;
+    enum agents_snapshot_status status = AGENTS_SNAPSHOT_UNAVAILABLE;
+    if (pub->generation != UINT64_MAX) {
+        pub->snapshot = *input;
+        pub->generation++;
+        status = AGENTS_SNAPSHOT_READY;
+    }
+    atomic_flag_clear_explicit(&pub->guard, memory_order_release);
+    return status;
+}
+
+enum agents_snapshot_status agents_snapshot_read(
+    struct agents_snapshot_publication *pub, struct agents_snapshot *out, uint64_t *generation)
+{
+    if (!pub || !out || !generation) return AGENTS_SNAPSHOT_UNAVAILABLE;
+    if (atomic_flag_test_and_set_explicit(&pub->guard, memory_order_acquire))
+        return AGENTS_SNAPSHOT_BUSY;
+    enum agents_snapshot_status status = AGENTS_SNAPSHOT_UNAVAILABLE;
+    if (pub->generation != 0) {
+        *out = pub->snapshot;
+        *generation = pub->generation;
+        status = AGENTS_SNAPSHOT_READY;
+    }
+    atomic_flag_clear_explicit(&pub->guard, memory_order_release);
+    return status;
+}

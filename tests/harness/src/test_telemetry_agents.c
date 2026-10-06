@@ -62,6 +62,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <threads.h>
 
 /* One label-free assertion per line, for the same reason as
  * test_telemetry_render: TEST/ASSERT mint a per-function `_test_next` label,
@@ -302,6 +303,11 @@ static int check_fill_leaves_nothing_unset(void)
     g_mode = TA_MODE_HEALTHY;
     struct agents_snapshot snap = { 0 };
     agents_dump_state_fill(&snap);
+    struct agents_snapshot_publication publication = AGENTS_SNAPSHOT_PUBLICATION_INIT;
+    uint64_t generation = 0;
+    TA_CHECK("[fill] collected snapshot survives publication",
+        agents_snapshot_publish(&publication, &snap) == AGENTS_SNAPSHOT_READY &&
+        agents_snapshot_read(&publication, &snap, &generation) == AGENTS_SNAPSHOT_READY && generation == 1);
 
     struct json_value doc;
     json_init(&doc);
@@ -690,6 +696,120 @@ static int check_commands_answer(void)
 
 /* ── entry point ─────────────────────────────────────────────────────────── */
 
+struct at_publication_test {
+    struct agents_snapshot_publication pub;
+    atomic_uint done, ready;
+    atomic_bool go;
+};
+static struct agents_snapshot at_publication_pattern(uint64_t generation)
+{
+    return (struct agents_snapshot){.sessions_total = (int64_t)generation,
+        .sessions_revoked = -(int64_t)generation,
+        .collected_unix = (int64_t)generation + 1000,
+        .collected_unix_meta = {.presence = TELEMETRY_PRESENT, .age_ms = 17,
+            .observed_unix = (int64_t)generation + 1000, .reason = "publication"}};
+}
+static bool at_publication_matches(const struct agents_snapshot *out)
+{
+    return out->sessions_total >= 1 && out->sessions_total <= 256 &&
+        out->sessions_revoked == -out->sessions_total &&
+        out->collected_unix == out->sessions_total + 1000 &&
+        out->collected_unix_meta.observed_unix == out->collected_unix &&
+        out->collected_unix_meta.presence == TELEMETRY_PRESENT &&
+        out->collected_unix_meta.age_ms == 17;
+}
+static int at_publication_writer(void *arg)
+{
+    struct at_publication_test *test = arg;
+    atomic_fetch_add_explicit(&test->ready, 1, memory_order_release);
+    while (!atomic_load_explicit(&test->go, memory_order_acquire)) thrd_yield();
+    int result = 0;
+    for (uint64_t i = 2; i <= 256; i++) {
+        struct agents_snapshot snap = at_publication_pattern(i);
+        enum agents_snapshot_status status;
+        do { status = agents_snapshot_publish(&test->pub, &snap); }
+        while (status == AGENTS_SNAPSHOT_BUSY);
+        if (status != AGENTS_SNAPSHOT_READY) { result = 1; break; }
+    }
+    atomic_fetch_add_explicit(&test->done, 1, memory_order_release);
+    return result;
+}
+static int check_publication_concurrency(struct at_publication_test *test)
+{
+    int failures = 0;
+    struct agents_snapshot out;
+    uint64_t generation, previous = 1;
+    thrd_t writers[2];
+    unsigned started = 0;
+    for (; started < 2; started++)
+        if (thrd_create(&writers[started], at_publication_writer, test) != thrd_success) break;
+    TA_CHECK("[publication] both writers start", started == 2);
+    while (atomic_load_explicit(&test->ready, memory_order_acquire) < started) thrd_yield();
+    atomic_store_explicit(&test->go, true, memory_order_release);
+    bool mixed = false;
+    if (started) {
+        do {
+            enum agents_snapshot_status status = agents_snapshot_read(&test->pub, &out, &generation);
+            if (status == AGENTS_SNAPSHOT_READY) {
+                mixed |= !at_publication_matches(&out) || generation < previous;
+                previous = generation;
+            } else mixed |= status != AGENTS_SNAPSHOT_BUSY;
+        } while (atomic_load_explicit(&test->done, memory_order_acquire) < started);
+        int errors = 0;
+        for (unsigned i = 0; i < started; i++) {
+            int result;
+            if (thrd_join(writers[i], &result) != thrd_success) {
+                fprintf(stderr, "FAIL publication writer join\n"); abort();
+            }
+            errors |= result;
+        }
+        TA_CHECK("[publication] two writers complete without mixed reads", !mixed && errors == 0);
+        TA_CHECK("[publication] generation counts every successful publish",
+            agents_snapshot_read(&test->pub, &out, &generation) == AGENTS_SNAPSHOT_READY &&
+            generation == 1 + 255 * started && out.sessions_total == 256 && at_publication_matches(&out));
+    }
+    return failures;
+}
+static int check_snapshot_publication(void)
+{
+    int failures = 0;
+    struct at_publication_test test = {.pub = AGENTS_SNAPSHOT_PUBLICATION_INIT};
+    atomic_init(&test.done, 0);
+    atomic_init(&test.ready, 0);
+    atomic_init(&test.go, false);
+    struct agents_snapshot out = {.sessions_total = -999};
+    uint64_t generation = 999;
+    TA_CHECK("[publication] empty is unavailable and preserves outputs",
+        agents_snapshot_read(&test.pub, &out, &generation) == AGENTS_SNAPSHOT_UNAVAILABLE &&
+        out.sessions_total == -999 && generation == 999);
+    struct agents_snapshot snap = at_publication_pattern(1);
+    TA_CHECK("[publication] distinctive snapshot publishes",
+        agents_snapshot_publish(&test.pub, &snap) == AGENTS_SNAPSHOT_READY);
+    atomic_flag_test_and_set_explicit(&test.pub.guard, memory_order_acquire);
+    TA_CHECK("[publication] held writer returns busy without touching output",
+        agents_snapshot_read(&test.pub, &out, &generation) == AGENTS_SNAPSHOT_BUSY &&
+        out.sessions_total == -999 && generation == 999);
+    struct agents_snapshot saved, competing = at_publication_pattern(99);
+    memcpy(&saved, &test.pub.snapshot, sizeof(saved));
+    TA_CHECK("[publication] occupied cache refuses a publisher",
+        agents_snapshot_publish(&test.pub, &competing) == AGENTS_SNAPSHOT_BUSY);
+    TA_CHECK("[publication] refused publisher preserves snapshot and capture metadata",
+        test.pub.generation == 1 && memcmp(&saved, &test.pub.snapshot, sizeof(saved)) == 0);
+    atomic_flag_clear_explicit(&test.pub.guard, memory_order_release);
+    TA_CHECK("[publication] producer failure is unavailable",
+        agents_snapshot_publish(&test.pub, NULL) == AGENTS_SNAPSHOT_UNAVAILABLE);
+    TA_CHECK("[publication] failure preserves generation and capture age",
+        agents_snapshot_read(&test.pub, &out, &generation) == AGENTS_SNAPSHOT_READY &&
+        generation == 1 && out.collected_unix == 1001 &&
+        out.collected_unix_meta.observed_unix == 1001 && out.collected_unix_meta.age_ms == 17);
+    /* Do not race an implementation already proven to bypass ownership. */
+    if (!failures) failures += check_publication_concurrency(&test);
+    test.pub.generation = UINT64_MAX;
+    TA_CHECK("[publication] generation exhaustion refuses without wrapping",
+        agents_snapshot_publish(&test.pub, &snap) == AGENTS_SNAPSHOT_UNAVAILABLE &&
+        test.pub.generation == UINT64_MAX);
+    return failures;
+}
 int test_telemetry_agents(void)
 {
     int failures = 0;
@@ -708,6 +828,7 @@ int test_telemetry_agents(void)
      * freshness assertions depend on which clock ran first. */
     g_now = telemetry_now_unix();
     node_rpc_client_set_test_hook(ta_hook);
+    failures += check_snapshot_publication();
 
     failures += check_every_leaf_has_meaning();
     failures += check_fill_leaves_nothing_unset();

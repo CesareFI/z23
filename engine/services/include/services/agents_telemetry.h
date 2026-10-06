@@ -42,6 +42,29 @@
 
 #include "util/telemetry_snapshots.h"
 
+#include <stdatomic.h>
+#include <stdint.h>
+
+/* Internal caller-owned cache: initialize once, never copy/reset while in use.
+ * Try-only calls: no RPC, allocation, retries or blocking. READY reads return
+ * the original capture metadata and a nonzero generation. BUSY/UNAVAILABLE
+ * leave storage and read outputs unchanged. NULL input signals producer failure.
+ * Snapshot reason tokens retain their required static lifetime. */
+enum agents_snapshot_status {
+    AGENTS_SNAPSHOT_READY, AGENTS_SNAPSHOT_UNAVAILABLE, AGENTS_SNAPSHOT_BUSY
+};
+struct agents_snapshot_publication {
+    atomic_flag guard;
+    uint64_t generation;
+    struct agents_snapshot snapshot;
+};
+#define AGENTS_SNAPSHOT_PUBLICATION_INIT {.guard = ATOMIC_FLAG_INIT}
+enum agents_snapshot_status agents_snapshot_publish(
+    struct agents_snapshot_publication *pub, const struct agents_snapshot *input);
+enum agents_snapshot_status agents_snapshot_read(
+    struct agents_snapshot_publication *pub, struct agents_snapshot *out, uint64_t *generation);
+
+
 /* Fill EVERY leaf of `snap`. The caller owns the struct and must zero it
  * (`= {0}`) first: zero is TELEMETRY_UNSET, which is the provider-defect
  * signal the render layer counts, and this function is contracted to leave
