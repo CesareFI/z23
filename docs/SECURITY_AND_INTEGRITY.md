@@ -2,13 +2,16 @@
 
 # Security and Integrity Model
 
-Z23's security model is built around operator ownership: one local
-full-node binary, explicit network listeners, private wallet state, an
-onion-hosted explorer, and a typed local native command operator surface. Tor support
-publishes the operator's own service, wallet/key code stays inside the
-operator's datadir, and fuzz/chaos harnesses exercise isolated recovery paths.
-This document states the boundary, safeguards, and evidence that make those
-properties auditable.
+Use this page to inspect Z23's security boundaries, choose isolated checks, and
+interpret build-verification results. Start with a source checkout; the native
+commands also need a built `build/bin/z23`. Use only resources you own or have
+permission to use (see "Operator-owned scope").
+
+Z23 keeps operation under local authority: one full-node binary, explicit
+network listeners, private wallet state, and typed native commands. P2P means
+peer-to-peer; RPC means remote procedure call. A datadir is the operator's
+node-state directory. Tor can publish the operator's service at an onion
+address; recovery checks use isolated state.
 
 ## Current status
 
@@ -42,29 +45,36 @@ isolated fixtures, or consenting peers.
 
 | Component | Purpose | Safety boundary |
 |-----------|---------|-----------------|
-| Embedded Tor | Publish the operator's own explorer/API as a hidden service | `-tor` is explicit; opt-in build (default links a stub, onion off); test harnesses disable Tor |
+| Embedded Tor | Onion service | `-tor`; full build or offline stub [1] |
 | P2P networking and peer scoring | Implement the public ZClassic node protocol | Peer policy protects consensus and network health |
 | Wallet and key code | Local transparent/Sapling wallet operation | Diagnostics must not return private key material |
 | Native commands | Local typed operator API for AI-assisted node operation | Destructive commands are explicit and privilege-gated |
-| `z23 dbquery` | Incident-response inspection of local `node.db` | SELECT-only, semicolon-rejected, limited, and rate-gated |
+| Local queries | Inspect `node.db` | Bounded SELECT-only queries [2] |
 | Fuzzers, chaos, kill-9 harnesses | Find crashes and recovery bugs in this codebase | Isolated datadirs and ports; no live-node mutation |
 | Atomic swap and market code | Application protocol scaffolding | Settlement gaps are documented; scaffolding is not claimed complete |
 
+[1] The build selects full Tor when its archives are present; otherwise it
+links the offline stub. Test harnesses disable Tor.
+[2] Use `z23 core storage query`; semicolons are rejected, with result limits
+and HTTP rate gating.
+
 ## Shielded transaction validation posture
 
-This is stated explicitly because an auditor reading the source will find
-`return true` in a shielded-validation helper and should know what it does and
-does not mean.
+A nullifier identifies a spent shielded note. Sprout and Sapling are the
+shielded transaction pools; a JoinSplit is a Sprout transaction component. An
+anchor is a note-commitment-tree root. The reducer fold is the staged
+block-application path that advances durable chain state; H\* is its verified
+frontier.
 
 - **Nullifier double-spend is enforced** on the live block-application (reducer
   fold) path — `utxo_apply_check_and_insert_nullifiers()`
-  (`engine/jobs/src/utxo_apply_nullifiers.c`): a two-pass check rejects a nullifier
+  (`engine/jobs/src/utxo_apply_nullifiers.c`): a two-pass check rejects a
+  nullifier
   reused against the durable set or within the same block, then inserts the
   block's nullifiers only after it validates.
 - **Shielded anchor membership is enforced** on that same reducer fold path.
   `coins_view_cache_check_shielded_requirements()`
-  (`core/modules/coins/src/coins_view.c`) is a real implementation — no longer the
-  `return true` placeholder earlier revisions of this doc described. It
+  (`core/modules/coins/src/coins_view.c`) is the membership check. It
   resolves every JoinSplit and Sapling Spend anchor through
   `coins_view_get_anchor()`, honors the empty-tree root as a per-pool
   constant, and reproduces zclassicd's per-transaction `intermediates` map
@@ -78,15 +88,19 @@ does not mean.
   <!-- claim: symbol-present coins_view_get_anchor core/modules/coins/src/coins_view.c # membership really resolves anchors -->
   <!-- claim: symbol-present coins_view_cache_check_shielded_requirements engine/jobs/src/utxo_apply_anchors.c # and is really called on the fold path -->
   <!-- claim: symbol-present parity_lockin_anchor_membership tools/dev/test_group_catalog.def # the lock-in test actually runs -->
-- **Groth16 spend/output proofs, the binding signature, and the JoinSplit
-  Ed25519 signature are checkpoint-gated ONLY in the legacy `connect_block()`
-  path** (`core/modules/validation/src/connect_block.c`), equivalent to Bitcoin Core's
-  `-assumevalid` (removed as a direct flag; controlled via
+- **Groth16 (a zero-knowledge proof system) spend/output proofs, the binding
+  signature, and the JoinSplit Ed25519 (a signature algorithm) signature are
+  checkpoint-gated ONLY in the
+  legacy `connect_block()` path**
+  (`core/modules/validation/src/connect_block.c`), equivalent to
+  Bitcoin Core's `-assumevalid` (removed as a direct flag; controlled via
   `-deferproofvalidationbelow=<blockhash|0>`, default the highest in-binary
-  PoW checkpoint, height 3,100,000; `core/chainparams/src/chainparams.c`). That path
+  PoW (proof-of-work) checkpoint, height 3,100,000;
+  `core/chainparams/src/chainparams.c`). That path
   is driven by `-reindex-chainstate` (`reindex_chainstate()` in
-  `engine/composition/src/boot_index.c`), by the offline harness/simnet code, and by the
-  background revalidation walker (`engine/services/src/bg_validation_service.c`,
+  `engine/composition/src/boot_index.c`), by the offline harness/simnet code,
+  and by the background revalidation walker
+  (`engine/services/src/bg_validation_service.c`,
   `-nobgvalidation` to disable) — which itself re-verifies every proof it
   walks and clears the deferred-height gate once the walk passes it.
   **The reducer's state-advancing path — `proof_validate_stage()`
@@ -97,47 +111,50 @@ does not mean.
   only crypto pass-through in that reducer pipeline is the `mint_skip_crypto`
   toggle (`engine/jobs/include/jobs/mint_skip_crypto.h`), which is exclusively
   set by the offline one-shot `-mint-anchor` driver
-  (`engine/composition/src/boot_mint_anchor.c`, gated under `ctx->mint_anchor`), defaults
+  (`engine/composition/src/boot_refold_staged.c`, enabled only by
+  `-mint-anchor-fast` under the offline `ctx->mint_anchor` driver), defaults
   OFF on every normal boot (a normal boot never calls the setter), and its
   output is durably marked `checkpoint_fold` (never `verified`) —
   excluded from serving validity, H\*, and tip finalization. Enforced by the
   lint gate `check-mint-skip-crypto-offline-only` + `test_mint_skip_crypto`.
-- **Anchor (note-commitment-tree root) membership is not checked independently.**
-  It is certified *implicitly* by the Groth16 proof, whose circuit constrains the
-  Merkle path of the commitment to equal the claimed anchor
-  (`core/modules/sapling/src/sapling_circuit.c`). On the reducer path this proof is
-  verified unconditionally (above); on the legacy `connect_block()` path it
-  carries the same deferred-height gating as proof verification there.
+- **Anchor membership and proof verification are separate checks.** The
+  legacy `connect_block()` path calls
+  `coins_view_cache_have_joinsplit_requirements()` independently of its
+  deferred proof-verification gate. Groth16 also constrains the commitment's
+  Merkle path (`core/modules/sapling/src/sapling_circuit.c`).
 
-Net: on the reducer path that actually advances the node's durable tip, a
-reorg cannot exceed the bounded reorg depth AND every Groth16/Ed25519
-proof/signature below tip is verified — there is no `assumevalid`-style trust
-window on the live, state-advancing path. The `assumevalid`-equivalent
-deferred-height gate is real but confined to the legacy `connect_block()`
-reindex/import/simnet path, where it carries the same practical exposure as
-any `assumevalid`-style node until the background walker (or a later
-`-reindex-chainstate`) passes that height. Independent (non-`assumevalid`)
-anchor-membership verification on that legacy path is tracked as a hardening
-item, not a claimed property.
+Net: on the reducer path that actually advances the node's durable tip, a reorg
+cannot exceed the bounded reorg depth AND every Groth16/Ed25519 proof/signature
+below tip is verified — there is no `assumevalid`-style trust window on the
+live, state-advancing path. The `assumevalid`-equivalent deferred-height gate is
+real but confined to the legacy `connect_block()` reindex/import/simnet path,
+where it carries the same practical exposure as any `assumevalid`-style node
+until the background walker (or a later `-reindex-chainstate`) passes that
+height. Anchor membership is checked independently on both paths.
 
 ## Concrete safeguards
 
 - **Defensive-coding gates:** `make lint` checks raw SQLite writes, raw
-  allocation use, silent error paths, native command error bodies, supervisor liveness,
-  app-shape boundaries, one-write-path rules, and no-silent-ready rules. The
-  detailed contract is [`DEFENSIVE_CODING.md`](./DEFENSIVE_CODING.md).
-- **Local integration gate:** `make ci` runs lint before tests, then the test
-  harness, benchmark regression, hermetic MVP slice gates, crash tests, and
-  fuzz smoke tests where the toolchain is available. Workflow automation uses
-  only explicitly managed self-hosted runners. Mainline build/test observations
-  and the trusted-base pull-request security scan are supplementary; exact
-  local receipts remain admission authority.
+  allocation use, silent error paths, native command error bodies, supervisor
+  liveness, app-shape boundaries, one-write-path rules, and no-silent-ready
+  rules. The detailed contract is
+  [`DEFENSIVE_CODING.md`](./DEFENSIVE_CODING.md).
+- **Local integration gate:** `make ci` requires lint, benchmark regression,
+  vendor readiness, and the node and test runner. Its recipe then runs the
+  portability symbol-floor check, isolated test runner, hermetic MVP slice
+  gates, soak-evidence checks, crash tests, and fuzz smoke checks. The
+  isolated node recovery check is separate (`make test-crash-bootstrap`).
+  Workflow automation uses only
+  explicitly managed self-hosted runners. Mainline build/test observations and
+  the trusted-base pull-request security scan are supplementary; exact local
+  receipts remain admission authority.
 - **Operator-private HTTP routes:** `/api/wallet`, `/api/messages`, and
   `/api/swaps` are classified operator-private (`api_route_is_operator_private`,
-  `core/modules/net/src/https_server.c`) and 403'd before dispatch on the 0.0.0.0 TLS
-  clearnet listener (no CORS header); public chain-data routes are unaffected,
-  the onion listener exposes no `/api`, and the in-process `wallet_gui`
-  consumer bypasses the listener entirely.
+  `core/modules/net/src/https_server.c`) and 403'd before dispatch on the
+  0.0.0.0 TLS (encrypted HTTP) clearnet listener (no CORS cross-origin access
+  header); public chain-data routes are unaffected, the onion listener exposes
+  no `/api`, and the in-process `wallet_gui` consumer bypasses the listener
+  entirely.
 - **Script opcode parsing is guarded against buffer overflow:** `script_get_op`
   enforces a destination-capacity guard before the opcode-data memcpy (an
   unguarded copy could write up to ~9994 bytes into 520-byte caller buffers —
@@ -150,20 +167,19 @@ item, not a claimed property.
   repairable).
 - **Nullifier double-spend is enforced by a consensus nullifier set**
   (`nullifier_kv`, Sprout/Sapling separate namespaces, checked + inserted
-  atomically with the coins commit inside the `utxo_apply` stage txn).
-  **Known limit:** nullifier enforcement is activation-forward on
-  snapshot-seeded datadirs (a from-genesis replay/reindex gets the complete
-  set automatically); the pre-activation backfill gap is a permanent typed
-  blocker (`utxo_apply.nullifier_backfill_gap`), remediated by the owner-gated
+  atomically with the coins commit inside the `utxo_apply` stage txn). **Known
+  limit:** nullifier enforcement is activation-forward on snapshot-seeded
+  datadirs (a from-genesis replay/reindex gets the complete set automatically);
+  the pre-activation backfill gap is a permanent typed blocker
+  (`utxo_apply.nullifier_backfill_gap`), remediated by the owner-gated
   `engine/services/src/nullifier_backfill_service.c` populate-only walker.
 - **Wallet backups are encrypted** when `WALLET_BACKUP_PASSWORD` is set
   (ChaCha20-Poly1305 via `wallet_backup_encrypt_file`); no password means
   plaintext continues with a loud boot warning, since refusing would silently
   kill the fleet-wide key-loss safety net.
-- **Operator-private HTTP routes** are guarded as described above.
-- **Refuted findings (pinned so they are not "fixed" again):** the retarget
-  half of "difficulty retarget not enforced on live ingest" is false — every
-  P2P header runs `accept_block_header → contextual_check_block_header →
+- **Refuted findings (pinned so they are not "fixed" again):** the retarget half
+  of "difficulty retarget not enforced on live ingest" is false — every P2P
+  header runs `accept_block_header → contextual_check_block_header →
   GetNextWorkRequired` (`bad-diffbits`); and "SIGHASH_SINGLE should return the
   Bitcoin `uint256(1)` sentinel" is a false positive — zclassicd itself throws
   and catches a `logic_error` there and returns false (bug-for-bug parity,
@@ -175,12 +191,14 @@ item, not a claimed property.
 - **Live-data discipline:** consensus-adjacent fixes are proven on a datadir
   copy before deployment. The isolated node harness refuses live datadirs and
   live ports and runs on throwaway `/tmp/zcl23-*` state.
-- **Release integrity:** `tools/release.sh` builds with deterministic release
-  flags, writes `BUILDINFO`, emits a SHA3-256 attestation, and supports GPG.
-  Its `--unsigned` output is explicitly local-development-only. Stable
-  publication is contained until exact-candidate quality evidence,
-  independently reproduced bytes, complete SBOM/provenance/manifests, and the
-  required offline signature quorum are all enforced.
+- **Release integrity:** `tools/release.sh --verify <archive.tar.gz>` checks an
+  existing archive's SHA3-256 manifest, detached GPG (OpenPGP) signature, and
+  archive structure. It reports local artifact verification, not stable release
+  verification. Every build/package/sign/publish invocation, including
+  `--unsigned`, is refused before workspace mutation. Stable publication remains
+  contained pending exact-candidate quality evidence, independent reproduction,
+  SBOM (software bill of materials), provenance, manifests, and the offline
+  signature quorum.
 - **Dependency provenance:** the shipped binary is not libc-only — it
   statically links vendored, source-built, SHA256-pinned third-party static
   libraries (OpenSSL, libevent, LevelDB, and secp256k1; see
@@ -188,21 +206,28 @@ item, not a claimed property.
   table). The precise claim is **no unvendored, unpinned, or dynamically
   fetched-at-runtime dependencies** — every third-party source tarball is
   fetched from a pinned URL and verified against a pinned SHA256 before it is
-  built and linked in; `libsecp256k1.a` (a custom fork build) ships
-  committed. Vendored and ported third-party code is tracked in
+  built and linked in; `libsecp256k1.a` (a custom fork build) ships committed.
+  Vendored and ported third-party code is tracked in
   [`ATTRIBUTIONS.md`](./ATTRIBUTIONS.md), [`../NOTICE`](../NOTICE), and the
-  repository tree. Packaging of several static libraries is still a known
-  pre-v1 build gap and is documented in the README.
+  repository tree. Packaging of several static libraries is still a known pre-v1
+  build gap and is documented in the README.
 
 ## Reproducible build gate: what is proven, what remains
 
-The node binary is byte-for-byte reproducible across two independent builders.
+The two checks below compare build bytes at different scopes.
+
+| Check | Compared bytes |
+| --- | --- |
+| `make repro-verify` | Two local builds in different directories |
+| `z23 zcode node verify` | Received artifact and local rebuild |
+
 `make repro-verify` (`tools/scripts/repro-verify.sh`) is the standing proof: it
 snapshots the current working tree into two isolated build directories whose
 absolute paths differ in both value and length, builds `build/bin/z23` in
 each, and SHA3-256- plus `cmp`-compares the two shipped (stripped) artifacts. It
-prints one `PASS`/`FAIL` line. It is opt-in (two full whole-program LTO links,
-~2x a normal build) and is intentionally NOT on the `make lint` / `make ci`
+prints one `PASS`/`FAIL` line. It is opt-in (two full whole-program LTO
+(link-time optimization) links, ~2x a normal build) and is intentionally NOT on
+the `make lint` / `make ci`
 path.
 
 For a P2P-reconstructed source carrier, the same gate has a Git-free mode.
@@ -219,15 +244,16 @@ directories produce an identical `build/bin/z23` — identical SHA3-256,
 identical `.note.gnu.build-id`, identical bytes. `.text`/`.rodata`/`.data` were
 already identical because the shipped binary is stripped (`strip -s`); the only
 divergences an empirical two-directory build exposed were the absolute build
-directory baked into DWARF, fixed by behavior-identical determinism flags
-(`REPRO_CFLAGS` in the Makefile, no optimization or codegen change):
+directory baked into DWARF (debug metadata), fixed by behavior-identical
+determinism flags (`REPRO_CFLAGS` in the Makefile, no optimization or codegen
+change):
 
 - `DW_AT_comp_dir` (the compile-time working directory, an absolute path) is
-  remapped to a fixed virtual root with `-ffile-prefix-map=$(CURDIR)=/zclassic23`.
-  Left unmapped it perturbs the split `.debug` sidecar — and therefore the
-  `.gnu_debuglink` CRC32 (4 bytes) in the shipped binary — and the pre-strip
-  link content — and therefore the content-derived `.note.gnu.build-id` sha1
-  (20 bytes).
+  remapped to a fixed virtual root with
+  `-ffile-prefix-map=$(CURDIR)=/zclassic23`. Left unmapped it perturbs the split
+  `.debug` sidecar — and therefore the `.gnu_debuglink` CRC32 (4 bytes) in the
+  shipped binary — and the pre-strip link content — and therefore the
+  content-derived `.note.gnu.build-id` sha1 (20 bytes).
 - `DW_AT_producer` records the exact gcc switch line when GCC defaults to
   `-grecord-gcc-switches`; that line embeds the absolute `-ffile-prefix-map`
   argument, so it is re-canonicalized with `-gno-record-gcc-switches`.
@@ -253,19 +279,28 @@ integrity anchor.
 
 ### The user-facing check: `z23 zcode node verify`
 
-`make repro-verify` is a maintainer gate: it proves this *source tree* builds
-deterministically here. It does not answer the question an ordinary user has,
-which is narrower and more important — *are the bytes I am running the bytes my
-own machine builds?* `z23 zcode node verify` answers that one. It hashes the
-artifact you have (by default this process's own executable), rebuilds `z23`
-from `source_dir` in an isolated tree via `tools/scripts/node_reproduce.sh`,
-and byte-compares. It contacts nothing.
+`make repro-verify` compares two builds of this source tree. To compare an
+artifact you received with a local rebuild:
+
+1. Have the source checkout and its build prerequisites available locally.
+2. From that checkout, run:
+
+   ```bash
+   build/bin/z23 zcode node verify --input='{"source_dir":"."}'
+   ```
+
+3. Read `verdict` and the named `unverified` components in the reply.
+
+The command hashes the artifact (by default its own executable), rebuilds from
+`source_dir` in an isolated tree via `tools/scripts/node_reproduce.sh`, and
+byte-compares. It contacts nothing.
 
 It structurally cannot perform the worthless check. Comparing a published hash
 against the file it was published beside has one participant; the comparator
-(`contexts/commons/modules/vcs/src/node_reproduce.c`) refuses unless one receipt carries producer
-`received` and the other `local-rebuild`, so no argument list reaches that
-comparison, and no input key accepts a hash or someone else's receipt.
+(`contexts/commons/modules/vcs/src/node_reproduce.c`) refuses unless one receipt
+carries producer `received` and the other `local-rebuild`, so no argument list
+reaches that comparison, and no input key accepts a hash or someone else's
+receipt.
 
 The `verdict` is the answer, never the envelope status:
 
@@ -278,8 +313,9 @@ The `verdict` is the answer, never the envelope status:
 | `claim-false` | same source *and* the same recorded toolchain, different bytes: the artifact is not what this source and toolchain produce |
 | `undiagnosed` | the bytes differ and an identity is missing, so it names neither rather than guessing |
 
-Both sides' toolchain identity is read the same way — SHA3-256 over each ELF's
-`.comment` section, by one implementation — because measuring the two sides
+Both sides' toolchain identity is read the same way — SHA3-256 over each ELF
+(Linux executable format) file's `.comment` section, by one implementation —
+because measuring the two sides
 differently would grade every honest build a toolchain mismatch.
 
 **What it covers today, exactly:** the linked `bin/z23` artifact. **What it
@@ -306,8 +342,8 @@ default portable `-march=x86-64-v3` profile on a single toolchain/host class;
 cross-*toolchain* (different gcc versions) reproducibility is not asserted. A
 `ZCL_NATIVE=1` build is machine-specific by design and is excluded. The
 `ci-reproducible` target / `tools/scripts/check_reproducible_build.sh` remains
-the complementary same-directory check under the exact `tools/release.sh`
-release flag profile (pinned `SOURCE_DATE_EPOCH`, `-Wl,--build-id=none`); it and
+the complementary same-directory check under the Makefile's resolved release
+flag profile (pinned `SOURCE_DATE_EPOCH`, `-Wl,--build-id=none`); it and
 `repro-verify` share the `REPRO_CFLAGS` determinism through the resolved release
 flag set. The full offline signature quorum, SBOM/provenance, and independent
 third-party reproduction that gate *stable publication* remain contained (see
@@ -322,13 +358,13 @@ The README states these properties; this is where each one names the mechanism
 | --- | --- |
 | **A validity decision has exactly two inputs** - the binary you compiled, and the proof-of-work-heaviest header chain. No operator attestation, no certificate authority, no registry lookup anywhere in a consensus path. | [`HOW_THE_NODE_WORKS.md`](./HOW_THE_NODE_WORKS.md) |
 | **`core/` is byte-sealed** - checkpoints, chain params and consensus math are pinned by `core/MANIFEST.sha3`. Any byte change fails `check-core-seal` and needs a recorded unseal ([`../core/UNSEAL.md`](../core/UNSEAL.md)). This binds an AI agent working on the code exactly as much as it binds you. | `make lint` |
-| **Consensus stays bit-compatible with `zclassicd`** - enforced by `check-consensus-parity` plus a golden-value test group; consensus-changing contributions are declined ([`CONSENSUS_PARITY_DOCTRINE.md`](./CONSENSUS_PARITY_DOCTRINE.md)). | `make -j"$(nproc)" t-fast ONLY=consensus_parity` |
+| **Consensus stays bit-compatible with `zclassicd`** - enforced by `check-consensus-parity` plus a golden-value test group; consensus-changing contributions are declined ([`CONSENSUS_PARITY_DOCTRINE.md`](./CONSENSUS_PARITY_DOCTRINE.md)). | `make -j"$(getconf _NPROCESSORS_ONLN)" t-fast ONLY=consensus_parity` |
 | **The process restricts itself before it reports ready** - `-sandbox=steady` applies `no_new_privs`, `PR_SET_DUMPABLE(0)`, Landlock datadir grants and a seccomp deny-list, installed with seccomp `TSYNC` so already-running threads are covered, not only new ones. | `build/bin/z23 ops state --subsystem=sandbox` |
-| **No subprocess execution** - zero `system()` and `popen()` in shipped app/lib/config code, enforced by a gate rather than by convention. An explicitly admitted commons build or test action may invoke its bound toolchain only inside the separate bounded worker lifecycle; fetching source never invokes it. | `make lint` |
+| **No subprocess execution** - zero `system()` and `popen()` in resident node code, enforced by a gate rather than by convention. An explicitly admitted commons build or test action may invoke its bound toolchain only inside the separate bounded worker lifecycle; fetching source never invokes it. | `make lint` |
 | **Wallet secrets have exactly one writer** - the encryption-aware `wallet_sqlite` layer. The old plaintext mirror is deleted and a gate ratchets that it never returns. Keys wrap in AES-256-GCM (PBKDF2-HMAC-SHA512, 200k iterations) under a passphrase ([`CUSTODY_MODEL.md`](./CUSTODY_MODEL.md)). | `make lint` |
 | **Crash recovery is executed, not claimed** - a node is kill-9ed mid-write on an isolated datadir and must fold back to its tip with no manual repair. | `make test-crash-bootstrap` |
 | **Read-only queries are constrained by construction** - SELECT-only, semicolons rejected, auto-`LIMIT`, a wall-clock budget, and wallet-secret tables denied by name. | `build/bin/z23 core storage query` |
-| **Public hosting default-refuses** - a node announces and serves only packages it can classify into a named public shape, and the licensed shapes require a verified author signature, an allowlisted SPDX identifier and real `LICENSE` text before a byte moves ([`P2P_SOURCE_HOSTING.md`](./P2P_SOURCE_HOSTING.md)). Anything unrecognised is refused by name. | `make -j"$(nproc)" t-fast ONLY=zcode_swarm` |
+| **Public hosting default-refuses** - a node announces and serves only packages it can classify into a named public shape, and the licensed shapes require a verified author signature, an allowlisted SPDX (license vocabulary) identifier and real `LICENSE` text before a byte moves ([`P2P_SOURCE_HOSTING.md`](./P2P_SOURCE_HOSTING.md)). Anything unrecognised is refused by name. | `make -j"$(getconf _NPROCESSORS_ONLN)" t-fast ONLY=zcode_swarm` |
 | **The bytes you run are the bytes your own machine builds** - not "signed by someone reputable", and not a published hash checked against the file it was published beside. The command rebuilds locally and compares, names what it did *not* cover, and reports `partial` rather than `match` while anything is uncovered. | `z23 zcode node verify --input='{"source_dir":"."}'` |
 | **The gates run on your machine**, with no hosted CI service in the loop. | `make lint && make ci` |
 
@@ -356,8 +392,10 @@ Evidence files worth reading first:
 - [`../.github/SECURITY.md`](../.github/SECURITY.md) - vulnerability reporting.
 - [`MVP.md`](./MVP.md) - v1 acceptance criteria and readiness score.
 - [`RUNBOOK.md`](./RUNBOOK.md) - operational safety rails.
-- [`../tools/scripts/isolated_node_env.sh`](../tools/scripts/isolated_node_env.sh) - isolated process/datadir guardrails.
-- [`../tools/release.sh`](../tools/release.sh) - reproducible release and signing logic.
+- [Isolated node harness](../tools/scripts/isolated_node_env.sh) - process
+  and datadir guardrails.
+- [`../tools/release.sh`](../tools/release.sh) - existing archive
+  verification and release containment.
 
 ## Reporting
 
