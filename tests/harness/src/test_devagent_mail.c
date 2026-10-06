@@ -16,6 +16,7 @@
 #include "command/native_devagent.h"
 #include "config/command_catalog.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "kernel/command_registry.h"
 #include "platform/private_directory.h"
 #include "platform/state_root.h"
@@ -822,9 +823,11 @@ _test_next:;
  * verify; a row without them reads "", and a value too long to be a post
  * id or a host key reads "" too, never a truncated prefix. Post has no
  * input for either: only a transport writes them. */
+static int test_mail_utf8_ref(void);
 static int test_mail_board_fields(void)
 {
     int failures = 0;
+    failures += test_mail_utf8_ref();
     TEST("mail: pull returns board_post and board_signer a transport appended") {
         static const char id[] =
             "1111111111111111111111111111111111111111111111111111111111111111";
@@ -873,6 +876,58 @@ static int test_mail_board_fields(void)
         PASS();
     }
 _test_next:;
+    return failures;
+}
+
+static int test_mail_utf8_ref(void)
+{
+    int failures = 0;
+    TEST("mail: invalid UTF-8 ref refuses before append; Unicode is exact") {
+        struct dvx_call c;
+        char maildir[1100], path[1200], line[8192];
+        const char *text = "caf\xc3\xa9\n\"\\";
+        const char *binding = "0123456789abcdef0123456789abcdef";
+        FILE *f;
+        struct json_value row;
+        dvx_isolate("utf8-ref");
+        dvx_post(&c, "alice", "bob", "note", "hello");
+        ASSERT(json_push_kv_str(&c.input, "ref", "a\xff" "b"));
+        ASSERT(dvx_run(&c));
+        ASSERT(!dvx_ok(&c));
+        ASSERT_STR_EQ(c.reply.error.code, "BAD_INPUT");
+        dvx_end(&c);
+        ASSERT(dvx_outbox_empty());
+        dvx_post(&c, "alice", "bob", "note", "a\xff" "b");
+        ASSERT(dvx_run(&c));
+        ASSERT(!dvx_ok(&c));
+        ASSERT_STR_EQ(c.reply.error.code, "BAD_INPUT");
+        dvx_end(&c);
+        ASSERT(dvx_outbox_empty());
+        dvx_post(&c, "alice", "bob", "note", text);
+        ASSERT(json_push_kv_str(&c.input, "ref", text));
+        ASSERT(json_push_kv_str(&c.input, "sender_binding", binding));
+        ASSERT(dvx_run(&c));
+        ASSERT(dvx_ok(&c));
+        dvx_end(&c);
+        dvx_maildir(maildir, sizeof(maildir));
+        ASSERT(snprintf(path, sizeof(path), "%s/outbox.jsonl", maildir) < (int)sizeof(path));
+        f = fopen(path, "r");
+        ASSERT(f != NULL);
+        bool read = fgets(line, sizeof(line), f) != NULL;
+        ASSERT_EQ(fclose(f), 0);
+        ASSERT(read);
+        ASSERT(zutf8_validate_n(line, strlen(line)));
+        ASSERT(json_valid(line, strlen(line)));
+        json_init(&row);
+        ASSERT(json_read(&row, line, strlen(line)));
+        ASSERT_STR_EQ(json_get_str(json_get(&row, "ref")), text);
+        ASSERT_STR_EQ(json_get_str(json_get(&row, "body")), text);
+        ASSERT_STR_EQ(json_get_str(json_get(&row, "sender_binding")), binding);
+        json_free(&row);
+        PASS();
+    }
+_test_next:;
+    dvx_restore();
     return failures;
 }
 

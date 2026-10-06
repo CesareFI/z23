@@ -249,6 +249,7 @@ ZCL_WINDOWS_ACCEPTANCE_dev_fleet_capture_SOURCES := \
 ZCL_WINDOWS_ACCEPTANCE_dev_agent_mail_SOURCES := \
 	tests/harness/src/dev_agent_mail_windows_acceptance.c \
 	tools/command/native_devagent_mail.c \
+	contexts/commons/packages/zutf8/src/zutf8.c \
 	platform/modules/json/src/json.c \
 	platform/modules/platform/src/directory_transaction.c \
 	platform/modules/platform/src/private_file.c \
@@ -259,7 +260,7 @@ ZCL_WINDOWS_ACCEPTANCE_dev_agent_mail_SOURCES := \
 	platform/modules/base/src/safe_alloc.c \
 	platform/modules/base/src/log_level.c
 ZCL_WINDOWS_ACCEPTANCE_dev_agent_mail_FLAGS := \
-	-Itools
+	-Itools -Icontexts/commons/packages/zutf8/include
 ZCL_WINDOWS_ACCEPTANCE_dev_agent_mail_LIBS := \
 	-ladvapi32 -lshell32 -lole32 -luuid $(ZCL_WINDOWS_ACCEPTANCE_PTHREAD_LIB)
 

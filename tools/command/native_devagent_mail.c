@@ -169,6 +169,7 @@
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "platform/directory_compat.h"
 #include "platform/private_file.h"
 #include "platform/state_root.h"
@@ -864,6 +865,8 @@ static const struct dvm_fail_info {
                  "input.ref too large"},
   escape_info = {"BAD_INPUT", "row fields too large to encode",
                  "escape budget exceeded"},
+  utf8_info = {"BAD_INPUT", "body and ref must be valid UTF-8",
+               "input.body or input.ref has invalid UTF-8"},
   line_big_info = {"BAD_INPUT", "row too large to encode",
                    "line budget exceeded"},
   newline_info = {"BAD_INPUT", "body must be one line of text",
@@ -907,6 +910,9 @@ static const struct dvm_fail_info *dvm_post_check_body_from_ref(
     if (!in->from || !in->from[0] || !dvm_agent_ok(in->from))
         return &from_bad_info;
     if (strlen(in->ref) > 200) return &ref_big_info;
+    if (!zutf8_validate_n(in->body, strlen(in->body)) ||
+        !zutf8_validate_n(in->ref, strlen(in->ref)))
+        return &utf8_info;
     if (!dvm_binding_ok(in->sender_binding)) return &binding_bad_info;
     return NULL;
 }
