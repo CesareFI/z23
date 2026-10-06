@@ -60,6 +60,8 @@ int test_sem_replay(void);
 #if !defined(_WIN32)
 
 #include "util/spawn.h"
+#include "json/json.h"
+#include "zutf8/zutf8.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -615,6 +617,47 @@ int test_sem_replay(void)
         PASS();
     }
 
+    TEST("request encoding preserves direct and quoted name-status entries") {
+        char probe[PATH_MAX], source[PATH_MAX], quoted[PATH_MAX];
+        ASSERT(srt_write(fx.repo, "a\"b.c", "/* fixture */\n"));
+        const char *git[] = {"git", "-C", fx.repo, "-c", "core.quotePath=true",
+                            "diff", "--no-index", "--name-status", "--", "/dev/null", "a\"b.c", NULL};
+        ASSERT_EQ(srt_run(git), 1);
+        char *field = strchr(g_srt_out, '\t');
+        ASSERT(field != NULL);
+        snprintf(quoted, sizeof quoted, "%s", field + 1);
+        quoted[strcspn(quoted, "\r\n")] = '\0';
+        snprintf(source, sizeof source, "%s/a\"b.c", fx.repo);
+        ASSERT(remove(source) == 0);
+        const char *code = "#include \"tools/dev/sem_replay_plan.c\"\n"
+            "int main(int n,char **v){struct sr_strv f={.v=v+1,.n=(size_t)(n-1)};char *s=request_json(&f,NULL,0);if(!s)return 3;puts(s+8);return 0;}\n";
+        ASSERT(srt_write(fx.tools, "fx_request.c", code));
+        snprintf(source, sizeof source, "%s/fx_request.c", fx.tools);
+        snprintf(probe, sizeof probe, "%s/fx_request", fx.tools);
+        const char *cc[] = {"cc", "-std=c23", "-O1", "-D_POSIX_C_SOURCE=200809L", "-D_DEFAULT_SOURCE", "-I.", "-Iplatform/modules/util/include",
+            "-Iplatform/modules/base/include", "-Iplatform/modules/platform/include",
+            "-Iplatform/modules/sha3/include", "-Icontexts/commons/packages/zjsonp/include",
+            "-Icontexts/commons/packages/zutf8/include", "-o", probe, source,
+            "tools/dev/sem_replay_util.c", "platform/modules/base/src/safe_alloc.c",
+            "platform/modules/platform/src/clock.c", "platform/modules/sha3/src/sha3.c",
+            "contexts/commons/packages/zjsonp/src/zjsonp.c", "contexts/commons/packages/zutf8/src/zutf8.c", NULL};
+        int compiled = srt_run(cc); if (compiled) printf("%s", g_srt_out);
+        ASSERT_EQ(compiled, 0);
+        const char *args[] = {probe, "a\"b.c", quoted, "a\\n\001\xc3\xa9.c", NULL};
+        ASSERT_EQ(srt_run(args), 0);
+        ASSERT(zutf8_validate(g_srt_out));
+        struct json_value decoded;
+        json_init(&decoded);
+        ASSERT(json_read(&decoded, g_srt_out, strlen(g_srt_out)));
+        const struct json_value *files = json_get(&decoded, "files");
+        ASSERT(files && files->type == JSON_ARR && files->num_children == 3);
+        for (size_t i = 0; i < 3; i++)
+            ASSERT_STR_EQ(json_get_str(json_at(files, i)), args[i + 1]);
+        json_free(&decoded);
+        const char *bad[] = {probe, "a\xff.c", NULL};
+        ASSERT_EQ(srt_run(bad), 3);
+        PASS();
+    }
     TEST("a facts plan that leaves out the changed TU exits 3 (false negative)") {
         int rc = srt_step(&fx, "fx-planner-omits", fx.c1, "1", state_a);
         if (rc != SRT_EXIT_FALSE_NEGATIVE)

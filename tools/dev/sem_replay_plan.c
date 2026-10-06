@@ -4,6 +4,7 @@
 #include "sem_replay_plan.h"
 
 #include "base/safe_alloc.h"
+#include "zutf8/zutf8.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -161,8 +162,13 @@ static void on_value(void *ctx, const char *path, const char *v)
 static bool append(char **buf, size_t *n, size_t *cap, const char *s)
 {
     size_t l = strlen(s);
-    if (*n + l + 1 > *cap) {
-        size_t nc = (*cap + l + 1) * 2;
+    if (*n == SIZE_MAX || l > SIZE_MAX - *n - 1) {
+        fprintf(stderr, "sem-replay: request size overflow\n");
+        return false;
+    }
+    size_t need = *n + l + 1;
+    if (need > *cap) {
+        size_t nc = need > SIZE_MAX / 2 ? need : need * 2;
         char *nb = zcl_realloc(*buf, nc, "sem_replay_plan_request");
         if (nb == NULL) {
             fprintf(stderr, "sem-replay: out of memory building a request\n");
@@ -176,6 +182,24 @@ static bool append(char **buf, size_t *n, size_t *cap, const char *s)
     return true;
 }
 
+static bool append_string(char **buf, size_t *n, size_t *cap, const char *s)
+{
+    if (!zutf8_validate(s)) {
+        fprintf(stderr, "sem-replay: invalid UTF-8 in request string\n");
+        return false;
+    }
+    bool ok = append(buf, n, cap, "\"");
+    for (const unsigned char *p = (const unsigned char *)s; ok && *p; p++) {
+        char text[8] = {(char)*p, '\0'};
+        if (*p == '"' || *p == '\\') {
+            text[0] = '\\'; text[1] = (char)*p; text[2] = '\0';
+        } else if (*p < 0x20)
+            (void)snprintf(text, sizeof(text), "\\u%04x", (unsigned)*p);
+        ok = append(buf, n, cap, text);
+    }
+    return ok && append(buf, n, cap, "\"");
+}
+
 static char *request_json(const struct sr_strv *files, const char *facts,
                           long offset)
 {
@@ -183,15 +207,14 @@ static char *request_json(const struct sr_strv *files, const char *facts,
     size_t n = 0, cap = 0;
     bool ok = append(&buf, &n, &cap, "--input={\"files\":[");
     for (size_t i = 0; ok && i < files->n; i++) {
-        ok = append(&buf, &n, &cap, i ? ",\"" : "\"") &&
-             append(&buf, &n, &cap, files->v[i]) &&
-             append(&buf, &n, &cap, "\"");
+        ok = append(&buf, &n, &cap, i ? "," : "") &&
+             append_string(&buf, &n, &cap, files->v[i]);
     }
     ok = ok && append(&buf, &n, &cap, "]");
     if (ok && facts != NULL) {
         snprintf(tail, sizeof(tail), ",\"facts_offset\":%ld", offset);
-        ok = append(&buf, &n, &cap, ",\"facts\":\"") &&
-             append(&buf, &n, &cap, facts) && append(&buf, &n, &cap, "\"") &&
+        ok = append(&buf, &n, &cap, ",\"facts\":") &&
+             append_string(&buf, &n, &cap, facts) &&
              append(&buf, &n, &cap, tail);
     }
     ok = ok && append(&buf, &n, &cap, "}");
