@@ -670,6 +670,44 @@ static int test_fe_bridge(void)
     return failures;
 }
 
+static bool fe_bridge_fixture(const char *path, const char *bytes, size_t n,
+                              bool write)
+{
+    char body[256];
+    if (n > sizeof(body)) return false;
+    FILE *f = fopen(path, write ? "wb" : "rb");
+    if (!f) return false;
+    size_t got = write ? fwrite(bytes, 1, n, f) : fread(body, 1, sizeof(body), f);
+    bool ok = !ferror(f); int closed = fclose(f);
+    return ok && closed == 0 && got == n && (write || memcmp(body, bytes, n) == 0);
+}
+
+static int test_fe_bridge_nul(void)
+{
+    int failures = 0;
+    TEST("fleet enrol: a NUL cannot hide an existing bridge grant") {
+        const char record[] = "\0\nrestrict,port-forwarding,permitlisten=\"127.0.0.1:22207\" "
+                              "ssh-ed25519 AAAAC3NzaC1 owner@box z23-fleet-studio\n";
+        char path[PATH_MAX], dir[PATH_MAX];
+        const char *why = NULL; bool added;
+        fe_isolate("bridge-nul");
+        (void)snprintf(dir, sizeof(dir), "%s/.ssh", g_fe_home);
+        (void)mkdir(g_fe_home, 0700); ASSERT(mkdir(dir, 0700) == 0);
+        (void)snprintf(path, sizeof(path), "%s/authorized_keys", dir);
+        for (size_t i = 0; i < 3; ++i) {
+            const char *bytes = i == 0 ? record : record + 2;
+            size_t n = sizeof(record) - 1u - (i == 0 ? 0u : 2u) - (i == 2 ? 1u : 0u);
+            ASSERT(fe_bridge_fixture(path, bytes, n, true)); added = true;
+            bool ok = fleet_bridge_authorize(record + 2, "studio", &added, &why);
+            ASSERT_EQ(ok, i != 0); ASSERT(!added);
+            ASSERT_STR_EQ(why ? why : "", i == 0 ? FLEET_ENROL_WHY_BRIDGE_UNWRITABLE : "");
+            ASSERT(fe_bridge_fixture(path, bytes, n, false));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_fe_ssh_record(void)
 {
     int failures = 0;
@@ -1026,6 +1064,7 @@ int test_fleet_enrol(void)
     failures += test_fe_invite_nonce_fresh();
     failures += test_fe_admit_two_machines();
     failures += test_fe_bridge();
+    failures += test_fe_bridge_nul();
     failures += test_fe_ssh_record();
     failures += test_fe_onion_grammar();
     failures += test_fe_onion_refused_at_mint();

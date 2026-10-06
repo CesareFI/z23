@@ -411,6 +411,23 @@ static bool fe_bridge_present(const char *body, const char *name)
     return strstr(body, tag) != NULL;
 }
 
+/* Read the measured store before any string search or append. */
+static bool fe_bridge_read(struct platform_private_file *file, char **body,
+                           uint64_t *size)
+{
+    *body = NULL;
+    *size = 0;
+    if (!platform_private_file_size(file, size) ||
+        *size >= FLEET_BRIDGE_MAX_BYTES) return false;
+    *body = zcl_malloc((size_t)*size + 1u, "fleet-authorized-keys");
+    if (!*body) return false;
+    if (!platform_private_file_read_at(file, *body, (size_t)*size, 0))
+        return false;
+    if (memchr(*body, '\0', (size_t)*size)) return false;
+    (*body)[(size_t)*size] = '\0';
+    return true;
+}
+
 bool fleet_bridge_authorize(const char *line, const char *name, bool *added,
                             const char **why)
 {
@@ -453,16 +470,8 @@ bool fleet_bridge_authorize(const char *line, const char *name, bool *added,
                  "needs ~/.ssh to exist already");
         return false;
     }
-    bool ok = platform_private_file_size(&file, &size) &&
-              size < FLEET_BRIDGE_MAX_BYTES;
+    bool ok = fe_bridge_read(&file, &body, &size);
     if (ok) {
-        body = zcl_malloc((size_t)size + 1u, "fleet-authorized-keys");
-        ok = body != NULL;
-    }
-    if (ok && size)
-        ok = platform_private_file_read_at(&file, body, (size_t)size, 0);
-    if (ok) {
-        body[(size_t)size] = '\0';
         if (fe_bridge_present(body, name)) {
             platform_private_file_close(&file);
             free(body);
