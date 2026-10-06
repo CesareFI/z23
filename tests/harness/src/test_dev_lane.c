@@ -142,7 +142,10 @@ static bool dln_fixture(const char *root)
     if (!dln_git(NULL, init))
         return false;
     if (!dln_write_dep(root, "Makefile",
-                       "install-hooks:\n\t@true\n") ||
+                       "install-hooks:\n"
+                       "\t@chmod u+x build/githooks/pre-push\n"
+                       "\t@git config core.hooksPath build/githooks\n"
+                       "\t@printf 'installed\\n' > build/hooks-installed\n") ||
         !dln_write_dep(root, "seed.txt", "seed\n") ||
         !dln_commit(root, "base"))
         return false;
@@ -255,6 +258,14 @@ int test_dev_lane(void)
         (void)snprintf(check, sizeof(check), "%s/build/githooks", lane);
         ASSERT(stat(check, &dst) == 0);
         ASSERT(S_ISDIR(dst.st_mode));
+        (void)snprintf(check, sizeof(check), "%s/build/hooks-installed", lane);
+        ASSERT(stat(check, &dst) == 0);
+        ASSERT(S_ISREG(dst.st_mode));
+        (void)snprintf(check, sizeof(check), "%s/build/githooks/pre-push", lane);
+        ASSERT(access(check, X_OK) == 0);
+        const char *hooks[] = {"config", "--get", "--fixed-value",
+                              "core.hooksPath", "build/githooks", NULL};
+        ASSERT(dln_git(lane, hooks));
 
         zcl_command_reply_free(&reply);
         json_free(&input);
