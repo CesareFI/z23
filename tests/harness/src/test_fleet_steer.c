@@ -4959,6 +4959,39 @@ _test_next:;
     return failures;
 }
 
+static int fmx_t_sent_framing(void)
+{
+    int failures = 0;
+    TEST("steer: malformed physical receipts establish no send or ownership") {
+        for (unsigned kind = 0; kind < 6; kind++) {
+            char gid[64], code[64], path[1400], wire[9000]; struct fmx_call b;
+            fmx_isolate("sent_framing");
+            ASSERT(fmx_mint("brief,send,evidence", gid, sizeof(gid)));
+            fmx_seed_inbox("peer-host", "2026-09-16T00:00:00Z", 7, "peer-host", "field-agent", "directive", "probe", "framing-in");
+            int n = snprintf(wire, sizeof(wire), "{\"key\":\"k\",\"seq\":7,\"to\":\"field-agent\"}");
+            if (kind == 1) wire[n++] = '\n';
+            if (kind == 2) { wire[n++] = '\0'; wire[n++] = 'x'; wire[n++] = '\n'; }
+            if (kind == 3) { wire[n++] = 'x'; wire[n++] = '\n'; }
+            if (kind == 4) { memmove(wire + 8191, wire, (size_t)n); memset(wire, 'x', 8191); n += 8191; wire[n++] = '\n'; }
+            if (kind == 5) { wire[n++] = '\n'; wire[n++] = 'x'; }
+            int p = snprintf(path, sizeof(path), "%s/z23/dev/steer/sent.jsonl", g_fmx_state);
+            ASSERT(p > 0 && (size_t)p < sizeof(path));
+            FILE *file = fopen(path, "wb"); ASSERT(file != NULL);
+            bool wrote = fwrite(wire, 1, (size_t)n, file) == (size_t)n;
+            int closed = fclose(file); ASSERT(wrote && closed == 0);
+            fmx_brief(&b, gid, 0); ASSERT(fmx_run(&b, zcl_native_handle_fleet_steer_brief));
+            ASSERT_STR_EQ(fmx_change_state(fmx_arr(&b, "changes"), "peer-host", "framing-in"), kind < 2 ? "queued" : "delivered"); fmx_end(&b);
+            fmx_ref_attempt(gid, "probe", "k", code, sizeof(code));
+            ASSERT_STR_EQ(code, kind < 2 ? "IDEMPOTENCY_CONFLICT" : "SENT_UNAVAILABLE");
+            fmx_begin(&b, FMX_GRANT_PATH, "zcl.fleet_steer_grant.v1");
+            (void)json_push_kv_str(&b.input, "action", "revoke"); (void)json_push_kv_str(&b.input, "id", gid);
+            ASSERT(fmx_run(&b, zcl_native_handle_fleet_steer_grant)); ASSERT(fmx_ok(&b) == (kind < 2)); fmx_end(&b);
+            fmx_restore();
+        }
+        PASS();
+    }
+_test_next:; fmx_restore(); return failures;
+}
 int test_fleet_steer(void);
 int fmx_task_projection_checks(void);
 int test_fleet_steer(void)
@@ -4991,6 +5024,7 @@ int test_fleet_steer(void)
     failures += fmx_t_lifecycle();
     failures += fmx_t_sent_needs_receiver();
     failures += fmx_t_sent_local_ack();
+    failures += fmx_t_sent_framing();
     failures += fmx_t_grants();
     failures += fmx_t_grant_records();
     failures += fmx_t_grant_list();

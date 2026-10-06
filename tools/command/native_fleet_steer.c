@@ -1051,44 +1051,50 @@ static void fmc_payload_sum(const char *to, const char *body,
 /* Find the recorded accept for key. On hit, seq takes the delivery identity
  * and sum takes the recorded payload digest ("" when the row predates
  * digests, which the caller treats as unverifiable, never as a match). */
-static bool fmc_sent_find(const char *path, const char *key, long long *seq,
+static int fmc_revoke_read_line(FILE *f, char line[FMC_LINE_CAP]);
+static bool fmc_sent_match(const char *line, const char *key, long long *seq,
+                           char sum[17])
+{
+    char pat[256], *end = NULL; const char *p; long long s;
+    *seq = -1; sum[0] = '\0';
+    int r = snprintf(pat, sizeof(pat), "\"key\":\"%s\"", key);
+    if (r <= 0 || (size_t)r >= sizeof(pat) || !strstr(line, pat)) return false;
+    p = strstr(line, "\"seq\":");
+    if (!p) return false;
+    s = strtoll(p + 6, &end, 10);
+    if (end == p + 6 || s < 0) return false;
+    p = strstr(line, "\"sum\":\"");
+    if (p && strlen(p + 7) >= 16) {
+        memcpy(sum, p + 7, 16); sum[16] = '\0';
+    }
+    *seq = s; return true;
+}
+static int fmc_sent_find(const char *path, const char *key, long long *seq,
                           char sum[17])
 {
     FILE *f;
     char line[FMC_LINE_CAP];
-    long long s = -1;
-    bool found = false;
-    const char *p;
-    char *end = NULL;
+    bool found = false; int read_rc;
+    if (seq) *seq = -1;
+    if (sum) sum[0] = '\0';
     if (!path || !key || !seq || !sum)
         return false;
     f = fopen(path, "rb");
     if (!f)
-        return false;
-    while (fgets(line, sizeof(line), f)) {
-        char pat[256];
-        int r = snprintf(pat, sizeof(pat), "\"key\":\"%s\"", key);
-        if (r <= 0 || (size_t)r >= sizeof(pat))
-            continue;
-        if (!strstr(line, pat))
-            continue;
-        p = strstr(line, "\"seq\":");
-        if (!p)
-            continue;
-        s = strtoll(p + 6, &end, 10);
-        if (end == p + 6 || s < 0)
-            continue;
-        p = strstr(line, "\"sum\":\"");
-        if (p && strlen(p + 7) >= 16) {
-            memcpy(sum, p + 7, 16);
-            sum[16] = '\0';
-        } else {
-            sum[0] = '\0';
+        return errno == ENOENT ? 0 : -1;
+    while ((read_rc = fmc_revoke_read_line(f, line)) > 0) {
+        long long candidate; char digest[17] = {0};
+        if (fmc_sent_match(line, key, &candidate, digest)) {
+            *seq = candidate; memcpy(sum, digest, sizeof(digest)); found = true;
         }
-        *seq = s;
-        found = true;
     }
-    (void)fclose(f);
+    bool failed = read_rc < 0 || ferror(f) != 0;
+    failed |= fclose(f) != 0;
+    if (failed) {
+        *seq = -1; sum[0] = '\0';
+        LOG_ERROR(FMC_LOG, "send: receipt store unreadable (%s)", path);
+        return -1;
+    }
     return found;
 }
 
@@ -1119,20 +1125,22 @@ static bool fmc_sent_by_us(const char *path, long long seq, const char *to)
     char rto[FMC_NAME_MAX + 1];
     long long rseq = -1;
     bool ours = false;
+    int read_rc;
     if (!path || !path[0] || seq < 0 || !to || !to[0])
         return false;
     f = fopen(path, "rb");
     if (!f)
         return false;
-    while (!ours && fgets(line, sizeof(line), f)) {
+    while ((read_rc = fmc_revoke_read_line(f, line)) > 0) {
         if (!fmc_grant_line_int(line, "seq", &rseq) || rseq != seq)
             continue;
         if (!fmc_grant_line_str(line, "to", rto, sizeof(rto)))
             continue;
-        ours = strcmp(rto, to) == 0;
+        ours |= strcmp(rto, to) == 0;
     }
-    (void)fclose(f);
-    return ours;
+    bool failed = read_rc < 0 || ferror(f) != 0;
+    failed |= fclose(f) != 0;
+    return !failed && ours;
 }
 
 /* ── in-process sibling calls ────────────────────────────────────────────
@@ -4552,7 +4560,12 @@ static bool fmc_send_item(const struct zcl_command_request *req,
      * bypass the binding closed. */
     {
         char recorded[17], presented[17];
-        if (fmc_sent_find(sent_path, f.key, &seq, recorded)) {
+        int receipt = fmc_sent_find(sent_path, f.key, &seq, recorded);
+        if (receipt < 0) {
+            fmc_send_item_refused(items, index, f.to, "SENT_UNAVAILABLE");
+            return false;
+        }
+        if (receipt > 0) {
             fmc_payload_sum(f.to, f.body, f.ref, from, f.kind, presented);
             if (recorded[0] && strcmp(recorded, presented) == 0) {
                 fmc_send_item_accept(items, index, &f, seq, true, sent_path,
@@ -5335,11 +5348,16 @@ static int fmc_revoke_read_line(FILE *f, char line[FMC_LINE_CAP])
         line[len++] = (char)ch;
         if (ch == '\n') break;
     }
-    if (ferror(f) || (len + 1 == FMC_LINE_CAP && line[len - 1] != '\n')) {
+    if (ferror(f) || (len + 1 == FMC_LINE_CAP && line[len - 1] != '\n' &&
+                     (fgetc(f) != EOF || ferror(f)))) {
         LOG_ERROR(FMC_LOG, "revoke: sent row unreadable or exceeds bound");
         return -1;
     }
     line[len] = '\0';
+    if (len && !json_valid(line, len)) {
+        LOG_ERROR(FMC_LOG, "steer: malformed sent JSON record");
+        return -1;
+    }
     return len ? 1 : 0;
 }
 
