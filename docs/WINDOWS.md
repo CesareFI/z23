@@ -2,20 +2,28 @@
 
 # Windows development
 
-Windows development has two explicit lanes. Do not mix their objects or
-vendored archives.
+Use this page to build a native Windows `z23.exe`, or to build, test, and
+operate the complete node in Windows Subsystem for Linux 2 (WSL2).
+For the native lane, first install MSYS2 and select its UCRT64 environment
+(the 64-bit Windows Universal C Runtime toolchain). For the Linux lane,
+use Ubuntu 24.04 or newer with GCC 14+ or a Clang that accepts `-std=c23`.
+Keep a separate checkout for each lane: do not mix compiled object files or
+vendored archives (the built third-party dependencies).
 
 | Lane | Purpose | Artifact status |
 | --- | --- | --- |
-| MSYS2 UCRT64 | Native C23 build, GCC/Clang diagnostics, and the ongoing Win32 port | GCC and Clang build the native `z23.exe`; native runtime acceptance covers the qualified Windows seams |
-| WSL2 Ubuntu | Build, test, and operate the complete node today | Linux ELF running under WSL2 |
+| MSYS2 UCRT64 | Native C23 build, GCC/Clang diagnostics, and Windows API (Win32) port | Native `z23.exe`; acceptance covers qualified Windows capabilities |
+| WSL2 Ubuntu | Build, test, and operate the complete node today | Linux Executable and Linkable Format (ELF) binary under WSL2 |
 
-The UCRT64 bootstrap, source-identity checks, compile-epoch leases, pinned
-static C dependencies, and canonical GCC and Clang node builds are supported. The built
-binary is a native x86-64 PE named `build/bin/z23.exe`; its release audit
-allows only declared Windows system DLLs. Some optional package, snapshot, and
-agent operations still refuse where their Windows capability backend is not
-qualified. The resident dev worker (`dev agent worker run`) runs its
+The UCRT64 bootstrap (initial setup), source-identity checks (checks of the
+exact source bytes), compile-epoch leases (which separate build objects by
+toolchain and protect them while in use), pinned static C dependencies, and
+canonical GCC and Clang node builds are supported. The built binary is a
+native x86-64 Portable Executable (PE) named `build/bin/z23.exe`; its release
+audit allows only declared Windows system dynamic-link libraries (DLLs).
+Some optional package, snapshot, and agent operations still refuse where
+their Windows capability backend is not qualified. The resident dev worker
+(`dev agent worker run`) runs its
 executor only inside the Windows confinement backend described under
 [Dev worker confinement backend](#dev-worker-confinement-backend). When
 that backend cannot be set up on a host, the worker refuses and names the
@@ -26,19 +34,22 @@ to obtain a green build.
 The native code navigator can build and refresh `.codeindex/index.kv` on
 Windows. Publication stays beneath a retained private directory handle, writes
 through a retained private staging-file handle, verifies the final source
-stat-root and empty SQLite journal, flushes the staged bytes, and atomically
-moves the retained child into place. `make windows-acceptance` executes
-`z23.exe code have` through the headless runner and requires a successful typed
-response; a Windows rebuild refusal is no longer accepted as a passing result.
+stat-root (a digest of source-file metadata) and SQLite rollback-journal
+format (the database's transaction format), flushes the staged bytes, and
+atomically moves the retained child into place. `make windows-acceptance`
+executes `z23.exe code have` through the headless runner and requires a
+successful typed response; a Windows rebuild refusal is no longer accepted
+as a passing result.
 The same native acceptance requires the canonical warm capability query to
 remain inside the command's declared 250 ms latency budget. A separate native
 program bounds the unchanged source-metadata freshness root at 150 ms, using
 one retained directory handle per source directory rather than reopening every
 source path. It also requires the warm Merkle refresh to reuse every unchanged
-leaf within 150 ms and detect same-size subsecond edits. Merkle comparison uses
+leaf within 150 ms and detect same-size subsecond edits. A Merkle tree combines
+file digests into one source-tree digest. Merkle comparison uses
 the full native directory metadata, preserving file IDs and timestamp precision
-that the CRT `stat` adapter would narrow. These are executable Windows contracts,
-not cross-compile claims.
+that the C Runtime (CRT) `stat` adapter would narrow. These are executable
+Windows contracts, not cross-compile claims.
 The source-tree Merkle cache and territory roll-up memo use the same retained
 private child transaction on Windows, so warm provenance and dispatch queries
 can reuse sealed derived state after the source generation is unchanged. The
@@ -48,19 +59,23 @@ instead of copied into a second roughly 100 MiB heap image on every command.
 The C23 Commons file-service client transport is also native. Windows uses the
 same bounded encrypted-frame and authenticated-chunk implementation as Linux
 and macOS, carried over `platform_socket_t`; native acceptance sends a 64 KiB
-encrypted frame and a 256 KiB authenticated chunk through a real WinSock
-loopback pair and verifies exact payload, digest, counter, and byte-accounting
-parity. The forward-secret X25519/HKDF handshake and ROM fetch dialer were
-already native, so Windows clients no longer stop at an `ENOTSUP` frame stub.
+encrypted frame (including padding) and a 256 KiB authenticated chunk through
+a real WinSock (Windows sockets) loopback pair and verifies exact payload,
+digest, counter, and byte-accounting parity. The forward-secret X25519/HKDF
+handshake (key exchange and key derivation) and ROM artifact fetch dialer
+(which downloads consensus-state bundles) are also native. Windows clients
+do not stop at an `ENOTSUP` (unsupported operation) frame stub.
 The inbound file-service server and its manifest/snapshot transaction remain
 explicitly unavailable until their filesystem mutation path is qualified.
 
 The fresh native consensus-store path is also operational. `consensus.db`,
-its WAL, and its shared-memory sibling are opened by the retained-directory
-SQLite VFS, and the live connection is audited against the exact validated
-directory handle before schema or reducer work begins. A fresh isolated
-mainnet datadir has reached RPC readiness, exchanged headers and block bodies
-with public ZClassic peers, and advanced the validated reducer frontier on a
+its write-ahead log (WAL), and its shared-memory sibling are opened by the
+retained-directory SQLite virtual filesystem (VFS), and the live connection
+is audited against the exact validated directory handle before schema or
+reducer work begins. A fresh isolated
+mainnet datadir (node data directory) has reached remote procedure call (RPC)
+readiness, exchanged headers and block bodies with public ZClassic peers,
+and advanced the validated reducer frontier on a
 native `z23.exe`. This is startup and forward-sync evidence, not a completed
 sync-to-tip claim. A copied legacy datadir that has `progress.kv` but no
 `consensus.db` still refuses before mutation because the legacy ATTACH/rename
@@ -68,10 +83,10 @@ migration is not handle-relative. Corrupt-store quarantine likewise refuses
 in place on Windows until its rename transaction is retained-directory
 qualified.
 
-Native execution still requires Windows, but producing a Windows artifact no
-longer does. A Linux host can build the pinned third-party archives into the
-target-qualified `vendor/cross/x86_64-w64-mingw32` tree, then use Clang 20+
-against the distro MinGW sysroot to link and audit an x86-64 PE:
+Native execution requires Windows. A Linux host can build the pinned
+third-party archives into the target-qualified
+`vendor/cross/x86_64-w64-mingw32` tree, then use Clang 20+ against the distro
+MinGW sysroot (target headers and libraries) to link and audit an x86-64 PE:
 
 ```bash
 VENDOR_TARGET=x86_64-w64-mingw32 tools/scripts/build_vendor.sh
@@ -95,18 +110,17 @@ the Tor archives first, so a Windows `z23.exe` reaches the onion network and
 publishes its own `.onion` with no flag. `-no-tor` opts out and is refused on
 a canonical, soak or standby operator lane.
 
-`make ZCL_TOR=stub …` is the dev-only escape. It links the stub, prints one
-loud line, stamps `tor: stub` into `z23.exe -version`, and produces a binary
-that refuses `-tor`, the onion flags and onion-node mode, and that no ship or
+Set `ZCL_TOR=stub` on a Make invocation for a development-only build. It links
+the stub, prints one loud line, stamps `tor: stub` into `z23.exe -version`,
+and produces a binary that refuses `-tor`, the onion flags and onion-node
+mode, and that no ship or
 install step will package. Its `tor_run_main` is the stub's and returns
 without ever opening an onion service.
 
-A cross build gets its own clean export of the pinned Tor commit as the
-configure source directory, `vendor/cross/x86_64-w64-mingw32/tor-src`. It has
-to: the host build configures `vendor/tor` in place, and autoconf refuses any
-out-of-tree configure against an already-configured source directory, so
-before this the Windows cross Tor build failed on every box that had ever run
-`make tor-full` for the host.
+A cross build uses a clean export of the pinned Tor commit as its configure
+source directory, `vendor/cross/x86_64-w64-mingw32/tor-src`. The host build
+configures `vendor/tor` in place; autoconf refuses an out-of-tree configure
+against an already-configured source directory.
 
 Cross, from Linux, once the pinned OpenSSL/libevent/zlib archives above exist
 under `vendor/cross/x86_64-w64-mingw32`:
@@ -123,39 +137,47 @@ make tor-full
 make -j"$(getconf _NPROCESSORS_ONLN)" z23
 ```
 
-Both invoke the same `tools/scripts/build_tor_full.sh` against the same
-pinned `vendor/tor` submodule, and point Tor's own `configure` at the same
-`--with-openssl-dir`/`--with-libevent-dir`/`--with-zlib-dir` vendor tree
-already used on Linux and macOS. The cross run adds only `--host` for the
-mingw triple, the matching cross toolchain, and an out-of-tree build
-directory so it can never collide with a native UCRT64 build of the same
-submodule checkout: the cross archives land at
-`vendor/cross/x86_64-w64-mingw32/tor/libtor.a` plus the `ext/` archives at
-their usual relative paths beneath it (`vendor/cross/x86_64-w64-mingw32/tor/src/ext/ed25519/donna/`,
-`vendor/cross/x86_64-w64-mingw32/tor/src/ext/ed25519/ref10/`, and
-`vendor/cross/x86_64-w64-mingw32/tor/src/ext/keccak-tiny/`), while the native UCRT64
-run places that same archive set directly under `vendor/tor/`. Either path
-is exactly `ZCL_TOR_TREE` in the Makefile, so `make ZCL_TARGET=windows-x86_64
-z23` and a plain UCRT64 `make z23` both pick the real archives over the stub
-automatically the moment they exist — the same evidence-based `TOR_FULL`
-selection every other platform already uses, never an OS check.
+Both invoke `tools/scripts/build_tor_full.sh` against the pinned `vendor/tor`
+submodule. Tor's `configure` uses `--with-openssl-dir`, `--with-libevent-dir`,
+and `--with-zlib-dir` to select the vendor tree. The cross run supplies
+`--host` for the MinGW target triple (the toolchain's target name), matching
+cross tools, and a separate build directory.
+
+| Output | Native UCRT64 | Linux cross build |
+| --- | --- | --- |
+| `ZCL_TOR_TREE` | `vendor/tor` | `vendor/cross/x86_64-w64-mingw32/tor` |
+| Main archive | `libtor.a` beneath that tree | Same relative path |
+| Additional archives | Under the tree's ext directory | Same relative paths |
+
+For the native tree the additional archives are beneath
+`vendor/tor/src/ext/ed25519/donna/`, `vendor/tor/src/ext/ed25519/ref10/`, and
+`vendor/tor/src/ext/keccak-tiny/`; the cross tree uses the same relative
+paths.
+
+The Makefile's `TOR_FULL` selection uses these archives on both lanes.
 
 ## Native UCRT64 lane
 
-Install MSYS2 to `C:\msys64`, open **MSYS2 UCRT64**, and run:
+1. Install MSYS2 to `C:\msys64`.
+2. Open **MSYS2 UCRT64** and update it. If the runtime closes the shell,
+   reopen UCRT64 and repeat the update:
 
-```bash
-pacman -Syu
-# Reopen UCRT64 and repeat pacman -Syu if the runtime closes the shell.
-pacman -S --needed base-devel gcc git \
-  mingw-w64-ucrt-x86_64-toolchain \
-  mingw-w64-ucrt-x86_64-clang \
-  mingw-w64-ucrt-x86_64-clang-tools-extra \
-  mingw-w64-ucrt-x86_64-lld \
-  mingw-w64-ucrt-x86_64-cmake \
-  mingw-w64-ucrt-x86_64-ninja \
-  mingw-w64-ucrt-x86_64-libsystre
-```
+   ```bash
+   pacman -Syu
+   ```
+
+3. Install the required packages:
+
+   ```bash
+   pacman -S --needed base-devel gcc git curl wget unzip \
+     mingw-w64-ucrt-x86_64-toolchain \
+     mingw-w64-ucrt-x86_64-clang \
+     mingw-w64-ucrt-x86_64-clang-tools-extra \
+     mingw-w64-ucrt-x86_64-lld \
+     mingw-w64-ucrt-x86_64-cmake \
+     mingw-w64-ucrt-x86_64-ninja \
+     mingw-w64-ucrt-x86_64-libsystre
+   ```
 
 Keep the checkout on the Windows filesystem rather than inside the
 MSYS2 tree, and enter it from UCRT64 through its drive mount (a path
@@ -176,7 +198,8 @@ UCRT64 packages, runs `make setup`, and builds `z23.exe`:
 
 The unprefixed MSYS `gcc` package builds the hosted `zcc` cache courier; it
 does not build product objects. `zcc` launches the UCRT64 compiler for native
-COFF/PE output, while Windows compile epochs use the shell publisher because
+Common Object File Format (COFF) objects and PE output, while Windows compile
+epochs use the shell publisher because
 MSYS does not provide the directory-flush contract required by zcc's native
 publisher. The setup smoke proves this hosted-to-native boundary.
 
@@ -209,7 +232,8 @@ On Windows, `make setup` installs the tracked shell `pre-commit` lane guard and
 native PE receipt hooks. The pre-push executable reads only an immutable
 exact commit/base receipt; it never opens a shell, runs Make, compiles, tests,
 waits, or fetches. Its two bounded Git queries reuse the exact parent Git image,
-run without a console window, and are contained by a kill-on-close Job Object.
+run without a console window, and are contained by a kill-on-close Job Object
+(a Windows process group with enforced resource and lifetime limits).
 Until a Job-contained native proof producer exists,
 post-commit/post-merge/post-checkout return immediately without launching the
 full development binary; missing proof remains an honest pre-push refusal.
@@ -225,7 +249,8 @@ bounded truncation, and nonzero exits with their diagnostics.
 Developer mail uses native owner-private files on Windows. Post appends through
 a nonblocking locked handle after checking its ownership and link count; ack
 atomically replaces the private cursor file. Native acceptance covers post/pull,
-LF byte preservation, lock contention, hard-link refusal, and cursor replacement.
+LF (line-feed) byte preservation, lock contention, hard-link refusal, and cursor
+replacement.
 Paths have an explicit 4096-byte command bound and refuse truncation. Cross-host
 delivery still requires a configured transport for the local outbox and inboxes.
 
@@ -265,10 +290,10 @@ The optional native miner accelerates the mainnet Equihash (192,7) solver on
 the Windows GPU while retaining the portable C23 verifier as the final
 authority. It dynamically loads the system `OpenCL.dll`; no CUDA SDK, OpenCL
 SDK, compiler installation, PATH change, or redistributable DLL is required.
-The NVIDIA driver compiles the bounded OpenCL C kernels to the selected GPU's
-native assembly. Kernel dispatches are deliberately short to stay below the
-Windows display-driver timeout, and the acceptance path runs under the same
-no-window, kill-on-close Job Object launcher as the node gates.
+The NVIDIA driver compiles the bounded OpenCL C kernels (GPU programs) to the
+selected GPU's native assembly. Kernel dispatches are deliberately short to
+stay below the Windows display-driver timeout, and the acceptance path runs
+under the same no-window, kill-on-close Job Object launcher as the node gates.
 
 Build and measure it from PowerShell without opening an MSYS2 window:
 
@@ -339,8 +364,8 @@ as the owning Windows user, that runs:
 wsl.exe -d Ubuntu -- systemctl --user start zclassic23.service
 ```
 
-Use “At log on” unless unattended pre-login operation is an explicit operator
-requirement. Do not store RPC credentials in the task arguments.
+Use “At log on” unless unattended pre-login operation is an explicit
+operator requirement. Do not store RPC credentials in the task arguments.
 
 ## Git and SSH
 
@@ -453,10 +478,11 @@ build.
 | `check-windows-cross-syntax` (`make lint`) | Every release-node translation unit listed by `make -s ZCL_TARGET=windows-x86_64 print-node-c23-srcs` | Syntax-only: no objects, archives, link, Wine run, or native observation |
 
 The syntax sweep uses `x86_64-w64-mingw32-gcc -std=c2x -fsyntax-only` and
-discovered `include` directories outside the script's explicitly pruned directories (plus `-I.` and `-Itools`, so
-`command/native_command.h` is findable). The file set follows the release build: a
-translation unit added to `NODE_C23_SRCS` joins the gate. When mingw is not installed the
-gate prints `SKIP` and exits 0; that is not a pass. The mandatory
+discovered `include` directories outside the script's explicitly pruned
+directories (plus `-I.` and `-Itools`, so `command/native_command.h` is
+findable). The file set follows the release build: a translation unit added
+to `NODE_C23_SRCS` joins the gate. When MinGW is not installed, the gate
+prints `SKIP` and exits 0; that is not a pass. The mandatory
 `windows-portability-acceptance`, pre-push, and hosted-CI paths
 set `ZCL_REQUIRE_MINGW=1`, so a missing compiler is a hard failure there. The
 gate prints its current source, clean, dependency-skip, baseline, and
