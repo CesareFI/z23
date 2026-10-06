@@ -5,6 +5,15 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Output errors use the same failure status as invalid addresses. */
+static int finish_output(FILE *out, int status) {
+  if (fflush(out) == EOF || ferror(out)) {
+    fputs("zcidr: cannot write result to stdout\n", stderr);
+    return 1;
+  }
+  return status;
+}
+
 int main(int argc, char **argv) {
   if (argc >= 4 && strcmp(argv[1], "contains") == 0) {
     zcidr net, addr;
@@ -18,10 +27,10 @@ int main(int argc, char **argv) {
     }
     if (zcidr_contains(&net, &addr)) {
       puts("yes");
-      return 0;
+      return finish_output(stdout, 0);
     }
     puts("no");
-    return 3;
+    return finish_output(stdout, 3);
   }
   if (argc == 2) {
     zcidr c;
@@ -32,7 +41,7 @@ int main(int argc, char **argv) {
     }
     zcidr_format(&c, buf, sizeof buf);
     puts(buf);
-    return 0;
+    return finish_output(stdout, 0);
   }
   fprintf(stderr, "usage: zcidr ADDR[/PREFIX] | zcidr contains NET ADDR\n");
   return 2;

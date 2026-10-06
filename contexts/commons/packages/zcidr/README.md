@@ -48,3 +48,13 @@ fuzz, and NULL/zero-capacity handling. Built with
 `-std=c23 -Wall -Wextra -Werror -pedantic` under ASan/UBSan.
 
 Apache-2.0 licensed.
+
+The registered C suite also exercises the CLI normalization, yes and no paths
+with writable, buffered refusing and unbuffered refusing streams. Complete
+output retains exits 0/0/3; an output error returns 1. The fixture uses POSIX
+streams; on `_WIN32` required refusal coverage reports unavailable and the
+suite exits 1. No close-only delivery guarantee is tested.
+
+`tests/test_zcidr.c:401` also checks each diagnostic-only exit against writable
+and refusing stderr. `tests/test_zcidr.c:372` checks simultaneous refusal of
+the result and its error diagnostic. The finish check is in `app/main.c:9`.

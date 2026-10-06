@@ -2,11 +2,17 @@
  * containment tables, and a randomised masked-compare oracle.
  * Built with -std=c23 -Wall -Wextra -Werror -pedantic, ASan/UBSan. */
 
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "zcidr/zcidr.h"
 
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 static int failures = 0;
 
@@ -264,7 +270,182 @@ static void test_null_args(void) {
   CHECK(zcidr_format(&c, NULL, 0) == strlen("192.168.1.77/24"));
 }
 
+/* Include the CLI under real FILE bindings, without mocking stream errors. */
+static FILE *cli_out;
+static FILE *cli_err;
+static FILE *real_stdout(void) { return stdout; }
+static FILE *real_stderr(void) { return stderr; }
+static int cli_puts(const char *s) {
+  if (fputs(s, cli_out) == EOF) return EOF;
+  return fputc('\n', cli_out);
+}
+#undef stdout
+#define stdout cli_out
+#undef stderr
+#define stderr cli_err
+#define puts cli_puts
+#define main cli_main
+#include "../app/main.c"
+#undef main
+#undef puts
+#undef stdout
+#define stdout (real_stdout())
+#undef stderr
+#define stderr (real_stderr())
+
+#if !defined(_WIN32)
+/* mode 0: writable; 1: deferred flush refusal; 2: immediate write refusal. */
+static void exercise_cli(char **argv, int argc, int status,
+                         const char *expected, int mode) {
+  char output[128] = {0}, diagnostic[128] = {0}, buffer[BUFSIZ];
+  FILE *out = mode ? fopen("/dev/null", "w") :
+                     fmemopen(output, sizeof(output), "w");
+  FILE *err = fmemopen(diagnostic, sizeof(diagnostic), "w");
+  CHECK(out && err);
+  if (!out || !err) {
+    if (out) CHECK(fclose(out) == 0);
+    if (err) CHECK(fclose(err) == 0);
+    return;
+  }
+  CHECK(setvbuf(out, buffer, mode == 2 ? _IONBF : _IOFBF,
+               sizeof(buffer)) == 0);
+  if (mode) CHECK(close(fileno(out)) == 0);
+  cli_out = out;
+  cli_err = err;
+  int result = cli_main(argc, argv);
+  cli_out = stdout;
+  cli_err = stderr;
+  CHECK(result == (mode ? 1 : status));
+  CHECK(fflush(err) == 0);
+  CHECK(strcmp(diagnostic, mode ?
+      "zcidr: cannot write result to stdout\n" : "") == 0);
+  if (!mode) {
+    CHECK(fflush(out) == 0);
+    CHECK(strcmp(output, expected) == 0);
+  }
+  CHECK(fclose(err) == 0);
+  int closed = fclose(out);
+  CHECK(mode ? closed == EOF : closed == 0);
+}
+#endif
+
+#if !defined(_WIN32)
+static void check_cli_diagnostic(FILE *err, const char *got,
+                                  const char *expected, int mode) {
+  int flushed = fflush(err);
+  if (mode) CHECK(flushed == EOF || ferror(err));
+  else {
+    CHECK(flushed == 0);
+    CHECK(strcmp(got, expected) == 0);
+  }
+}
+
+static void exercise_cli_diagnostic(char **argv, int argc, int status,
+                                     const char *expected, int mode) {
+  char output[128] = {0}, diagnostic[128] = {0}, buffer[BUFSIZ];
+  FILE *out = fmemopen(output, sizeof(output), "w");
+  FILE *err = mode ? fopen("/dev/null", "w") :
+                     fmemopen(diagnostic, sizeof(diagnostic), "w");
+  CHECK(out && err);
+  if (!out || !err) {
+    if (out) CHECK(fclose(out) == 0);
+    if (err) CHECK(fclose(err) == 0);
+    return;
+  }
+  CHECK(setvbuf(err, buffer, mode == 2 ? _IONBF : _IOFBF,
+               sizeof(buffer)) == 0);
+  if (mode) CHECK(close(fileno(err)) == 0);
+  cli_out = out;
+  cli_err = err;
+  int result = cli_main(argc, argv);
+  cli_out = stdout;
+  cli_err = stderr;
+  CHECK(result == status);
+  CHECK(fflush(out) == 0);
+  CHECK(output[0] == '\0');
+  check_cli_diagnostic(err, diagnostic, expected, mode);
+  CHECK(fclose(out) == 0);
+  int closed = fclose(err);
+  CHECK(mode ? closed == EOF : closed == 0);
+}
+
+static void exercise_cli_secondary(int mode) {
+  FILE *out = fopen("/dev/null", "w");
+  FILE *err = fopen("/dev/null", "w");
+  char buffer[BUFSIZ], error_buffer[BUFSIZ];
+  CHECK(out && err);
+  if (!out || !err) {
+    if (out) CHECK(fclose(out) == 0);
+    if (err) CHECK(fclose(err) == 0);
+    return;
+  }
+  CHECK(setvbuf(out, buffer, mode == 2 ? _IONBF : _IOFBF,
+               sizeof(buffer)) == 0);
+  CHECK(setvbuf(err, error_buffer, mode == 2 ? _IONBF : _IOFBF,
+               sizeof(error_buffer)) == 0);
+  CHECK(close(fileno(out)) == 0);
+  CHECK(close(fileno(err)) == 0);
+  cli_out = out;
+  cli_err = err;
+  char *argv[] = {"zcidr", "::1", NULL};
+  int result = cli_main(2, argv);
+  cli_out = stdout;
+  cli_err = stderr;
+  CHECK(result == 1);
+  CHECK(fflush(out) == EOF || ferror(out));
+  check_cli_diagnostic(err, "", "", mode);
+  CHECK(fclose(out) == EOF);
+  CHECK(fclose(err) == EOF);
+}
+
+static void test_cli_diagnostics(void) {
+  char *network[] = {"zcidr", "contains", "bad", "::1", NULL};
+  char *address[] = {"zcidr", "contains", "::/0", "bad", NULL};
+  char *single[] = {"zcidr", "bad", NULL};
+  char *usage[] = {"zcidr", NULL};
+  for (int mode = 0; mode < 3; mode++) {
+    fprintf(stderr, "CLI control network mode=%d\n", mode);
+    exercise_cli_diagnostic(network, 4, 1, "bad network: bad\n", mode);
+    fprintf(stderr, "CLI control address mode=%d\n", mode);
+    exercise_cli_diagnostic(address, 4, 1, "bad address: bad\n", mode);
+    fprintf(stderr, "CLI control single mode=%d\n", mode);
+    exercise_cli_diagnostic(single, 2, 1, "bad address: bad\n", mode);
+    fprintf(stderr, "CLI control usage mode=%d\n", mode);
+    exercise_cli_diagnostic(usage, 1, 2,
+        "usage: zcidr ADDR[/PREFIX] | zcidr contains NET ADDR\n", mode);
+  }
+  for (int mode = 1; mode < 3; mode++) {
+    fprintf(stderr, "CLI control secondary mode=%d\n", mode);
+    exercise_cli_secondary(mode);
+  }
+}
+#endif
+
+static void test_cli_output_refusal(void) {
+#if !defined(_WIN32)
+  char *address[] = {"zcidr", "192.168.1.77/24", NULL};
+  char *yes[] = {"zcidr", "contains", "10.0.0.0/8", "10.1.2.3", NULL};
+  char *no[] = {"zcidr", "contains", "10.0.0.0/8", "11.1.2.3", NULL};
+  for (int mode = 0; mode < 3; mode++) {
+    fprintf(stderr, "CLI row address mode=%d\n", mode);
+    exercise_cli(address, 2, 0, "192.168.1.77/24\n", mode);
+    fprintf(stderr, "CLI row yes mode=%d\n", mode);
+    exercise_cli(yes, 4, 0, "yes\n", mode);
+    fprintf(stderr, "CLI row no mode=%d\n", mode);
+    exercise_cli(no, 4, 3, "no\n", mode);
+  }
+  test_cli_diagnostics();
+#else
+  (void)cli_main;
+  (void)real_stdout;
+  fprintf(stderr, "zcidr: required CLI refusal coverage unavailable on _WIN32\n");
+  failures++;
+#endif
+}
+
 int main(void) {
+  cli_out = stdout;
+  cli_err = stderr;
   test_v4_kats();
   test_v4_bad();
   test_v6_kats();
@@ -274,6 +455,7 @@ int main(void) {
   test_fuzz_contains();
   test_fuzz_v6_roundtrip();
   test_null_args();
+  test_cli_output_refusal();
   if (failures) {
     fprintf(stderr, "%d failure(s)\n", failures);
     return 1;
