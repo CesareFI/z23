@@ -511,17 +511,30 @@ bool mvl_fold_line(const char *line, size_t line_no, struct mvl_agent *agent,
 
 /* ── bounded line reading ─────────────────────────────────────────────── */
 
-/* Returns 1 on a line, 0 at end of file, -1 when the line is longer than
- * MVL_LINE_CAP. `buf` must hold MVL_LINE_CAP + 2 bytes. */
+/* Returns 1 on a line, 0 on clean EOF, -1 on overflow, -2 on read error,
+ * -3 on embedded NUL. `buf` must hold MVL_LINE_CAP + 2 bytes. */
 int mvl_read_line(FILE *f, char *buf, size_t cap)
 {
-    size_t n;
+    size_t n = 0;
+    int c;
 
-    if (!fgets(buf, (int)cap, f))
+    buf[0] = '\0';
+    while ((c = fgetc(f)) != EOF) {
+        if (c == 0)
+            return -3;
+        if (n >= cap - 1)
+            return -1;
+        buf[n++] = (char)c;
+        if (c == '\n')
+            break;
+    }
+    if (ferror(f))
+        return -2;
+    if (n == 0)
         return 0;
-    n = strlen(buf);
-    if (n + 1 >= cap && buf[n - 1] != '\n')
+    if (n == cap - 1 && buf[n - 1] != '\n')
         return -1;
+    buf[n] = '\0';
     while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r'))
         buf[--n] = '\0';
     return 1;
@@ -554,6 +567,8 @@ bool mvl_scan_transcript(const char *path, struct mvl_agent *agent,
         line_no++;
         if (rc < 0) {
             mvl_err(err, err_cap, path, line_no,
+                    rc == -2 ? "mvl_read_error: cannot read transcript line" :
+                    rc == -3 ? "mvl_line_nul: embedded NUL in transcript" :
                     "mvl_line_too_long: line exceeds MVL_LINE_CAP bytes");
             ok = false;
             break;

@@ -14,6 +14,7 @@
 
 #include "base/safe_alloc.h"
 #include "mvp_ledger_internal.h"
+#include "zutf8/zutf8.h"
 
 /* Painted left to right in enum order; MVL_STATE_OTHER paints nothing. */
 static const char *const k_state_names[MVL_STATE_COUNT] = {
@@ -543,23 +544,6 @@ size_t mvl_render_xp(const struct mvl_plan *plan,
     return mvl_render_xp_gaps(board, out, out_cap, used);
 }
 
-/* RFC 3629 scalar encodings, without adding a standalone link dependency. */
-static bool mvl_json_utf8(const char *s)
-{
-    const unsigned char *p = (const unsigned char *)s;
-    while (*p) {
-        unsigned char b = *p++;
-        if (b < 0x80) continue;
-        unsigned n = b < 0xe0 ? 1 : b < 0xf0 ? 2 : 3;
-        if ((unsigned)(b - 0xc2) > 0x32) return false;
-        unsigned lo = b == 0xe0 ? 0xa0 : b == 0xf0 ? 0x90 : 0x80;
-        unsigned hi = b == 0xed ? 0x9f : b == 0xf4 ? 0x8f : 0xbf;
-        if ((unsigned)(*p - lo) > hi - lo) return false;
-        p++;
-        while (--n) { if ((unsigned)(*p - 0x80) > 0x3f) return false; p++; }
-    }
-    return true;
-}
 /* A JSON string cell. Lane names are word-shaped, but a quote or a
  * backslash arriving from a plan row must never break the object. */
 static size_t mvl_render_json_str(const char *s, char *out, size_t cap,
@@ -595,16 +579,26 @@ static size_t mvl_render_json_agent(const struct mvl_xp_agent *a, char *out,
                        a->rank > 0 ? "true" : "false");
 }
 
+static bool mvl_xp_json_strings_valid(const struct mvl_plan *plan,
+                                      const struct mvl_xp_board *board)
+{
+    for (size_t i = 0; i < plan->milestone_count; ++i)
+        if (!zutf8_validate(plan->milestones[i].id))
+            return false;
+    for (size_t i = 0; i < board->count; ++i)
+        if (!zutf8_validate(board->rows[i].agent))
+            return false;
+    return true;
+}
+
 size_t mvl_render_xp_json(const struct mvl_plan *plan,
                           const struct mvl_xp_board *board, char *out,
                           size_t out_cap)
 {
-    for (size_t i = 0; i < board->count; i++) {
-        if (!mvl_json_utf8(board->rows[i].agent)) {
-            if (out && out_cap) out[0] = '\0';
-            return out_cap; /* snprintf-style refusal: no usable document. */
-        }
-    }
+    if (out && out_cap)
+        out[0] = '\0';
+    if (!mvl_xp_json_strings_valid(plan, board))
+        return SIZE_MAX;
     size_t used = mvl_appendf(out, out_cap, 0,
                               "{\"kind\":\"mvp_xp_v1\",\"multipliers\":{");
 

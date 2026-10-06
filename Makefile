@@ -4424,6 +4424,7 @@ $(MVP_LEDGER_BIN): tools/dev/mvp_ledger.c tools/dev/mvp_ledger_tsv.c \
 		tools/dev/mvp_ledger_plan.c tools/dev/mvp_ledger_join.c \
 		tools/dev/mvp_ledger_kpi.c tools/dev/mvp_ledger_main.c \
 		tools/dev/fleet_observe.c \
+		contexts/commons/packages/zutf8/src/zutf8.c \
 		platform/modules/json/src/json.c \
 		platform/modules/base/src/safe_alloc.c \
 		platform/modules/platform/src/directory_compat.c \
@@ -4431,6 +4432,7 @@ $(MVP_LEDGER_BIN): tools/dev/mvp_ledger.c tools/dev/mvp_ledger_tsv.c \
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic $(ZCL_PLATFORM_CPPFLAGS) \
 	    -D_POSIX_C_SOURCE=200809L -Itools/dev \
+	    -Icontexts/commons/packages/zutf8/include \
 	    -Iplatform/modules/json/include -Iplatform/modules/base/include \
 	    -Iplatform/modules/platform/include -Iplatform/modules/util/include \
 	    -o $@ $^

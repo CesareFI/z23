@@ -681,7 +681,9 @@ bool mvl_write_xp_events(const char *path, const struct mvl_xp_events *events,
 
 /* The leaderboard, and the same numbers as one JSON object for a board
  * post. Both print the multiplier table, because a score whose weights are
- * invisible is not auditable. snprintf semantics. */
+ * invisible is not auditable. snprintf semantics. The JSON renderer returns
+ * SIZE_MAX for invalid UTF-8 in a milestone ID or agent name and clears out[0]
+ * when out is non-NULL and out_cap is nonzero. */
 size_t mvl_render_xp(const struct mvl_plan *plan,
                      const struct mvl_xp_board *board, char *out,
                      size_t out_cap);

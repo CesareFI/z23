@@ -1448,9 +1448,173 @@ _test_next:;
     return failures;
 }
 
+static int test_mvp_ledger_record_bytes(void)
+{
+    int failures = 0;
+    TEST("transcript and TSV reject hidden bytes; short EOF stays valid") {
+        char tmp[PATH_MAX], path[PATH_MAX], err[MVL_ERR_CAP] = "";
+        const char body[] = "{\"type\":\"user\"}\0garbage\n";
+        struct mvl_agent agent = {0};
+        struct mvl_agents agents = {0};
+        FILE *f;
+        ASSERT(test_mkdtemp(tmp, sizeof(tmp), "mvlnul") != NULL);
+        (void)snprintf(path, sizeof(path), "%s/record", tmp);
+        f = fopen(path, "wb");
+        ASSERT(f != NULL);
+        ASSERT_EQ(fwrite(body, 1, sizeof(body) - 1, f), sizeof(body) - 1);
+        ASSERT_EQ(fclose(f), 0);
+        ASSERT(!mvl_scan_transcript(path, &agent, err, sizeof(err)));
+        ASSERT(strstr(err, "mvl_line_nul") != NULL);
+        f = fopen(path, "wb");
+        ASSERT(f != NULL);
+        ASSERT(fputs(mvl_agents_header(), f) >= 0);
+        ASSERT_EQ(fwrite("\0garbage\n", 1, 9, f), 9);
+        ASSERT_EQ(fclose(f), 0);
+        ASSERT(mvl_agents_alloc(&agents));
+        ASSERT(!mvl_read_agents(path, &agents, err, sizeof(err)));
+        mvl_agents_free(&agents);
+        mvl_write_file(tmp, "record", "{\"type\":\"user\"}");
+        ASSERT(mvl_scan_transcript(path, &agent, err, sizeof(err)));
+        mvl_write_file(tmp, "record", mvl_agents_header());
+        ASSERT(mvl_agents_alloc(&agents));
+        ASSERT(mvl_read_agents(path, &agents, err, sizeof(err)));
+        ASSERT(!mvl_scan_transcript(tmp, &agent, err, sizeof(err)));
+        ASSERT(!mvl_read_agents(tmp, &agents, err, sizeof(err)));
+        mvl_agents_free(&agents);
+        test_rm_rf_recursive(tmp);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int test_mvp_ledger_record_error(void)
+{
+    int failures = 0;
+    TEST("a read error after a valid record is not clean EOF") {
+        FILE *f = tmpfile();
+        static char buf[MVL_LINE_CAP + 2];
+        ASSERT(f != NULL);
+        ASSERT_EQ(setvbuf(f, NULL, _IONBF, 0), 0);
+        ASSERT(fputs("{\"type\":\"user\"}\n", f) >= 0);
+        rewind(f);
+        ASSERT_EQ(mvl_read_line(f, buf, sizeof(buf)), 1);
+        ASSERT_EQ(close(fileno(f)), 0);
+        ASSERT_EQ(mvl_read_line(f, buf, sizeof(buf)), -2);
+        ASSERT(ferror(f));
+        (void)fclose(f);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int test_mvp_ledger_header_nul(void)
+{
+    int failures = 0;
+    TEST("hidden header bytes refuse snapshot and KPI appends unchanged") {
+        char tmp[PATH_MAX], path[PATH_MAX], err[MVL_ERR_CAP] = "";
+        struct mvl_plan plan = {0};
+        struct mvl_agents agents = {0};
+        struct mvl_kpi kpi = {0};
+        const char *headers[] = {mvl_snapshots_header(), mvl_kpi_header()};
+        struct stat before, after;
+        ASSERT(test_mkdtemp(tmp, sizeof(tmp), "mvlheader") != NULL);
+        (void)snprintf(path, sizeof(path), "%s/ledger", tmp);
+        for (size_t i = 0; i < 2; ++i) {
+            FILE *f = fopen(path, "wb");
+            ASSERT(f != NULL);
+            ASSERT(fputs(headers[i], f) >= 0);
+            ASSERT_EQ(fwrite("\0garbage\n", 1, 9, f), 9);
+            ASSERT_EQ(fclose(f), 0);
+            ASSERT_EQ(stat(path, &before), 0);
+            bool ok = i == 0
+                ? mvl_append_snapshot(path, &plan, &agents,
+                                      "2026-09-08T00:00:00Z", "-", "-",
+                                      err, sizeof(err))
+                : mvl_append_kpi(path, &kpi, "2026-09-08T00:00:00Z",
+                                 "w", "-", err, sizeof(err));
+            ASSERT(!ok);
+            ASSERT(strstr(err, ":1: mvl_header_read:") != NULL);
+            ASSERT_EQ(stat(path, &after), 0);
+            ASSERT_EQ(before.st_size, after.st_size);
+        }
+        test_rm_rf_recursive(tmp);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int test_mvp_ledger_header_error(void)
+{
+    int failures = 0;
+    TEST("an unreadable header refuses both appends at the header check") {
+        char tmp[PATH_MAX], err[MVL_ERR_CAP] = "";
+        struct mvl_plan plan = {0};
+        struct mvl_agents agents = {0};
+        struct mvl_kpi kpi = {0};
+        ASSERT(test_mkdtemp(tmp, sizeof(tmp), "mvlheader") != NULL);
+        ASSERT(!mvl_check_header(tmp, mvl_snapshots_header(), err,
+                                 sizeof(err)));
+        ASSERT(strstr(err, ":1: mvl_header_read:") != NULL);
+        ASSERT(!mvl_append_snapshot(tmp, &plan, &agents,
+                                    "2026-09-08T00:00:00Z", "-", "-", err,
+                                    sizeof(err)));
+        ASSERT(strstr(err, ":1: mvl_header_read:") != NULL);
+        ASSERT(!mvl_append_kpi(tmp, &kpi, "2026-09-08T00:00:00Z", "w", "-",
+                               err, sizeof(err)));
+        ASSERT(strstr(err, ":1: mvl_header_read:") != NULL);
+        test_rm_rf_recursive(tmp);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int test_mvp_ledger_json_utf8(void)
+{
+    int failures = 0;
+    TEST("JSON refuses invalid and truncated external strings; Unicode stays") {
+        struct mvl_milestone milestone = {0};
+        struct mvl_xp_agent agent = {0};
+        struct mvl_plan plan = {.milestones = &milestone, .milestone_count = 1};
+        struct mvl_xp_board board = {.rows = &agent, .count = 1};
+        char out[1024];
+        const char *bad[] = {"\xff", "\xe2\x82"};
+        for (size_t i = 0; i < 2; ++i) {
+            (void)snprintf(agent.agent, sizeof(agent.agent), "%s", bad[i]);
+            (void)snprintf(out, sizeof(out), "sentinel");
+            ASSERT_EQ(mvl_render_xp_json(&plan, &board, out, sizeof(out)),
+                       SIZE_MAX);
+            ASSERT_EQ(out[0], '\0');
+            agent.agent[0] = '\0';
+            (void)snprintf(milestone.id, sizeof(milestone.id), "%s", bad[i]);
+            (void)snprintf(out, sizeof(out), "sentinel");
+            ASSERT_EQ(mvl_render_xp_json(&plan, &board, out, sizeof(out)),
+                       SIZE_MAX);
+            ASSERT_EQ(out[0], '\0');
+            milestone.id[0] = '\0';
+        }
+        (void)snprintf(agent.agent, sizeof(agent.agent), "雪\"\\");
+        (void)snprintf(milestone.id, sizeof(milestone.id), "é\"\\");
+        ASSERT(mvl_render_xp_json(&plan, &board, out, sizeof(out)) < sizeof(out));
+        ASSERT(strstr(out, "\"agent\":\"雪\\\"\\\\\"") != NULL);
+        ASSERT(strstr(out, "\"é\\\"\\\\\":0") != NULL);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
 int test_mvp_ledger(void)
 {
     int failures = 0;
+    failures += test_mvp_ledger_record_bytes();
+    failures += test_mvp_ledger_record_error();
+    failures += test_mvp_ledger_header_nul();
+    failures += test_mvp_ledger_header_error();
+    failures += test_mvp_ledger_json_utf8();
     failures += test_mvp_ledger_fresh_error();
     failures += test_mvp_ledger_classify();
     failures += test_mvp_ledger_agents();

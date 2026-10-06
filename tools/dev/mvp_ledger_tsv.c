@@ -241,8 +241,12 @@ bool mvl_check_header(const char *path, const char *want, char *err,
         free(buf);
         return true;
     }
-    if (mvl_read_line(f, buf, MVL_LINE_CAP + 2) == 1
-        && strcmp(buf, want) != 0) {
+    int rc = mvl_read_line(f, buf, MVL_LINE_CAP + 2);
+    if (rc < 0) {
+        mvl_err(err, err_cap, path, 1,
+                "mvl_header_read: malformed or unreadable ledger header");
+        ok = false;
+    } else if (rc == 1 && strcmp(buf, want) != 0) {
         mvl_err(err, err_cap, path, 1,
                 "mvl_tsv_header: not this build's header for that ledger");
         ok = false;
