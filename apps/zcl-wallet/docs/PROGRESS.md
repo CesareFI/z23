@@ -8547,6 +8547,26 @@ hashes and complexity at M<=10 production and M<=15 tests. Recovery, record
 format, storage, transaction validity, consensus and monetary rules remain
 unchanged. No Android runtime or physical-device claim is made.
 
+## Production continuation: unsupported entropy profiles refused before RNG — 2026-10-06
+
+JNI receive-address, wallet-header and recovered-address derivation now use the
+existing core entropy-profile predicate before random blinding acquisition.
+Unsupported 1-, 15-, 17- and 31-byte inputs previously copied within the JNI
+bound and consumed random bytes before lower derivation refused them. They now
+perform the bounded copy, retire the full scratch and leave the provider
+untouched. Supported 16/20/24/28/32-byte behavior is unchanged.
+
+Canonical RED observes one random call for each invalid profile and entry.
+GREEN observes zero; removing all three checks restores RED. The first full
+gate rejected M=16 in the expanded test function, so the matrix was extracted
+into a focused helper; no complexity rule was suppressed.
+
+Focused dual-compiler sanitizer lanes and the exact-tree TLS-OFF gate pass both
+analyzers, all 145 Clang and 140 GCC tests, vendor/reference hashes, production
+M<=10 and test M<=15. Entropy cleanup, BIP39 semantics, derivation paths,
+recovery, transaction validity, monetary policy and consensus remain unchanged.
+No Android runtime or physical-device claim is made.
+
 ## Production continuation: review network admitted before secret copy — 2026-10-06
 
 Transaction review wallet claims now compare the parsed wallet-record network

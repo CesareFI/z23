@@ -5235,3 +5235,26 @@ one parsed-record wipe and zero custody calls; removing only the network check
 restores RED. Focused dual-compiler ASan/UBSan/LSan tests and the complete
 145/140 TLS-OFF matrix pass. No Android runtime or physical-device claim is
 made.
+
+## JNI entropy-profile admission before random acquisition — 2026-10-06
+
+Receive-address, wallet-header and recovered-address JNI entries now apply the
+core's existing BIP39 entropy-length predicate after the bounded managed copy
+and before requesting random blinding bytes. Unsupported in-capacity lengths
+therefore cannot consume the CSPRNG before their deterministic refusal.
+
+| Hazard | Review |
+| --- | --- |
+| Secret lifetime | The at-most-32-byte entropy scratch is still fully wiped on every exit. Unsupported profiles perform no subsequent random, derivation or output-allocation work. |
+| Predicate ownership | JNI reuses `zcl_entropy_length_valid`; supported lengths remain exactly 16, 20, 24, 28 and 32 bytes. Lower mnemonic/address/header owners retain their checks. |
+| Random-provider failure | Supported inputs still invoke the provider exactly once and preserve its failure semantics. Invalid profiles now leave the provider untouched. |
+| JNI exceptions | Length and region exceptions retain their existing cleanup and pending-exception behavior. No JNI call was added. |
+| Output behavior | Successful address/header bytes and Java allocation order are unchanged. Refusals still return null. |
+| Complexity | The new profile matrix initially exceeded the test cap at M=16; extraction restored the gate without suppression. Production remains M<=10 across 605 functions and tests M<=15 across 1,858 functions. |
+| Consensus and custody | BIP39 profiles, derivation paths, networks, recovery, transaction validity, monetary policy, consensus and TLS behavior are unchanged. |
+
+Canonical RED observes random-provider calls for 1-, 15-, 17- and 31-byte
+inputs in all three entries. GREEN observes one entropy copy and zero random
+calls; removing the three checks restores RED. Focused Clang 20 and GCC 14
+ASan/UBSan/LSan tests and the complete 145/140 TLS-OFF matrix pass. No Android
+runtime or physical-device claim is made.

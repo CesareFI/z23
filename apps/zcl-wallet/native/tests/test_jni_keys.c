@@ -474,6 +474,18 @@ static void invalid_inputs(void)
         CHECK(!invoke(operation, &environment, (jbyteArray)&entropy, NULL, 2, 0));
         verify_cleanup(); CHECK(vm_calls == 0 && random_calls == 0);
     }
+
+}
+
+static void invalid_entropy_profiles(void)
+{
+    const jsize invalid[] = {1, 15, 17, 31};
+    for (unsigned operation = 4; operation <= 6; ++operation) {
+        for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+            prepare(); entropy.length = invalid[i];
+            CHECK(!run(operation) && !pending && entropy_reads == 1 && random_calls == 0);
+        }
+    }
 }
 
 static void invalid_headers(void)
@@ -676,7 +688,8 @@ static void fuzz_transfers(void)
 int main(void)
 {
     pending_helpers(); pending_and_null_entries(); exact_results(); public_results(); vm_failures();
-    allocation_with_exception(); invalid_inputs(); invalid_headers(); full_phrase_inputs();
+    allocation_with_exception(); invalid_inputs(); invalid_entropy_profiles();
+    invalid_headers(); full_phrase_inputs();
     destination_refusals(); transfer_failures(); fuzz_transfers();
     puts("JNI key exception and secret cleanup checks passed");
     return 0;

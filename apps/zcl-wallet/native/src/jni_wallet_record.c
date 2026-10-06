@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "jni_support.h"
+#include "mnemonic_words.h"
 #include "zcl_wallet_record.h"
 
 static zcl_status admit_wallet_header(const uint8_t *header, size_t length)
@@ -22,6 +23,8 @@ Java_org_zclassic_wallet_core_NativeCore_createWalletHeader(JNIEnv *env, jclass 
     if (zcl_jni_network(chain, &network) != ZCL_OK)
         goto cleanup;
     if (zcl_jni_read_bytes(env, input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
+        goto cleanup;
+    if (!zcl_entropy_length_valid(entropy_len))
         goto cleanup;
     if (zcl_random_bytes(blinding, sizeof(blinding)) != ZCL_OK)
         goto cleanup;
@@ -48,6 +51,8 @@ Java_org_zclassic_wallet_core_NativeCore_recoveredWalletAddress(JNIEnv *env, jcl
     if (admit_wallet_header(header, header_len) != ZCL_OK)
         goto cleanup;
     if (zcl_jni_read_bytes(env, entropy_input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
+        goto cleanup;
+    if (!zcl_entropy_length_valid(entropy_len))
         goto cleanup;
     if (zcl_random_bytes(blinding, sizeof(blinding)) != ZCL_OK)
         goto cleanup;

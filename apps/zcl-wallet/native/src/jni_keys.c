@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "jni_support.h"
+#include "mnemonic_words.h"
 #include "zcl_keys.h"
 
 /* The managed caller allocates and owns every secret destination BEFORE entry,
@@ -174,6 +175,8 @@ Java_org_zclassic_wallet_core_NativeCore_receivingAddress(JNIEnv *env, jclass ty
     if (index < 0 || zcl_jni_network(chain, &network) != ZCL_OK)
         goto cleanup;
     if (zcl_jni_read_bytes(env, input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
+        goto cleanup;
+    if (!zcl_entropy_length_valid(entropy_len))
         goto cleanup;
     if (zcl_random_bytes(blinding, sizeof(blinding)) != ZCL_OK)
         goto cleanup;
