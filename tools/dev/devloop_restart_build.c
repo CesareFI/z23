@@ -793,14 +793,23 @@ static bool rr_cache_key(const struct rr_plan *plan, const char *root,
     return true;
 }
 
+/* Terminal metadata reads must distinguish clean EOF from I/O failure. */
+bool zcl_devloop_restart_metadata_end(FILE *f);
+bool zcl_devloop_restart_metadata_end(FILE *f)
+{
+    return fgetc(f) == EOF && !ferror(f);
+}
+
 static bool rr_read_hash(const char *path, char out[65])
 {
+    out[0] = 0;
     FILE *f = fopen(path, "r");
     if (!f)
         return false;
     char extra = 0;
     bool ok = fscanf(f, "%64[0-9a-f]%c", out, &extra) == 2 &&
-              strlen(out) == 64 && extra == '\n' && fgetc(f) == EOF;
+              strlen(out) == 64 && extra == '\n' &&
+              zcl_devloop_restart_metadata_end(f);
     fclose(f);
     if (!ok) out[0] = 0;
     return ok;
@@ -1519,7 +1528,7 @@ static bool rr_overlay_for_base_verify(const struct rr_plan *plan,
     char generation[65] = {0}, expected[65] = {0}, extra = 0;
     bool parsed = fscanf(f, "%64[0-9a-f] %64[0-9a-f]%c", generation,
                          expected, &extra) == 3 && extra == '\n' &&
-                  fgetc(f) == EOF;
+                  zcl_devloop_restart_metadata_end(f);
     fclose(f);
     char source_full[PATH_MAX], actual[65];
     return parsed && strcmp(generation, plan->base_generation) == 0 &&

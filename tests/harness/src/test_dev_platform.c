@@ -9519,6 +9519,55 @@ static int test_restart_response_extent(void)
     return failures;
 }
 
+extern bool zcl_devloop_restart_metadata_end(FILE *);
+
+static bool dp_restart_metadata_read_error(FILE *f)
+{
+    int fd = fileno(f);
+    int saved = dup(fd);
+    if (saved < 0)
+        return false;
+    if (close(fd) != 0) {
+        (void)close(saved);
+        return false;
+    }
+    /* With the stream positioned at its end and EOF cleared, the next
+     * read reaches the closed descriptor instead of a buffered byte. */
+    bool accepted = zcl_devloop_restart_metadata_end(f);
+    bool read_error = ferror(f) != 0 && feof(f) == 0;
+    int restored = dup2(saved, fd);
+    int closed = close(saved);
+    return !accepted && read_error && restored == fd && closed == 0;
+}
+
+static int test_restart_metadata_error(void)
+{
+    int failures = 0;
+    FILE *f = NULL;
+    TEST("dev platform: restart digest metadata refuses terminal read error") {
+        f = dp_response_fixture();
+        ASSERT(f != NULL);
+        ASSERT_EQ(setvbuf(f, NULL, _IONBF, 0), 0);
+        char digest[65];
+        memset(digest, 'a', 64);
+        digest[64] = '\n';
+        ASSERT_EQ(fwrite(digest, 1, sizeof(digest), f), sizeof(digest));
+        ASSERT_EQ(fseek(f, 0, SEEK_SET), 0);
+        ASSERT_EQ(fread(digest, 1, sizeof(digest), f), sizeof(digest));
+        ASSERT(zcl_devloop_restart_metadata_end(f));
+        ASSERT(feof(f) != 0 && ferror(f) == 0);
+        clearerr(f);
+        ASSERT_EQ(fseek(f, 0, SEEK_SET), 0);
+        ASSERT(!zcl_devloop_restart_metadata_end(f));
+        ASSERT_EQ(fseek(f, 0, SEEK_END), 0);
+        ASSERT(dp_restart_metadata_read_error(f));
+        PASS();
+    } _test_next:;
+    if (f && fclose(f) != 0)
+        failures++;
+    return failures;
+}
+
 /* Case identity and ownership are kept in one table. The registered base
  * group proves the partition; each child group runs its assigned cases. */
 struct dp_shard_case {
@@ -9528,6 +9577,7 @@ struct dp_shard_case {
 };
 #define DP_CASE(fn, owner) {#fn, fn, owner}
 static const struct dp_shard_case g_dp_cases[] = {
+    DP_CASE(test_restart_metadata_error, 3),
     DP_CASE(test_restart_response_extent, 3),
     DP_CASE(test_failure_store, 5),
     DP_CASE(test_cycle_seal_batch, 5),
@@ -9703,7 +9753,7 @@ static int test_dev_platform_platform_arm(void)
         owned += counts[i];
         nonempty &= counts[i] > 0;
     }
-    if (DP_CASE_COUNT != 67u + (unsigned)(
+    if (DP_CASE_COUNT != 68u + (unsigned)(
 #if defined(__APPLE__)
             1
 #else
