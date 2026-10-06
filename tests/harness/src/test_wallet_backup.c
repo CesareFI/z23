@@ -266,6 +266,31 @@ static int t_happy(void)
     return failures;
 }
 
+static int t_small_output_path_is_refused_before_backup(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    if (!wb_fixture_init(&f, "small_out"))
+        return 1;
+
+    char path[8] = "";
+    char err[256] = "";
+    struct zcl_result r = wallet_backup_run_once(
+        f.backup_dir, &f.ndb, path, sizeof(path), NULL, err, sizeof(err));
+    char listing[2][512];
+    int listed = wallet_backup_list(f.backup_dir, listing, 2);
+
+    WB_RUN("wb: a path buffer too small for the result is refused",
+           !r.ok && err[0] != '\0');
+    WB_RUN("wb: output-path refusal happens before a backup is written",
+           listed == 0 && atomic_load(&g_wb_ok) == 0);
+
+    wb_fixture_tear_down(&f);
+    return failures;
+}
+
 /* ── 2. Refuses to write to a missing / unwritable directory ── */
 
 static int t_missing_dir_created(void)
@@ -1165,6 +1190,7 @@ int test_wallet_backup(void)
     int failures = 0;
     failures += t_authority_sync_backend();
     failures += t_happy();
+    failures += t_small_output_path_is_refused_before_backup();
     failures += t_missing_dir_created();
     failures += t_zero_keys();
     failures += t_two_runs_distinct_files();
