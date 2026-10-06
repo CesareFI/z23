@@ -9,6 +9,7 @@
 JNIEXPORT jlong JNICALL API(parseAmount)(JNIEnv *, jclass, jbyteArray);
 JNIEXPORT jbyteArray JNICALL API(formatAmount)(JNIEnv *, jclass, jlong);
 JNIEXPORT jbyteArray JNICALL API(formatAmountDelta)(JNIEnv *, jclass, jlong);
+JNIEXPORT jlong JNICALL API(changeAmount)(JNIEnv *, jclass, jlong, jlong, jboolean);
 
 typedef struct { jsize length; uint8_t bytes[32]; } fake_array;
 /* Bounded single-threaded public fake-VM state, never linked into the app. */
@@ -176,12 +177,27 @@ static void formats(void)
     }
 }
 
+static void arithmetic(void)
+{
+    CHECK(API(changeAmount)(NULL, NULL, 7, 5, JNI_FALSE) == 12);
+    CHECK(API(changeAmount)(NULL, NULL, 7, 5, JNI_TRUE) == 2);
+    CHECK(API(changeAmount)(NULL, NULL, 0, 1, JNI_TRUE) == -(jlong)ZCL_OUT_OF_RANGE);
+    CHECK(API(changeAmount)(NULL, NULL, -1, 0, JNI_FALSE) == -(jlong)ZCL_OUT_OF_RANGE);
+    CHECK(API(changeAmount)(NULL, NULL, INT64_MAX, INT64_MAX, JNI_FALSE) ==
+        -(jlong)ZCL_OUT_OF_RANGE);
+    CHECK(API(changeAmount)(NULL, NULL, 7, 5, (jboolean)2) ==
+        -(jlong)ZCL_INVALID_ARGUMENT);
+    CHECK(API(changeAmount)(NULL, NULL, 7, 5, (jboolean)UINT8_MAX) ==
+        -(jlong)ZCL_INVALID_ARGUMENT);
+}
+
 int main(void)
 {
     pending_entries();
     parse_faults();
     parse_statuses();
     formats();
+    arithmetic();
     puts("JNI amount exact values, pending exceptions and VM fault checks passed");
     return 0;
 }

@@ -5375,3 +5375,24 @@ exactness mutation restores unsafe packing and fails. Focused Clang 20.1.2
 ASan/UBSan/LSan and GCC 14.2.0 tests pass, followed by the complete 145/140
 TLS-OFF matrix and both analyzers. TLS remains quarantined; no Android runtime
 or device claim is made.
+
+## Canonical JNI monetary-operation admission — 2026-10-06
+
+`changeAmount` now refuses noncanonical `jboolean` values before selecting
+addition or subtraction. Only `JNI_FALSE` and `JNI_TRUE` cross the native
+operation boundary; the existing C amount owners retain all monetary bounds
+and arithmetic semantics.
+
+| Hazard | Review |
+| --- | --- |
+| Operation identity | Values 2 through 255 can no longer silently select addition. They return `ZCL_INVALID_ARGUMENT` without arithmetic. |
+| Monetary bounds | Negative operands, subtraction underflow, addition overflow and values above `ZCL_MAX_MONEY` retain existing fail-closed statuses. |
+| Conversion | `jlong` negativity is checked before unsigned conversion. Canonical admitted values use the same `uint64_t` operations and signed-safe result range. |
+| JNI state | The entry performs no JNI calls, allocations or reference operations and does not alter exception state. |
+| Complexity | Production remains M<=10 across 606 functions; tests remain M<=15 across 1,861 functions without suppression. |
+| Authority | Monetary policy, transaction validity, fees, consensus, storage and custody are unchanged. |
+
+Canonical RED observes `(jboolean)2` and `UINT8_MAX` selecting addition. GREEN
+returns `ZCL_INVALID_ARGUMENT`; removing only the admission check restores RED.
+Focused Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0 tests pass, followed by the
+complete 145/140 TLS-OFF matrix and both analyzers. TLS remains quarantined.

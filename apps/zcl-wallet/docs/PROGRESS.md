@@ -8672,3 +8672,18 @@ exact-tree TLS-OFF gate passes both analyzers, all 145 Clang and 140 GCC tests,
 production M<=10 and test M<=15. Record format, recovery, storage, transaction
 validity, monetary policy and consensus are unchanged. No Android runtime or
 physical-device claim is made.
+
+## Production continuation: noncanonical monetary booleans refused — 2026-10-06
+
+JNI amount arithmetic now admits only `JNI_FALSE` for addition and `JNI_TRUE`
+for subtraction. Noncanonical bytes previously selected addition; they now
+return `ZCL_INVALID_ARGUMENT` before arithmetic. Deterministic coverage includes
+both valid operations, negative inputs, subtraction underflow, signed extremes,
+addition overflow, and boolean values 2 and 255.
+
+Canonical RED observes addition for malformed booleans; GREEN refuses them.
+Removing only the new check restores RED, and saved hashes verify exact
+restoration. Focused Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0 tests pass. The
+exact-tree TLS-OFF gate passes both analyzers, all 145 Clang and 140 GCC tests,
+production M<=10 and test M<=15. Monetary policy, transaction validity,
+consensus, storage and custody are unchanged.

@@ -57,6 +57,8 @@ Java_org_zclassic_wallet_core_NativeCore_changeAmount(JNIEnv *env, jclass type,
 {
     (void)env;
     (void)type;
+    if (subtract != JNI_FALSE && subtract != JNI_TRUE)
+        return -(jlong)ZCL_INVALID_ARGUMENT;
     if (left < 0 || right < 0)
         return -(jlong)ZCL_OUT_OF_RANGE;
     uint64_t result = 0;
