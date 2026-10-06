@@ -5,6 +5,7 @@
 #include "platform/barrier.h"
 
 #include "config/boot_zcode_dht_reachability.h"
+#include "crypto/ed25519.h"
 #include "../../vcs/src/zcode_dht_service_internal.h"
 
 #include <pthread.h>
@@ -271,7 +272,7 @@ static bool run_model(void) {
       break;
     }
     case 5: {
-      /* A request-ID collision never enters the response namespace. */
+      /* Ledger churn; production namespace admission is checked below. */
       struct service_peer *peer = &s->peers[0];
       memset(peer->request_replay[0].id, (int)(step & 0xff), 16);
       peer->request_replay[0].used = true;
@@ -566,10 +567,66 @@ static bool run_lock_stress(void) {
   return ok;
 }
 
+static bool model_frame_replay(void) {
+  struct vcs_zcode_dht_service *s = model_service(0);
+  if (!s) return false;
+  memset(s->lookups, 0, sizeof(s->lookups));
+  memset(s->queries, 0, sizeof(s->queries));
+  memset(s->peers, 0, sizeof(s->peers));
+  struct service_peer *p = &s->peers[0];
+  p->used = p->connected = p->session.established = true;
+  p->peer_id = p->session.generation = p->session.connection_serial = 1;
+  memset(p->session.transcript_hash, 0x77, 32);
+  memset(p->session.remote_static, 0x33, 32);
+  memset(s->genesis, 1, 32);
+  uint8_t seed[32] = {0x22}, pub[32], secret[32], master[32] = {0x55};
+  uint8_t beacon[32] = {0x44};
+  struct vcs_zcode_dht_msg_find_node find = {.session_generation = 1,
+      .query_id = {0x66}, .target_node_id = {0x7a}};
+  ed25519_keypair(pub, secret, seed);
+  bool ok = vcs_zcode_dht_delegation_sign(&find.delegation, s->genesis,
+      pub, p->session.remote_static, 120, beacon, 1000, 2000, 1, master) ==
+      VCS_ZCODE_DHT_DELEGATION_OK &&
+      vcs_zcode_dht_delegation_node_id(find.sender_node_id, &find.delegation);
+  master[0] = 0x56;
+  ok = ok && vcs_zcode_dht_delegation_sign(&s->delegation, s->genesis,
+      pub, p->session.remote_static, 120, beacon, 1000, 2000, 1, master) ==
+      VCS_ZCODE_DHT_DELEGATION_OK &&
+      vcs_zcode_dht_delegation_node_id(s->self_id, &s->delegation) &&
+      vcs_zcode_dht_table_init(s->table, s->self_id);
+  memcpy(s->online_seed, seed, 32);
+  struct vcs_zcode_dht_msg_nodes nodes = {.session_generation = 1,
+      .delegation = find.delegation, .query_id = {0x66}};
+  memcpy(nodes.sender_node_id, find.sender_node_id, 32);
+  uint8_t request[VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES];
+  uint8_t response[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES];
+  size_t nr = 0, ns = 0;
+  ok = ok && vcs_zcode_dht_msg_serialize_find_node(&find,
+      p->session.transcript_hash, seed, request, sizeof(request), &nr) == VCS_ZCODE_DHT_OK &&
+      vcs_zcode_dht_msg_serialize_nodes(&nodes, p->session.transcript_hash,
+      seed, response, sizeof(response), &ns) == VCS_ZCODE_DHT_OK;
+  s->queries[0] = (struct service_query){.used = true, .peer_id = 1,
+      .generation = 1, .kind = QUERY_LOOKUP, .deadline_mono = 1010};
+  memcpy(s->queries[0].id, find.query_id, 16);
+  struct vcs_zcode_dht_time now = {1001, 1001};
+  enum vcs_zcode_dht_reject_reason rejected = VCS_ZCODE_DHT_REJECT_COUNT;
+  ok = ok && vcs_zcode_dht_service_handle_frame(s, 1, request, nr, now, &rejected) &&
+      vcs_zcode_dht_service_handle_frame(s, 1, response, ns, now, &rejected) &&
+      s->frames_accepted == 2 &&
+      !vcs_zcode_dht_service_handle_frame(s, 1, request, nr, now, &rejected) &&
+      rejected == VCS_ZCODE_DHT_REJECT_REPLAY &&
+      !vcs_zcode_dht_service_handle_frame(s, 1, response, ns, now, &rejected) &&
+      rejected == VCS_ZCODE_DHT_REJECT_REPLAY;
+  s->persistence_dirty = false;
+  vcs_zcode_dht_service_free(s, now);
+  return ok;
+}
+
 int test_zcode_dht_model(void) {
   int failures = 0;
   TEST("zcode dht model: 32 nodes/12000 transitions plus concurrent lock lifecycle") {
     ASSERT(run_model());
+    ASSERT(model_frame_replay());
     ASSERT(run_lock_stress());
     PASS();
   }
