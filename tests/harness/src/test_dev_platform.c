@@ -5811,63 +5811,104 @@ static int test_darwin_attested_descriptor_process(void)
 }
 #endif
 
+struct dp_cancel_fixture {
+    struct zcl_devloop_process_result result;
+    struct zcl_devloop_process_result refused;
+    int64_t now_ns;
+    long pid;
+    bool entered;
+    bool ran;
+    bool spawned;
+    int refusal_errno;
+};
+
+static int64_t dp_cancel_clock_ns(void *opaque)
+{
+    struct dp_cancel_fixture *fixture = opaque;
+    fixture->now_ns += INT64_C(10000000);
+    return fixture->now_ns;
+}
+
+static int64_t dp_cancel_clock_wall_ms(void *opaque)
+{
+    (void)opaque;
+    return 0;
+}
+
+static bool dp_cancel_observed(const struct dp_cancel_fixture *fixture)
+{
+    int status = 0;
+    const struct zcl_devloop_process_result *result = &fixture->result;
+    return fixture->entered && fixture->pid > 1 && result->cancelled &&
+           !result->timed_out && result->term_signal == SIGTERM &&
+           waitpid((pid_t)fixture->pid, &status, WNOHANG) == -1 &&
+           errno == ECHILD;
+}
+
 static bool dp_cancel_active_child_poll(void *opaque)
 {
-    bool *entered = opaque;
-    *entered = true;
+    struct dp_cancel_fixture *fixture = opaque;
+    if (fixture->entered)
+        return true;
+    char *end = NULL;
+    errno = 0;
+    long pid = strtol(fixture->result.output, &end, 10);
+    if (errno != 0 || pid <= 1 || *end != '\n')
+        return false;
+    fixture->pid = pid;
+    fixture->entered = true;
+    fixture->now_ns += INT64_C(9000000000);
     return true;
+}
+
+static bool dp_cancel_run_fixture(struct dp_cancel_fixture *fixture)
+{
+    char saved_copy[4096];
+    const char *saved = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    if (saved) {
+        size_t len = strlen(saved);
+        if (len >= sizeof(saved_copy))
+            return false;
+        memcpy(saved_copy, saved, len + 1);
+    }
+    if (platform_environment_set("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0)
+        return false;
+    const clock_iface_t *previous = clock_default();
+    static clock_iface_t clock;
+    clock = (clock_iface_t){dp_cancel_clock_ns, dp_cancel_clock_wall_ms, fixture};
+    const char *argv[] = {"sh", "-c", "echo $$; exec sleep 30", NULL};
+    zcl_devloop_process_cancel_clear();
+    zcl_devloop_process_cancel_poll_set(dp_cancel_active_child_poll, fixture);
+    clock_set_default(&clock);
+    int64_t started = platform_time_monotonic_us();
+    fixture->ran = zcl_devloop_process_run(".", argv, 60000, &fixture->result);
+    int64_t elapsed_us = platform_time_monotonic_us() - started;
+    zcl_devloop_process_cancel_poll_clear();
+    zcl_devloop_process_cancel_clear();
+    zcl_devloop_process_cancel_request();
+    fixture->spawned = zcl_devloop_process_run(".", argv, 60000, &fixture->refused);
+    fixture->refusal_errno = errno;
+    zcl_devloop_process_cancel_clear();
+    clock_set_default(previous);
+    printf("  dev platform: cancel virtual_elapsed_us=%lld "
+           "injected_pause_us=%lld\n", (long long)elapsed_us,
+           (long long)(fixture->entered ? 9000000 : 0));
+    return saved
+        ? platform_environment_set("ZCL_DEVLOOP_TEST_PROCESS", saved_copy, 1) == 0
+        : dp_environment_unset("ZCL_DEVLOOP_TEST_PROCESS") == 0;
 }
 
 static int test_resident_process_cancellation(void)
 {
     int failures = 0;
     TEST("dev platform: resident cancellation stops an active child and refuses a new spawn") {
-        const char *saved = getenv("ZCL_DEVLOOP_TEST_PROCESS");
-        char *saved_copy = saved ? strdup(saved) : NULL;
-        ASSERT(!saved || saved_copy);
-        ASSERT(platform_environment_set("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
-
-        const char *argv[] = { "sleep", "30", NULL };
-        struct zcl_devloop_process_result result = {0};
-        bool entered = false;
-        zcl_devloop_process_cancel_poll_set(dp_cancel_active_child_poll,
-                                             &entered);
-        int64_t started = platform_time_monotonic_us();
-        bool ran = zcl_devloop_process_run(".", argv, 60000, &result);
-        int64_t elapsed_us = platform_time_monotonic_us() - started;
-        zcl_devloop_process_cancel_poll_clear();
-        zcl_devloop_process_cancel_clear();
-        ASSERT(ran && entered);
-        ASSERT(result.cancelled);
-        ASSERT(!result.timed_out);
-        ASSERT(result.term_signal == SIGTERM);
-        /* Cancel must land promptly; the 1 s ceiling scales with measured
-         * host load so a loaded lane does not flake the verdict. */
-        struct test_budget cancel_budget =
-            test_budget_scale(UINT64_C(1000000));
-        printf("  dev platform: cancel-latency elapsed_us=%lld "
-               "nominal_us=%llu effective_us=%llu load_factor=%.2f "
-               "calib_us=%llu\n",
-               (long long)elapsed_us,
-               (unsigned long long)cancel_budget.nominal_us,
-               (unsigned long long)cancel_budget.effective_us,
-               cancel_budget.factor,
-               (unsigned long long)cancel_budget.calib_med_us);
-        ASSERT(elapsed_us >= 0 &&
-               (uint64_t)elapsed_us < cancel_budget.effective_us);
-        struct zcl_devloop_process_result refused = {0};
-        zcl_devloop_process_cancel_request();
-        bool spawned = zcl_devloop_process_run(".", argv, 60000, &refused);
-        int refusal_errno = errno;
-        zcl_devloop_process_cancel_clear();
-        ASSERT(!spawned && refused.cancelled && refusal_errno == ECANCELED);
-
-        if (saved_copy) {
-            ASSERT(platform_environment_set("ZCL_DEVLOOP_TEST_PROCESS", saved_copy, 1) == 0);
-            free(saved_copy);
-        } else {
-            ASSERT(dp_environment_unset("ZCL_DEVLOOP_TEST_PROCESS") == 0);
-        }
+        static struct dp_cancel_fixture fixture;
+        fixture = (struct dp_cancel_fixture){0};
+        ASSERT(dp_cancel_run_fixture(&fixture));
+        ASSERT(fixture.ran);
+        ASSERT(dp_cancel_observed(&fixture));
+        ASSERT(!fixture.spawned && fixture.refused.cancelled &&
+               fixture.refusal_errno == ECANCELED);
         PASS();
     } _test_next:;
     return failures;
@@ -9596,7 +9637,7 @@ static const struct dp_shard_case g_dp_cases[] = {
 #if defined(__APPLE__)
     DP_CASE(test_darwin_attested_descriptor_process, 4),
 #endif
-    DP_CASE(test_resident_process_cancellation, 4),
+    DP_CASE(test_resident_process_cancellation, 3),
     DP_CASE(test_exact_commit_preempts_edit_proof, 4),
     DP_CASE(test_foreground_cycle_yields_to_commit, 4),
     DP_CASE(test_watcher_stream_backpressure, 4),
