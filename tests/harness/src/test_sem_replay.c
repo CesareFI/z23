@@ -491,6 +491,56 @@ static bool srt_find_tool(struct srt_fx *fx)
     return true;
 }
 
+/* Exercise the exact TU copy and failure flag through the owned callback. */
+static int srt_tu_paths(const struct srt_fx *fx)
+{
+    const char *source =
+        "/* Verify replay TU response path bounds. */\n"
+        "#include \"tools/dev/sem_replay_plan.c\"\n"
+        "bool sr_strv_push(struct sr_strv *s, const char *v)\n"
+        "{ (void)v; s->n++; return true; }\n"
+        "int main(void) {\n"
+        " struct sr_plan p = {0}; struct pctx c = {.p = &p};\n"
+        " char path[1025]; memset(path, 'a', 1024); path[1024] = 0;\n"
+        " on_value(&c, \"data.facts.tus[].path\", path);\n"
+        " on_value(&c, \"data.facts.tus[].affected\", \"true\");\n"
+        " if (!c.failed || c.row_open || p.tus_affected.n) return 1;\n"
+        " on_value(&c, \"data.facts.tus[].path\", \"src/ignored.c\");\n"
+        " if (c.row_open || c.row_path[0] || p.tu_rows.n) return 5;\n"
+        " c = (struct pctx){.p = &p}; path[1023] = 0;\n"
+        " on_value(&c, \"data.facts.tus[].path\", path);\n"
+        " if (c.failed || !c.row_open || strcmp(c.row_path, path)) return 2;\n"
+        " on_value(&c, \"data.facts.tus[].affected\", \"true\");\n"
+        " on_value(&c, \"data.facts.tus[].path\", \"src/a.c\");\n"
+        " if (p.tus_affected.n != 1 || strcmp(c.row_path, \"src/a.c\")) return 3;\n"
+        " return c.row_open ? 0 : 4;\n"
+        "}\n";
+    char src[PATH_MAX + 32], bin[PATH_MAX + 32];
+    if (!srt_write(fx->tools, "tu-paths.c", source))
+        return 1;
+    snprintf(src, sizeof src, "%s/tu-paths.c", fx->tools);
+    snprintf(bin, sizeof bin, "%s/tu-paths", fx->tools);
+#if defined(__APPLE__)
+    const char *discard = "-Wl,-dead_strip";
+#else
+    const char *discard = "-Wl,--gc-sections";
+#endif
+    const char *cc[] = {"cc", "-std=c23", "-O1", "-ffunction-sections",
+                        "-fdata-sections", discard, "-I.",
+                        "-Iplatform/modules/base/include",
+                        "-Icontexts/commons/packages/zutf8/include",
+                        "-o", bin, src, NULL};
+    if (srt_run(cc) != 0) {
+        printf("(TU path probe compile output: %s) ", g_srt_out);
+        return 1;
+    }
+    const char *run[] = {bin, NULL};
+    int rc = srt_run(run);
+    if (rc != 0)
+        printf("(TU path probe exit %d: %s) ", rc, g_srt_out);
+    return rc != 0;
+}
+
 static bool srt_setup(struct srt_fx *fx)
 {
     const char *probe[] = {"objcopy", "--version", NULL};
@@ -501,7 +551,7 @@ static bool srt_setup(struct srt_fx *fx)
     /* Without objcopy the replay cannot split code from debug changes and
      * files a changed object as unknown, which it treats as code. */
     fx->objcopy = srt_run(probe) == 0;
-    return srt_find_tool(fx) && srt_mkdir_p(fx->tools) && srt_tools(fx) && srt_history(fx);
+    return srt_find_tool(fx) && srt_mkdir_p(fx->tools) && srt_tu_paths(fx) == 0 && srt_tools(fx) && srt_history(fx);
 }
 
 /* ── running the replay ──────────────────────────────────────────────── */

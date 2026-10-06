@@ -31,15 +31,17 @@ static long to_long(const char *v)
     return strcmp(v, "null") == 0 ? -1 : strtol(v, NULL, 10);
 }
 
-static void copy_str(char *dst, size_t cap, const char *v)
+static bool copy_str(char *dst, size_t cap, const char *v)
 {
-    snprintf(dst, cap, "%s", v);
+    int n = snprintf(dst, cap, "%s", v);
+    return n >= 0 && (size_t)n < cap;
 }
 
 struct pctx {
     struct sr_plan *p;
     bool first_page;
     bool row_open;
+    bool failed;
     char row_path[1024];
     char row_aff[8], row_br[8], row_reason[128];
 };
@@ -62,9 +64,17 @@ static bool on_tu(struct pctx *c, const char *path, const char *v)
     if (strstr(path, "tus[].") == NULL)
         return false;
     if (key_is(path, "tus[].path")) {
+        char tu_path[sizeof(c->row_path)];
+        if (!copy_str(tu_path, sizeof(tu_path), v)) {
+            c->failed = true;
+            c->row_open = false;
+            c->row_path[0] = '\0';
+            fprintf(stderr, "sem-replay: TU path exceeds response capacity\n");
+            return true;
+        }
         row_flush(c);
         c->row_open = true;
-        copy_str(c->row_path, sizeof(c->row_path), v);
+        memcpy(c->row_path, tu_path, strlen(tu_path) + 1);
         copy_str(c->row_aff, sizeof(c->row_aff), "?");
         copy_str(c->row_br, sizeof(c->row_br), "?");
         c->row_reason[0] = '\0';
@@ -146,6 +156,8 @@ static void on_plain(struct sr_plan *p, const char *path, const char *v)
 static void on_value(void *ctx, const char *path, const char *v)
 {
     struct pctx *c = ctx;
+    if (c->failed)
+        return;
     if (!in_facts(path)) {
         if (c->first_page)
             on_plain(c->p, path, v);
@@ -238,7 +250,9 @@ static bool plan_page(const char *planner, const char *repo,
         (void)sr_write_file(raw, out, len);
     c->p->next_offset = -1;
     bool ok = rc == 0 && out != NULL && sr_json_flatten(out, len, on_value, c);
-    row_flush(c);
+    ok = ok && !c->failed;
+    if (ok)
+        row_flush(c);
     if (!ok)
         snprintf(c->p->error, sizeof(c->p->error), "planner exit %d at offset %ld",
                  rc, offset);
