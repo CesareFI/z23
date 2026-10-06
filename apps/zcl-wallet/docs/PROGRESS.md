@@ -8687,3 +8687,20 @@ restoration. Focused Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0 tests pass. The
 exact-tree TLS-OFF gate passes both analyzers, all 145 Clang and 140 GCC tests,
 production M<=10 and test M<=15. Monetary policy, transaction validity,
 consensus, storage and custody are unchanged.
+
+## Production continuation: Base58 private-capable scratch retired — 2026-10-06
+
+The portable Base58Check core now clears every checksum, checked payload,
+division magnitude, reversed text and staged output buffer before return. The
+generic codec can carry published 78-byte extended-private-key vectors, so
+leaving those automatic buffers live was a custody-relevant defect even though
+current Android product call sites use public address data.
+
+Canonical RED observes zero Base58 cleanup calls. GREEN verifies exact 4-, 32-,
+132- and 184-byte retirement counts across 1-, 78- and 128-byte round trips and
+invalid-alphabet refusal. Deleting cleanup calls restores RED while functional
+encoding remains available; saved hashes verify exact restoration. Focused
+Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0 codec/retirement lanes pass. The
+exact-tree TLS-OFF gate passes both analyzers, all 145 Clang and 140 GCC tests,
+production M<=10 and test M<=15. Base58 bytes, active-span efficiency, keys,
+recovery, transaction validity, monetary policy and consensus are unchanged.

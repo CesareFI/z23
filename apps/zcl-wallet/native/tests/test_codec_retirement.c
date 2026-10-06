@@ -12,6 +12,8 @@
 typedef enum { NORMAL, CHECK_FAILURE, WRONG_SIZE } fault;
 static fault failure;
 static unsigned hash_clears, candidate_clears, wire_clears;
+static bool base58_active;
+static unsigned base58_clears[4];
 /* Public fixture storage is bounded, single-threaded and absent from Android. */
 static uint8_t fixture_wire[ZCL_TX_WIRE_MAX + 1];
 static size_t fixture_length;
@@ -39,7 +41,13 @@ zcl_status zcl_codec_test_check(const zcl_transparent_tx *tx, size_t *length)
 void zcl_codec_test_zero(void *buffer, size_t length)
 {
     CHECK(buffer != NULL);
-    if (length == 32) ++hash_clears;
+    if (base58_active) {
+        const size_t lengths[] = {4, 32, 132, 184};
+        size_t index = 0;
+        while (index < 4 && length != lengths[index]) ++index;
+        CHECK(index < 4);
+        ++base58_clears[index];
+    } else if (length == 32) ++hash_clears;
     else if (length == sizeof(zcl_transparent_tx)) ++candidate_clears;
     else { CHECK(length == ZCL_TX_WIRE_MAX); ++wire_clears; }
     zcl_secure_zero(buffer, length);
@@ -48,8 +56,45 @@ void zcl_codec_test_zero(void *buffer, size_t length)
 
 static void reset(fault mode)
 {
+    base58_active = false;
     failure = mode;
     hash_clears = candidate_clears = wire_clears = 0;
+}
+
+static void reset_base58(void)
+{
+    base58_active = true;
+    memset(base58_clears, 0, sizeof(base58_clears));
+}
+
+static void base58_counts(unsigned four, unsigned thirty_two, unsigned one_thirty_two,
+    unsigned one_eighty_four)
+{
+    CHECK(base58_clears[0] == four && base58_clears[1] == thirty_two);
+    CHECK(base58_clears[2] == one_thirty_two && base58_clears[3] == one_eighty_four);
+}
+
+static void base58_retirement(void)
+{
+    uint8_t payload[128] = {0}, decoded[128] = {0}, text[184] = {0};
+    for (size_t i = 0; i < sizeof(payload); ++i) payload[i] = (uint8_t)(i + 1);
+    const size_t lengths[] = {1, 78, 128};
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        size_t text_len = 0;
+        reset_base58();
+        CHECK(zcl_base58check_encode(payload, lengths[i], text, sizeof(text), &text_len) == ZCL_OK);
+        base58_counts(0, 2, 1, 2);
+        size_t decoded_len = 0;
+        reset_base58();
+        CHECK(zcl_base58check_decode(text, text_len, decoded, sizeof(decoded), &decoded_len) == ZCL_OK);
+        CHECK(decoded_len == lengths[i] && memcmp(decoded, payload, decoded_len) == 0);
+        base58_counts(1, 2, 2, 0);
+    }
+    size_t length = 0;
+    reset_base58();
+    CHECK(zcl_base58check_decode((const uint8_t *)"0", 1, decoded, sizeof(decoded), &length) ==
+        ZCL_INVALID_ENCODING);
+    base58_counts(0, 0, 2, 0);
 }
 
 static void load_fixture(size_t index)
@@ -124,6 +169,7 @@ int main(void)
 {
     for (size_t i = 0; i < sizeof(transaction_vectors) / sizeof(transaction_vectors[0]); ++i)
         fixture_cases(i);
+    base58_retirement();
     CHECK(puts("Codec retirement: canonical fixtures, every truncation and staged failure passed") >= 0);
     return 0;
 }

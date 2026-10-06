@@ -5396,3 +5396,28 @@ Canonical RED observes `(jboolean)2` and `UINT8_MAX` selecting addition. GREEN
 returns `ZCL_INVALID_ARGUMENT`; removing only the admission check restores RED.
 Focused Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0 tests pass, followed by the
 complete 145/140 TLS-OFF matrix and both analyzers. TLS remains quarantined.
+
+## Base58Check scratch retirement — 2026-10-06
+
+The platform-neutral Base58Check encoder and decoder now retire every automatic
+checksum, checked-payload, division magnitude, reversed-text and staged-output
+buffer on success and after all post-admission failures. This matters because
+the generic codec supports 78-byte extended private-key payloads as well as
+public addresses.
+
+| Hazard | Review |
+| --- | --- |
+| Secret lifetime | SHA-256 first/second blocks (32 bytes), checksum comparison (4), checked/magnitude buffers (132), and reversed/staged text (184) are cleared before their owning functions return. |
+| Failure paths | Invalid alphabet, checksum mismatch, arithmetic range, output capacity and provider failures converge on cleanup after scratch creation. Precondition refusals occur before scratch receives caller data. |
+| Output atomicity | Caller output and length are still published only after the same validation and capacity checks. Cleanup touches only invocation-owned automatic buffers. |
+| Byte compatibility | Encoding alphabet, leading-zero handling, double-SHA256 checksum, constant-time checksum comparison and decoded payload bytes are unchanged. |
+| Allocation and performance | No heap allocation, copying expansion, retry or new provider call was added. Fixed stack sizes and active-span algorithms are unchanged. |
+| Complexity | Production remains M<=10 across 606 functions; tests remain M<=15 across 1,864 functions without suppression. |
+| Authority | Key derivation, addresses, recovery, storage, transaction validity, monetary policy and consensus are unchanged. |
+
+Canonical RED observes none of the required Base58 scratch wipes. GREEN observes
+exact wipe counts for 1-, 78- and 128-byte encode/decode round trips plus
+invalid-alphabet refusal; deleting all cleanup calls restores RED while leaving
+functional logic intact. Focused Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0
+codec/retirement tests pass, followed by the complete 145/140 TLS-OFF matrix
+and both analyzers. TLS remains quarantined.
