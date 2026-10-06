@@ -84,6 +84,7 @@ static struct {
     struct async_event ring[ASYNC_QUEUE_SIZE];
     _Atomic uint64_t   write_pos;
     _Atomic uint64_t   read_pos;
+    _Atomic uint64_t   dropped;
     pthread_t          thread;
     _Atomic bool       running;
     bool               thread_started;
@@ -135,6 +136,23 @@ static void async_enqueue(enum event_type type, uint32_t peer_id,
     pthread_mutex_lock(&g_async.wake_mutex);
     uint64_t wp = atomic_load_explicit(&g_async.write_pos,
                                        memory_order_relaxed);
+    /* Bounded queue, honest accounting: when a producer burst outruns the
+     * dispatcher, refuse the enqueue and count the drop instead of
+     * overwriting a slot the dispatcher has not consumed yet. Pre-fix the
+     * ring silently overwrote unconsumed slots (lost events, no counter),
+     * and the unbounded overwrite also let a producer write the very slot
+     * the dispatcher was reading (a C11 data race). With the bound, a
+     * producer never writes into [read_pos, write_pos), so the same-slot
+     * race is gone by construction. Producers must never block on
+     * diagnostics, so this drops rather than waits. */
+    uint64_t rp = atomic_load_explicit(&g_async.read_pos,
+                                       memory_order_acquire);
+    if (wp - rp >= ASYNC_QUEUE_SIZE) {
+        atomic_fetch_add_explicit(&g_async.dropped, 1u,
+                                  memory_order_relaxed);
+        pthread_mutex_unlock(&g_async.wake_mutex);
+        return;
+    }
     struct async_event *ae = &g_async.ring[wp & ASYNC_QUEUE_MASK];
     ae->type = type;
     ae->peer_id = peer_id;
@@ -228,6 +246,7 @@ bool event_async_start(void)
 
     atomic_store(&g_async.write_pos, 0);
     atomic_store(&g_async.read_pos, 0);
+    atomic_store(&g_async.dropped, 0);
     if (pthread_mutex_init(&g_async.wake_mutex, NULL) != 0)
         return false;
     if (pthread_cond_init(&g_async.wake_cond, NULL) != 0) {
@@ -725,4 +744,9 @@ uint64_t event_log_head_sequence(void)
     if (!atomic_load(&g_log.initialized))
         return 0;
     return atomic_load_explicit(&g_log.write_pos, memory_order_acquire);
+}
+
+uint64_t event_async_dropped(void)
+{
+    return atomic_load_explicit(&g_async.dropped, memory_order_acquire);
 }
