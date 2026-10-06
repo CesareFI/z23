@@ -1823,6 +1823,183 @@ static void fmx_ref_attempt(const char *gid, const char *ref, const char *key,
     fmx_end(&c);
 }
 
+static int fmx_t_revoke_running_pages(void)
+{
+    int failures = 0;
+    TEST("steer: revoke preserves running claims on both lexical pages") {
+        struct fmx_call q, c;
+        char gid[64], ref[32], code[64];
+        fmx_isolate("revoke_running_pages");
+        ASSERT(fmx_mint("brief,send,evidence", gid, sizeof(gid)));
+        for (unsigned i = 0; i < 65; i++) {
+            (void)snprintf(ref, sizeof(ref), "page-%03u", i);
+            fmx_ref_attempt(gid, ref, ref, code, sizeof(code));
+            ASSERT_STR_EQ(code, "");
+        }
+        ASSERT(fmx_claim_running("page-000"));
+        ASSERT(fmx_claim_running("page-064"));
+        for (unsigned i = 1; i < 64; i++) {
+            (void)snprintf(ref, sizeof(ref), "page-%03u", i);
+            fmx_begin(&q, "dev.agent.queue", "zcl.agent_queue.v1");
+            (void)json_push_kv_str(&q.input, "action", "post");
+            (void)json_push_kv_str(&q.input, "kind", "leaf");
+            (void)json_push_kv_str(&q.input, "name", ref);
+            ASSERT(fmx_run(&q, zcl_native_handle_dev_agent_queue));
+            ASSERT(fmx_ok(&q));
+            fmx_end(&q);
+        }
+        fmx_begin(&c, FMX_GRANT_PATH, "zcl.fleet_steer_grant.v1");
+        (void)json_push_kv_str(&c.input, "action", "revoke");
+        (void)json_push_kv_str(&c.input, "id", gid);
+        ASSERT(fmx_run(&c, zcl_native_handle_fleet_steer_grant));
+        ASSERT(fmx_ok(&c));
+        ASSERT_EQ(fmx_int(&c, "cancelled"), 63);
+        ASSERT_EQ(fmx_int(&c, "running_continued"), 2);
+        ASSERT_EQ(fmx_int(&c, "terminated"), 0);
+        fmx_end(&c);
+        for (unsigned i = 0; i < 2; i++) {
+            fmx_begin(&q, "dev.agent.queue", "zcl.agent_queue.v1");
+            (void)json_push_kv_str(&q.input, "action", "cancel");
+            (void)json_push_kv_str(&q.input, "name", i ? "page-064" : "page-000");
+            ASSERT(fmx_run(&q, zcl_native_handle_dev_agent_queue));
+            ASSERT(!fmx_ok(&q));
+            ASSERT_STR_EQ(q.reply.error.code, "CANCEL_RUNNING");
+            fmx_end(&q);
+        }
+        fmx_begin(&q, "dev.agent.queue", "zcl.agent_queue.v1");
+        (void)json_push_kv_str(&q.input, "action", "claim");
+        (void)json_push_kv_str(&q.input, "worker", "worker2");
+        (void)json_push_kv_str(&q.input, "session", "session2");
+        ASSERT(fmx_run(&q, zcl_native_handle_dev_agent_queue));
+        ASSERT(fmx_ok(&q));
+        ASSERT_STR_EQ(fmx_str(&q, "state"), "empty");
+        fmx_end(&q);
+        PASS();
+    }
+_test_next:;
+    fmx_restore();
+    return failures;
+}
+
+static int fmx_t_revoke_nul(void)
+{
+    int failures = 0;
+    FILE *file = NULL;
+    TEST("steer: revoke refuses NUL in a final unterminated sent row") {
+        for (unsigned nul = 0; nul < 2; nul++) {
+            struct fmx_call q, c;
+            char gid[64], code[64], wire[256], path[1400];
+            fmx_isolate(nul ? "revoke_nul" : "revoke_unterminated");
+            ASSERT(fmx_mint("brief,send,evidence", gid, sizeof(gid)));
+            fmx_ref_attempt(gid, "nul-prefix", "nul-prefix", code, sizeof(code));
+            ASSERT_STR_EQ(code, "");
+            fmx_ref_attempt(gid, "nul-hidden", "nul-hidden", code, sizeof(code));
+            ASSERT_STR_EQ(code, "");
+            fmx_begin(&q, "dev.agent.queue", "zcl.agent_queue.v1");
+            (void)json_push_kv_str(&q.input, "action", "post");
+            (void)json_push_kv_str(&q.input, "kind", "leaf");
+            (void)json_push_kv_str(&q.input, "name", "nul-hidden");
+            ASSERT(fmx_run(&q, zcl_native_handle_dev_agent_queue));
+            ASSERT(fmx_ok(&q));
+            fmx_end(&q);
+            int n = snprintf(wire, sizeof(wire),
+                "{\"grant\":\"%s\",\"ref\":\"nul-prefix\"}%c{\"grant\":\"%s\",\"ref\":\"nul-hidden\"}",
+                gid, nul ? '\0' : '\n', gid);
+            ASSERT(n > 0 && (size_t)n < sizeof(wire));
+            int p = snprintf(path, sizeof(path), "%s/z23/dev/steer/sent.jsonl", g_fmx_state);
+            ASSERT(p > 0 && (size_t)p < sizeof(path));
+            file = fopen(path, "wb");
+            ASSERT(file != NULL);
+            bool wrote = fwrite(wire, 1, (size_t)n, file) == (size_t)n;
+            int closed = fclose(file);
+            file = NULL;
+            ASSERT(wrote && closed == 0);
+            fmx_begin(&c, FMX_GRANT_PATH, "zcl.fleet_steer_grant.v1");
+            (void)json_push_kv_str(&c.input, "action", "revoke");
+            (void)json_push_kv_str(&c.input, "id", gid);
+            ASSERT(fmx_run(&c, zcl_native_handle_fleet_steer_grant));
+            ASSERT(fmx_ok(&c) == !nul);
+            ASSERT_EQ(fmx_int(&c, "cancelled"), nul ? 0 : 1);
+            if (nul) {
+                ASSERT_STR_EQ(c.reply.error.code, "REVOKE_CANCEL_INCOMPLETE");
+                ASSERT(c.reply.error.mutated);
+            }
+            fmx_end(&c);
+            fmx_begin(&q, "dev.agent.queue", "zcl.agent_queue.v1");
+            (void)json_push_kv_str(&q.input, "action", "claim");
+            (void)json_push_kv_str(&q.input, "worker", "worker2");
+            (void)json_push_kv_str(&q.input, "session", "session2");
+            ASSERT(fmx_run(&q, zcl_native_handle_dev_agent_queue));
+            ASSERT(fmx_ok(&q));
+            ASSERT_STR_EQ(fmx_str(&q, "state"), nul ? "running" : "empty");
+            fmx_end(&q);
+            fmx_restore();
+        }
+        PASS();
+    }
+_test_next:;
+    if (file) (void)fclose(file);
+    fmx_restore();
+    return failures;
+}
+
+static int fmx_t_revoke_pages(bool fail_page)
+{
+    int failures = 0;
+    TEST(fail_page ? "steer: refused second revoke page reports incomplete coverage"
+                   : "steer: revoke cancels refs beyond the first 64") {
+        struct fmx_call q, c;
+        char gid[64], ref[32], code[64], bad[160];
+        fmx_isolate(fail_page ? "revoke_page_fail" : "revoke_pages");
+        ASSERT(fmx_mint("brief,send,evidence", gid, sizeof(gid)));
+        for (unsigned i = 0; i < 65; i++) {
+            (void)snprintf(ref, sizeof(ref), "page-%03u", i);
+            fmx_ref_attempt(gid, ref, ref, code, sizeof(code));
+            ASSERT_STR_EQ(code, "");
+            if (i == 0) {
+                ASSERT(fmx_claim_running(ref));
+            } else {
+                fmx_begin(&q, "dev.agent.queue", "zcl.agent_queue.v1");
+                (void)json_push_kv_str(&q.input, "action", "post");
+                (void)json_push_kv_str(&q.input, "kind", "leaf");
+                (void)json_push_kv_str(&q.input, "name", ref);
+                ASSERT(fmx_run(&q, zcl_native_handle_dev_agent_queue));
+                ASSERT(fmx_ok(&q));
+                fmx_end(&q);
+            }
+            if (fail_page && i == 63) {
+                (void)snprintf(bad, sizeof(bad), "{\"grant\":\"%s\",\"ref\":\"page-063/x\"}\n", gid);
+                fmx_state_file("steer", "sent.jsonl", bad, true);
+            }
+        }
+        fmx_begin(&c, FMX_GRANT_PATH, "zcl.fleet_steer_grant.v1");
+        (void)json_push_kv_str(&c.input, "action", "revoke");
+        (void)json_push_kv_str(&c.input, "id", gid);
+        ASSERT(fmx_run(&c, zcl_native_handle_fleet_steer_grant));
+        bool complete = fmx_ok(&c);
+        long long cancelled = fmx_int(&c, "cancelled");
+        long long continued = fmx_int(&c, "running_continued");
+        long long terminated = fmx_int(&c, "terminated");
+        fmx_end(&c);
+        ASSERT(complete == !fail_page);
+        ASSERT_EQ(cancelled, fail_page ? 63 : 64);
+        ASSERT_EQ(continued, 1);
+        ASSERT_EQ(terminated, 0);
+        fmx_begin(&q, "dev.agent.queue", "zcl.agent_queue.v1");
+        (void)json_push_kv_str(&q.input, "action", "claim");
+        (void)json_push_kv_str(&q.input, "worker", "worker2");
+        (void)json_push_kv_str(&q.input, "session", "session2");
+        ASSERT(fmx_run(&q, zcl_native_handle_dev_agent_queue));
+        ASSERT(fmx_ok(&q));
+        ASSERT_STR_EQ(fmx_str(&q, "state"), fail_page ? "running" : "empty");
+        fmx_end(&q);
+        PASS();
+    }
+_test_next:;
+    fmx_restore();
+    return failures;
+}
+
 /* The ingress ref grammar is the queue's grammar: a ref accepted here that the
  * queue would refuse is work that is delivered and never dispatched. The hostile
  * refs are ones sent at a deployed endpoint in an adversarial run. */
@@ -4699,6 +4876,10 @@ int test_fleet_steer(void)
     failures += fmx_t_peer_grants();
     failures += fmx_t_revoke_cancels_queued();
     failures += fmx_t_revoke_running();
+    failures += fmx_t_revoke_running_pages();
+    failures += fmx_t_revoke_nul();
+    failures += fmx_t_revoke_pages(false);
+    failures += fmx_t_revoke_pages(true);
     failures += fmx_t_ref_grammar();
     failures += fmx_t_sender_binding();
     failures += fmx_t_board_absent();

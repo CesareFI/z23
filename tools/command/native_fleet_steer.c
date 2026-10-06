@@ -5234,37 +5234,67 @@ static bool fmc_ref_seen(char refs[][FMC_REF_MAX + 1], size_t nrefs,
     return false;
 }
 
-/* Collect the distinct non-empty refs sent under one grant. Old rows
- * without a grant never match; rows without a ref carry nothing to
- * cancel. Returns the ref count (0 when the store is absent). */
+static int fmc_ref_compare(const void *a, const void *b)
+{ return strcmp(a, b); }
+
+/* 1: bounded text row, 0: EOF, -1: NUL, oversized row or read error. */
+static int fmc_revoke_read_line(FILE *f, char line[FMC_LINE_CAP])
+{
+    size_t len = 0;
+    int ch;
+    while (len + 1 < FMC_LINE_CAP && (ch = fgetc(f)) != EOF) {
+        if (ch == '\0') {
+            LOG_ERROR(FMC_LOG, "revoke: NUL in sent row");
+            return -1;
+        }
+        line[len++] = (char)ch;
+        if (ch == '\n') break;
+    }
+    if (ferror(f) || (len + 1 == FMC_LINE_CAP && line[len - 1] != '\n')) {
+        LOG_ERROR(FMC_LOG, "revoke: sent row unreadable or exceeds bound");
+        return -1;
+    }
+    line[len] = '\0';
+    return len ? 1 : 0;
+}
+
+/* Page distinct refs after the previous lexical cursor. Each read has a
+ * 4096-row budget; SIZE_MAX refuses coverage. Rows without a grant
+ * or ref are skipped; an absent store yields 0. */
 static size_t fmc_revoke_refs(const char *sent_path, const char *grant_id,
-                              char refs[][FMC_REF_MAX + 1], size_t cap)
+                              char refs[][FMC_REF_MAX + 1], const char *after)
 {
     FILE *f;
     char line[FMC_LINE_CAP];
     char grant[64], ref[FMC_REF_MAX + 1];
-    size_t nrefs = 0;
-    if (!sent_path || !grant_id || !refs || cap == 0)
-        return 0;
+    size_t nrefs = 0, rows = 0, cap = 64;
+    int read_rc;
     f = fopen(sent_path, "rb");
     if (!f)
-        return 0;
-    while (fgets(line, sizeof(line), f)) {
+        return errno == ENOENT ? 0 : SIZE_MAX;
+    while ((read_rc = fmc_revoke_read_line(f, line)) > 0) {
+        if (++rows > 4096) { nrefs = SIZE_MAX; break; }
         if (!fmc_grant_line_str(line, "grant", grant, sizeof(grant)))
             continue;
         if (strcmp(grant, grant_id) != 0)
             continue;
         if (!fmc_grant_line_str(line, "ref", ref, sizeof(ref)))
             continue;
+        if (strcmp(ref, after) <= 0)
+            continue;
         if (fmc_ref_seen(refs, nrefs, ref))
             continue;
-        if (nrefs >= cap)
-            break;
+        if (nrefs >= cap) {
+            if (strcmp(ref, refs[cap - 1]) >= 0) continue;
+            nrefs--;
+        }
         (void)snprintf(refs[nrefs], sizeof(refs[nrefs]), "%s", ref);
         nrefs++;
+        qsort(refs, nrefs, sizeof(refs[0]), fmc_ref_compare);
     }
-    (void)fclose(f);
-    return nrefs;
+    bool failed = read_rc < 0 || ferror(f) != 0;
+    failed |= fclose(f) != 0;
+    return failed ? SIZE_MAX : nrefs;
 }
 
 static long long fmc_reply_int(const struct fmc_sub *sub, const char *key)
@@ -5284,12 +5314,13 @@ static bool fmc_reply_bool(const struct fmc_sub *sub, const char *key)
 /* Cancel one queue row by ref. `terminate` is the grant's explicit
  * authority to end a running row's claim on later stages. Without it a
  * running row is counted in *continued and left in place. */
-static void fmc_revoke_cancel_one(const struct zcl_command_request *req,
+static bool fmc_revoke_cancel_one(const struct zcl_command_request *req,
                                   const char *ref, bool terminate,
                                   long long *cancelled, long long *terminated,
                                   long long *continued)
 {
     struct fmc_sub sub;
+    bool complete = false;
     char input[512];
     int n;
     *cancelled = 0;
@@ -5302,51 +5333,65 @@ static void fmc_revoke_cancel_one(const struct zcl_command_request *req,
                        ref)
             : snprintf(input, sizeof(input),
                        "{\"action\":\"cancel\",\"name\":\"%s\"}", ref);
-    if (n <= 0 || (size_t)n >= sizeof(input))
-        return;
+    if (n <= 0 || (size_t)n >= sizeof(input)) {
+        LOG_ERROR(FMC_LOG, "revoke: cancel input exceeds bound (ref=%s)", ref);
+        return false;
+    }
     fmc_sub_begin(&sub, "zcl.agent_queue.v1", req, "dev.agent.queue");
     if (!sub.valid || !fmc_sub_input(&sub, input)) {
+        LOG_ERROR(FMC_LOG, "revoke: cannot prepare queue cancel (ref=%s)", ref);
         fmc_sub_end(&sub);
-        return;
+        return false;
     }
     zcl_native_handle_dev_agent_queue(&sub.request, &sub.reply);
     sub.ran = true;
     if (fmc_sub_ok(&sub)) {
+        complete = true;
         *cancelled = fmc_reply_int(&sub, "cancelled");
         *terminated = fmc_reply_int(&sub, "terminated");
         if (fmc_reply_bool(&sub, "running_continues"))
             *continued = 1;
     } else if (strcmp(sub.reply.error.code, "CANCEL_RUNNING") == 0) {
         *continued = 1;
-    } else if (sub.reply.error.code[0] &&
-               strcmp(sub.reply.error.code, "CANCEL_NOT_FOUND") != 0) {
+        complete = true;
+    } else if (strcmp(sub.reply.error.code, "CANCEL_NOT_FOUND") == 0) {
+        complete = true;
+    } else {
         LOG_ERROR(FMC_LOG, "revoke: queue cancel refused (ref=%s code=%s)",
                   ref, sub.reply.error.code);
     }
     fmc_sub_end(&sub);
+    return complete;
 }
 
-/* Best-effort revoke-cancel of every ref sent under the grant. */
-static void fmc_revoke_cancel_queued(const struct zcl_command_request *req,
+/* At most 64 cancellation pages plus one exhaustion read; refuse leftovers. */
+static bool fmc_revoke_cancel_queued(const struct zcl_command_request *req,
                                      const char *sent_path,
                                      const char *grant_id, bool terminate,
                                      long long *cancelled,
                                      long long *terminated,
                                      long long *continued)
 {
-    char refs[64][FMC_REF_MAX + 1];
+    char refs[64][FMC_REF_MAX + 1] = {{0}}, after[FMC_REF_MAX + 1] = "";
     size_t nrefs, i;
     *cancelled = 0;
     *terminated = 0;
     *continued = 0;
-    nrefs = fmc_revoke_refs(sent_path, grant_id, refs, 64);
-    for (i = 0; i < nrefs; i++) {
-        long long c = 0, t = 0, k = 0;
-        fmc_revoke_cancel_one(req, refs[i], terminate, &c, &t, &k);
-        *cancelled += c;
-        *terminated += t;
-        *continued += k;
+    for (unsigned page = 0; page <= 64; page++) {
+        nrefs = fmc_revoke_refs(sent_path, grant_id, refs, after);
+        if (nrefs == SIZE_MAX || (page == 64 && nrefs)) break;
+        for (i = 0; i < nrefs; i++) {
+            long long c = 0, t = 0, k = 0;
+            if (!fmc_revoke_cancel_one(req, refs[i], terminate, &c, &t, &k)) return false;
+            *cancelled += c;
+            *terminated += t;
+            *continued += k;
+        }
+        if (nrefs < 64) return true;
+        memcpy(after, refs[nrefs - 1], sizeof(after));
     }
+    LOG_ERROR(FMC_LOG, "revoke: incomplete ref coverage (%s)", sent_path);
+    return false;
 }
 
 static void fmc_grant_revoke(const struct zcl_command_request *req,
@@ -5413,11 +5458,12 @@ static void fmc_grant_revoke(const struct zcl_command_request *req,
     {
         char sent_path[4096 + 32];
         long long cancelled = 0, terminated = 0, continued = 0;
+        bool complete = false;
         int s;
         s = snprintf(sent_path, sizeof(sent_path), "%s/sent.jsonl",
                      steerdir);
         if (s > 0 && (size_t)s < sizeof(sent_path))
-            fmc_revoke_cancel_queued(req, sent_path, id,
+            complete = fmc_revoke_cancel_queued(req, sent_path, id,
                                      fmc_scope_has(g.scopes, "terminate"),
                                      &cancelled, &terminated, &continued);
         (void)json_push_kv_str(&reply->data, "leaf", FMC_GRANT_LEAF);
@@ -5426,6 +5472,13 @@ static void fmc_grant_revoke(const struct zcl_command_request *req,
         (void)json_push_kv_int(&reply->data, "cancelled", cancelled);
         (void)json_push_kv_int(&reply->data, "terminated", terminated);
         (void)json_push_kv_int(&reply->data, "running_continued", continued);
+        if (!complete) {
+            fmc_fail(reply, "REVOKE_CANCEL_INCOMPLETE",
+                     "grant revoked; queued cancellation coverage is incomplete",
+                     "queued ref coverage");
+            reply->error.mutated = true;
+            return;
+        }
     }
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = 0;
