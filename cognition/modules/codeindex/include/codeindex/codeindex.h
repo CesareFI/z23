@@ -453,6 +453,38 @@ int codeindex_symbol_record_id(const struct ci_symbol *symbol,
  * (depth exhaustion is a normal bound, NOT truncation: the file set returned for
  * the walked depth is complete). Returns the file count (>=0), -1 on hard error.
  * `changed_files` is an array of NUL-terminated repo-relative paths. */
+/* In-process observations only: never serialize native layout or padding.
+ * Counts are observed rows/items; path capacity includes NUL, count excludes it.
+ * Unknown counts have count_known=false; NONE is the all-zero reset value. */
+enum ci_impact_cause_reason {
+    CI_IMPACT_CAUSE_NONE = 0,
+    CI_IMPACT_CAUSE_FILE_SET_CAPACITY,
+    CI_IMPACT_CAUSE_QUEUE_SYMBOL_CAPACITY,
+    CI_IMPACT_CAUSE_SEED_QUERY_SATURATED,
+    CI_IMPACT_CAUSE_SEED_SYMBOL_CAPACITY,
+    CI_IMPACT_CAUSE_CALLER_QUERY_SATURATED,
+    CI_IMPACT_CAUSE_CALLER_SYMBOL_CAPACITY,
+    CI_IMPACT_CAUSE_OUTPUT_PATH_CAPACITY,
+    CI_IMPACT_CAUSE_OUTPUT_FORMAT_ERROR,
+    CI_IMPACT_CAUSE_OUTPUT_ROW_CAPACITY
+};
+struct ci_impact_cause {
+    enum ci_impact_cause_reason reason;
+    uint64_t capacity, count_reached;
+    bool count_known, path_known, path_truncated, node_truncated;
+    char path[256];
+    char node[400];
+};
+_Static_assert(sizeof(struct ci_impact_cause) < 768, "bounded impact cause");
+/* Stable tokens; unknown enum values return "unknown". Reset accepts NULL. */
+const char *codeindex_impact_cause_label(enum ci_impact_cause_reason reason);
+void codeindex_impact_cause_reset(struct ci_impact_cause *cause);
+#ifdef ZCL_TESTING
+/* Injected helper fixture: reset, then copy identities without traversing. */
+void codeindex_test_impact_cause_identity(struct ci_impact_cause *cause,
+                                         const char *path, const char *node);
+#endif
+
 #define CI_CLOSURE_DEFAULT_DEPTH 8
 /* One authority for the largest file set the impact engine can prove. A
  * consumer should size its bounded result buffer from its verified corpus,

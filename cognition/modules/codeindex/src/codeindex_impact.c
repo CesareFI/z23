@@ -41,6 +41,45 @@
 #include <stdlib.h>
 #include <string.h>
 
+const char *codeindex_impact_cause_label(enum ci_impact_cause_reason reason)
+{
+    static const char *const labels[] = {
+        "none", "file_set_capacity", "queue_symbol_capacity",
+        "seed_query_saturated", "seed_symbol_capacity", "caller_query_saturated",
+        "caller_symbol_capacity", "output_path_capacity", "output_format_error",
+        "output_row_capacity"
+    };
+    return (unsigned)reason < sizeof(labels) / sizeof(labels[0])
+        ? labels[(unsigned)reason] : "unknown";
+}
+void codeindex_impact_cause_reset(struct ci_impact_cause *cause)
+{
+    if (cause)
+        memset(cause, 0, sizeof(*cause));
+}
+#ifdef ZCL_TESTING
+static bool ci_impact_cause_copy(char *out, size_t cap, const char *source)
+{
+    out[0] = '\0';
+    if (!source)
+        return false;
+    size_t len = strlen(source), n = len < cap ? len : cap - 1;
+    memcpy(out, source, n);
+    out[n] = '\0';
+    return len >= cap;
+}
+void codeindex_test_impact_cause_identity(struct ci_impact_cause *cause,
+                                         const char *path, const char *node)
+{
+    codeindex_impact_cause_reset(cause);
+    if (!cause)
+        return;
+    cause->path_known = path && path[0];
+    cause->path_truncated = ci_impact_cause_copy(cause->path, sizeof(cause->path), path);
+    cause->node_truncated = ci_impact_cause_copy(cause->node, sizeof(cause->node), node);
+}
+#endif
+
 /* ── bounds (all deliberately generous; the point is a hard ceiling, not a
  * tight budget — on a bounded change set none of these is reached) ── */
 

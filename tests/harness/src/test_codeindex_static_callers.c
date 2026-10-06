@@ -321,9 +321,55 @@ static int test_sc_overlay_keys_seeds_the_same_way(struct codeindex *ci)
     return failures;
 }
 
-int test_codeindex_static_callers(void)
+static int test_sc_cause_labels(void)
 {
     int failures = 0;
+    TEST("codeindex_static_callers: cause tokens are stable and total") {
+        static const char *const labels[] = {
+            "none", "file_set_capacity", "queue_symbol_capacity",
+            "seed_query_saturated", "seed_symbol_capacity",
+            "caller_query_saturated", "caller_symbol_capacity",
+            "output_path_capacity", "output_format_error", "output_row_capacity"
+        };
+        for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++)
+            ASSERT(strcmp(codeindex_impact_cause_label((enum ci_impact_cause_reason)i), labels[i]) == 0);
+        ASSERT(strcmp(codeindex_impact_cause_label((enum ci_impact_cause_reason)-1), "unknown") == 0);
+        ASSERT(strcmp(codeindex_impact_cause_label((enum ci_impact_cause_reason)10), "unknown") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_sc_cause_value(void)
+{
+    int failures = 0;
+    TEST("codeindex_static_callers: cause reset and bounded identity copies") {
+        struct ci_impact_cause cause, zero; memset(&zero, 0, sizeof(zero));
+        char path[257], node[401];
+        memset(&cause, 0xff, sizeof(cause));
+        codeindex_impact_cause_reset(&cause);
+        ASSERT(memcmp(&cause, &zero, sizeof(cause)) == 0);
+        codeindex_impact_cause_reset(NULL);
+        memset(path, 'p', sizeof(path) - 1); path[256] = '\0';
+        memset(node, 'n', sizeof(node) - 1); node[400] = '\0';
+        codeindex_test_impact_cause_identity(&cause, path, node);
+        ASSERT(cause.path_known && cause.path_truncated && cause.node_truncated);
+        ASSERT(strlen(cause.path) == 255 && strlen(cause.node) == 399);
+        ASSERT(strncmp(cause.path, path, 255) == 0 && strncmp(cause.node, node, 399) == 0);
+        path[255] = '\0'; node[399] = '\0';
+        codeindex_test_impact_cause_identity(&cause, path, node);
+        ASSERT(cause.path_known && !cause.path_truncated && !cause.node_truncated);
+        ASSERT(strcmp(cause.path, path) == 0 && strcmp(cause.node, node) == 0);
+        codeindex_test_impact_cause_identity(&cause, NULL, NULL);
+        ASSERT(memcmp(&cause, &zero, sizeof(cause)) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+int test_codeindex_static_callers(void)
+{
+    int failures = test_sc_cause_labels() + test_sc_cause_value();
     struct codeindex *ci = NULL;
     TEST("codeindex_static_callers: fixture tree indexes") {
         (void)system("rm -rf " SC_FIX);
