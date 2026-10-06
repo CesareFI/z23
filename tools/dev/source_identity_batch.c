@@ -357,6 +357,28 @@ static void cache_remember(const char *path, const struct stat *st,
     g_cache_dirty = 1;
 }
 
+static FILE *cache_stage_open(char *tmp)
+{
+    int fd = mkstemp(tmp);
+    if (fd < 0) {
+        /* Memoization is optional, including before its directory exists. */
+        if (errno != ENOENT) report_path_error("could not stage digest cache", tmp);
+        return nullptr;
+    }
+    FILE *file = fdopen(fd, "w");
+    if (file == nullptr) { report_path_error("could not open digest cache stream", tmp); close(fd); unlink(tmp); }
+    return file;
+}
+
+static bool cache_stage_close(FILE *file, const char *tmp)
+{
+    bool flushed = fflush(file) == 0 && fsync(fileno(file)) == 0;
+    if (!flushed) report_path_error("could not flush digest cache", tmp);
+    bool closed = fclose(file) == 0;
+    if (!closed) report_path_error("could not close digest cache", tmp);
+    return flushed && closed;
+}
+
 static void cache_save(void)
 {
     if (!g_cache_dirty || g_cache_path[0] == '\0')
@@ -365,10 +387,10 @@ static void cache_save(void)
         qsort(g_rows, g_row_count, sizeof(*g_rows), row_cmp);
     g_rows_sorted = 1;
     char tmp[4200];
-    int n = snprintf(tmp, sizeof tmp, "%s.tmp", g_cache_path);
+    int n = snprintf(tmp, sizeof tmp, "%s.tmp.XXXXXX", g_cache_path);
     if (n <= 0 || (size_t)n >= sizeof tmp)
         return;
-    FILE *file = fopen(tmp, "w");
+    FILE *file = cache_stage_open(tmp);
     if (file == nullptr)
         return;
     for (size_t i = 0; i < g_row_count; i++) {
@@ -386,7 +408,7 @@ static void cache_save(void)
             return;
         }
     }
-    if (fclose(file) != 0) {
+    if (!cache_stage_close(file, tmp)) {
         unlink(tmp);
         return;
     }

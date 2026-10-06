@@ -708,6 +708,133 @@ static int sia_include_search_semantics(void)
 #endif
 
 #if !defined(_WIN32)
+/* Exercise the actual cache publisher with an enforced A-open/B-open/A-rename/B-write schedule. */
+#include <poll.h>
+#include <signal.h>
+#include <sys/wait.h>
+static FILE *sia_cache_stage(FILE *file);
+static int sia_cache_rename(const char *from, const char *to);
+int sia_batch_fixture_main(int argc, char **argv);
+#define ZCL_SOURCE_IDENTITY_BATCH_INPUT_ID "fixture"
+#define main sia_batch_fixture_main
+#define fopen(path, mode) sia_cache_stage(fopen(path, mode))
+#define fdopen(fd, mode) sia_cache_stage(fdopen(fd, mode))
+#define rename sia_cache_rename
+#include "../../../tools/dev/source_identity_batch.c"
+#undef rename
+#undef fdopen
+#undef fopen
+#undef main
+#undef ZCL_SOURCE_IDENTITY_BATCH_INPUT_ID
+static int sia_racing, sia_writer_b, sia_ready[2] = {-1, -1}, sia_resume[2] = {-1, -1}, sia_child_status;
+static pid_t sia_child;
+static bool sia_a_whole;
+static struct digest_row sia_row_a = {.path = "a.c", .size = 999999999};
+static struct digest_row sia_row_b = {.path = "b.c", .size = 1};
+static bool sia_cache_whole(const char *path, const struct digest_row *row)
+{
+    char actual[512] = {0}, expected[512], hex[65];
+    zcl_hex_encode(row->digest, 32, hex);
+    snprintf(expected, sizeof(expected), "0 0 0 %" PRIu64 " 0 0 0 0 %s %s\n", row->size, hex, row->path);
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    size_t n = fread(actual, 1, sizeof(actual) - 1, f);
+    bool ok = feof(f) && !ferror(f) && n == strlen(expected);
+    if (fclose(f) != 0) ok = false;
+    return ok && strcmp(actual, expected) == 0;
+}
+static FILE *sia_cache_stage(FILE *file)
+{
+    if (!sia_racing || !file) return file;
+    char byte = 0;
+    if (sia_writer_b) {
+        if (write(sia_ready[1], &byte, 1) != 1 || read(sia_resume[0], &byte, 1) != 1) _exit(2);
+        return file;
+    }
+    sia_child = fork();
+    if (sia_child == 0) {
+        alarm(5);
+        if (fclose(file) != 0) _exit(3);
+        sia_writer_b = 1; g_rows = &sia_row_b;
+        cache_save();
+        _exit(0);
+    }
+    struct pollfd ready = {.fd = sia_ready[0], .events = POLLIN};
+    if (sia_child < 0 || poll(&ready, 1, 5000) != 1 || read(sia_ready[0], &byte, 1) != 1) {
+        if (sia_child > 0) { kill(sia_child, SIGKILL); waitpid(sia_child, NULL, 0); }
+        fclose(file); return NULL;
+    }
+    return file;
+}
+static int sia_cache_rename(const char *from, const char *to)
+{
+    int rc = rename(from, to);
+    if (sia_racing && !sia_writer_b) {
+        sia_racing = 0;
+        sia_a_whole = rc == 0 && sia_cache_whole(to, &sia_row_a);
+        char byte = 0;
+        if (write(sia_resume[1], &byte, 1) != 1) kill(sia_child, SIGKILL);
+        if (waitpid(sia_child, &sia_child_status, 0) != sia_child) sia_child_status = -1;
+    }
+    return rc;
+}
+static int sia_digest_cache_concurrent(void)
+{
+    int failures = 0;
+    char work[512] = {0};
+    bool loaded = false;
+    TEST("digest cache concurrent publication retains whole rows and validates metadata") {
+        test_make_tmpdir(work, sizeof(work), "sia", "cache-concurrent");
+        ASSERT(snprintf(g_cache_path, sizeof(g_cache_path), "%s/cache", work) < (int)sizeof(g_cache_path));
+        ASSERT_EQ(pipe(sia_ready), 0); ASSERT_EQ(pipe(sia_resume), 0);
+        g_rows = &sia_row_a; g_row_count = 1; g_cache_dirty = 1; g_cache_ready = 1;
+        sia_racing = 1; cache_save(); sia_racing = 0;
+        ASSERT(sia_a_whole); ASSERT_EQ(sia_child_status, 0);
+        ASSERT(sia_cache_whole(g_cache_path, &sia_row_b));
+        g_rows = &sia_row_b; g_row_count = 0; g_row_cap = 1; g_cache_ready = 0;
+        loaded = true; sia_row_b.path = NULL; cache_load();
+        ASSERT_EQ(g_row_count, 1);
+        struct stat snapshot; row_apply(&snapshot, &sia_row_b);
+        uint8_t digest[32];
+        ASSERT_EQ(reuse_snapshot("b.c", &snapshot, digest), 1);
+        snapshot.st_size++;
+        ASSERT_EQ(reuse_snapshot("b.c", &snapshot, digest), 0);
+        PASS();
+    } _test_next:;
+    close(sia_ready[0]); close(sia_ready[1]); close(sia_resume[0]); close(sia_resume[1]);
+    if (loaded) cache_release_path(sia_row_b.path);
+    sia_row_b.path = "b.c";
+    g_rows = NULL; g_row_count = 0; g_row_cap = 0; g_cache_ready = 0; g_cache_path[0] = '\0';
+    if (work[0]) test_rm_rf_recursive(work);
+    return failures;
+}
+static int sia_digest_cache_absent_directory(void)
+{
+    int failures = 0;
+    char work[512] = {0}, root[PATH_MAX], path[PATH_MAX];
+    char cmd[PATH_MAX * 4], out[512];
+    TEST("digest cache absent directory quietly preserves successful hashing") {
+        ASSERT(getcwd(root, sizeof(root)) != NULL);
+        test_make_tmpdir(work, sizeof(work), "sia", "cache-absent");
+        ASSERT(snprintf(path, sizeof(path), "%s/input", work) < (int)sizeof(path));
+        ASSERT(sia_write_file(path, "abc"));
+        ASSERT(snprintf(cmd, sizeof(cmd),
+            "cd '%s' && { printf 'input\\0' | '%s/build/bin/source-identity-batch' "
+            "hash --cache absent/cache >result 2>error; status=$?; "
+            "printf 'status=%%s\\n' \"$status\"; cat error; tr '\\000' '\\n' <result; }",
+            work, root) < (int)sizeof(cmd));
+        ASSERT(sia_capture(cmd, out, sizeof(out)));
+        ASSERT(strcmp(out, "status=0\n"
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad "
+            " input") == 0);
+        ASSERT(snprintf(path, sizeof(path), "%s/absent", work) < (int)sizeof(path));
+        struct stat snapshot;
+        ASSERT(lstat(path, &snapshot) != 0 && errno == ENOENT);
+        PASS();
+    } _test_next:;
+    if (work[0]) test_rm_rf_recursive(work);
+    return failures;
+}
 /* Corrupt cache framing must not qualify metadata-matched digest reuse. */
 static int sia_digest_cache_framing(void)
 {
@@ -764,6 +891,8 @@ int test_source_identity_authority(void)
     failures += sia_healthcheck_reader_refuses_ambiguity();
     failures += sia_precommit_source_action();
 #if !defined(_WIN32)
+    failures += sia_digest_cache_concurrent();
+    failures += sia_digest_cache_absent_directory();
     failures += sia_digest_cache_framing();
     failures += sia_include_namespace_closure();
     failures += sia_include_search_semantics();
