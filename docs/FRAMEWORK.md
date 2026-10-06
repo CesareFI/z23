@@ -1,5 +1,9 @@
 # The z23 Framework
 
+Place a resource, follow its contracts, and preview or scaffold a slice (§4).
+First, follow [`docs/DEVELOPING.md`](./DEVELOPING.md) to prepare a checkout.
+Scaffolding needs `build/bin/z23-dev`, built with `make dev-bin`.
+
 > **One binary. One chain. One way to do each thing — and the compiler
 > knows what that way is.**
 >
@@ -28,8 +32,14 @@ that file is the build recipe.
 
 A full node has exactly one job: **keep `(tip, utxo)` equal to the network's
 best *valid* chain — or name, precisely, the one input it is missing.**
+The UTXO (unspent transaction output) set records outputs available to spend;
+the tip is the latest block of the best valid chain.
 Everything else — wallet, explorer, market, ZNAM, messaging, swaps — is a
-*read-model* over that one fact.
+*read-model*: a queryable view over that one fact.
+
+A reducer advances chain state through stages; its cursor is a durable
+position. A blocker names a missing input, height, and source tried.
+A projection folds the append-only fact log into a queryable view.
 
 That boundary is intentional: Zclassic consensus is the base layer. z23
 can act like an L2-style engine/application/service layer over that base — ZSLP,
@@ -39,9 +49,10 @@ to ZCL — but they must not drift from the L1 rules. Product innovation lives i
 versioned controllers, services, projections, OP_RETURN/memo/script protocols,
 and operator APIs; Equihash parameters, activation heights, block/transaction
 validity, and coin accounting remain consensus-parity territory. The working
-umbrella for that engine/application/service layer is **ZLSP** (ZCL Layer Service
-Protocol): noun-shaped REST resources and typed native JSON methods over
-ZCL-anchored services. ZSLP tokens, ZNAM names, messaging, market flows, and
+umbrella for that engine/application/service layer is **ZLSP**
+(ZCL Layer Service Protocol): noun-shaped REST resources and typed native
+JSON methods over ZCL-anchored services. ZSLP tokens, ZNAM names, messaging,
+market flows, and
 script-contract workflows are ZLSP-style services; they may build valid ZCL
 transactions, but they never become a second consensus engine.
 
@@ -73,8 +84,8 @@ A second honesty, and this one is a standing architectural fact rather than a
 live status (live status lives only in `docs/HANDOFF.md` §0-LATEST — never
 here): above genesis, ZClassic headers commit none of the UTXO, Sapling/Sprout
 frontier, or nullifier contents. A state artifact whose `anchor_block_hash`
-matches a validated in-binary PoW header (`core/chainparams/src/checkpoints.c`) is
-therefore not thereby proof- or consensus-bound for its UTXO/shielded payload
+matches a validated in-binary PoW header (`core/chainparams/src/checkpoints.c`)
+is therefore not thereby proof- or consensus-bound for its UTXO/shielded payload
 — that requires independently validating the transparent and shielded
 contents and passing copy proof; matching a header alone is not enough. The
 fold is genuinely pure *above* a complete, self-derived anchor; the
@@ -85,10 +96,12 @@ running on self-derived vs. borrowed state is a live fact: see
 
 The four promises this buys the operator:
 
-- **⚡ Fast** — cold-sync to tip in seconds (FlyClient + SHA3 snapshot) is the *design target*; the FlyClient/snapshot stack is built but inert today. The legacy `--importblockindex` + boot path still works. Then stay current. Current sync/cure status is a live fact, not an architecture fact — see `docs/HANDOFF.md` §0-LATEST, not this file.
-- **🪶 Lean** — one static binary, bounded RAM, no runtime it doesn't ship itself.
-- **💪 Unbreakable** — cannot halt *silently*; a stall is always a named blocker or a growing `log_head` gap, and it pages a human before it gives up.
-- **🔬 Honest** — forward progress on the live tip is the only acceptance bar. Green tests are not a healthy node.
+| Promise | Meaning |
+|---------|---------|
+| Fast | Cold-sync in seconds through FlyClient and a SHA3 snapshot is a design target; that stack is built but inert today. The legacy `--importblockindex` boot path still works. Current sync/cure status belongs in `docs/HANDOFF.md` §0-LATEST. |
+| Lean | One static binary, bounded RAM, no runtime it does not ship itself. |
+| Unbreakable | No silent halt: a named blocker or growing `log_head` gap exposes a stall; exhaustion pages a human. |
+| Honest | Forward progress on the live tip is the acceptance bar; green tests do not establish node health. |
 
 ---
 
@@ -99,12 +112,14 @@ for high-performance C, not Rails cosplay.
 
 1. **The folder is the type; the filename is the entity.** If you cannot name a
    file's shape from its path, it is in the wrong folder. Convention resolves at
-   *build time* — folder + filename + linker is our "reflection," at zero runtime cost.
+   *build time* — folder + filename + linker is our "reflection," at zero
+   runtime cost.
 
 2. **One way in, one way out.** Every persistent write goes through the
-   ActiveRecord lifecycle. Every failure returns a `zcl_result` that explains
-   itself. Every healer is `(detect, remedy, witness)`. Alternatives are
-   compiler errors, not code-review comments.
+   ActiveRecord (AR) lifecycle: validate, before-save, write, after-save.
+   Every failure returns a `zcl_result` that explains itself. Every healer has
+   detection, a remedy and a witness: an observable post-condition.
+   Alternatives are compiler errors, not code-review comments.
 
 3. **Declare the spec; generate the code.** Prefer `validates_*` tables,
    plain init-structs, and `tools/` codegen over block-macro DSLs you cannot set
@@ -112,12 +127,13 @@ for high-performance C, not Rails cosplay.
    the fictional `MODEL(){…}` / `SERVICE_BEGIN` / `JOB(){…}` forms — see §3.)
 
 4. **The core is pure; the shell is dirty.** No clock, no RNG, no I/O in
-   `domain/`. A pure core replays from a 64-bit seed and benchmarks
+   the pure core. A pure core replays from a 64-bit seed and benchmarks
    honestly. Lint-enforced, FAIL mode.
 
 5. **Behavior attaches to the type, not the byte.** Fat models, lean structs:
    hooks and validations hang off one static registry *per model*; records stay
-   dense, POD, cache-friendly. No per-instance vtables in a hot array.
+   dense, plain old data (POD), cache-friendly. No per-instance vtables in a hot
+   array.
 
 6. **Don't crash — checkpoint and re-run.** The unit of recovery is an
    idempotent, cursor-stamped Job, not `abort()`. Restart resumes from a
@@ -132,7 +148,8 @@ for high-performance C, not Rails cosplay.
    hot loop to avoid duplication. Duplicated straight-line code beats a
    function-pointer in a tight path.
 
-9. **Immutable at the boundary, mutable inside.** Readers see MVCC snapshots and
+9. **Immutable at the boundary, mutable inside.** Readers see multiversion
+   concurrency control (MVCC) snapshots and
    append-only history; writers mutate dense arrays under clear ownership. No
    persistent data structures, no structural sharing, no GC.
 
@@ -181,7 +198,7 @@ a fixed line, each proving one thing and either advancing its cursor or
 naming a blocker; see [`docs/HOW_THE_NODE_WORKS.md`](./HOW_THE_NODE_WORKS.md)
 §2 for the full per-stage table (what each proves, what "stuck" looks like).
 
-Each stage is a Job (§3.4): it advances a durable cursor or names a typed
+Each stage is a Job (§3, row 4): it advances a durable cursor or names a typed
 blocker. `tip_finalize`'s cursor *is* the tip. Reorg is a fork-aware append:
 disconnect emits the inverse UTXO deltas (restore-spent → ADD, erase-created →
 SPEND), so a reorged projection is byte-identical to a direct build of the
@@ -195,75 +212,70 @@ no third state. That is strictly stronger than detectors watching proxies.
 
 The staged reducer is the authoritative chain-advance architecture, but the
 legacy block-connect engine still ships and is live-called on the recovery path
-(`connect_block` at `engine/composition/src/boot_index.c:403`; `core/modules/validation/src/` ≈
-7.7k LOC across its `.c` files, still linked). Cleanup remains — the
+(`connect_block` in `engine/composition/src/boot_index.c`;
+`core/modules/validation/src/` is still linked). Cleanup remains — the
 checklist tracks it.
 
 ---
 
 ## 3. The eight shapes — honest status
 
-Every `.c` file under `app/` is exactly one of eight shapes. Open the folder,
-know the shape.
+The eight shapes describe code roles. Engine and feature rooms own their
+implementations; Event is a concept rather than a required folder.
 
 | # | Shape | Folder | Canonical form | Status | Exemplar |
 |---|-------|--------|----------------|--------|----------|
 | 1 | **Controller** | `engine/controllers/` | `static int h_x(req,res)` + route table | partial; E1 is empty, but import/sync controllers still carry legacy orchestration and raw-SQL debt is ratcheted | `chain_projection.c` |
 | 2 | **Service** | `engine/services/` | functions returning `struct zcl_result` | partial; file-level E2 and typed-blocker baselines are empty, but legacy bool compatibility APIs remain | `replay_verify_service.c` |
 | 3 | **Model** | `engine/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (E3+E4+model-validation HARD; file count in `docs/CODEBASE_MAP.md` §1's app-shapes table) | `block.c` |
-| 4 | **Job** | `engine/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — eight reducer stages live in `engine/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
+| 4 | **Job** | `engine/jobs/` + `engine/reducer/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — eight stage files live in `engine/jobs/`; reducer frontier ownership lives in `engine/reducer/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `engine/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `engine/supervisors/src/staged_sync_supervisor.c` |
 | 6 | **Condition** | `engine/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (`condition_registrations` count is machine-checked in `docs/CODEBASE_MAP.md`'s DOC-COUNTS block) | `block_failed_mask_at_tip.c` |
-| 7 | **Event** | *(no `app/` folder — concept, not a physical shape)* | typed append-only emit + subscribers | there is no `app/events/` folder (0 files ever lived there); the concept stays owned by `engine/modules/event/` + `engine/modules/storage/src/event_log.c` + `engine/modules/storage/*_projection.c` | `engine/modules/storage/src/event_log.c` | <!-- doc-path-ok: app/events/ deliberately does not exist — that is the row's point -->
+| 7 | **Event** | concept, not a physical shape | typed append-only emit + subscribers | owned by `engine/modules/event/` + `engine/modules/storage/src/event_log.c` + `engine/modules/storage/src/*_projection.c` | `engine/modules/storage/src/event_log.c` |
 | 8 | **Storage Adapter** | `platform/adapters/` + `platform/ports/` | port interface + swappable impl | **real — outbound-only by design** (§6); port/adapter counts are machine-checked in `docs/CODEBASE_MAP.md`'s DOC-COUNTS block; `check_raw_sqlite.sh` CLEAN | `platform/adapters/outbound/persistence/` |
-
-The honest read: **Model, Condition, Job, the projection/state-dump registry, and
-the Storage Adapter (outbound-only by design) are real and enforced; Supervisor is
-partial; Controller and Service still carry legacy debt.**
 
 ### The canonical form is struct-registration, not a block-DSL
 
-The single most important correction this doc makes: **we bless the form the
-code actually uses and rejects the DSL it never adopted.** A Condition is a
-plain struct you can read, grep, and step through:
+A Condition uses struct registration. The excerpt uses callbacks defined in
+the named source file:
 
 ```c
-// engine/conditions/src/block_failed_mask_at_tip.c — the exemplar for ALL shapes
-static bool detect(const struct condition_ctx *c)  { /* reads model state   */ }
-static bool remedy(const struct condition_ctx *c)  { /* calls a service     */ }
-static bool witness(const struct condition_ctx *c) { /* observable success  */ }
-
-static struct condition cond = {
+// In engine/conditions/src/block_failed_mask_at_tip.c:
+static struct condition c_block_failed_mask_at_tip = {
     .name = "block_failed_mask_at_tip", .severity = COND_CRITICAL,
     .poll_secs = 5, .backoff_secs = 30, .max_attempts = 5,
-    .detect = detect, .remedy = remedy, .witness = witness,
+    .detect = detect_block_failed_mask_at_tip,
+    .remedy = remedy_block_failed_mask_at_tip,
+    .witness = witness_block_failed_mask_at_tip,
+    .detail = detail_block_failed_mask_at_tip, .witness_window_secs = 60,
 };
-void block_failed_mask_at_tip_register(void) { condition_register(&cond); }
 ```
 
 No `CONDITION(){ DETECT{…} }` macro hides the control flow; the engine handles
 poll, backoff, attempts, witness, and `EV_OPERATOR_NEEDED` paging. Adding a
-healer is one ~50-LOC file plus one line in the registry. Every other shape
+healer requires its implementation and registration. Every other shape
 converges on this form — the form is always *struct + register*, never *macro
 you can't breakpoint*.
 
 The contracts, briefly:
 
-- **Controller** — parse → authorize → call ONE service → return. No business logic, no storage, no swallowing errors. Dumb glue.
-- **Service** — typed inputs → call models/other services → return `zcl_result`. No input parsing, no direct storage.
-- **Model** — the only reader/writer of persistent state. AR lifecycle: `validate → before_save → write → after_save`. Raw `sqlite3_step` is a *compile error*.
-- **Job** — idempotent, cursor-stamped in `consensus.db`. Returns `ADVANCED` / `BLOCKED(typed)` / `IDLE` / `FATAL`. Re-running at the same cursor is a no-op. The reducer stages are the model case.
-- **Supervisor** — a declared tree of children with restart policy; the deadman that edge-triggers `on_stall`. Recovery is structural, not ad-hoc.
-- **Condition** — `(detect, remedy, witness)` with backoff + max-attempts; pages on exhaustion. Every halt class is one file.
-- **Event** — typed, append-only, totally ordered. Emitting writes the fact log. Subscribers receive asynchronously.
-- **Storage Adapter** — the domain depends on the *port*; multiple adapters satisfy it. Swapping engines swaps one file.
+| Shape | Contract |
+|-------|----------|
+| Controller | Parse → authorize → call one service → return. No business logic, storage, or swallowed errors. |
+| Service | Typed inputs → models/other services → `zcl_result`. No input parsing or direct storage. |
+| Model | Persistent-state reader/writer through the AR lifecycle (Law 2); raw `sqlite3_step` is checked by lint. |
+| Job | Idempotent, cursor-stamped in `consensus.db`; returns `ADVANCED`, typed `BLOCKED`, `IDLE`, or `FATAL`. Re-running at the same cursor is a no-op. |
+| Supervisor | Declared children and restart policy; the deadman edge-triggers `on_stall`. Recovery is structural. |
+| Condition | Detect, remedy, witness; backoff and maximum attempts; pages on exhaustion. |
+| Event | Typed, append-only, totally ordered; emitting writes the fact log; subscribers receive asynchronously. |
+| Storage Adapter | The domain depends on a port (interface) implemented by swappable adapters. |
 
 ---
 
 ## 4. Folder convention
 
 ```
-app/
+engine/          shared node composition and code roles
   controllers/   parse · authorize · delegate            (one service call)
   services/      orchestrate workflows → zcl_result
   models/        entities · AR lifecycle · validations    (only writers of state)
@@ -271,38 +283,41 @@ app/
   supervisors/   liveness trees, one root per domain
   conditions/    auto-healers, one file per halt class
   views/         explorer templates
-                 (Event shape has no app/ folder — see engine/modules/storage/ below)
-
-domain/          pure consensus core — NO clock/RNG/IO    21 modules: consensus/ wallet/ encoding/
-                 (each fronted by a thin lib/ legacy wrapper + a seal test)
-
-lib/
-  framework/     the shape primitives (condition, projection, mailbox real; rest WIP)
-  platform/      clock, rng — the only sanctioned source of time/entropy
-  event/         the Event shape's pub/sub bus (typed append-only emit + subscribers)
-  storage/       event_log + projections + (legacy) coins/sqlite
-  net/ rpc/ crypto/ chain/ validation/ …                (primitives, incremental migration)
-
-platform/adapters/ platform/ports/  hexagonal seam (outbound-only by design — port/adapter counts in CODEBASE_MAP.md's DOC-COUNTS block; reads owned by Models per Law 5)
-config/           composition root (today: boot monoliths — to become supervisor decls)
-tools/lint/       the ratcheting gates — beauty enforced by the build
-docs/             FRAMEWORK.md (this — §9 is the debt board) · work/ (assignments)
+  reducer/       authoritative chain-state advancement and frontier
+  composition/   command registry and boot wiring
+  modules/       shared framework, event bus, storage and projections
+core/            byte-sealed consensus truth and reusable modules
+contexts/        feature-owned controllers, services, models and modules
+cognition/       software-understanding machinery
+platform/
+  modules/       time, entropy and other host primitives
+  ports/         outbound interfaces
+  adapters/      implementations of the ports
+tools/lint/      architecture and defensive-coding gates
+docs/            FRAMEWORK.md (this page) and work/ (assignments)
 ```
 
-**Rule:** every new `.c` under `app/` lives in exactly one shape folder. The
-`check-framework-shape` gate enforces it (RATCHET today → HARD).
+**Rule:** place new code under its owner. `check-architecture-tree` checks
+rooms and module ownership; `check-framework-shape` checks shape placement.
 
 ### Scaffolding an App resource slice
 
 A decentralized App on z23 grows one resource at a time, and every resource
-lands in the same shape folders above. Two commands own that step, and they
+lands in the model and service folders below. Two commands own that step; they
 read the same slice description, so a preview can never describe files the
 scaffold does not write:
 
-```
-z23 dev app plan social posts        # preview: paths only, writes nothing
-z23-dev dev app scaffold social posts # materialize those exact files
-```
+1. Preview the resource paths without writing files:
+
+   ```sh
+   build/bin/z23 dev app plan social posts
+   ```
+
+2. Materialize the planned files with the development binary:
+
+   ```sh
+   build/bin/z23-dev dev app scaffold social posts
+   ```
 
 The scaffold writes five files and registers one row:
 
@@ -319,10 +334,12 @@ Nothing else is touched. The source folders are wildcarded by the build and
 the catalog row makes the test run, so the slice compiles and proves itself
 with no further wiring:
 
-```
-make -s -j8 dev-bin
-make t-fast ONLY=<app>_<resource>_slice
-```
+3. Build and run the generated slice's registered group (for this example):
+
+   ```sh
+   make -s -j8 dev-bin
+   make t-fast ONLY=social_posts_slice
+   ```
 
 The plan's `wiring` array names the existing files a real resource
 eventually needs edited — the App manifest, the feature migration, the
@@ -338,17 +355,17 @@ about, because it decides before it writes:
 - Every target is classified in a read-only pass first. If **any** target
   already exists with different content, the whole command refuses with
   `refused: <path> exists with different content`, exits non-zero, and
-  writes nothing — never a half-materialised slice, never a temp file left
-  behind.
+  writes nothing. A write failure after classification can leave completed
+  files; re-running the same plan can finish the remaining files.
 - A target whose bytes already match is left alone. A second run of the same
   command therefore reports `0 written, N unchanged` and leaves the tree
   byte-identical; the registry row is matched as a whole line, so it is
   never doubled.
 - Each file that is written lands as a temp file in the target's own
   directory followed by `rename()`, so a reader never sees a partial file.
-- An inadmissible App id or resource name (anything but lowercase
-  snake_case starting with a letter, no doubled or trailing underscore) is
-  refused before the disk is touched.
+- App ids use lowercase letters, digits and single hyphens; resources use
+  lowercase letters, digits and single underscores. Both start with a
+  letter and end with a letter or digit. Invalid names refuse before writing.
 - `dev.app.scaffold` is dev-only. A release binary reports
   `DEV_BUILD_REQUIRED`; build `z23-dev` with `make dev-bin`.
 
@@ -360,20 +377,24 @@ refuse, by design, rather than overwrite your work.
 
 ## 5. Beauty by the build — enforcement
 
-> "If the compiler can't enforce it, it will be violated." — `DEFENSIVE_CODING.md`
+> "If the compiler can't enforce it, it will be violated." —
+`DEFENSIVE_CODING.md`
 
 Beauty here is not a style guide; it is a set of gates that turn the build red.
-`make ci` runs `lint` *before* a single test, so a violation never reaches a
-human reviewer. The ladder is deliberate:
+`make ci` requires `lint` before its test recipe. The ladder is deliberate:
 
-- **WARN** — a gate the day it ships, measuring the existing tree before the refactor deletes the debt.
-- **RATCHET** — a law the tree doesn't yet satisfy but must monotonically approach. The baseline can only shrink; growing it costs an ADR.
+- **WARN** — a gate the day it ships, measuring the existing tree before the
+  refactor deletes the debt.
+- **RATCHET** — a law the tree doesn't yet satisfy but must monotonically
+  approach. The baseline can only shrink; growing it costs an ADR.
 - **HARD** — a law the tree already satisfies. One regression is one too many.
 
 Hygiene + adoption gates cover: no bare malloc, no raw `sqlite3_step`
 (text-scan lint gate), no silent error returns, no raw clock/RNG outside
-`platform/modules/platform/`, threads only via the registry, observability-pairing,
-before/after-save hooks, function ≤500 LOC, `lib/`→`app/` layering, supervisor
+`platform/modules/platform/`, threads only via the registry,
+observability-pairing,
+before/after-save hooks, function ≤500 LOC, module-to-shape layering,
+supervisor
 registration, typed blockers, framework-shape. The gates are themselves under
 test (`test_make_lint_gates.c` plants a fixture, asserts the gate trips,
 removes it, asserts green).
@@ -406,7 +427,7 @@ load-bearing.
 ```
                  ┌──────────────────────┐
                  │       DOMAIN          │   pure: consensus rules, validation
-                 │      domain/          │   predicates, UTXO arithmetic, crypto
+                 │  core/ pure contexts  │   predicates, UTXO arithmetic, crypto
                  │  (no clock/RNG/IO)    │   registry. Replays from a seed.
                  └──────────┬───────────┘
                             │ depends on PORTS (interfaces)
@@ -422,28 +443,27 @@ Adapters → Domain. The domain depends on nothing dirty. This is what makes the
 node 50-year-replaceable: C23 → next language, SQLite → next engine, Tor v3 →
 next routing, all without the domain moving.
 
-Honest status: the domain core is **real but partial** — `domain/` (top-level)
-holds 21 pure no-clock/no-RNG/no-IO modules (consensus/ wallet/ encoding/), each
-fronted by a thin `lib/` legacy wrapper and sealed by a `test_domain_*` regression
-test. The adapter tree is **outbound-only by design**: `docs/CODEBASE_MAP.md`'s
+The pure consensus contexts are `core/consensus/`, `core/params/`,
+`core/math/` and `core/chainparams/`; the byte seal covers `core/`.
+The adapter tree is **outbound-only by design**: `docs/CODEBASE_MAP.md`'s
 machine-checked `port_interfaces` / `persistence_adapters` counts carry writes
 out through swappable ports (Law 2); reads are owned by the Models (Law 5),
 so no inbound "repository" port fronts them — the same kind of by-design absence
-as the deleted `app/events/` folder (§3 row 7): the concept has a real home <!-- doc-path-ok: app/events/ deliberately does not exist -->
-elsewhere and does not need an empty placeholder. App sites that call
-`engine/modules/storage/*_sqlite.c` directly are
-legitimate (Models ARE storage; Jobs use the consensus.db kernel store; Views are
-read-only introspection), and `check_raw_sqlite.sh` stays CLEAN with an empty
-baseline. The `check-lib-layering` ratchet guards the write direction.
+as Event (§3 row 7): the concept has a real home
+and does not need an empty placeholder. App sites that call
+`engine/modules/storage/src/*_sqlite.c` directly are
+legitimate (Models ARE storage; Jobs use the consensus.db kernel store;
+Views are read-only introspection), and `check_raw_sqlite.sh` stays CLEAN
+with an empty baseline. The `check-lib-layering` ratchet guards writes.
 
 ### The `engine/application/` tier — staged consensus logic
 
-When `engine/application/` (the hexagonal application-level consensus boundary) is
+When `engine/application/`, the application-level consensus boundary, is
 populated, it should contain domain-level consensus state predicates and
 use-case invariants that cross multiple models/services — checks that express
-business rules of the chain itself before they migrate to the pure `domain/`
-core. This keeps `engine/application/` as the staged consensus-logic tier between
-orchestration (`engine/services`) and pure consensus (`domain/`).
+business rules of the chain itself before they migrate to the pure consensus
+core. It stages consensus logic between orchestration (`engine/services/`)
+and pure consensus (`core/consensus/`).
 
 ---
 
@@ -472,7 +492,8 @@ The framework holds; the implementation moves.
 - **Driving the north star:** keep the lint baselines empty, finish deleting
   old cutover/shadow language, and keep reducer/log authority as the only
   architecture described in production docs.
-- **Worker assignment:** [`docs/work/agent-protocol.md`](./work/agent-protocol.md),
+- **Worker assignment:**
+  [`docs/work/agent-protocol.md`](./work/agent-protocol.md),
   then your spec under `docs/work/`.
 - **Reviewing a PR:** every changed file matches its folder's shape; lint
   passes; §9 is updated if it changed the open-item list.
@@ -493,15 +514,15 @@ a number.
 
 | Item | Status |
 |------|--------|
-| `config/` boot monolith (`boot.c`, `boot_services.c`, `boot_refold_staged.c`) | GATED: `boot.c` and `boot_refold_staged.c` are over the 1500-line hard limit and carried in the shrink-only legacy baseline, so they may only get smaller. Continue only behavior-preserving extractions; larger moves need an explicit seam design. |
-| `domain/` fronted by thin `lib/` wrappers | base58 + bech32 collapsed into `domain/` (landed: callers moved to `domain_encoding_*`, the `lib/` wrappers deleted). `upgrades.c` is intentionally kept as two files — `core/params/src/upgrades.c` (the ex-`lib/consensus/upgrades.c`) owns the `NetworkUpgradeInfo`/`SPROUT_BRANCH_ID`/`EquihashUpgradeInfo` tables, `core/consensus/src/upgrades.c` (the ex-`domain/consensus/upgrades.c`) holds the pure activation-height arithmetic that reads them (correct layering, not duplication). The direction is easy to invert from the names alone — ADR-0002's "moved from" table is the authority. `contexts/wallet/modules/keys/*` + `core/params/src/params.c` remain a future scoping item. Both `core/` files are under the byte seal — see `core/UNSEAL.md`. | <!-- doc-path-ok: "ex-" names are the pre-ADR-0002 locations, deliberately gone -->
+| `engine/composition/src/` boot monolith (`boot.c`, `boot_services.c`, `boot_refold_staged.c`) | GATED: `boot.c` and `boot_refold_staged.c` are over the 1500-line hard limit and carried in the shrink-only legacy baseline, so they may only get smaller. Continue only behavior-preserving extractions; larger moves need an explicit seam design. |
+| Pure consensus and parameter ownership | `core/params/src/upgrades.c` owns the `NetworkUpgradeInfo`/`SPROUT_BRANCH_ID`/`EquihashUpgradeInfo` tables; `core/consensus/src/upgrades.c` owns activation-height arithmetic that reads them. These are distinct owners, not duplication. `contexts/wallet/modules/keys/` + `core/params/src/params.c` remain a future scoping item. Both upgrade files are byte-sealed; see `core/UNSEAL.md`. |
 | Supervisor shape partial | `engine/supervisors/` now declares `net`, `chain`, `staged_sync`, `legacy_mirror`, `self_heal` and the three domains (`domains.c`). Every other long-running service registers its own `liveness_contract` in its own file, so nothing is off the tree — what remains in `engine/composition/src/boot_services.c` is the ORDER those registrars run in (`boot_register_core_liveness_and_reducer`), which is load-bearing and pinned by ordering asserts in `tests/harness/src/test_make_lint_gates.c`. Moving that sequence needs a seam design, not code motion. Coverage is measured by six gates (`check-supervisor-registration`, `check-supervisor-domain`, `check-thread-supervision`, `check-typed-blocker`, `check-blocker-escape-registered`, `check-blocker-remedy`); the residual debt is the shrink-only `tools/scripts/supervisor_baseline.txt` (10) and `tools/lint/thread_supervision_baseline.txt` (11), both documented per entry. |
 | Controller/Service legacy compat | the file-level E1/E2/typed-blocker baselines carry no NEW violations, but import/sync controllers still carry legacy orchestration and services keep bare-`bool` compatibility APIs alongside `zcl_result`. Subtraction work, not new structure. |
 
 Not tracked as debt (do not re-flag): the storage-adapter seam is
-outbound-only **by design**, not a migration in progress (§6); there is no
-`app/events/` folder — Event stays a concept owned by `engine/modules/event/` + <!-- doc-path-ok: app/events/ deliberately does not exist -->
-`engine/modules/storage/src/event_log.c` + projections, never a physical `app/` folder (§3
+outbound-only **by design**, not a migration in progress (§6); Event stays a
+concept owned by `engine/modules/event/` +
+`engine/modules/storage/src/event_log.c` + projections (§3
 row 7); the sealed `core/` consensus tree is landed — see
 [`docs/adr/0002-sealed-consensus-core.md`](./adr/0002-sealed-consensus-core.md).
 
@@ -511,12 +532,4 @@ Gate mode/status is tracked in §5, not duplicated here.
 
 ## Glossary
 
-- **Shape** — one of the eight allowed kinds of `app/` code.
-- **AR (ActiveRecord)** — the model lifecycle (`AR_*_SAVE`, before/after hooks). Real and lint-enforced.
-- **Cursor** — durable position in `consensus.db` a Job advances; enables crash-safe idempotent replay.
-- **Reducer** — the stage pipeline; the only writer; advance-cursor-or-name-blocker.
-- **Fact log** — `engine/modules/storage/src/event_log.c`; the append-only durable source of truth.
-- **Projection** — a pure fold over the log into a queryable view; rebuildable, never authoritative.
-- **Witness** — observable post-condition confirming a Condition's remedy actually worked.
-- **Blocker** — a typed, named reason a stage cannot advance (height, missing input, source tried).
-- **Ratchet** — a gate that can only tighten; the refactor's monotonic guarantee.
+- **Shape** — see the eight code roles in §3.
