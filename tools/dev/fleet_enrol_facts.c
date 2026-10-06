@@ -181,6 +181,18 @@ void fleet_enrol_facts_collect(struct fleet_box_facts *out)
 #endif
 }
 
+/* Validate the measured single record, allowing its final terminator. */
+static bool fe_ssh_record(char *line, size_t n)
+{
+    if (memchr(line, '\0', n)) return false;
+    if (n && line[n - 1u] == '\n') --n;
+    if (n && line[n - 1u] == '\r') --n;
+    if (n > (size_t)FLEET_ENROL_SSH_MAX) return false;
+    if (memchr(line, '\n', n) || memchr(line, '\r', n)) return false;
+    line[n] = '\0';
+    return true;
+}
+
 void fleet_enrol_ssh_pubkey(char *out, size_t cap)
 {
     char home[FLEET_ENROL_PATH_MAX];
@@ -199,12 +211,10 @@ void fleet_enrol_ssh_pubkey(char *out, size_t cap)
      * bridge, and `fleet join` says so. */
     f = fopen(path, FE_FOPEN_READ);
     if (!f) return;
-    if (fgets(line, sizeof(line), f)) {
-        for (char *p = line; *p; ++p) {
-            if (*p == '\n' || *p == '\r') { *p = '\0'; break; }
-        }
-        if (strlen(line) <= (size_t)FLEET_ENROL_SSH_MAX)
-            fe_copy_clean(out, cap, line);
-    }
-    (void)fclose(f);
+    size_t n = fread(line, 1, sizeof(line), f);
+    int tail = fgetc(f);
+    bool ok = tail == EOF && !ferror(f);
+    if (fclose(f) != 0) ok = false;
+    if (!ok || !fe_ssh_record(line, n)) return;
+    fe_copy_clean(out, cap, line);
 }

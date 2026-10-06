@@ -670,6 +670,54 @@ static int test_fe_bridge(void)
     return failures;
 }
 
+static int test_fe_ssh_record(void)
+{
+    int failures = 0;
+    TEST("fleet enrol: the dedicated key consumes one complete measured record") {
+        const char key[] = "ssh-ed25519 AAAAC3NzaC1 owner@box";
+        const char hidden[] = "ssh-ed25519 AAAAC3NzaC1 owner@box\0junk\n";
+        char large[FLEET_ENROL_SSH_MAX + 4];
+        char path[PATH_MAX], dir[PATH_MAX], out[FLEET_ENROL_SSH_MAX + 1];
+        memset(large, 'x', sizeof(large));
+        const struct { const char *body; size_t len; bool accepted; } cases[] = {
+            {hidden, sizeof(hidden) - 1u, false},
+            {large, FLEET_ENROL_SSH_MAX + 1u, false},
+            {large, sizeof(large), false},
+            {"ssh-ed25519 key\nextra", 21u, false},
+            {"ssh-ed25519 key\rjunk\n", 21u, false},
+            {key, sizeof(key) - 1u, true},
+            {"ssh-ed25519 key\n", 16u, true},
+            {"ssh-ed25519 key\r\n", 17u, true},
+            {large, FLEET_ENROL_SSH_MAX, true},
+        };
+        fe_isolate("ssh-record");
+        (void)snprintf(dir, sizeof(dir), "%s/.ssh", g_fe_home);
+        (void)mkdir(g_fe_home, 0700);
+        ASSERT(mkdir(dir, 0700) == 0);
+        (void)snprintf(path, sizeof(path), "%s/z23_fleet.pub", dir);
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+            FILE *f = fopen(path, "wb");
+            ASSERT(f != NULL);
+            size_t written = fwrite(cases[i].body, 1, cases[i].len, f);
+            int closed = fclose(f);
+            ASSERT_EQ(written, cases[i].len);
+            ASSERT_EQ(closed, 0);
+            memset(out, '!', sizeof(out));
+            fleet_enrol_ssh_pubkey(out, sizeof(out));
+            ASSERT_EQ(out[0] != '\0', cases[i].accepted);
+            if (cases[i].accepted) {
+                size_t len = cases[i].len;
+                if (cases[i].body[len - 1u] == '\n') --len;
+                if (cases[i].body[len - 1u] == '\r') --len;
+                ASSERT_EQ(strlen(out), len);
+                ASSERT(memcmp(out, cases[i].body, len) == 0);
+            }
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── the onion locator ──────────────────────────────────────────────────── */
 
 static int test_fe_onion_grammar(void)
@@ -978,6 +1026,7 @@ int test_fleet_enrol(void)
     failures += test_fe_invite_nonce_fresh();
     failures += test_fe_admit_two_machines();
     failures += test_fe_bridge();
+    failures += test_fe_ssh_record();
     failures += test_fe_onion_grammar();
     failures += test_fe_onion_refused_at_mint();
     failures += test_fe_machines_page();
