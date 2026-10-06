@@ -173,6 +173,11 @@ static int run_all(const struct opts *o)
         return 2;
     }
     int rc = 0, index = 0, ran = 0;
+    if (memchr(text, '\0', len) != NULL) {
+        fprintf(stderr, "sem-replay: malformed commit list %s (embedded NUL)\n", o->commits);
+        rc = 2;
+        goto done;
+    }
     for (char *line = strtok(text, "\n"); line && rc == 0 && (o->max_steps == 0 || ran < o->max_steps);
          line = strtok(NULL, "\n")) {
         index++;
@@ -183,6 +188,7 @@ static int run_all(const struct opts *o)
         rc = spawn_step(&o->cfg, index, line);
         ran++;
     }
+done:
     free(text);
     if (rc == SR_STEP_FALSE_NEGATIVE)
         fprintf(stderr, "sem-replay: stopped at a code false negative (see MISSES.tsv)\n");

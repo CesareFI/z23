@@ -594,6 +594,45 @@ static int srt_replay_run(const struct srt_fx *fx, const char *commit)
     return srt_run(argv);
 }
 
+/* Reject raw NUL anywhere in the list before dispatch, even past max_steps. */
+static int srt_commit_records(const struct srt_fx *fx)
+{
+    int failures = 0;
+    char state[PATH_MAX + 16], commits[PATH_MAX + 16], index[16];
+    char sensor[PATH_MAX + 16], planner[PATH_MAX + 32];
+    snprintf(sensor, sizeof sensor, "%s/fx-sensor", fx->tools);
+    snprintf(planner, sizeof planner, "%s/fx-planner-omits", fx->tools);
+    for (int kind = 0; kind < 3; kind++) {
+        snprintf(index, sizeof index, "%d", 30 + kind);
+        snprintf(state, sizeof state, "%s/list-%s", fx->root, index);
+        snprintf(commits, sizeof commits, "%s/list-%s.txt", fx->root, index);
+        TEST("commit lists reject hidden bytes before dispatch and retain comments/EOF") {
+            FILE *f = fopen(commits, "wb");
+            ASSERT(f != NULL);
+            bool wrote = fwrite("#ignored", 1, 8, f) == 8;
+            if (kind == 0) wrote &= fputc(0, f) != EOF;
+            wrote &= fputc('\n', f) != EOF;
+            wrote &= fwrite(fx->c1, 1, strlen(fx->c1), f) == strlen(fx->c1);
+            if (kind == 1) wrote &= fwrite("\n#tail\0junk\n", 1, 12, f) == 12;
+            bool closed = fclose(f) == 0;
+            ASSERT(wrote && closed);
+            const char *argv[] = {fx->tool, "run", "--repo", fx->repo, "--state", state,
+                                  "--sensor", sensor, "--planner", planner,
+                                  "--commits", commits, "--max-steps", "1", NULL};
+            if (kind == 2) {
+                ASSERT_EQ(srt_run(argv), SRT_EXIT_FALSE_NEGATIVE);
+            } else {
+                ASSERT_EQ(srt_run(argv), 2);
+                ASSERT(strstr(g_srt_out, "malformed commit list") != NULL);
+                ASSERT(strstr(g_srt_out, "sem-replay: step ") == NULL);
+            }
+            PASS();
+        }
+_test_next:;
+    }
+    return failures;
+}
+
 #endif /* !_WIN32 */
 
 int test_sem_replay(void)
@@ -611,6 +650,7 @@ int test_sem_replay(void)
 
     TEST("the fixture history builds: P, C1 (a.c body), C2 (common.h)") {
         ASSERT(srt_setup(&fx));
+        failures += srt_commit_records(&fx);
         srt_run_dir(dir_a, 1, fx.c1);
         srt_run_dir(dir_b, 2, fx.c2);
         srt_run_dir(dir_c, 3, fx.c2);
