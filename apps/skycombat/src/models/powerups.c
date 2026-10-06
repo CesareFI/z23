@@ -216,7 +216,7 @@ void powerup_manager_collect(powerup_manager_t* manager, int powerup_id) {
         p->respawn_timer = 20.0f;  // Default respawn time
     }
     
-    printf("Collected %s powerup (respawn in %.1fs)\n", powerup_get_name(p->type), p->respawn_timer);
+    printf("Collected %s powerup (respawn in %.1fs)\n", powerup_get_name(p->type), (double)p->respawn_timer);
 }
 
 void powerup_effects_init(powerup_effects_t* effects) {

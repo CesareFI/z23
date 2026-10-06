@@ -80,7 +80,66 @@ static void skycombat_stub_DrawLine3D(Vector3 a, Vector3 b, Color t)
 #include "../../../apps/skycombat/src/models/aircraft.c"
 #include "../../../apps/skycombat/src/models/weapons.c"
 #include "../../../apps/skycombat/src/models/match_rules.c"
+
+/* Inspect the argument before variadic promotion. The explicit conversion in
+ * this seam lets a removed production cast compile, then fail the type check
+ * through the real collection caller instead of failing compilation. */
+static unsigned skycombat_collect_messages;
+static bool skycombat_collect_double;
+static char skycombat_collect_message[128];
+static int skycombat_powerup_printf(const char *format, const char *name,
+                                   bool explicit_double, double value)
+{
+    if (strcmp(format, "Spawned %s powerup at spawn point %d\n") == 0)
+        return printf("Spawned %s powerup at spawn point %d\n", name, (int)value);
+    ++skycombat_collect_messages;
+    skycombat_collect_double = explicit_double;
+    return snprintf(skycombat_collect_message, sizeof(skycombat_collect_message),
+                    format, name, value);
+}
+#define printf(format, name, value) \
+    skycombat_powerup_printf((format), (name), \
+                            _Generic((value), double: true, default: false), (double)(value))
 #include "../../../apps/skycombat/src/models/powerups.c"
+#undef printf
+
+static int skycombat_collect_diagnostic_tests(void)
+{
+    int failures = 0;
+    powerup_manager_t m = {0};
+    m.powerup_count = 1;
+    m.spawn_point_count = 1;
+    m.spawn_points[0].respawn_time = 7.5f;
+    m.powerups[0].type = POWERUP_HEALTH;
+    m.powerups[0].active = true;
+    m.powerups[0].spawn_point_id = 0;
+    skycombat_collect_messages = 0;
+    TEST("pickups: collection diagnostic supplies double and preserves custom timer") {
+        powerup_manager_collect(&m, 0);
+        ASSERT_EQ(skycombat_collect_messages, 1);
+        ASSERT(skycombat_collect_double);
+        ASSERT(strcmp(skycombat_collect_message,
+                      "Collected Health powerup (respawn in 7.5s)\n") == 0);
+        ASSERT(!m.powerups[0].active);
+        ASSERT_EQ(m.powerups[0].respawn_timer, 7.5f);
+        PASS();
+    }
+    TEST("pickups: collision collection diagnostic supplies double for default timer") {
+        m.powerups[0].active = true;
+        m.powerups[0].spawn_point_id = -1;
+        skycombat_collect_messages = 0;
+        ASSERT(powerup_manager_check_collection(&m, (Vector3){0}, 1.0f, NULL));
+        ASSERT_EQ(skycombat_collect_messages, 1);
+        ASSERT(skycombat_collect_double);
+        ASSERT(strcmp(skycombat_collect_message,
+                      "Collected Health powerup (respawn in 20.0s)\n") == 0);
+        ASSERT(!m.powerups[0].active);
+        ASSERT_EQ(m.powerups[0].respawn_timer, 20.0f);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
 
 static int skycombat_pickup_active(const powerup_manager_t *m, int point)
 {
@@ -575,6 +634,7 @@ _test_next:;
     failures += skycombat_pickup_time_tests(false);
     failures += skycombat_pickup_time_tests(true);
     failures += skycombat_pickup_tests();
+    failures += skycombat_collect_diagnostic_tests();
     failures += skycombat_wrap_tests();
     failures += skycombat_document_tests();
     failures += skycombat_gun_pattern_tests();
