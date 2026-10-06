@@ -2,32 +2,51 @@
 
 # Chain authority: current proof boundary and target ownership
 
-This page answers one narrow question: **which code may turn validated chain
-inputs into durable runtime chain truth?** It records what the checkout proves,
-what it only intends, and the boundary a future refactor must enforce. It is not
-a claim that wallet, peer, Commons, or other product state is a projection of
-the chain kernel; those domains retain their own authorities.
+Use this page to distinguish the current chain-state writers from the ownership
+boundary a future refactor must enforce. You will be able to identify which
+code turns validated chain inputs into durable runtime chain truth, and which
+ownership claims remain unproven. To check these claims, start with the source
+paths and symbols below; the store layout alone cannot establish ownership.
+
+The **chain kernel** is the durable chain state described below. Wallet, peer,
+Commons, and other product state retain their own authorities; this page does
+not claim that they are projections of the chain kernel. A **projection** is a
+rebuildable view, such as an address or transaction index.
+
+**UTXO** means unspent transaction output; inverse deltas undo applied changes.
+A **stage cursor** records a stage's position; its **verdict row** records the
+stage result. The **frontier** is the chain progress served by the node.
+**Bulk fold** keeps a coins overlay in memory and flushes it to durable storage.
+A **capability** is the handle that grants access to an operation.
 
 ## Verdict
 
-The post-flip node has one physical SQLite transaction domain for reducer chain
-state: `consensus.db`, opened by `progress_store`. Its seven fingerprinted
-tables are `coins`, `sprout_anchors`, `sapling_anchors`, `anchor_state`,
+After migration from `progress.kv`, the node has one physical SQLite transaction
+domain for reducer chain state: `consensus.db`, opened by `progress_store`.
+Its fingerprint combines the coins commitment with row counts for seven tables:
+`coins`, `sprout_anchors`, `sapling_anchors`, `anchor_state`,
 `nullifiers`, `progress_meta`, and `stage_cursor`. Other tables co-located in
 the file include stage verdict journals, inverse UTXO deltas,
 `created_outputs`, repair rows, state-producer session/receipt rows, and the
 two consensus-state proof-prefix tables; they are used or cleared by kernel
-transactions and install cutovers. Co-location does not make `created_outputs` consensus
-truth: it is a replayable prevout-resolution cache written by `body_persist`.
+transactions and install cutovers. Co-location does not make `created_outputs`
+consensus truth: it is a replayable cache for resolving previous transaction
+outputs, written by `body_persist`.
 `progress.kv` is a separate projection file whose
 executable migration STAY set is exactly `address_index`,
 `address_index_state`, `txindex`, and `txindex_state`.
 
-That proves a physical store boundary. It does **not** prove one code-level
-writer or one owner for every durable chain fact. The mutable
-`progress_store_db()` handle and several stage/storage APIs expose raw
-`sqlite3 *`; source files in normal fold, bulk-fold flush, boot reconciliation,
-repair, import, and install lifecycles can all mutate kernel tables. SQLite and
+The two boundaries differ:
+
+| Boundary | Current evidence |
+|---|---|
+| Physical store | Reducer chain state shares `consensus.db`. |
+| Code ownership | One writer for every durable chain fact remains unproven. |
+
+The mutable `progress_store_db()` handle and several stage/storage APIs expose
+raw `sqlite3 *`; source files in normal fold, bulk-fold flush, boot
+reconciliation, repair, import, and install lifecycles can all mutate kernel
+tables. SQLite and
 `progress_store_tx_lock()` serialize cooperating callers, but serialization is
 not ownership.
 
@@ -63,7 +82,8 @@ The durable design separates **meaning**, **execution**, and **capability**:
 | `platform/` | Portable OS, file, time, entropy, network, and process capabilities behind narrow interfaces | Domain truth or policy decisions derived from those capabilities |
 
 This is the target contract, not a statement that the physical tree already
-conforms. In particular, the effective byte seal covers all tracked `core/`
+conforms. A **byte seal** pins file content rather than proving its behavior.
+The effective byte seal covers all tracked `core/`
 content (except its manifest), including `core/modules/sync` and
 `core/modules/net`; the pure include-boundary gate covers only four smaller
 contexts. `core/modules/sync/src/stage.c` currently implements SQLite
@@ -106,9 +126,14 @@ symbol evidence only, not proof against an indirect alias.
 ## Owner-gated decision
 
 The next irreversible architectural choice is whether the full `core/` byte
-seal intentionally includes runtime sync/network machinery. If not, authorize
-an unseal/reseal slice that moves stage transaction mechanics into the engine
-and introduces the opaque mutation capability above. If yes, update the core
-doctrine to name the broader sealed runtime boundary and enforce its different
-purity rules. Do not silently preserve the current mismatch between the seal's
-effective scope and the documented semantic core.
+seal intentionally includes runtime sync/network machinery:
+
+1. Decide whether that machinery belongs in the seal.
+2. If not, authorize an unseal/reseal slice that moves stage transaction
+   mechanics into the engine and introduces the opaque mutation capability
+   above.
+3. If yes, update the core doctrine to name the broader sealed runtime boundary
+   and enforce its different purity rules.
+
+Do not silently preserve the current mismatch between the seal's effective
+scope and the documented semantic core.
