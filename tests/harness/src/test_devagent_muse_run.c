@@ -61,6 +61,81 @@ static bool mr_write(const char *path, const char *text, mode_t mode)
     return ok;
 }
 
+/* Exercise the owning writer with descriptor/close faults, without a clock. */
+#include "platform/file_sync.h"
+#include "platform/private_file.h"
+#include "services/muse_run_evidence.h"
+static int mr_evidence_fault, mr_evidence_order;
+static int mr_evidence_sync(int fd)
+{
+    mr_evidence_order = 1;
+    if (mr_evidence_fault == 1) { errno = EIO; return -1; }
+    return platform_file_sync(fd);
+}
+static int mr_evidence_close(FILE *f)
+{
+    int rc = fclose(f);
+    if (mr_evidence_order == 1) mr_evidence_order = 2;
+    if (mr_evidence_fault == 2) { errno = ENOSPC; return EOF; }
+    return rc;
+}
+static int mr_evidence_rename(const char *src, const char *dst)
+{
+    mr_evidence_order = mr_evidence_order == 2 ? 3 : 99;
+    return rename(src, dst);
+}
+static bool mr_evidence_parent(const char *parent)
+{
+    if (mr_evidence_order != 3 || mr_evidence_fault == 3) return false;
+    mr_evidence_order = 4;
+    return platform_private_parent_flush(parent);
+}
+#define platform_file_sync mr_evidence_sync
+#define fclose mr_evidence_close
+#define rename mr_evidence_rename
+#define platform_private_parent_flush mr_evidence_parent
+#define muse_run_write_atomic mr_evidence_write
+#define muse_run_write_receipt mr_evidence_receipt
+#define muse_run_write_facts mr_evidence_facts
+#define muse_run_write_blocked mr_evidence_blocked
+#include "../../../contexts/commons/services/src/muse_run_evidence.c"
+#undef muse_run_write_blocked
+#undef muse_run_write_facts
+#undef muse_run_write_receipt
+#undef muse_run_write_atomic
+#undef platform_private_parent_flush
+#undef rename
+#undef fclose
+#undef platform_file_sync
+
+static int mr_failures_evidence(int fault)
+{
+    const char *old = "{\"verdict\":\"fail\",\"seq\":7,\"name\":\"fixture\",\"attempt\":1,"
+        "\"group\":\"g\",\"turn\":\"failed\",\"reason\":\"prior\",\"engine\":\"fixture\","
+        "\"tokens\":0,\"files_changed\":0,\"workspace_restored\":true,\"workspace_blocked\":false}";
+    const char *next = "{\"verdict\":\"pass\",\"seq\":7,\"name\":\"fixture\",\"attempt\":1,"
+        "\"group\":\"g\",\"turn\":\"completed\",\"reason\":\"complete\",\"engine\":\"fixture\","
+        "\"tokens\":8,\"files_changed\":1,\"workspace_restored\":true,\"workspace_blocked\":false}";
+    char dir[4096], path[8192], bytes[512] = {0};
+    int failures = 0;
+    (void)mr_evidence_sync; (void)mr_evidence_parent;
+    if (!test_mkdtemp(dir, sizeof(dir), "muse_evidence")) return 1;
+    (void)snprintf(path, sizeof(path), "%s/receipt.json", dir);
+    MR_CHECK("seed complete receipt", mr_write(path, old, 0));
+    printf("muse_run: evidence fault=%d\n", fault);
+    mr_evidence_fault = fault;
+    mr_evidence_order = 0;
+    MR_CHECK("durable replacement verdict", mr_evidence_write(path, next) == (fault == 0));
+    MR_CHECK("flush/close/rename/parent order", mr_evidence_order == (fault == 0 ? 4 : fault == 3 ? 3 : 2));
+    FILE *f = fopen(path, "rb");
+    if (f) { (void)fread(bytes, 1, sizeof(bytes) - 1, f); (void)fclose(f); }
+    MR_CHECK("exact retained or installed bytes", strcmp(bytes, fault == 1 || fault == 2 ? old : next) == 0);
+    mr_evidence_fault = 0;
+    MR_CHECK("remove receipt", unlink(path) == 0);
+    MR_CHECK("no staging leak", rmdir(dir) == 0);
+    return failures;
+}
+
 static char *mr_read(const char *path)
 {
     FILE *f = fopen(path, "rb");
@@ -3490,6 +3565,7 @@ int test_devagent_muse_run(void)
 {
     int failures = 0;
     (void)mr_fake_lifecycle_refs;
+    for (int fault = 0; fault < 4; ++fault) failures += mr_failures_evidence(fault);
     failures += mr_failures_validate();
     failures += mr_failures_parse();
     failures += mr_failures_precheck();

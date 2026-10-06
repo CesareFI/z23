@@ -9,6 +9,9 @@
 #include "services/muse_run.h"
 #include "services/muse_run_audit.h"
 #include "base/safe_alloc.h"
+#include "platform/file_sync.h"
+#include "platform/private_file.h"
+#include <stdatomic.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,30 +20,39 @@
 
 bool muse_run_write_atomic(const char *path, const char *text)
 {
-    char tmp[8192];
+    char tmp[8192], destination[8192], parent[8192];
+    static atomic_uint sequence;
+    bool ok;
     FILE *f;
     size_t n;
-    if (!path || !text) return false;
-    if (snprintf(tmp, sizeof(tmp), "%s.tmp-%d", path,
-            (int)getpid()) >= (int)sizeof(tmp))
+    if (!text || !platform_private_destination_resolve(path, destination,
+            sizeof(destination), parent, sizeof(parent))) {
+        fprintf(stderr, "muse_run: invalid evidence destination\n");
         return false;
-    f = fopen(tmp, "wb");
-    if (!f) return false;
+    }
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp-%d-%u", destination,
+            (int)getpid(), atomic_fetch_add(&sequence, 1u)) >= (int)sizeof(tmp)) {
+        fprintf(stderr, "muse_run: evidence staging path too long\n");
+        return false;
+    }
+    f = fopen(tmp, "wbx");
+    if (!f) {
+        fprintf(stderr, "muse_run: evidence staging refused: %s\n", tmp);
+        return false;
+    }
     n = strlen(text);
-    if (n > 0 && fwrite(text, 1, n, f) != n) {
-        fclose(f);
+    ok = fwrite(text, 1, n, f) == n && fflush(f) == 0 &&
+        platform_file_sync(fileno(f)) == 0;
+    if (fclose(f) != 0) ok = false;
+    if (!ok || rename(tmp, destination) != 0) {
         (void)unlink(tmp);
+        fprintf(stderr, "muse_run: evidence replacement refused: %s\n", path);
         return false;
     }
-    if (fclose(f) != 0) {
-        (void)unlink(tmp);
-        return false;
-    }
-    if (rename(tmp, path) != 0) {
-        (void)unlink(tmp);
-        return false;
-    }
-    return true;
+    /* After replacement, refusal means directory persistence is unconfirmed. */
+    ok = platform_private_parent_flush(parent);
+    if (!ok) fprintf(stderr, "muse_run: evidence directory flush refused: %s\n", parent);
+    return ok;
 }
 
 void muse_run_write_receipt(const struct muse_run_task *t,
