@@ -100,6 +100,12 @@ bool configured_sync_peer_identity(const struct net_service *target,
 typedef bool (*configured_sync_peer_prober_fn)(const struct net_service *target,
                                                uint8_t out_static[32]);
 
+/* Start the runtime probe service with the local Noise identity and network
+ * magic. This is the inverse of configured_sync_peers_stop(): after an
+ * in-process service restart it clears the prior stop request before new
+ * probes are admitted. */
+void configured_sync_peers_start(const struct net_manager *nm);
+
 /* The local Noise identity and network magic the default prober uses. The
  * first operator-named target (-addnode/-connect/-addnode-file or the
  * addnode RPC) attaches the node's net manager; without it (or with Noise

@@ -363,7 +363,7 @@ static bool boot_configured_sync_probe_start(void *ctx)
     struct boot_svc_ctx *svc = ctx;
     if (!svc || !svc->connman)
         return false;
-    configured_sync_peers_attach_network(&svc->connman->manager);
+    configured_sync_peers_start(&svc->connman->manager);
     return true;
 }
 

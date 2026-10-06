@@ -2249,6 +2249,17 @@ static int test_configured_inbound_probe_thread(void)
         ASSERT(!configured_sync_peers_join_probe_for_testing());
         g_model_now += CONFIGURED_SYNC_PEER_PROBE_RETRY_SECS;
         ASSERT(configured_sync_peer_request_probe(c[1].in) == 0);
+
+        /* Restart the runtime service after its stop callback. A fresh probe
+         * must be admitted without resetting the configured target table. */
+        struct net_manager restarted_network;
+        memset(&restarted_network, 0, sizeof(restarted_network));
+        configured_sync_peers_start(&restarted_network);
+        gate_set(true);
+        g_model_now += CONFIGURED_SYNC_PEER_PROBE_RETRY_SECS;
+        ASSERT(configured_sync_peer_request_probe(c[1].in) == 1);
+        ASSERT(configured_sync_peers_join_probe_for_testing());
+        ASSERT(g_gate_calls == 4);
         PASS();
     } _test_next:;
     gate_set(true);
