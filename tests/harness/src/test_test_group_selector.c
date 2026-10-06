@@ -1675,6 +1675,36 @@ static int test_dispatch_order_pure(void)
     return failures;
 }
 
+static int test_dispatch_weights_framing(void)
+{
+    int failures = 0;
+    TEST("dispatch weights: NUL row cannot drain next row or hide suffix") {
+        static unsigned w[TGS_WEIGHT_ROWS];
+        static const char bytes[] =
+            "x\0\n"
+            "test_chain\t7\n"
+            "test_chain\t8\rjunk\n"
+            "test_chain\t9\0junk";
+        size_t n = zcl_test_group_catalog_count();
+        ASSERT(n > 0 && n <= TGS_WEIGHT_ROWS);
+        char root[PATH_MAX], path[PATH_MAX + 32];
+        test_make_tmpdir(root, sizeof(root), "tgs_weights", "framing");
+        int len = snprintf(path, sizeof(path), "%s/weights.tsv", root);
+        ASSERT(len > 0 && (size_t)len < sizeof(path));
+        FILE *fp = fopen(path, "wb");
+        ASSERT(fp != NULL);
+        size_t written = fwrite(bytes, 1, sizeof(bytes) - 1, fp);
+        int closed = fclose(fp);
+        ASSERT_EQ(written, sizeof(bytes) - 1);
+        ASSERT_EQ(closed, 0);
+        ASSERT_EQ(zcl_test_group_weights_read(path, w, n), (size_t)1);
+        ASSERT_EQ(w[tgs_catalog_index("test_chain")], 7u);
+        ASSERT(test_rm_rf_recursive(root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_dispatch_weights_read(void)
 {
     int failures = 0;
@@ -1833,6 +1863,7 @@ int test_test_group_selector(void)
     failures += test_runner_no_cache_outranks_env();
     failures += test_dispatch_order_pure();
     failures += test_dispatch_weights_read();
+    failures += test_dispatch_weights_framing();
     failures += test_runner_dispatches_longest_first();
     failures += test_assert_macros_report_where_and_what();
     failures += test_assert_messages_name_file_line_and_values();

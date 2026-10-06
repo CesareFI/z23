@@ -28,7 +28,9 @@ static size_t weights_catalog_index(const char *full_id)
  * are not rows. */
 static bool weights_parse_line(char *line, const char **id, unsigned *seconds)
 {
-    line[strcspn(line, "\r\n")] = '\0';
+    size_t len = strlen(line);
+    if (len > 0 && line[len - 1] == '\r')
+        line[len - 1] = '\0';
     char *tab = strchr(line, '\t');
     if (line[0] == '#' || !tab || tab == line)
         return false;
@@ -51,14 +53,21 @@ static bool weights_parse_line(char *line, const char **id, unsigned *seconds)
  * and reported as not a row, so its tail can never parse as a row. */
 static bool weights_next_line(FILE *fp, char *buf, size_t cap, bool *fits)
 {
-    if (!fgets(buf, (int)cap, fp))
-        return false;
-    *fits = strchr(buf, '\n') != NULL || feof(fp);
-    if (*fits)
-        return true;
+    *fits = false;
+    size_t used = 0;
+    bool valid = true;
     int c;
-    while ((c = fgetc(fp)) != EOF && c != '\n') {}
-    return true;
+    while ((c = fgetc(fp)) != EOF && c != '\n') {
+        if (c == 0)
+            valid = false;
+        if (used < cap - 1)
+            buf[used++] = (char)c;
+        else
+            valid = false;
+    }
+    buf[used] = '\0';
+    *fits = valid && !ferror(fp);
+    return c != EOF || used != 0;
 }
 
 size_t zcl_test_group_weights_read(const char *path, unsigned *out, size_t n)
