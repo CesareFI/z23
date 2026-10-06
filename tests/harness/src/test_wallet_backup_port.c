@@ -173,6 +173,13 @@ int test_wallet_backup_port(void)
     bool sp_ok = port.source_path(port.self, resolved, sizeof(resolved));
     WBP_CHECK("source_path returns true on file db", sp_ok);
     WBP_CHECK("source_path is non-empty", resolved[0] != '\0');
+    char short_path[8] = "stale";
+    bool short_sp_ok = port.source_path(port.self, short_path,
+                                        sizeof(short_path));
+    WBP_CHECK("source_path rejects a buffer that would truncate the path",
+              !short_sp_ok);
+    WBP_CHECK("source_path clears output when exact copy is impossible",
+              short_path[0] == '\0');
 
     /* count_rows over the source. */
     int64_t src_keys = -1;

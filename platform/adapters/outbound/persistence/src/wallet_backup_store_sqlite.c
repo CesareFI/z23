@@ -90,7 +90,12 @@ static bool wbs_store_source_path(void *self, char *out, size_t cap)
     const char *p = sqlite3_db_filename(c->src_db, "main");
     if (!p || !*p)
         return false;
-    snprintf(out, cap, "%s", p);
+    size_t len = strlen(p);
+    if (len >= cap) {
+        out[0] = '\0';
+        return false;
+    }
+    memcpy(out, p, len + 1);
     return true;
 }
 
