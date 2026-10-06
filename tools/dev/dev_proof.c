@@ -3610,12 +3610,21 @@ static bool dp_wrapper_input_clean(const char *line, size_t len)
     return strstr(line, "..") == NULL;
 }
 
-static size_t dp_wrapper_trim(char *line)
+/* 1 = complete record (including valid EOF tail), 0 = EOF, -1 = refusal. */
+static int dp_wrapper_record_read(FILE *f, char line[256], size_t *len)
 {
-    size_t len = strlen(line);
-    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
-        line[--len] = 0;
-    return len;
+    size_t n = 0;
+    int c;
+    while ((c = fgetc(f)) != EOF && c != '\n') {
+        if (c == 0 || n == 255) return -1;
+        line[n++] = (char)c;
+    }
+    if (ferror(f)) return -1;
+    bool eof = c == EOF && n == 0;
+    while (n > 0 && line[n - 1] == '\r') n--;
+    line[n] = 0;
+    *len = n;
+    return eof ? 0 : 1;
 }
 
 /* Read the bootstrap-input catalog into a fixed table. A line that is too
@@ -3626,17 +3635,28 @@ static bool dp_wrapper_catalog_read(FILE *f, char inputs[][128],
                                     size_t input_cap, size_t *input_count)
 {
     char line[256];
-    while (fgets(line, sizeof(line), f)) {
-        size_t len = dp_wrapper_trim(line);
+    size_t len, count = *input_count;
+    int record;
+    while ((record = dp_wrapper_record_read(f, line, &len)) > 0) {
         if (len == 0 || strncmp(line, "license=", 8) == 0) continue;
         if (len >= sizeof(inputs[0])) return false;
-        if (!dp_wrapper_input_clean(line, len) || *input_count >= input_cap)
+        if (!dp_wrapper_input_clean(line, len) || count >= input_cap)
             return false;
-        (void)snprintf(inputs[*input_count], sizeof(inputs[0]), "%s", line);
-        (*input_count)++;
+        (void)snprintf(inputs[count++], sizeof(inputs[0]), "%s", line);
     }
+    if (record < 0) return false;
+    *input_count = count;
     return true;
 }
+
+#if defined(ZCL_TESTING)
+bool zcl_dev_proof_test_wrapper_catalog(FILE *, char (*)[128], size_t, size_t *);
+bool zcl_dev_proof_test_wrapper_catalog(FILE *f, char inputs[][128], size_t cap,
+                                       size_t *count)
+{
+    return dp_wrapper_catalog_read(f, inputs, cap, count);
+}
+#endif
 
 static bool warm_wrapper_inputs_unchanged(const char *root,
                                           const char *donor_local,

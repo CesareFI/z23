@@ -7045,6 +7045,57 @@ static int test_ic_landing_step_share_waits_out_a_step(void)
     } _test_next:;
     return failures;
 }
+/* Exercise the production reader without a proof cycle or a live catalog. */
+extern bool zcl_dev_proof_test_wrapper_catalog(FILE *, char (*)[128], size_t,
+                                               size_t *);
+
+static int test_ic_wrapper_catalog_records(void)
+{
+    int failures = 0;
+    TEST("bootstrap catalog: account for complete physical records") {
+        static const char nul[] = "tools/zcc.c\0hidden bytes\n";
+        static const char license_nul[] = "license=x\0hidden bytes\n";
+        static const char partial[] = "tools/zcc.c\ntools/zcc.c\0hidden\n";
+        char continuation[267], many[13 * 12], path[129];
+        memset(continuation, 'x', 255);
+        memcpy(continuation, "license=", 8);
+        memcpy(continuation + 255, "tools/zcc.c\n", 12);
+        for (size_t i = 0; i < 13; i++)
+            memcpy(many + i * 12, "tools/zcc.c\n", 12);
+        memset(path, 'a', sizeof(path));
+        const struct { const char *bytes; size_t len; bool ok; size_t count; }
+        rows[] = {
+            {nul, sizeof(nul) - 1, false, 0},
+            {license_nul, sizeof(license_nul) - 1, false, 0},
+            {partial, sizeof(partial) - 1, false, 0},
+            {continuation, sizeof(continuation), false, 0},
+            {many, sizeof(many), false, 0},
+            {many, 12 * 12, true, 12},
+            {"license=x\r\n\r\ntools/zcc.c\r\n", 26, true, 1},
+            {"tools/zcc.c", 11, true, 1},
+            {path, 127, true, 1},
+            {path, 128, false, 0},
+            {continuation, 256, false, 0},
+            {continuation, 255, true, 0},
+            {"tools/zcc.c junk\n", 17, false, 0},
+        };
+        for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+            FILE *f = tmpfile();
+            ASSERT(f != NULL);
+            bool written = fwrite(rows[i].bytes, 1, rows[i].len, f) == rows[i].len;
+            rewind(f);
+            char inputs[12][128];
+            size_t count = 0;
+            bool ok = zcl_dev_proof_test_wrapper_catalog(f, inputs, 12, &count);
+            int closed = fclose(f);
+            ASSERT(written && closed == 0);
+            ASSERT(ok == rows[i].ok && count == rows[i].count);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* The bootstrap wrapper and a dependency room file are both copy class, for
  * two unrelated reasons: bin/zcc may only be inherited while the inputs that
  * built it are unchanged, while a room file must be copied because the
@@ -11290,6 +11341,7 @@ int test_impact_composition(void)
     failures += test_pw_status_line_reports_warm_or_typed_cold();
     failures += test_ic_landing_step_share_waits_out_a_step();
     failures += test_pw_seed_links_replaces_and_copies();
+    failures += test_ic_wrapper_catalog_records();
     failures += test_pw_seed_room_copy_survives_a_stale_wrapper();
     failures += test_pw_seed_skips_removed_dev_source();
     failures += test_pw_seed_cold_without_seedables();
