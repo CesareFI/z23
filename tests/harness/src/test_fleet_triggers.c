@@ -862,6 +862,43 @@ _test_next:;
     return failures;
 }
 
+#define FTX_TSV8 "a\ta\ta\ta\ta\ta\ta\ta"
+#define FTX_TSV32 FTX_TSV8 "\t" FTX_TSV8 "\t" FTX_TSV8 "\t" FTX_TSV8
+#define FTX_RECORD(s) { s, sizeof(s) - 1 }
+static int ftx_case_tsv_records(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    const struct { const char *bytes; size_t len; } cases[] = {
+        FTX_RECORD("a\0\tb\n"), FTX_RECORD(FTX_TSV32 "\ta\n"),
+        FTX_RECORD("a\n" FTX_TSV32 "\ta\n"), FTX_RECORD("a\nx\0junk\n"),
+        FTX_RECORD(FTX_TSV32 "\n" FTX_TSV32),
+        FTX_RECORD(FTX_TSV32 "\n" FTX_TSV32 "\n"), FTX_RECORD(FTX_TSV32)
+    };
+    printf("fleet_triggers: TSV byte extent and column bounds... ");
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        ftx_isolate("tsv_records");
+        ASSERT(zcl_trigger_experiment_path(path, sizeof path));
+        ftx_write_file(path, "");
+        FILE *f = fopen(path, "wb");
+        ASSERT(f != NULL);
+        ASSERT_EQ(fwrite(cases[i].bytes, 1, cases[i].len, f), cases[i].len);
+        ASSERT_EQ(fclose(f), 0);
+        struct ftx_call c;
+        ftx_begin(&c, true, 0);
+        ASSERT(ftx_run(&c));
+        ASSERT_EQ(ftx_int(&c, "failed"), i < 4 ? 1 : 0);
+        ASSERT_EQ(ftx_int(&c, "checked"), i == 4 || i == 5 ? 1 : 0);
+        ASSERT_EQ(ftx_int(&c, "fired"), 0);
+        ftx_end(&c);
+    }
+    PASS();
+_test_next:;
+    return failures;
+}
+#undef FTX_RECORD
+#undef FTX_TSV32
+#undef FTX_TSV8
 int test_fleet_triggers(void);
 int test_fleet_triggers(void)
 {
@@ -881,6 +918,7 @@ int test_fleet_triggers(void)
     failures += ftx_case_board_post_no_node();
     failures += ftx_case_board_post_retries_then_fires();
     failures += ftx_case_later_row_waits_behind_failed();
+    failures += ftx_case_tsv_records();
 
     ftx_restore();
     if (failures == 0)

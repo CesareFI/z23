@@ -267,24 +267,27 @@ static bool trg_row_from_json_line(const char *line, size_t len,
     return json_read(&row->json, line, len) && row->json.type == JSON_OBJ;
 }
 
-static void trg_row_from_tsv_line(const char *line, size_t len,
+static bool trg_row_from_tsv_line(const char *line, size_t len,
                                   struct trg_row *row)
 {
     memset(row, 0, sizeof *row);
     row->is_json = false;
     if (len >= sizeof row->tsv_copy)
-        len = sizeof row->tsv_copy - 1;
+        return false;
     memcpy(row->tsv_copy, line, len);
     row->tsv_copy[len] = 0;
     char *p = row->tsv_copy;
     row->tsv_field[row->tsv_count++] = p;
-    while (*p && row->tsv_count < TRG_TSV_MAX_COLS) {
+    while (*p) {
         if (*p == '\t') {
+            if (row->tsv_count == TRG_TSV_MAX_COLS)
+                return false;
             *p = 0;
             row->tsv_field[row->tsv_count++] = p + 1;
         }
         p++;
     }
+    return true;
 }
 
 /* field_ lookup against one row. Returns NULL for a field the row does not
@@ -447,29 +450,49 @@ static const struct trg_source_spec k_source_specs[] = {
 /* Read the header line of a TSV source (column names by index); a JSONL
  * source has none. header_storage is the caller's scratch buffer that
  * header[] points into. */
-static void trg_read_header(FILE *f, bool has_header, char *header_storage,
+/* Byte-counted TSV record: -1 refuses corruption, 0 is clean empty EOF. */
+static int trg_read_tsv(FILE *f, char *line, size_t cap, size_t *bytes)
+{
+    *bytes = 0;
+    int ch;
+    while ((ch = fgetc(f)) != EOF) {
+        if (ch == 0 || *bytes == cap - 1)
+            return -1;
+        line[(*bytes)++] = (char)ch;
+        if (ch == '\n')
+            break;
+    }
+    line[*bytes] = 0;
+    return ferror(f) ? -1 : (*bytes != 0);
+}
+static bool trg_read_header(FILE *f, bool has_header, char *header_storage,
                             size_t header_storage_cap, char **header,
                             size_t *header_count, long *header_bytes)
 {
     *header_count = 0;
     *header_bytes = 0;
     if (!has_header)
-        return;
-    if (!fgets(header_storage, (int)header_storage_cap, f))
-        return;
-    *header_bytes = (long)strlen(header_storage);
-    size_t len = strlen(header_storage);
+        return true;
+    size_t len;
+    if (trg_read_tsv(f, header_storage, header_storage_cap, &len) < 0)
+        return false;
+    *header_bytes = (long)len;
+    if (!len)
+        return true;
     if (len && header_storage[len - 1] == '\n')
         header_storage[--len] = 0;
     char *p = header_storage;
     header[(*header_count)++] = p;
-    while (*p && *header_count < TRG_TSV_MAX_COLS) {
+    while (*p) {
         if (*p == '\t') {
+            if (*header_count == TRG_TSV_MAX_COLS)
+                return false;
             *p = 0;
             header[(*header_count)++] = p + 1;
         }
         p++;
     }
+    return true;
 }
 
 /* Runs the concrete action for one already-matched trigger. print can never
@@ -601,8 +624,12 @@ static void trg_process_line(const struct trg_scan_ctx *ctx, char *line,
     struct trg_row row;
     bool have_row;
     if (ctx->spec->has_header) {
-        trg_row_from_tsv_line(line, len, &row);
-        have_row = true;
+        have_row = trg_row_from_tsv_line(line, len, &row);
+        if (!have_row) {
+            *row_failed = true;
+            (*failed)++;
+            (void)snprintf(why, why_cap, "experiment_rows invalid TSV row");
+        }
     } else {
         have_row = trg_row_from_json_line(line, len, &row);
     }
@@ -653,17 +680,28 @@ static void trg_scan_lines(FILE *f, const struct trg_scan_ctx *ctx,
                            uint64_t *failed, char *why, size_t why_cap)
 {
     char line[TRG_LINE_MAX];
-    while (fgets(line, sizeof line, f)) {
-        size_t raw_len = strlen(line);
-        if (raw_len == 0 || line[raw_len - 1] != '\n')
+    size_t raw_len = 0;
+    int status;
+    while ((status = ctx->spec->has_header
+                         ? trg_read_tsv(f, line, sizeof line, &raw_len)
+                         : (fgets(line, sizeof line, f) != NULL)) > 0) {
+        if (!ctx->spec->has_header)
+            raw_len = strlen(line);
+        bool newline = raw_len && line[raw_len - 1] == '\n';
+        if (!ctx->spec->has_header && !newline)
             break; /* partial trailing line: leave it for next time */
-        line[raw_len - 1] = 0; /* drop the newline for parsing */
+        size_t len = raw_len - newline;
+        line[len] = 0; /* drop the newline for parsing */
         bool row_failed = false;
-        trg_process_line(ctx, line, raw_len - 1, row_count, checked, fired,
+        trg_process_line(ctx, line, len, row_count, checked, fired,
                          failed, why, why_cap, &row_failed);
         if (row_failed)
             return; /* hold the cursor before this row; later rows wait */
         *offset += (uint64_t)raw_len;
+    }
+    if (status < 0) {
+        (*failed)++;
+        (void)snprintf(why, why_cap, "experiment_rows invalid TSV record");
     }
 }
 
@@ -702,9 +740,15 @@ static void trg_process_source(const struct trg_source_spec *spec,
     char *header[TRG_TSV_MAX_COLS];
     size_t header_count = 0;
     long header_bytes = 0;
-    trg_read_header(f, spec->has_header, header_storage,
+    if (!trg_read_header(f, spec->has_header, header_storage,
                     sizeof header_storage, header, &header_count,
-                    &header_bytes);
+                    &header_bytes)) {
+        (*failed)++;
+        if (out_why && out_why_cap && !out_why[0])
+            (void)snprintf(out_why, out_why_cap, "experiment_rows invalid TSV header");
+        fclose(f);
+        return;
+    }
 
     uint64_t new_offset;
     if (!trg_seek_to_cursor(f, cursor.offset, header_bytes, &new_offset)) {
