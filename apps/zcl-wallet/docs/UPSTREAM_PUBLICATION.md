@@ -10,8 +10,9 @@ This ledger stays on the wallet development branch; PRs carry concise provenance
 
 - Upstream/origin: https://github.com/z23c/z23.git, main
   `3a93e60ebf922af3d119b9facc1d95803f42844b` (fetched under both remote-tracking names).
-- Android branch: `agent/android-jni-secret-retirement-20260915`, HEAD
-  `cd1a152116e55a907ed31dd4eb8d7c08c38e37d7`; signed locally. The last
+- Android branch: `agent/android-jni-secret-retirement-20260915`; latest
+  validated C checkpoint before this ledger update is
+  `daeba12ae6e8a3e2ba6a3b2ac9840e078e2d9342`, signed locally. The last
   exact backup-SHA verification predates the later local publication-evidence
   commits; no current remote-equality claim is made.
 - Backup: https://github.com/CesareFI/zclassic-android-wallet.git.
@@ -54,7 +55,7 @@ material. Candidate heads and the publication boundary are recorded below.
 | Crash/process interruption and partial IO fixtures | C | Android injected write/rename checkpoints name its authenticated journal and exact record layout. Upstream wallet_backup and wallet_backup_port already test backup encryption, restoration and authority barriers. Transfer descriptor invariants separately; the format-specific crash harness is not an independent upstream component. |
 | BIP39/12-word recovery / normalization / deterministic seeds | B | Existing domain/wallet/mnemonic and wallet wrapper. Preserve upstream accepted formats and canonical bytes; never change12-word creation/recovery guarantees. |
 | Prepared HMAC/PBKDF2 reuse | D | Upstream already has its own crypto implementation in sealed core. No duplicate provider or unseal authority; only report existing parity and owner constraints. |
-| Base58 bounded conversion (`e805c8a06`, `32e58fad9`, `89926c0bd`, `a16546e79`) | A/B | The selected prefix candidate ports the existing native encoder/decoder optimizations with current-base tests, measured speedup, reference comparisons and unchanged cleanup. |
+| Base58 bounded conversion and scratch retirement (`e805c8a06`, `32e58fad9`, `89926c0bd`, `a16546e79`, `03654b250`) | A/B | The selected prefix candidate ports the existing native encoder/decoder optimizations with current-base tests, measured speedup and reference comparisons. The newer portable-C retirement commit adds deterministic wiping for private-capable checksum, magnitude and staging scratch and requires a separate current-base adaptation/proof before publication. |
 | Native xprv scratch retirement (`01e045fc9`) | A/B | Port existing serializer copy elimination and decoder refusal cleanup into the existing HD-key owner; adapt regression registration and required inventory to current main. |
 | Payment URI/text parser and RPC string fast paths | C | These optimizations target Android payment metadata and the read-only mobile Electrum JSON schema. Replacing upstream native command/RPC policy or adding an unused duplicate parser is outside a small adaptation. |
 | Platform-neutral QR/camera stride/pixel bounds | C | Upstream owns QR generation through qrcodegen, not Android camera-plane decoding. There is no matching camera consumer for stride/pixel APIs; retain the validated bounds as reference rather than introduce an unused decoder stack. |
@@ -65,6 +66,7 @@ material. Candidate heads and the publication boundary are recorded below.
 | ASan/UBSan/LSan, qualified MSan/TSan and compiler evidence | B | Rerun on each port. Android observations support source provenance only; no claim they validate adapted upstream bytes. |
 | ARM64 Linux/QEMU and Android runtime evidence | C | Exact environment claims only; no physical-device proof and no transfer of evidence to changed upstream code. |
 | Android UI, lifecycle, Kotlin/JNI build and APK fixtures | C | Preserve on Android branch; exclude from C PRs. |
+| Base58 JNI scratch retirement (`daeba12ae`) | C | Android/JNI ownership only. It is useful evidence for consumed-input-before-publication ordering but has no upstream JNI consumer; do not mix it into the portable Base58 C slice. |
 | TLS candidate/provider experiments | D | Quarantine stays intact; no publication implying security acceptance. |
 | Evidence and documentation | B | Small PR-specific problem/behavior/safety/tests/provenance descriptions. This ledger and long app progress history stay outside upstream PRs. |
 
