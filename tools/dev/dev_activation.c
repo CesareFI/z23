@@ -21,6 +21,7 @@
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 
 #include "crypto/sha256.h"
+#include "json/json.h"
 #include "platform/time_compat.h"
 #include "platform/os_proc.h"
 #include "platform/positioned_file.h"
@@ -256,10 +257,29 @@ static bool dev_valid_generation_id(const char *g)
 bool dev_activation_json_first_string(const char *blob, const char *key,
                                       char *out, size_t out_sz);
 
-bool dev_activation_read_gen_link(const struct dev_activation_txn *txn,
-                                  const char *link, char *out, size_t out_sz)
+/* Shared with the portable regression; Windows supplies the measured file bytes. */
+bool dev_activation_selector_string(const char *blob, size_t len,
+                                     char *out, size_t out_sz)
 {
+    if (out_sz == 0) return false;
+    out[0] = 0;
+    if (len == 0 || len >= 256 || memchr(blob, 0, len)) return false;
+    struct json_value root = {0};
+    bool ok = json_read(&root, blob, len) && root.type == JSON_OBJ;
+    const struct json_value *field = ok ? json_get(&root, "generation") : NULL;
+    const char *value = json_get_str(field);
+    ok = field && field->type == JSON_STR && strlen(value) < out_sz;
+    if (ok) memcpy(out, value, strlen(value) + 1);
+    json_free(&root);
+    return ok;
+}
+
 #if defined(_WIN32)
+static bool dev_activation_read_selector(const char *link,
+                                         char *out, size_t out_sz)
+{
+    if (out_sz == 0) return false;
+    out[0] = 0;
     struct platform_positioned_file file;
     platform_positioned_file_init(&file);
     uint64_t size = 0;
@@ -273,8 +293,15 @@ bool dev_activation_read_gen_link(const struct dev_activation_txn *txn,
         return false;
     }
     platform_positioned_file_close(&file);
-    blob[size] = 0;
-    if (!dev_activation_json_first_string(blob, "generation", out, out_sz) ||
+    return dev_activation_selector_string(blob, (size_t)size, out, out_sz);
+}
+#endif
+
+bool dev_activation_read_gen_link(const struct dev_activation_txn *txn,
+                                  const char *link, char *out, size_t out_sz)
+{
+#if defined(_WIN32)
+    if (!dev_activation_read_selector(link, out, out_sz) ||
         !dev_valid_generation_id(out))
         return false;
     char full[PATH_MAX];

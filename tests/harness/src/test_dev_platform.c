@@ -1743,6 +1743,42 @@ static int test_native_activation_result_mapping(void)
     return failures;
 }
 
+bool dev_activation_selector_string(const char *blob, size_t len,
+                                     char *out, size_t out_sz);
+
+static int test_activation_selector_records(void)
+{
+    int failures = 0;
+    TEST("dev platform: activation selector refuses hidden or malformed suffixes") {
+        static const char good[] = "{\"generation\":\"gen-a\"}";
+        char body[256], out[80];
+        for (unsigned row = 0; row < 7; row++) {
+            memcpy(body, good, sizeof(good));
+            size_t len = sizeof(good) - 1;
+            if (row == 1) body[len++] = '\n';
+            if (row == 2) { body[len++] = 0; body[len++] = 'x'; }
+            if (row == 3) body[len++] = 'x';
+            if (row == 4) len--;
+            if (row == 5) { memset(body + len, ' ', sizeof(body) - len); len = sizeof(body); }
+            if (row == 6) {
+                static const char array[] = "[{\"generation\":\"gen-a\"}]";
+                memcpy(body, array, sizeof(array)); len = sizeof(array) - 1;
+            }
+            memset(out, 'x', sizeof(out));
+            bool ok = dev_activation_selector_string(body, len, out, sizeof(out));
+            ASSERT(ok == (row < 2));
+            ASSERT((row < 2) ? strcmp(out, "gen-a") == 0 : out[0] == 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_activation_mapping_and_selector_records(void)
+{
+    return test_native_activation_result_mapping() + test_activation_selector_records();
+}
+
 static int test_watch_start_wait_reply(void)
 {
     int failures = 0;
@@ -9497,7 +9533,7 @@ static const struct dp_shard_case g_dp_cases[] = {
     DP_CASE(test_social_sim, 7),
     DP_CASE(test_native_activation_switch, 7),
     DP_CASE(test_native_activation_request_builder, 7),
-    DP_CASE(test_native_activation_result_mapping, 7),
+    DP_CASE(test_activation_mapping_and_selector_records, 7),
 };
 #undef DP_CASE
 #define DP_CASE_COUNT (sizeof(g_dp_cases) / sizeof(g_dp_cases[0]))

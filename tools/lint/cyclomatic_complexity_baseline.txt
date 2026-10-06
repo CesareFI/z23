@@ -3784,7 +3784,6 @@ tools/dev/dependency_links.c:scan_directory:16
 tools/dev/dependency_links.c:zcl_dependency_links_scan:16
 tools/dev/dev_activation.c:dev_activation_canon:27
 tools/dev/dev_activation.c:dev_activation_link_generation:19
-tools/dev/dev_activation.c:dev_activation_read_gen_link:18
 tools/dev/dev_activation.c:dev_activation_sha256_file:16
 tools/dev/dev_activation.c:dev_derive_paths:19
 tools/dev/dev_activation.c:dev_validate_confinement:29
