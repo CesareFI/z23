@@ -2,18 +2,21 @@
 
 # Local data-source index
 
-Z23 produces several local data sources — the fleet board, the experiment
-ledger, the landing outcomes ledger, and free-text logs — and until now
-nothing indexed them: every question meant a manual grep. `z23-dev dev
-index` ingests them incrementally into one sqlite+FTS5 database and answers
-questions from that index instead.
+Search the local fleet board, experiment ledger, landing outcomes, and logs
+with `z23-dev dev index`. You need the development binary (`z23-dev`) on
+your command search path and local source files first. Ingest before
+searching: these commands use a SQLite database with FTS5, SQLite's
+full-text search extension.
 
 ## What is indexed
 
-The CLOSED source registry is `engine/composition/sources.def` (an X-macro,
-same idiom as the sibling `.def` files under `engine/composition/`). Each
-row is `Z23_SOURCE(id_, kind_, root_, path_, format_, why_)`. Today it
-declares four sources:
+The closed source registry (the complete list of accepted sources) is
+`engine/composition/sources.def`. Its X-macro rows are expanded by the
+source catalog; each row is
+`Z23_SOURCE(id_, kind_, root_, path_, format_, why_)`. It declares four
+sources. The zclassic23 state root is `~/.local/state/zclassic23`; the
+native dev-state root is resolved by `platform_state_root()`. JSONL stores
+one JSON object per line; TSV stores tab-separated values.
 
 | id | kind | path | format |
 | --- | --- | --- | --- |
@@ -23,36 +26,56 @@ declares four sources:
 | `logs` | `log_lines` | every `*.log` under the zclassic23 state root | text_kv (free text + extracted `key=value` tokens) |
 
 A source id not declared in `sources.def` cannot be ingested, filtered by
-`--source=`, or reported by `status`. Adding a fifth source means adding one
-row there — nothing else hand-derives a path a second time.
+`--source=`, or reported by `status`. Source paths are derived from
+that registry.
 
 ## The three leaves
 
-- `z23-dev dev index ingest [--source=<id>]` — read each declared source (or
-  just one) from its saved cursor to the last complete line, insert one row
-  per new line (an already-seen line is silently ignored, never
-  duplicated — see "Identity, not just a cursor" below), and advance the
-  cursor. Reports `rows_added` and `rows_skipped` (lines that failed to
-  parse this run, or a format's own header line) per source. A maintenance
-  leaf: it walks real files, budgeted at 5000ms, not the 250ms a read leaf
-  gets (measured ~3.1s over ~48k real rows).
+A leaf is a command at the end of the command tree. To index and search:
+
+1. Read the new complete lines into the index:
+
+   ```sh
+   z23-dev dev index ingest
+   ```
+
+2. Check row counts and how far ingestion is behind:
+
+   ```sh
+   z23-dev dev index status
+   ```
+
+3. Search the indexed rows:
+
+   ```sh
+   z23-dev dev index search 'kind:result'
+   ```
+
+- `z23-dev dev index ingest [--source=<id>]` — read each declared source
+  (or just one) from its cursor (the saved byte offset) to the last complete
+  line. Insert each new line once, then advance the cursor; identical rows
+  are ignored (see "Identity, not just a cursor" below). Reports
+  `rows_added` and `rows_skipped` per source. Skipped rows include parse
+  failures and format headers. This maintenance leaf has a 5000 ms latency
+  budget; the read leaves have a 250 ms budget.
 - `z23-dev dev index status [--source=<id>]` — per source: row count, newest
-  ts seen, seconds since that ts, bytes not yet ingested, and cumulative
-  `rows_skipped`. Read-only, and never creates a missing index — reports
-  `index_exists: false` with no per-source data instead.
-- `z23-dev dev index search <query> [--source=<id>] [--limit=N]` — one FTS5
-  `MATCH` query, newest-first. A log line's `key=value` tokens (and every
-  structured source's short fields) are flattened into `key:value` search
-  terms at ingest time, so `z23-dev dev index search 'kind:result'` matches
-  the flattened term the same way a bare word matches free text. Also never
-  creates a missing index.
+  timestamp (`ts`), seconds since that timestamp, bytes not yet ingested,
+  and cumulative `rows_skipped`. Read-only; a missing index is not created.
+  It reports `index_exists: 0` with no per-source data instead.
+- `z23-dev dev index search <query> [--source=<id>] [--limit=N]` — full-text
+  search, newest first. Each whitespace-separated word is quoted for FTS5
+  `MATCH`; multiple words must all match. The default limit is 20, capped
+  at 50. Log `key=value` tokens and structured sources' short fields are
+  flattened into `key:value` search terms during ingest. For example,
+  `z23-dev dev index search 'kind:result'` matches the flattened term in the
+  same way a bare word matches free text. A missing index is not created.
 
-Every leaf accepts two explicit CLI overrides:
+Every leaf accepts two explicit command-line overrides:
 
-- `--index=<path>` — the sqlite file location, used verbatim.
-- `--state-root=<dir>` — the root every declared source is read from
-  (applies uniformly, whether a source is normally zclassic23-rooted or
-  dev-state-rooted).
+| Flag | Effect |
+| --- | --- |
+| `--index=<path>` | Use this SQLite file location verbatim. |
+| `--state-root=<dir>` | Read every declared source relative to this root. |
 
 `--index` changes only the database location. Without `--index`,
 `--state-root` also places the database at `<dir>/index/index.db`. With
@@ -66,15 +89,12 @@ flattened text.
 ## Identity, not just a cursor
 
 A `rows` row is only ever inserted once for a given (source_id, row_key)
-pair, where `row_key` is a SHA3-256 hash of the source id, a `0x1f`
-separator, and the line text with its trailing LF or CRLF removed,
-enforced by a `UNIQUE` index and `INSERT ... ON CONFLICT DO NOTHING`. The
-byte-offset cursor is only an optimisation for where to resume reading —
-correctness never depends on it alone. This matters because board.sh's
-atomic `mv` onto a fresh file changes that file's inode: an earlier version
-treated any inode change as "rotated" and restarted from byte 0, which
-re-inserted every already-seen line as a "new" row (verified 5 rows became
-10 after one `mv`). Now:
+pair, where `row_key` is a SHA3-256 content hash of the source id, a `0x1f`
+separator, and the line text with its trailing line feed (LF)
+or carriage return plus LF (CRLF) removed. A `UNIQUE` index and
+`INSERT ... ON CONFLICT DO NOTHING` enforce this identity.
+Row identity prevents duplicates even when a replaced file must be read
+again:
 
 - **A rename onto identical bytes** (`mv` with the same content) does not
   duplicate anything: even restarting from 0 and re-reading every line, the
@@ -86,25 +106,23 @@ re-inserted every already-seen line as a "new" row (verified 5 rows became
   is not missed. Each cursor also stores a SHA3-256 hash of the file's own
   first `byte_offset` bytes as of the last successful ingest. The next
   ingest re-hashes those same bytes off whatever is on disk now and only
-  trusts the saved offset when the two hashes still match — inode and size
-  alone are checked only as a cheap bound (a saved offset larger than the
-  current file size can never be trusted), never as the whole answer.
+  trusts the saved offset when the two hashes still match — a saved offset
+  larger than the current file size is rejected before hashing. An inode
+  change alone does not determine whether the saved offset is trustworthy.
 
 ## The incremental rule
 
-Ingest never re-reads what it already saw when the offset it saved is still
-trustworthy (see above). A trailing line with no final newline yet is left
-for the next ingest, never partially indexed. Every file of one source
-ingests inside a single transaction: an earlier version committing one row
-at a time forced one fsync-adjacent WAL commit per row, measured making the
-real `host_gc/tmp_gc.log` file (256 log files' worth in one ingest call)
-take minutes instead of seconds.
+Ingest resumes reading lines at the saved offset when the prefix hash still
+matches (see above). Prefix verification re-reads the earlier bytes.
+A trailing line with no final newline yet is left for the next ingest,
+never partially indexed. Every file of one source ingests inside a single
+transaction, including its cursor updates.
 
 ## What is NOT indexed yet
 
 - GitHub (issues, PRs, Actions) — this project does not use GitHub issues
-  for work tracking (see the fleet board instead), so this was never in
-  scope.
+  for work tracking (see the fleet board instead), so these are outside
+  the source registry.
 - The chainlog / consensus state (node.db, consensus.db) — a different
   question (chain data, not operational logs) with its own tooling
   (`z23 core storage query`, the explorer projections).
