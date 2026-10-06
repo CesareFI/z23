@@ -24,6 +24,7 @@
 #include "test/test_core.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -459,17 +460,28 @@ static int test_lease_bad_spec_fails_closed(void)
         ASSERT(snprintf(lease, sizeof(lease), "%s/lease", dir) > 0);
         /* Specs derived from this run's own scratch dir — every malformed
          * shape the parser must refuse, with no bare /tmp literal. */
-        char specs[6][340];
+        char specs[10][340];
         ASSERT(snprintf(specs[0], sizeof(specs[0]), "%s/no-colon-here", dir) > 0);
         ASSERT(snprintf(specs[1], sizeof(specs[1]), "%s:0", lease) > 0);
         ASSERT(snprintf(specs[2], sizeof(specs[2]), "%s:abc", lease) > 0);
         ASSERT(snprintf(specs[3], sizeof(specs[3]), "%s:5:x", lease) > 0);
         ASSERT(snprintf(specs[4], sizeof(specs[4]), "%s:5:6:7", lease) > 0);
         ASSERT(snprintf(specs[5], sizeof(specs[5]), ":5") > 0);
-        for (size_t i = 0; i < 6; i++) {
+        /* strtol clamps out-of-range fields to LONG_MAX with errno=ERANGE;
+         * the parser must refuse both the clamp and any in-range value
+         * that would overflow reap_leased_group's grace_s * 5. */
+        ASSERT(snprintf(specs[6], sizeof(specs[6]), "%s:5:99999999999999999999",
+                        lease) > 0);
+        ASSERT(snprintf(specs[7], sizeof(specs[7]), "%s:5:%ld",
+                        lease, LONG_MAX) > 0);
+        ASSERT(snprintf(specs[8], sizeof(specs[8]), "%s:99999999999999999999:1",
+                        lease) > 0);
+        ASSERT(snprintf(specs[9], sizeof(specs[9]), "%s:5:%ld",
+                        lease, LONG_MAX / 5 + 1) > 0);
+        for (size_t i = 0; i < 10; i++) {
             char line[1024];
             int n = snprintf(line, sizeof(line),
-                             "'%s' --die-with-lease='%s' sleep 60 2>&1",
+                             "'%s' --die-with-lease='%s' true 2>&1",
                              launcher, specs[i]);
             ASSERT(n > 0 && (size_t)n < sizeof(line));
             FILE *p = popen(line, "r");
@@ -484,6 +496,43 @@ static int test_lease_bad_spec_fails_closed(void)
         PASS();
     }
     _test_next:;
+    return failures;
+}
+
+static int test_lease_long_stale_accepted(const char *suffix, const char *name)
+{
+    int failures = 0;
+    char dir[] = "test-tmp/pge_lease_long_XXXXXX";
+    char lease[300] = "";
+    TEST(name) {
+        const char *launcher = pge_launcher();
+        ASSERT(launcher != NULL);
+        ASSERT(mkdtemp(dir) != NULL);
+        int n = snprintf(lease, sizeof(lease), "%s/lease", dir);
+        ASSERT(n > 0 && (size_t)n < sizeof(lease));
+        FILE *fixture = fopen(lease, "w");
+        ASSERT(fixture != NULL);
+        ASSERT_EQ(fclose(fixture), 0);
+        char line[1024];
+        n = snprintf(line, sizeof(line),
+                     "'%s' --die-with-lease='%s:%031d1%s' 2>&1",
+                     launcher, lease, 0, suffix);
+        ASSERT(n > 0 && (size_t)n < sizeof(line));
+        /* A parsed spec reaches the missing-command check before supervision. */
+        FILE *p = popen(line, "r");
+        ASSERT(p != NULL);
+        bool got_line = fgets(line, sizeof(line), p) != NULL;
+        int rc = pclose(p);
+        ASSERT(got_line);
+        ASSERT(WIFEXITED(rc) && WEXITSTATUS(rc) == 2);
+        ASSERT(strstr(line, "needs COMMAND") != NULL);
+        ASSERT(strstr(line, "bad lease spec") == NULL);
+        PASS();
+    }
+    _test_next:;
+    if (lease[0])
+        (void)unlink(lease);
+    (void)rmdir(dir);
     return failures;
 }
 
@@ -523,6 +572,10 @@ int test_process_group_exec(void)
     failures += test_lease_grace_escalates_to_kill();
     failures += test_lease_passes_through_child_exit();
     failures += test_lease_bad_spec_fails_closed();
+    failures += test_lease_long_stale_accepted("",
+        "process-group-exec: long leading-zero stale parses without grace");
+    failures += test_lease_long_stale_accepted(":1",
+        "process-group-exec: long leading-zero stale parses with grace");
     failures += test_unknown_flag_fails_closed();
     return failures;
 }
