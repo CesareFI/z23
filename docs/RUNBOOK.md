@@ -1,28 +1,42 @@
 # Z23 Operator Runbook
 
-Symptom-driven troubleshooting. Each section: what you see, how to diagnose, how to fix.
+Use this page to diagnose a node symptom, distinguish a temporary condition
+from a fault, and find the matching recovery procedure. Start with
+[High-Availability First Check](#high-availability-first-check).
+
+You need a built `build/bin/z23`, access to the node's RPC (remote procedure
+call) interface, and its datadir (data directory). Run commands from the
+checkout root. Examples using `~/.zclassic-c23` assume that datadir; substitute
+your configured path if it differs. Service commands assume the checked-in
+`zclassic23.service` user unit is installed. Recovery, deployment, and timer
+changes require the operator's authority.
 
 ## Soak / chaos harnesses
 
 Run `make test-crash-bootstrap` (C7 kill-9) and `make soak-ci` (C6 soak proxy)
 to exercise a real but fully isolated node. For the isolation contract, build
 caveat, output/verdict reading, and the operational forms (`make soak-7day` =
-MVP #6, C7 `--with-peer` = MVP #7), see [`CHAOS_HARNESS.md`](./CHAOS_HARNESS.md).
+MVP #6), see [`CHAOS_HARNESS.md`](./CHAOS_HARNESS.md).
 
 ### Nightly simulator sweep
 
-`make chaos` (the `tools/sim/scenarios/*.scenario` corpus — count with
-`ls tools/sim/scenarios/*.scenario | wc -l`) is
-deliberately NOT part of `make ci` — see the comment beside the `ci:` target
-in the Makefile for the measured build-cost reasoning (the corpus itself
-replays in ~1.6s once built; the cost is the extra whole-program LTO link,
-~1m33s clean). Instead it is covered nightly by `make simnet-nightly` (full
-corpus + bounded `make wire-sweep` + `make sim-fast`) and, optionally, the
-longer `make simnet-fuzz-sweep` seed tail, both driven by
-`tools/scripts/simnet_nightly.sh` — same status-JSON/log-dir convention as
-`tools/scripts/background_quality_lane.sh`.
+`make chaos` runs the `tools/sim/scenarios/*.scenario` corpus. Count the
+scenarios with `ls tools/sim/scenarios/*.scenario | wc -l`. It is excluded
+from `make ci` because it requires an extra whole-program link; see the
+comment beside `ci:` in the Makefile.
 
-The installed fuzz/test/coverage/simnet services enter through
+| Target | Work |
+|--------|------|
+| `make simnet-nightly` | Scenario corpus, bounded `make wire-sweep`, `make sim-fast`, and the additional checks in the target |
+| `make simnet-fuzz-sweep` | Longer seeded wire sweep |
+
+`tools/scripts/simnet_nightly.sh` runs the first target and optionally the
+second. It writes a JSON (structured text) status file and dated logs, as
+does `tools/scripts/background_quality_lane.sh`.
+
+A lane groups work under one operating role, such as a background quality
+job or a node instance. The installed fuzz/test/coverage/simnet services enter
+through
 `tools/scripts/quality_job_guard.sh`. They clean-skip when any active user
 service name contains `mint`, leaving the last verdict untouched, and retain
 the newest eight dated logs per lane, bounded to 1 GiB total per lane while
@@ -30,27 +44,30 @@ always preserving the newest verdict (`ZCL_QUALITY_LOG_KEEP` and
 `ZCL_QUALITY_LOG_MAX_BYTES` override those limits). A failed mint-state query
 also skips rather than guessing that the host is idle.
 
-Not installed by default (owner-gated deploy step). To enable:
+The timer is an owner-gated installation, not a default checkout step:
 
-```bash
-systemctl --user enable --now zclassic23-simnet-nightly.timer
-```
+1. Have the operator install the unit files from
+   `platform/deploy/zclassic23-simnet-nightly.timer` and
+   `platform/deploy/zclassic23-simnet-nightly.service`, with the service's
+   checkout paths configured for this host.
+2. To include the longer sweep, set
+   `Environment=ZCL_SIMNET_NIGHTLY_FUZZ_SWEEP=1` in a service drop-in.
+3. Enable the installed timer:
+   ```bash
+   systemctl --user enable --now zclassic23-simnet-nightly.timer
+   ```
+4. Read the latest status at
+   `~/.local/state/zclassic23-quality/status/simnet_nightly.json`, or
+   `$ZCL_QUALITY_STATE_DIR/status/simnet_nightly.json` if overridden.
 
-installs `platform/deploy/zclassic23-simnet-nightly.timer` +
-`platform/deploy/zclassic23-simnet-nightly.service`, mirroring the existing
-`zclassic23-fuzz.timer` / `zclassic23-test-suite.timer` pattern. Runs daily
-at 03:10 (jittered up to 5 min), distinct from the hourly fuzz timer and the
-`*:20:00` test-suite timer. Set `Environment=ZCL_SIMNET_NIGHTLY_FUZZ_SWEEP=1`
-in a drop-in to also run `make simnet-fuzz-sweep` every night. Check the
-latest verdict at `~/.local/state/zclassic23-quality/status/simnet_nightly.json`
-(or `$ZCL_QUALITY_STATE_DIR/status/simnet_nightly.json` if overridden).
+The timer runs daily at 03:10 with up to five minutes of jitter. The fuzz
+timer is hourly; the test-suite timer runs at `*:20:00` each hour.
 
 ---
 
 ## High-Availability First Check
 
-For live operators, start with one read-only topology probe before deciding to
-restart anything:
+For a live node, run these read-only probes before deciding to restart:
 
 ```bash
 build/bin/z23 agentops
@@ -59,13 +76,15 @@ build/bin/z23 agentliveness
 build/bin/z23 peerincidents
 ```
 
-`agentops` is the no-jq command center: it names the preferred transport,
-diagnostic drill-down commands, lane safety, runtime availability, and the next
-architecture work. `agent` is the compact live health packet. `agentliveness`
-checks whether the lane, supervisor tree, and background quality lanes are
-actually alive. `peerincidents` is the compact peer-only packet for reconnect
-storms, duplicate host entries, bootstrap usefulness, and last disconnect
-reasons.
+| Probe | What to read |
+|-------|--------------|
+| `agentops` | Preferred transport, diagnostic commands, lane safety, runtime availability, and next architecture work |
+| `agent` | Compact live health packet |
+| `agentliveness` | Whether the lane, supervisor tree, and background quality lanes are alive |
+| `peerincidents` | Reconnect storms, duplicate hosts, bootstrap usefulness, and disconnect reasons |
+
+P2P means peer-to-peer network communication; a handshaked peer has completed
+the protocol greeting.
 
 Do not restart on a single stale-looking field if these probes show active
 services, handshaked peers, and bounded mirror lag. Drill down with
@@ -78,8 +97,10 @@ names a concrete problem.
 
 ## Benign log patterns at tip
 
-On a node holding tip and finalizing forward, these patterns look alarming but
-are **expected**. Mental model: the served tip and every derived projection
+Tip means the latest connected block; a projection is state derived from block
+data. On a node holding tip and finalizing forward, these patterns look
+alarming but are **expected**. Mental model: the served tip and every derived
+projection
 (headers, bodies, scripts, proofs, coins) converge a few seconds *after* each
 block lands; most "noise" is one stage briefly observing a frontier another
 hasn't caught up to. This self-resolves next tick — sustained firing across many
@@ -88,18 +109,22 @@ crosses its **real-alarm** threshold.
 
 | Pattern | Meaning (emitted by) | Benign? | Real alarm if |
 |---------|----------------------|---------|---------------|
-| **header-resync WARN storm** — `staged.header_admit/validate_headers stalled …`, `condition:header_stall_at_height … action=kick_headers`, `Peer …: all N headers rejected` | At tip the node already holds every header a peer offers; "all N rejected" is the duplicate-rejection path, plus a precautionary re-request. `staged_sync_supervisor.c:76,83`, `header_stall_at_height.c:74`, `msg_headers.c:410` | Yes | `validate_headers stalled` repeats with `failed>0` climbing (genuine validation failures, not dups), or `header_stall_at_height` keeps firing with `age` growing for minutes while `peer_max` stays well above your height. Cross-check height vs zclassicd. |
-| **have_data_missing race** — `EV_BLOCK_REJECTED … tip_finalize … reason=have_data_missing` / `block_missing` | A block (or tip's H+1 lookahead) has a header but its body hasn't finished `body_persist → script_validate → utxo_apply`. Finalize returns `JOB_IDLE` (cursor unchanged, txn rolled back) and retries next tick. `tip_finalize_stage.c:173` (TRANSIENT case at `:390`) | Yes | The SAME height stays `have_data_missing` for many consecutive ticks (minutes) — a body that never arrives. Confirm via `z23 core sync status` (body frontier not advancing) + `tip_advance_age_seconds` climbing. |
-| **"database is locked" transient** — SQLite `SQLITE_BUSY`/`SQLITE_LOCKED` retries | Stage writers (chain-state cursor, body persist, tx index, explorer projections) share one WAL `node.db`; under a write burst two briefly contend and retry within `busy_timeout`. Bounded retry loop `chain_state_service.c:159-219`; `sqlite3_busy_timeout` on hot writers e.g. `snapshot_controller_import.c:91`, `explorer_stats_view.c:387`. The bulk SQLite projection catchup is one of those writers and does **not** abort on the first busy: after each batch COMMIT it retries its `BEGIN IMMEDIATE` up to `NODE_DB_CATCHUP_REOPEN_MAX_ATTEMPTS` (6, ≈60 s at the 10 s busy timeout) with backoff, logging `catchup: reopen busy, retry k/n` per retry before the unchanged fail-closed abort, while `db_maintenance` yields its wal/analyze/vacuum tick (`db_maintenance: deferred, catchup active`) for up to `DB_MAINT_MAX_CATCHUP_DEFERRALS` (8) consecutive ticks so the two are not fighting for the same lock | Yes (retry succeeds) | The exhausted-retry surface appears (`last_persist_locked` set / "bounded retry exhausted"), or `database is locked` coincides with two live `z23` PIDs on one datadir (real second-instance — see Boot Failure). A bloated WAL (>100 MB) can sustain contention — force a checkpoint (see "Disk > 99% Full"). |
-| **bg-validation undo-data-missing** — `[bg-valid] h=…: N non-coinbase tx(s) NOT script-verified (undo missing) — block advances, not fully verified` | Snapshot/fast-sync blocks carry no undo data for the pre-snapshot range; scripts were verified at connect time, only optional historical re-verify is skipped. Skip count tallied for honesty. `bg_validation_service.c:389-392`; `health_controller.c:196` | Yes (expected post-snapshot) | `[bg-valid] script verification FAILED h=…` (`bg_validation_service.c:384`) appears, or the skip count grows for blocks connected normally (with undo data), not just the pre-snapshot range. |
-| **crash-only auto-reindex** — `[boot] crash-only recovery: post-restore tip-above-extent … requesting -reindex-chainstate; restarting …` then `… consuming auto-reindex request — rebuilding the UTXO set from block data` | A kill-9 mid-connect left the derived tip above the validated on-disk extent. blocks/ + wallet are the only durable truth and the UTXO set is derived, so the node bounded-requests a rebuild and restarts. Never deletes blocks/ or wallet; max 3 attempts/anchor. `boot_crashonly.c:22,70`; `boot_auto_reindex.c` | Yes (strictly safer self-heal) | `[boot] crash-only recovery EXHAUSTED after N reindex attempts …` (`boot_crashonly.c:81`) — blocks/ genuinely can't back the tip (real corrupt-block-data), or the same anchor keeps requesting a reindex without converging. |
-| **rpc-unreachable during deploy** — monitors / `mirror_status` show `rpc-unreachable` / connection-refused briefly around `make deploy` / restart | The process is down then re-opening the datadir, rebuilding the index map, binding RPC; the port isn't answering yet. `deploy_verify.sh` runs the captured service executable's offline `core node bootstatus` leaf and reports its typed `zcl.core_bootstatus.v1` result (or the named `NO_BOOT_STATUS` refusal) directly from `boot_status.json`; it never infers boot state from log prose. The dev hot-swap wrapper and C-native `agentdeployguard deploy-dev` both refuse to start or restart the dev lane when `auto_reindex_request` is already pending unless `ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1` is set, so routine code deploys do not accidentally consume the marker and enter a long pre-RPC rebuild. The native guard also exits nonzero on refusal, so automation does not need `jq` to stop safely. Control tooling budgets ~90s (`rpc_ready(c23, 90)` `zcl-nodectl.c:562`). `tools/deploy_verify.sh`; `tools/dev/deploy-dev-lane.sh`; `agent_interface_controller.c`; `legacy_mirror_sync_service.c:270,299,516`; `mirror_divergence_locator.c:7` | Yes (expected restart gap) | RPC stays unreachable well past the readiness budget with no typed boot status (boot did not start or the beacon is unreadable), typed `stage` or `progress_current` stops advancing for a long interval, or `rpc-unreachable` appears while the process is **up and stable** after READY (a bind/auth problem). |
-| **block-not-finalized-by-reducer single event** — one `EV_BLOCK_REJECTED … tip_finalize precondition_failed …` / reason `block-not-finalized-by-reducer` right as a new tip arrives | The reducer ingested the block but finalize's one-block lookahead hasn't seen the successor yet, so a read-back momentarily answers no; a reorg cursor-rewind also emits this. `tip_finalize_stage.c:294,380,439`; `reducer_ingest_service.c:152` (read-back), known-benign at `repair_controller_rebuild.c:255,272` | Yes | The SAME height keeps emitting `block-not-finalized-by-reducer` across many ticks (tip never finalizes — the live-wedge mode), or an `EV_BLOCK_REJECTED` carries a hard consensus reason (script/proof failure from `script_validate_stage.c`/`proof_validate_stage.c`, or `bad-txns-*`). |
+| **header-resync WARN storm** — `staged.header_admit/validate_headers stalled …`, `condition:header_stall_at_height … action=kick_headers`, `Peer …: all N headers rejected` | At tip, duplicate headers can trigger this path and a precautionary re-request. "All N rejected" alone does not distinguish duplicates from invalid headers. `staged_sync_supervisor.c:134,141`, `header_stall_at_height.c:74`, `msg_headers.c:1541` | Yes | `validate_headers stalled` repeats with `failed>0` climbing (genuine validation failures, not dups), or `header_stall_at_height` keeps firing with `age` growing for minutes while `peer_max` stays well above your height. Cross-check height vs zclassicd. |
+| **have_data_missing race** — `EV_BLOCK_REJECTED … tip_finalize … reason=have_data_missing` / `block_missing` | A block (or tip's H+1 lookahead) has a header but its body hasn't finished `body_persist → script_validate → utxo_apply`. A canonical header successor can finalize without its body; otherwise finalize returns `JOB_IDLE` (cursor unchanged, txn rolled back) and retries next tick. `tip_finalize_stage.c:397,440,471` | Yes | The SAME height stays `have_data_missing` for many consecutive ticks (minutes) — a body that never arrives. Confirm via `z23 core sync status` (body frontier not advancing) + `tip_advance_age_seconds` climbing. |
+| **"database is locked" transient** — SQLite `SQLITE_BUSY`/`SQLITE_LOCKED` retries | Stage writers (chain-state cursor, body persist, tx index, explorer projections) share one SQLite WAL (write-ahead log) for `node.db`; under a write burst two briefly contend and retry within `busy_timeout`. Bounded retry loop `chain_state_service.c:163-199`; `sqlite3_busy_timeout` on hot writers e.g. `snapshot_controller_import.c:246`. The bulk SQLite projection catchup is one of those writers and does **not** abort on the first busy: after each batch COMMIT it retries its `BEGIN IMMEDIATE` up to `NODE_DB_CATCHUP_REOPEN_MAX_ATTEMPTS` (6, ≈60 s at the 10 s busy timeout) with backoff, logging `catchup: reopen busy, retry k/n` per retry before the unchanged fail-closed abort, while `db_maintenance` yields its wal/analyze/vacuum tick (`db_maintenance: deferred, catchup active`) for up to `DB_MAINT_MAX_CATCHUP_DEFERRALS` (8) consecutive ticks so the two are not fighting for the same lock | Yes (retry succeeds) | The exhausted-retry surface appears (`last_persist_locked` set / "bounded retry exhausted"), or `database is locked` coincides with two live `z23` PIDs on one datadir (real second-instance — see Boot Failure). A bloated WAL (>100 MB) can sustain contention — force a checkpoint (see "Disk > 99% Full"). |
+| **bg-validation undo-data-missing** — `[bg-valid] h=…: N non-coinbase tx(s) NOT script-verified (undo missing) — block advances, not fully verified` | Snapshot/fast-sync blocks carry no undo data for the pre-snapshot range; scripts were verified at connect time, only optional historical re-verify is skipped. Skip count tallied for honesty. `bg_validation_verify_block.c:422-429`; `health_controller.c:210` | Yes (expected post-snapshot) | `[bg-valid] script verification FAILED h=…` (`bg_validation_verify_block.c:407`) appears, or the skip count grows for blocks connected normally (with undo data), not just the pre-snapshot range. |
+| **crash-only auto-reindex** — `[boot] crash-only recovery: post-restore tip-above-extent … requesting -reindex-chainstate; restarting …` then `… consuming auto-reindex request — rebuilding the UTXO set from block data` | A kill-9 mid-connect left the derived tip above the validated on-disk extent. blocks/ + wallet are the only durable truth and the UTXO (unspent transaction output) set is derived, so the node bounded-requests a rebuild and restarts. Never deletes blocks/ or wallet; max 3 attempts per identical finding. `boot_crashonly.c:23`; `boot_crashonly_handle_unrecoverable()`; `boot_auto_reindex.c` | Yes (strictly safer self-heal) | `[boot] crash-only recovery EXHAUSTED: the IDENTICAL post-restore finding …` (`boot_crashonly_handle_unrecoverable()`) — blocks/ genuinely can't back the tip (real corrupt-block-data), or the same anchor keeps requesting a reindex without converging. |
+| **rpc-unreachable during deploy** — monitors / `mirror_status` show `rpc-unreachable` / connection-refused briefly around `make deploy` / restart | The process is down then re-opening the datadir, rebuilding the index map, binding RPC; the port isn't answering yet. `deploy_verify.sh` runs the captured service executable's offline `core node bootstatus` leaf and reports its typed `zcl.core_bootstatus.v1` result (or the named `NO_BOOT_STATUS` refusal) directly from `boot_status.json`; it never infers boot state from log prose. The dev hot-swap wrapper and C-native `agentdeployguard deploy-dev` both refuse to start or restart the dev lane when `auto_reindex_request` is already pending unless `ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1` is set, so routine code deploys do not accidentally consume the marker and enter a long pre-RPC rebuild. The native guard also exits nonzero on refusal, so automation does not need `jq` to stop safely. Control tooling budgets ~90s (`rpc_ready(c23, 90)` `zcl-nodectl.c:568`). `tools/deploy_verify.sh`; `tools/dev/deploy-dev-lane.sh`; `agent_interface_controller.c`; `legacy_mirror_sync_service.c:270,299,516`; `mirror_divergence_locator.c:7` | Yes (expected restart gap) | RPC stays unreachable well past the readiness budget with no typed boot status (boot did not start or the beacon is unreadable), typed `stage` or `progress_current` stops advancing for a long interval, or `rpc-unreachable` appears while the process is **up and stable** after READY (a bind/auth problem). |
+| **block-not-finalized-by-reducer single event** — one `EV_BLOCK_REJECTED … tip_finalize precondition_failed …` / reason `block-not-finalized-by-reducer` right as a new tip arrives | The reducer ingested the block but finalize's one-block lookahead hasn't seen the successor yet, so a read-back momentarily answers no; a reorg cursor-rewind also emits this. `tip_finalize_stage.c:440`; `reducer_ingest_service.c:183` (read-back), recovery classification at `repair_controller_rebuild.c:281,298` | Yes | The SAME height keeps emitting `block-not-finalized-by-reducer` across many ticks (tip never finalizes — the live-wedge mode), or an `EV_BLOCK_REJECTED` carries a hard consensus reason (script/proof failure from `script_validate_stage.c`/`proof_validate_stage.c`, or `bad-txns-*`). |
 | **`tip_stale` during a slow block** — `/api/health` / `healthcheck` stays `healthy=true`, `serving=true`, and reports `status.warning_reasons="tip_stale"` | `tip_stale = (now - tip->nTime) > 600` (`node_health_service.c`). Target interval is 2.5 min; Poisson variance puts honest gaps past 600s, so a synced node can report this several times a day. | Yes (chain is slow, not the node — peer height matches, `tip_lag=0`) | `tip_stale` persists while peer heights are ahead of the node, `tip_lag` grows, or `status.blocking_reason` becomes non-null — a genuine stall, see "Tip Regressed / Stuck on Wrong Fork". |
 
 ---
 
 ## BIP30 Stale Coinbase Wedge — fixed structurally
+
+BIP30 is the rule rejecting duplicate transaction outputs that are still
+unspent. BIP34 puts the block height in the coinbase transaction, the block's
+mining reward transaction.
 
 **Symptoms:** tip frozen (`tip_advance_age_seconds` climbing, gap > 0) while
 legacy peers advance; `node.log` repeats `bad-txns-BIP30` / `csr-tip-commit-rejected`
@@ -137,7 +162,7 @@ same-height self-write; a different-height duplicate is still a hard rejection.
 
 **Diagnose:**
 ```bash
-df -h $(build/bin/z23 -datadir 2>/dev/null || echo ~/.zclassic-c23)
+df -h "$HOME/.zclassic-c23"
 du -sh ~/.zclassic-c23/*
 build/bin/z23 dumpstate disk_monitor
 ```
@@ -145,7 +170,7 @@ build/bin/z23 dumpstate disk_monitor
 **Fix:**
 1. Prune old debug logs: `rm -f ~/.zclassic-c23/debug.log.old*`
 2. Remove stale peer data: `rm -f ~/.zclassic-c23/peers.dat.bak`
-3. If WAL is bloated (>100MB), force checkpoint:
+3. If the WAL is bloated (>100MB), force checkpoint:
    ```bash
    sqlite3 ~/.zclassic-c23/node.db 'PRAGMA wal_checkpoint(TRUNCATE);'
    ```
@@ -170,7 +195,7 @@ build/bin/z23 ops timeline
 ```
 
 **Fix:**
-1. If a specific peer is spamming bad blocks/txs, disconnect:
+1. If a specific peer is spamming bad blocks/txs, remove its addnode entry:
    ```bash
    build/bin/zcl-rpc addnode "IP:PORT" "remove"
    ```
@@ -223,9 +248,44 @@ with `compatibility_fallback=true` while preserving the
    differs from the local listen port. For public reachability,
    `inbound_handshake_seen=true` or `inbound_handshaked_connections > 0` is
    stronger evidence than outbound-only handshakes.
-3. **Only `connecting` peers:** prefer fresh addnodes from known ZClassic peers. The compact peer incident view shows `primary_issue_class`, `primary_issue_next_action`, `primary_host_issue`, and `top_host_incidents` first, then reconnect pressure, reconnect cadence (`last_reconnect_interval_secs` and host min/max/latest intervals), duplicate host groups, current open/handshaked duplicate groups, direction, handshake age, advertised height, service summary, `bootstrap_readiness`, `fast_sync_readiness`, and whether a peer is currently useful for bootstrap. The full `peer_lifecycle.sources[]` view shows whether failures concentrate in `addnode`, `addrman`, `manual`, `zcl23_db`, or `inbound`; the coordinator dump distinguishes TCP failures (`addnode_tcp_failures`) from post-connect protocol/handshake failures (`addnode_protocol_failures`).
-4. **Coordinator blocked or waiting:** use `dumpstate chain_advance_coordinator` first. `initialized=true` plus `has_connman=true`, `has_main_state=true`, `has_node_db=true` confirm the coordinator is wired into live P2P, chainstate, and persistence. `authority` must stay `local_consensus_validation`; `selected_source` shows the best input, `selected_source_trust`/`sources[].trust` explain its trust class, and `sources[].selectable=false` with `selection_blocker` explains why a source was excluded before score ranking. `activation_allowed=false` or a non-empty `blocker` explains why the node refuses to advance.
-5. **Legacy advisory active:** legacy data may be used only as `candidate_source=legacy_advisory`. Read the mirror fields as three separate facts: `mirror_monitor_running` means the z23 monitor loop is alive, `zclassicd_rpc_transport_reachable` means the C++ RPC answered at the HTTP/JSON-RPC layer, and `legacy_oracle_usable` means it supplied a usable height/hash oracle. `rpc error -28: Activating best chain...` should be `zclassicd_rpc_transport_reachable=true` and `legacy_oracle_usable=false`. When `active_source=p2p` or another native source and `candidate_blocker_scope=advisory_only`, the node is not blocked by the legacy oracle. Treat `candidate_blocker_scope=active_or_safety`, `unsafe_overrides_total > 0`, `last_override_safe=false`, or a non-empty `active_blocker` as actionable. Inspect `legacy_advisory_blocker`, `candidate_blocker`, `last_blocker_code`, `stuck_reason`, `stalls_total`, `blockers_total`, `unsafe_overrides_total`, `last_override_scope`, `zclassicd_rpc_error_code`, `zclassicd_rpc_error_message`, and `last_error`. `consensus_authority` must stay `local_consensus_validation`; `candidate_trust` describes candidate data, not a co-authority.
+3. **Only `connecting` peers:** prefer fresh addnodes from known ZClassic
+   peers. The compact peer incident view shows `primary_issue_class`,
+   `primary_issue_next_action`, `primary_host_issue`, and `top_host_incidents`
+   first, then reconnect pressure, reconnect cadence
+   (`last_reconnect_interval_secs` and host min/max/latest intervals),
+   duplicate host groups, current open/handshaked duplicate groups, direction,
+   handshake age, advertised height, service summary, `bootstrap_readiness`,
+   `fast_sync_readiness`, and whether a peer is currently useful for bootstrap.
+   The full `peer_lifecycle.sources[]` view shows whether failures concentrate
+   in `addnode`, `addrman`, `manual`, `zcl23_db`, or `inbound`; the coordinator
+   dump distinguishes TCP failures (`addnode_tcp_failures`) from post-connect
+   protocol/handshake failures (`addnode_protocol_failures`).
+4. **Coordinator blocked or waiting:** use
+   `dumpstate chain_advance_coordinator` first. `initialized=true` plus
+   `has_connman=true`, `has_main_state=true`, `has_node_db=true` confirm the
+   coordinator is wired into live P2P, chainstate, and persistence. `authority`
+   must stay `local_consensus_validation`; `selected_source` shows the best
+   input, `selected_source_trust`/`sources[].trust` explain its trust class,
+   and `sources[].selectable=false` with `selection_blocker` explains why a
+   source was excluded before score ranking. `activation_allowed=false` or a
+   non-empty `blocker` explains why the node refuses to advance.
+5. **Legacy advisory active:** legacy data may be used only as
+   `candidate_source=legacy_advisory`. Read the mirror fields as three separate
+   facts: `mirror_monitor_running` means the z23 monitor loop is alive,
+   `zclassicd_rpc_transport_reachable` means the C++ RPC answered at the
+   HTTP/JSON-RPC layer, and `legacy_oracle_usable` means it supplied a usable
+   height/hash oracle. `rpc error -28: Activating best chain...` should be
+   `zclassicd_rpc_transport_reachable=true` and `legacy_oracle_usable=false`.
+   When `active_source=p2p` or another native source and
+   `candidate_blocker_scope=advisory_only`, the node is not blocked by the
+   legacy oracle. Treat `candidate_blocker_scope=active_or_safety`,
+   `unsafe_overrides_total > 0`, `last_override_safe=false`, or a non-empty
+   `active_blocker` as actionable. Inspect `legacy_advisory_blocker`,
+   `candidate_blocker`, `last_blocker_code`, `stuck_reason`, `stalls_total`,
+   `blockers_total`, `unsafe_overrides_total`, `last_override_scope`,
+   `zclassicd_rpc_error_code`, `zclassicd_rpc_error_message`, and `last_error`.
+   `consensus_authority` must stay `local_consensus_validation`;
+   `candidate_trust` describes candidate data, not a co-authority.
 6. **When not to restart:** if `chain_advance.decision` is `use_source` or `wait` with a clear reason, `lag <= 1`, and peer lifecycle shows active handshakes, leave it running. Restarting resets peer reputation and can make reachability look worse for a few minutes.
 
 **Prevention:** Alert when `handshaked_connections == 0` for 5 minutes, `peer_lifecycle.timeout` rises quickly, `chain_advance.decision == "blocked"`, `candidate_blocker_scope == "active_or_safety"`, or `unsafe_overrides_total > 0`.
@@ -349,9 +409,10 @@ build/bin/z23 core consensus integrity
      ```bash
      build/bin/z23 getpeerinfo
      ```
-3. If stuck on a dead fork (no peers agree), use the native RPC fallback
-   (`z23 rpc invalidateblock` / `z23 rpc reconsiderblock`) to
-   drop a stale fork.
+3. If stuck on a dead fork (no peers agree), use the native RPC client
+   (`build/bin/z23 invalidateblock "BLOCK_HASH"` /
+   `build/bin/z23 reconsiderblock "BLOCK_HASH"`) to drop a stale fork.
+   Replace `BLOCK_HASH` with the block's actual hash.
 4. Nuclear option (last resort): stop node, delete state, resync:
    ```bash
    systemctl --user stop zclassic23
@@ -361,7 +422,9 @@ build/bin/z23 core consensus integrity
    # Node will rebuild from block files or snapshot sync (cold bootstrap is now --importblockindex then a normal boot).
    ```
 
-**Prevention:** Run background validation (`-nobgvalidation` NOT set). Monitor `zcl_chain_height` derivative — alert if zero for >10 minutes while peers show higher heights.
+**Prevention:** Run background validation (`-nobgvalidation` NOT set). Monitor
+the `zcl_block_height` derivative: alert if zero for >10 minutes while peers
+show higher heights.
 
 ---
 
@@ -398,7 +461,8 @@ build/bin/z23 core network peers list
    ```bash
    systemctl --user restart zclassic23
    ```
-4. **Stuck in SNAPSHOT_RECEIVE:** snapshot peer may have disconnected. Restart to retry from another peer:
+4. **Stuck in SNAPSHOT_RECEIVE:** snapshot peer may have disconnected. Restart
+   to retry from another peer:
    ```bash
    systemctl --user restart zclassic23
    ```
@@ -408,6 +472,10 @@ build/bin/z23 core network peers list
 ---
 
 ## Shielded-History Wedge (anchor + nullifier backfill gap)
+
+`H*` is the reducer's validated frontier. Sprout and Sapling are shielded
+transaction protocols; an anchor is a note-tree root, and a nullifier records
+a spent shielded note.
 
 **Symptoms:** `H*` holds flat below the header tip on a node seeded from a
 transparent-only artifact — the fold-from-checkpoint path
@@ -430,10 +498,10 @@ history below the fold's activation cursor is incomplete.
 
 **Fix — `-import-complete-shielded` (the operational cure):**
 ```bash
-# Requires a co-located, synced zclassicd on the same machine, left running
-# (see CLAUDE.md "Services" and docs/SYNC.md Method 3).
-build/bin/z23 -datadir=<TARGET-COPY> \
-  -import-complete-shielded=<zclassicd-datadir>
+# Requires a co-located, synced zclassicd, left running (SYNC.md Method 3).
+# Substitute real paths for these examples.
+build/bin/z23 -datadir=/path/to/target-copy \
+  -import-complete-shielded=/path/to/zclassicd-datadir
 ```
 This borrows the **complete** historical Sprout+Sapling anchor and nullifier
 set from the co-located `zclassicd` chainstate and, in one transaction,
@@ -452,11 +520,11 @@ copy and gate on H\* climbing past the wedge height (both blockers absent,
 exact tip-hash parity vs `zclassicd`) before ever pointing the importer at a
 canonical datadir:
 ```bash
-tools/scripts/import-copy-prove.sh --src=$HOME/.zclassic-c23 \
-  --chainstate-src=$HOME/.zclassic/chainstate
+tools/scripts/import-copy-prove.sh --src="$HOME/.zclassic-c23" \
+  --chainstate-src="$HOME/.zclassic/chainstate"
 ```
-Only a green copy-prove run earns a re-run of the same importer against the
-live canonical datadir.
+The importer refuses `~/.zclassic-c23` and `~/.zclassic-c23-mint` as targets.
+A green copy-prove run is the prerequisite for an operator-controlled cutover.
 
 **Precondition — the bind guard needs a height coincidence, and it can be
 unsatisfiable.** The importer's bind guard requires the `zclassicd` source's
@@ -496,14 +564,19 @@ actual read failure. The refusal logs its ERROR line at most once per hour
 per connection (with an exponential SQLite re-check backoff capped at 15
 minutes) instead of once per poll, and `catalog_completeness`'s own WARN is
 equally throttled, so neither storms the log while the blocker stays named
-and visible. **Fix:** `z23 app oprindex rebuild` (`op_return_index_truncate`)
+and visible. **Fix:** `build/bin/z23 oprindex_rebuild`
+(`op_return_index_truncate`)
 drops the legacy record and re-derives the catalog from block bodies from
 scratch; the blocker and both throttled log lines clear as soon as the next
 read finds the fresh `v2` record.
 ## Blocker `tor.start_failed` (embedded Tor is not running)
 
-**What it means:** this node asked for an onion (`-tor`, or the onion-node
-profile) and the embedded Tor thread is not running. Either it never started
+An onion is a hidden-service address on the Tor privacy network.
+
+**What it means:** this node needs an onion and the embedded Tor thread is
+not running. A build linked with full Tor starts it by default; `-tor` remains
+accepted, and `-no-tor` disables it where the operator lane permits that.
+Either it never started
 or it started and exited. The blocker's reason quotes the most specific
 warning from this boot's `<datadir>/tor.log`, classified as one of
 `port_in_use`, `datadir`, `config_invalid` or `exited`; any onion address in
@@ -551,7 +624,7 @@ frontend service refused and how long each one took.
 
 ## Onion-Seed Bootstrap (extending peer-discovery-of-last-resort)
 
-**What it's for:** when DNS seeds (`nSeeds=0` today — see
+**What it's for:** when DNS (Domain Name System) seeds (`nSeeds=0` today — see
 `core/chainparams/src/chainparams.c`) and the hardcoded clearnet fixed-IP seeds are
 both unreachable (churn, firewall, ISP blackhole), the node's remaining
 bootstrap path is Tor: fetch `/directory.json` (its own .onion + advertised
@@ -568,9 +641,8 @@ in `~/.config/zclassic23/onion-seeds`, one per line:
 
 ```
 # comments start with '#'; blank lines are skipped
-somepeersonion1234567890123456789012345678901234567890123.onion
-# a second/community-run z23 directory node:
-anotherpeersonionabcdefghijklmnopqrstuvwxyz0123456789abcde.onion
+# Add known reachable directory hosts here, one hostname per line.
+# Use real .onion addresses supplied by their operators.
 ```
 
 Format rules: one hostname per line, `#`-prefixed comment lines and blank
@@ -620,7 +692,8 @@ publishes `height: null` until the blocks connect — the same store backs the
 
 ## RPC 429 (Rate Limited)
 
-**Symptoms:** RPC clients get HTTP 429. `EV_RPC_TIMEOUT`. `zcl_rpc_rate_limited_*` counters climbing.
+**Symptoms:** RPC clients get HTTP 429. The `zcl_rpc_requests_total` counter
+climbs with `result="rate_limited_global"` or `result="rate_limited_per_ip"`.
 
 **Diagnose:**
 ```bash
@@ -631,34 +704,35 @@ echo "Per-IP: ${ZCL_RPC_PER_IP_RPS:-5} rps, burst ${ZCL_RPC_PER_IP_BURST:-10}"
 ```
 
 **Fix:**
-1. If your own tooling hits per-IP limits, raise per-IP budget:
+1. Set `ZCL_RPC_PER_IP_RPS=20` and `ZCL_RPC_PER_IP_BURST=40` in
+   `~/.config/zclassic23/env` to raise the service's per-IP budget,
+   then restart:
    ```bash
-   export ZCL_RPC_PER_IP_RPS=20
-   export ZCL_RPC_PER_IP_BURST=40
    systemctl --user restart zclassic23
    ```
-2. If global limit is hit by many clients, raise global:
+2. Set `ZCL_RPC_RPS=200` and `ZCL_RPC_BURST=400` in that environment file
+   to raise the service's global budget, then restart:
    ```bash
-   export ZCL_RPC_RPS=200
-   export ZCL_RPC_BURST=400
    systemctl --user restart zclassic23
    ```
 3. If a specific IP is flooding, it auto-bans after `ZCL_RPC_AUTH_FAIL_THRESHOLD` (default 5) auth failures. For non-auth flooding, the per-IP rate limit handles it.
 4. Loopback (127.0.0.1) bypasses per-IP limits but still counts against global. If local tools fight for global budget, raise `ZCL_RPC_RPS`.
 
-**Prevention:** Monitor `zcl_rpc_rate_limited_*` in Grafana. Right-size limits for your deployment.
+**Prevention:** Monitor those `zcl_rpc_requests_total` results in Grafana.
+Right-size limits for your deployment.
 
 ---
 
 ## RPC Auth Failures / Unexpected Bans
 
-**Symptoms:** Legitimate clients get 403. `EV_PEER_BANNED` on RPC layer. `zcl_rpc_auth_failures` climbing.
+**Symptoms:** Banned clients get HTTP 403; authentication failures get 401.
+`zcl_rpc_auth_failures_total` is climbing.
 
 **Diagnose:**
 ```bash
 # Check if cookie file exists and is readable
 ls -la ~/.zclassic-c23/.cookie
-cat ~/.zclassic-c23/.cookie
+test -r ~/.zclassic-c23/.cookie
 # Check if client is using the current cookie (rotates every 24h by default)
 echo "Rotation interval: ${ZCL_RPC_COOKIE_ROTATE_SEC:-86400}s"
 ```
@@ -677,7 +751,8 @@ echo "Rotation interval: ${ZCL_RPC_COOKIE_ROTATE_SEC:-86400}s"
 
 ## High Memory Usage
 
-**Symptoms:** Process RSS growing unbounded. OOM killer risk.
+**Symptoms:** Process RSS (resident memory) growing unbounded.
+Risk of an OOM (out-of-memory) kill.
 
 **Diagnose:**
 ```bash
@@ -701,11 +776,12 @@ build/bin/z23 core storage stats # inspect cache sizes
 
 ## Boot Failure (Node Won't Start)
 
-**Symptoms:** Service fails to start. `journalctl --user -u z23` shows errors.
+**Symptoms:** Service fails to start.
+`journalctl --user -u zclassic23` shows errors.
 
 **Diagnose:**
 ```bash
-journalctl --user -u z23 --since "5 min ago" --no-pager
+journalctl --user -u zclassic23 --since "5 min ago" --no-pager
 # Look for EV_BOOT_VALIDATION_FAILED or specific error messages
 ```
 
@@ -714,7 +790,7 @@ journalctl --user -u z23 --since "5 min ago" --no-pager
 | Error | Fix |
 |-------|-----|
 | `database is locked` | Another instance is running. `pgrep z23`. Kill stale process. |
-| `block index corrupt` | `EV_BLOCK_INDEX_CORRUPT`. Delete and rebuild: `rm ~/.zclassic-c23/block_index.bin{,.sha3}; restart` |
+| `block index corrupt` | `EV_BLOCK_INDEX_CORRUPT`. Delete and rebuild: `rm ~/.zclassic-c23/block_index.bin{,.sha3}; systemctl --user restart zclassic23` |
 | `node.db corrupt` | Delete `node.db*`, restart — will rebuild from block files or snapshot. |
 | `schema version mismatch` | Node was downgraded. Use the matching binary version or delete+resync. |
 | `permission denied` | `chmod 700 ~/.zclassic-c23; chown -R $USER ~/.zclassic-c23` |
@@ -730,10 +806,7 @@ A node that was killed (or restarted) before it closed its stores cleanly has
 no clean-close receipt for them, so their SQLite integrity check is owed. Both
 owed checks — `node.db` and the `progress.kv` projection — are handed to one
 paced background scan that starts **after** the node reaches READY and binds
-RPC and P2P, instead of running on the boot thread: a 2.36 GB `progress.kv`
-once held a 7200 rpm box in `systemctl status` → `activating (start)` for 62
-minutes with nothing reachable, because a single unpaced `PRAGMA quick_check`
-sat in front of READY. Nothing is skipped or shortened. On rotational storage
+RPC and P2P, instead of running on the boot thread. On rotational storage
 the scan runs in slices under the same maintenance token WAL truncation and
 projection compaction queue on, so it cannot monopolise the spindle; expect
 `[projection_store] quick_check deferred …` at boot, `[boot] bg_quick_check
