@@ -857,7 +857,8 @@ static bool proof_read_text(const char *path, char *out, size_t out_size)
     FILE *f = fopen(path, "r");
     if (!f) return false;
     size_t n = fread(out, 1, out_size - 1, f);
-    bool ok = !ferror(f) && !(!feof(f) && n == out_size - 1);
+    bool ok = !ferror(f) && !(!feof(f) && n == out_size - 1) &&
+              memchr(out, '\0', n) == NULL;
     fclose(f);
     out[n] = 0;
     while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r'))
@@ -11691,6 +11692,23 @@ static bool dp_retry_worker_settled(const char *path, bool lease)
     if ((int64_t)(pid_t)pid != pid) return false;
     return kill((pid_t)pid, 0) != 0 && errno == ESRCH;
 }
+
+#if defined(ZCL_TESTING)
+bool zcl_dev_proof_test_text_reader(const char *path, unsigned reader)
+{
+    char text[192], local[65], base[65];
+    struct zcl_dev_proof_status status = {0};
+    switch (reader) {
+    case 0: return warm_status_line(path, text, sizeof(text));
+    case 1: return proof_running(path, NULL, NULL);
+    case 2: return proof_lease_read(path, text, sizeof(text), NULL, NULL);
+    case 3: return proof_request_read(path, local, base, NULL, NULL);
+    case 4: return dp_failure_record_read(path, &status);
+    case 5: return dp_retry_worker_settled(path, false);
+    default: return false;
+    }
+}
+#endif
 
 static bool dp_retry_absent(const char *path)
 {

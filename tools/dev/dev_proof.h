@@ -571,6 +571,9 @@ const char *zcl_dev_proof_test_clang_runtime_path(void);
  * against a fixture sidecar without driving a full proof cycle. */
 bool zcl_dev_proof_test_warm_status_line(const char *warmstart_path,
                                          char *out, size_t out_len);
+/* Text-only reader classes: 0 warm status, 1 running marker, 2 lease,
+ * 3 request, 4 failure record, 5 settled-worker running marker. */
+bool zcl_dev_proof_test_text_reader(const char *path, unsigned reader);
 /* Seam for the landing-lint regression: the same argv, fallback budget, and
  * recorded target list the proof worker uses for the lint dimension, so a
  * test can prove every root runs the whole gate set plus Windows

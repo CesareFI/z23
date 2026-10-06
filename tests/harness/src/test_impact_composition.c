@@ -11146,6 +11146,70 @@ static int test_pw_authoritative_proof_refuses_same_uid_donor(void)
 }
 #endif
 
+#if !defined(_WIN32)
+static bool ic_text_record_write(const char *path, const char *prefix,
+                                 bool hidden_suffix)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    size_t n = strlen(prefix);
+    bool ok = fwrite(prefix, 1, n, f) == n;
+    if (hidden_suffix) {
+        static const char suffix[] = "\0extra record\n";
+        ok = fwrite(suffix, 1, sizeof(suffix) - 1, f) == sizeof(suffix) - 1 && ok;
+    }
+    return fclose(f) == 0 && chmod(path, 0600) == 0 && ok;
+}
+
+static int test_ic_proof_text_readers_refuse_nul(void)
+{
+    int failures = 0, child_status = 0;
+    pid_t child = fork();
+    if (child == 0) _exit(0);
+    if (child < 0 || waitpid(child, &child_status, 0) != child ||
+        !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+        fprintf(stderr, "proof text: could not reap fixture worker\n");
+        return 1;
+    }
+    char root[PATH_MAX], path[PATH_MAX], running[64], lease[96], settled[64];
+    test_make_tmpdir(root, sizeof(root), "proof_text", "nul");
+    if (snprintf(path, sizeof(path), "%s/record", root) >= (int)sizeof(path)) {
+        fprintf(stderr, "proof text: fixture path exceeds capacity\n");
+        (void)test_rm_rf_recursive(root);
+        return 1;
+    }
+    (void)snprintf(running, sizeof(running), "%lld 1", (long long)getpid());
+    (void)snprintf(lease, sizeof(lease), "fixture-token %lld 1", (long long)getpid());
+    (void)snprintf(settled, sizeof(settled), "%lld 1", (long long)child);
+    const struct { const char *name, *prefix; } cases[] = {
+        {"proof text: warm status refuses NUL suffix",
+         "zcl.dev_proof_warmstart.v1\nwarm=0\nreason=fixture"},
+        {"proof text: running marker refuses NUL suffix", running},
+        {"proof text: lease marker refuses NUL suffix", lease},
+        {"proof text: request refuses NUL suffix",
+         "zcl.dev_proof_request.v1\n"
+         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n1\n1"},
+        {"proof text: failure status refuses NUL suffix", "fixture_failure\nevidence"},
+        {"proof text: settled worker refuses NUL suffix", settled},
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        TEST(cases[i].name) {
+            ASSERT(ic_text_record_write(path, cases[i].prefix, true));
+            ASSERT(!zcl_dev_proof_test_text_reader(path, i));
+            ASSERT(ic_text_record_write(path, cases[i].prefix, false));
+            ASSERT(zcl_dev_proof_test_text_reader(path, i));
+            PASS();
+        } _test_next:;
+    }
+    if (test_rm_rf_recursive(root) != 0) {
+        fprintf(stderr, "proof text: fixture cleanup failed\n");
+        failures++;
+    }
+    return failures;
+}
+#endif
+
 int test_impact_composition(void)
 {
     int failures = 0;
@@ -11314,6 +11378,7 @@ int test_impact_composition(void)
     failures += test_pw_identity_mismatch_stays_cold_with_its_reason();
     failures += test_pw_live_donor_is_never_seeded_from();
     failures += test_pw_authoritative_proof_refuses_same_uid_donor();
+    failures += test_ic_proof_text_readers_refuse_nul();
 #endif
     return failures;
 }
