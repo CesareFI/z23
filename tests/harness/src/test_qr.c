@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "encoding/qr.h"
+#include "base/safe_alloc.h"
 #include "command/native_command.h"
 #include "json/json.h"
 #include "presentation/canvas.h"
@@ -27,6 +28,104 @@ int *qr_failures_ptr(void)
     static int failures;
     return &failures;
 }
+/* Allocation failure used to crash both QR paths: zcl_malloc's NULL went
+ * straight into the module-copy loop / the render memset. Both must refuse
+ * with the function's false-and-error contract instead. */
+static void qr_case_alloc_failure_refuses(void)
+{
+    char err[128] = "stale error";
+    uint8_t sentinel = 0;
+    struct qr_matrix m = { .modules = &sentinel, .width = 1 };
+
+    zcl_alloc_fault_fail_next("qr.matrix.modules");
+    bool refused = !qr_matrix_encode("hello", &m, err, sizeof err);
+    zcl_alloc_fault_clear();
+    QR_CHECK("QR encode refuses allocation failure",
+             refused && m.modules == NULL && m.width == 0 &&
+             strcmp(err, "QR matrix allocation failed") == 0);
+    qr_matrix_free(&m);
+
+    if (!qr_matrix_encode("hello", &m, err, sizeof err)) {
+        QR_CHECK("QR render refuses allocation failure (matrix setup)", false);
+        return;
+    }
+    uint8_t *pixels = &sentinel;
+    uint32_t side = 99;
+    zcl_alloc_fault_fail_next("qr.render.rgb");
+    refused = !qr_matrix_render_rgb(&m, 2, 2, &pixels, &side, err,
+                                    sizeof err);
+    zcl_alloc_fault_clear();
+    QR_CHECK("QR render refuses allocation failure",
+             refused && pixels == NULL && side == 0 &&
+             strcmp(err, "QR render allocation failed") == 0);
+    qr_matrix_free(&m);
+}
+
+static void qr_case_popup_alloc_failure_refuses(void)
+{
+    char err[128];
+    struct zcl_present_model_v1 model;
+    if (!zcl_present_model_qr_from_payload_v1(
+            "hello", "QR", &model, err, sizeof err)) {
+        QR_CHECK("QR popup allocation failure (model setup)", false);
+        return;
+    }
+    const char *labels[] = { "qr.matrix.modules", "qr.render.rgb" };
+    const char *errors[] = { "QR matrix allocation failed",
+                             "QR render allocation failed" };
+    for (size_t i = 0; i < 2; i++) {
+        struct qr_popup_card card = { .width = 99, .height = 99 };
+        zcl_alloc_fault_fail_next(labels[i]);
+        bool refused = !qr_popup_card_render(&model, &card, err, sizeof err);
+        zcl_alloc_fault_clear();
+        QR_CHECK(labels[i], refused && card.pixels == NULL &&
+                 card.width == 0 && card.height == 0 &&
+                 strcmp(err, errors[i]) == 0);
+        qr_popup_card_free(&card);
+    }
+}
+
+static void qr_case_render_refusal_outputs(void)
+{
+    uint8_t sentinel = 0;
+    uint8_t *pixels = &sentinel;
+    uint32_t side = 99;
+    char err[128];
+    struct qr_matrix matrix = { .modules = &sentinel, .width = 1 };
+    bool refused = !qr_matrix_render_rgb(NULL, 2, 2, &pixels, &side,
+                                         err, sizeof err);
+    QR_CHECK("invalid QR matrix clears both outputs",
+             refused && pixels == NULL && side == 0 &&
+             strcmp(err, "invalid QR render arguments") == 0);
+    side = 99;
+    refused = !qr_matrix_render_rgb(&matrix, 2, 2, NULL, &side,
+                                    err, sizeof err);
+    QR_CHECK("missing QR pixels clears supplied side", refused && side == 0);
+    pixels = &sentinel;
+    refused = !qr_matrix_render_rgb(&matrix, 2, 2, &pixels, NULL,
+                                    err, sizeof err);
+    QR_CHECK("missing QR side clears supplied pixels",
+             refused && pixels == NULL);
+}
+
+static void qr_case_render_size_refuses(void)
+{
+    uint8_t sentinel = 0;
+    const uint32_t widths[] = { UINT32_MAX, UINT32_MAX / 2u - 4u };
+    for (size_t i = 0; i < 2; i++) {
+        struct qr_matrix matrix = { .modules = &sentinel,
+                                     .width = widths[i] };
+        uint8_t *pixels = &sentinel;
+        uint32_t side = 99;
+        char err[128];
+        bool refused = !qr_matrix_render_rgb(&matrix, 2, 2, &pixels, &side,
+                                             err, sizeof err);
+        QR_CHECK("overflowing QR dimensions clear outputs",
+                 refused && pixels == NULL && side == 0 &&
+                 strcmp(err, "QR render dimensions overflow") == 0);
+    }
+}
+
 int test_qr(void)
 {
     printf("\n=== qr ===\n");
@@ -35,6 +134,10 @@ int test_qr(void)
     if (!qr_matrix_backend_available()) return (*qr_failures_ptr());
 
     if (!qr_case_payment_uri_encode_and_finders()) return (*qr_failures_ptr());
+    qr_case_alloc_failure_refuses();
+    qr_case_popup_alloc_failure_refuses();
+    qr_case_render_refusal_outputs();
+    qr_case_render_size_refuses();
     qr_case_zclassic_window_icon();
     qr_case_canvas_primitives();
     qr_case_chart_scale_maximum();

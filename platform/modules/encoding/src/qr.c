@@ -21,6 +21,12 @@ bool qr_matrix_backend_available(void)
     return true;
 }
 
+static bool qr_encoded_width_valid(uint32_t width)
+{
+    return width != 0 && width <= 177u &&
+           (size_t)width <= SIZE_MAX / (size_t)width;
+}
+
 bool qr_matrix_encode(const char *payload, struct qr_matrix *out,
                       char *error, size_t error_cap)
 {
@@ -53,12 +59,16 @@ bool qr_matrix_encode(const char *payload, struct qr_matrix *out,
     }
     int encoded_width = qrcodegen_getSize(encoded);
     uint32_t width = encoded_width > 0 ? (uint32_t)encoded_width : 0;
-    if (width > 177u || (size_t)width > SIZE_MAX / (size_t)width) {
+    if (!qr_encoded_width_valid(width)) {
         qr_error(error, error_cap, "QR encoder returned an invalid matrix");
         return false;
     }
     size_t count = (size_t)width * (size_t)width;
     uint8_t *modules = zcl_malloc(count, "qr.matrix.modules");
+    if (!modules) {
+        qr_error(error, error_cap, "QR matrix allocation failed");
+        return false;
+    }
     for (uint32_t y = 0; y < width; y++) {
         for (uint32_t x = 0; x < width; x++) {
             modules[(size_t)y * width + x] =
@@ -79,27 +89,56 @@ void qr_matrix_free(struct qr_matrix *matrix)
     matrix->width = 0;
 }
 
+/* Argument gate + out-param hygiene for qr_matrix_render_rgb. */
+static bool qr_render_args_valid(const struct qr_matrix *matrix,
+                                 uint32_t scale, uint32_t quiet_modules,
+                                 uint8_t **pixels, uint32_t *side)
+{
+    if (pixels) *pixels = NULL;
+    if (side) *side = 0;
+    return matrix && matrix->modules && matrix->width != 0 && pixels &&
+           side && scale != 0 && scale <= 64u && quiet_modules <= 32u;
+}
+
+/* Arguments have passed qr_render_args_valid. The widened sum and scale
+ * product fit uint64_t; bound the side before squaring and RGB expansion. */
+static bool qr_render_size(uint32_t width, uint32_t scale,
+                           uint32_t quiet_modules, uint32_t *out_side,
+                           size_t *out_bytes)
+{
+    *out_side = 0;
+    *out_bytes = 0;
+    uint64_t module_side = (uint64_t)width + 2u * quiet_modules;
+    uint64_t image_side = module_side * scale;
+    if (image_side == 0 || image_side > UINT32_MAX) return false;
+    uint64_t area = image_side * image_side;
+    if (area > SIZE_MAX / 3u) return false;
+    *out_side = (uint32_t)image_side;
+    *out_bytes = (size_t)area * 3u;
+    return true;
+}
+
 bool qr_matrix_render_rgb(const struct qr_matrix *matrix, uint32_t scale,
                           uint32_t quiet_modules, uint8_t **pixels,
                           uint32_t *side, char *error, size_t error_cap)
 {
-    if (pixels) *pixels = NULL;
-    if (side) *side = 0;
-    if (!matrix || !matrix->modules || matrix->width == 0 || !pixels ||
-        !side || scale == 0 || scale > 64u || quiet_modules > 32u) {
+    if (!qr_render_args_valid(matrix, scale, quiet_modules, pixels, side)) {
         qr_error(error, error_cap, "invalid QR render arguments");
         return false;
     }
-    uint64_t module_side = (uint64_t)matrix->width + 2u * quiet_modules;
-    uint64_t image_side = module_side * scale;
-    uint64_t bytes = image_side * image_side * 3u;
-    if (image_side == 0 || image_side > UINT32_MAX || bytes > SIZE_MAX) {
+    uint32_t out_side;
+    size_t bytes;
+    if (!qr_render_size(matrix->width, scale, quiet_modules,
+                        &out_side, &bytes)) {
         qr_error(error, error_cap, "QR render dimensions overflow");
         return false;
     }
     uint8_t *rgb = zcl_malloc((size_t)bytes, "qr.render.rgb");
+    if (!rgb) {
+        qr_error(error, error_cap, "QR render allocation failed");
+        return false;
+    }
     memset(rgb, 0xff, (size_t)bytes);
-    uint32_t out_side = (uint32_t)image_side;
     for (uint32_t my = 0; my < matrix->width; my++) {
         for (uint32_t mx = 0; mx < matrix->width; mx++) {
             if (!(matrix->modules[(size_t)my * matrix->width + mx] & 1u))

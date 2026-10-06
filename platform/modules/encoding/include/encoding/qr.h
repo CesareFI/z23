@@ -17,13 +17,17 @@ struct qr_matrix {
 };
 
 /* Encode one UTF-8/text payload as a QR symbol at error-correction level M.
- * The returned matrix is row-major; bit 0 is one for a dark module. */
+ * The returned matrix is row-major; bit 0 is one for a dark module.
+ * On false, a non-NULL out has modules=NULL and width=0. A supplied error
+ * buffer with nonzero capacity receives a bounded diagnostic. */
 bool qr_matrix_encode(const char *payload, struct qr_matrix *out,
                       char *error, size_t error_cap);
 void qr_matrix_free(struct qr_matrix *matrix);
 
 /* Render a scanner-safe RGB image with integer module scaling. The caller
- * owns *pixels and releases it with free(). */
+ * owns *pixels and releases it with free(). On false, each supplied output
+ * is cleared (*pixels=NULL, *side=0), and a supplied error buffer with
+ * nonzero capacity receives a bounded diagnostic. */
 bool qr_matrix_render_rgb(const struct qr_matrix *matrix, uint32_t scale,
                           uint32_t quiet_modules, uint8_t **pixels,
                           uint32_t *side, char *error, size_t error_cap);
