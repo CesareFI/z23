@@ -899,10 +899,99 @@ _test_next:;
 #undef FTX_RECORD
 #undef FTX_TSV32
 #undef FTX_TSV8
+static int ftx_case_cursor_extent(void)
+{
+    int failures = 0;
+    char path[PATH_MAX], cursor[PATH_MAX], raw[256];
+    const char *tails[] = {"", "\n", " 999\n", "\nextra\n", "\0junk\n", "", "", ""};
+    const size_t sizes[] = {0, 1, 5, 7, 6, 0, 150, 0};
+    ftx_install_clock();
+    ftx_isolate("cursor_extent");
+    ASSERT(zcl_trigger_landing_path(path, sizeof path));
+    ftx_write_file(path, "{\"state\":\"landed\"}\n");
+    struct ftx_call c;
+    ftx_begin(&c, false, 0);
+    ASSERT(ftx_run(&c));
+    ftx_end(&c);
+    ASSERT(zcl_trigger_cursor_path("landing_outcomes", cursor, sizeof cursor));
+    struct stat st;
+    ASSERT_EQ(stat(path, &st), 0);
+    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+        int n = snprintf(raw, sizeof raw, "%llu %llu %llu 1",
+                         (unsigned long long)st.st_ino,
+                         (unsigned long long)st.st_size,
+                         (unsigned long long)st.st_size);
+        ASSERT(n > 0 && (size_t)n + sizes[i] < sizeof raw);
+        if (i == 7) raw[n - 2] = '\n';
+        if (i == 5) n--; /* incomplete fourth scalar */
+        if (i == 6) memset(raw + n, 'x', sizes[i]);
+        else memcpy(raw + n, tails[i], sizes[i]);
+        FILE *f = fopen(cursor, "wb");
+        ASSERT(f != NULL);
+        ASSERT_EQ(fwrite(raw, 1, (size_t)n + sizes[i], f), (size_t)n + sizes[i]);
+        ASSERT_EQ(fclose(f), 0);
+        ftx_begin(&c, true, 0);
+        ASSERT(ftx_run(&c));
+        ASSERT_EQ(ftx_int(&c, "checked"), i < 2 ? 0 : 1);
+        ftx_end(&c);
+    }
+_test_next:;
+    clock_reset_default();
+    return failures;
+}
+
+static int ftx_cursor_scalar_row(const char *cursor, const struct stat *st,
+                                 const char *scalar, int expected)
+{
+    int failures = 0;
+    char raw[256];
+    printf("fleet_triggers: cursor scalar %s... ", scalar);
+    int n = snprintf(raw, sizeof raw, "%llu %llu %llu %s",
+                     (unsigned long long)st->st_ino,
+                     (unsigned long long)st->st_size,
+                     (unsigned long long)st->st_size, scalar);
+    ASSERT(n > 0 && (size_t)n < sizeof raw);
+    ftx_write_file(cursor, raw);
+    struct ftx_call c;
+    ftx_begin(&c, true, 0);
+    ASSERT(ftx_run(&c));
+    int checked = ftx_int(&c, "checked");
+    ftx_end(&c);
+    ASSERT_EQ(checked, expected);
+_test_next:;
+    return failures;
+}
+
+static int ftx_case_cursor_scalar_range(void)
+{
+    int failures = 0;
+    char path[PATH_MAX], cursor[PATH_MAX];
+    const char *scalars[] = {
+        "18446744073709551615", "18446744073709551615 \t\r\n",
+        "18446744073709551616", "184467440737095516160000000000",
+        "+1", "-1"
+    };
+    ftx_install_clock();
+    ftx_isolate("cursor_scalar_range");
+    ASSERT(zcl_trigger_landing_path(path, sizeof path));
+    ftx_write_file(path, "{\"state\":\"landed\"}\n");
+    ASSERT(zcl_trigger_cursor_path("landing_outcomes", cursor, sizeof cursor));
+    struct stat st;
+    ASSERT_EQ(stat(path, &st), 0);
+    for (size_t i = 0; i < sizeof scalars / sizeof scalars[0]; i++) {
+        failures += ftx_cursor_scalar_row(cursor, &st, scalars[i], i < 2 ? 0 : 1);
+    }
+_test_next:;
+    clock_reset_default();
+    return failures;
+}
+
 int test_fleet_triggers(void);
 int test_fleet_triggers(void)
 {
     int failures = 0;
+    failures += ftx_case_cursor_extent();
+    failures += ftx_case_cursor_scalar_range();
     failures += ftx_case_landed_ledger_once();
     failures += ftx_case_failed_prints();
     failures += ftx_case_dry_run_no_advance();

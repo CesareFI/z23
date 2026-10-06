@@ -173,6 +173,44 @@ struct trg_cursor {
     uint64_t row_count;
 };
 
+static bool trg_cursor_scalar(const char **p, uint64_t *out)
+{
+    uint64_t value = 0;
+    *out = 0;
+    *p += strspn(*p, " \t\r");
+    if (**p < '0' || **p > '9') return false;
+    do {
+        unsigned digit = (unsigned)(**p - '0');
+        if (value > (UINT64_MAX - digit) / 10) return false;
+        value = value * 10 + digit;
+        (*p)++;
+    } while (**p >= '0' && **p <= '9');
+    *out = value;
+    return true;
+}
+
+static bool trg_cursor_parse(const char *raw, size_t len, struct trg_cursor *out)
+{
+    memset(out, 0, sizeof *out);
+    const char *p = raw;
+    uint64_t values[4];
+    for (size_t i = 0; i < 4; i++) {
+        if (i && *p != ' ' && *p != '\t' && *p != '\r') return true;
+        if (!trg_cursor_scalar(&p, &values[i])) return true;
+    }
+    size_t tail = (size_t)(p - raw);
+    tail += strspn(raw + tail, " \t\r");
+    if (raw[tail] == '\n')
+        tail++;
+    if (tail != len)
+        return true; /* malformed cursor: treat as fresh */
+    out->ino = values[0];
+    out->size = values[1];
+    out->offset = values[2];
+    out->row_count = values[3];
+    return true;
+}
+
 static bool trg_cursor_read(const char *source_name, struct trg_cursor *out)
 {
     memset(out, 0, sizeof *out);
@@ -182,16 +220,18 @@ static bool trg_cursor_read(const char *source_name, struct trg_cursor *out)
     FILE *f = fopen(path, "rb");
     if (!f)
         return true; /* no cursor yet: starts at zero */
-    unsigned long long a = 0, b = 0, c = 0, d = 0;
-    int n = fscanf(f, "%llu %llu %llu %llu", &a, &b, &c, &d);
-    fclose(f);
-    if (n != 4)
-        return true; /* malformed cursor: treat as fresh */
-    out->ino = a;
-    out->size = b;
-    out->offset = c;
-    out->row_count = d;
-    return true;
+    char raw[128];
+    size_t len = fread(raw, 1, sizeof raw - 1, f);
+    bool bad = ferror(f) || !feof(f);
+    if (fclose(f) != 0)
+        bad = true;
+    if (bad || memchr(raw, 0, len))
+        return true;
+    char *lf = memchr(raw, '\n', len);
+    if (lf && lf != raw + len - 1)
+        return true;
+    raw[len] = 0;
+    return trg_cursor_parse(raw, len, out);
 }
 
 static bool trg_cursor_write(const char *source_name,
