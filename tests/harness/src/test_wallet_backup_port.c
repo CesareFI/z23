@@ -14,7 +14,8 @@
  * fail source_path()).
  *
  * Coverage:
- *   - source_path resolves a file-backed source; false for in-memory.
+ *   - source_path copies a complete file path or refuses with empty output.
+ *     NULL output and zero capacity are refused without writing.
  *   - count_rows over the source counts wallet_keys exactly.
  *   - write_snapshot copies every wallet table that exists, skips missing
  *     ones, and returns WB_STORE_OK; the backup file is created.
@@ -140,6 +141,86 @@ static void wbp_rm(const char *path)
     if (path && path[0]) unlink(path);
 }
 
+static int wbp_source_path_bounds(struct wallet_backup_store_port *port,
+                                  sqlite3 *db)
+{
+    int failures = 0;
+    char short_path[8] = "stale";
+    bool short_sp_ok = port->source_path(port->self, short_path,
+                                        sizeof(short_path));
+    WBP_CHECK("source_path rejects a buffer that would truncate the path",
+              !short_sp_ok);
+    WBP_CHECK("source_path clears output when exact copy is impossible",
+              short_path[0] == '\0');
+
+    const char *path = sqlite3_db_filename(db, "main");
+    WBP_CHECK("source_path fixture has an on-disk filename", path && *path);
+    if (!path || !*path)
+        return failures;
+    size_t len = strlen(path);
+    char exact[1024] = "stale";
+    WBP_CHECK("source_path fixture fits boundary buffer", len < sizeof(exact));
+    if (len >= sizeof(exact))
+        return failures;
+    bool ok = port->source_path(port->self, exact, len);
+    WBP_CHECK("source_path refuses capacity without room for NUL",
+              !ok && exact[0] == '\0');
+    ok = port->source_path(port->self, exact, len + 1);
+    WBP_CHECK("source_path accepts exact capacity with identical bytes",
+              ok && memcmp(exact, path, len + 1) == 0);
+
+    char sentinel = 'x';
+    ok = port->source_path(port->self, &sentinel, 0);
+    WBP_CHECK("source_path refuses zero capacity without writing",
+              !ok && sentinel == 'x');
+    WBP_CHECK("source_path refuses NULL output",
+              !port->source_path(port->self, NULL, sizeof(exact)));
+    exact[0] = 'x';
+    ok = port->source_path(NULL, exact, sizeof(exact));
+    WBP_CHECK("source_path clears output for NULL context",
+              !ok && exact[0] == '\0');
+    return failures;
+}
+
+static int wbp_service_backup(struct node_db *ndb, int seeded)
+{
+    int failures = 0;
+    char svc_dir[256];
+    snprintf(svc_dir, sizeof(svc_dir),
+             WBP_DIR "/wbp_%d_svc_out", (int)getpid());
+    /* A plain Windows mkdir inherits the parent DACL.  Create this leaf
+     * through the production owner-private seam so run_once can validate
+     * the exact directory object on every platform. */
+    WBP_CHECK("service output directory is owner-private",
+              platform_private_directory_ensure(svc_dir));
+
+    char out_path[512] = {0};
+    int64_t out_keys = -1;
+    char err[256] = {0};
+    struct zcl_result r = wallet_backup_run_once(svc_dir, ndb,
+                              out_path, sizeof(out_path),
+                              &out_keys, err, sizeof(err));
+    WBP_CHECK("service run_once ok over port", r.ok);
+    WBP_CHECK("service run_once key_count == 5", out_keys == 5);
+
+    /* The service's verified backup carries the same key bytes. */
+    bool svc_key_match = true;
+    for (int i = 0; i < seeded && r.ok; i++) {
+        uint8_t want[32], got[32];
+        wbp_privkey_for(i, want);
+        if (!wbp_file_privkey(out_path, (uint8_t)(i + 1), got) ||
+            memcmp(want, got, 32) != 0) {
+            svc_key_match = false;
+            break;
+        }
+    }
+    WBP_CHECK("service backup preserves privkey bytes", svc_key_match);
+
+    wbp_rm(out_path);
+    test_cleanup_tmpdir(svc_dir);
+    return failures;
+}
+
 int test_wallet_backup_port(void)
 {
     int failures = 0;
@@ -173,6 +254,7 @@ int test_wallet_backup_port(void)
     bool sp_ok = port.source_path(port.self, resolved, sizeof(resolved));
     WBP_CHECK("source_path returns true on file db", sp_ok);
     WBP_CHECK("source_path is non-empty", resolved[0] != '\0');
+    failures += wbp_source_path_bounds(&port, ndb.db);
 
     /* count_rows over the source. */
     int64_t src_keys = -1;
@@ -237,42 +319,7 @@ int test_wallet_backup_port(void)
     WBP_CHECK("privkey BLOBs round-trip byte-for-byte into backup",
               all_keys_identical);
 
-    /* ---- drive the SERVICE primitive over the same fixture ---- */
-    {
-        char svc_dir[256];
-        snprintf(svc_dir, sizeof(svc_dir),
-                 WBP_DIR "/wbp_%d_svc_out", (int)getpid());
-        /* A plain Windows mkdir inherits the parent DACL.  Create this leaf
-         * through the production owner-private seam so run_once can validate
-         * the exact directory object on every platform. */
-        WBP_CHECK("service output directory is owner-private",
-                  platform_private_directory_ensure(svc_dir));
-
-        char out_path[512] = {0};
-        int64_t out_keys = -1;
-        char err[256] = {0};
-        struct zcl_result r = wallet_backup_run_once(svc_dir, &ndb,
-                                  out_path, sizeof(out_path),
-                                  &out_keys, err, sizeof(err));
-        WBP_CHECK("service run_once ok over port", r.ok);
-        WBP_CHECK("service run_once key_count == 5", out_keys == 5);
-
-        /* The service's verified backup carries the same key bytes. */
-        bool svc_key_match = true;
-        for (int i = 0; i < seeded && r.ok; i++) {
-            uint8_t want[32], got[32];
-            wbp_privkey_for(i, want);
-            if (!wbp_file_privkey(out_path, (uint8_t)(i + 1), got) ||
-                memcmp(want, got, 32) != 0) {
-                svc_key_match = false;
-                break;
-            }
-        }
-        WBP_CHECK("service backup preserves privkey bytes", svc_key_match);
-
-        wbp_rm(out_path);
-        test_cleanup_tmpdir(svc_dir);
-    }
+    failures += wbp_service_backup(&ndb, seeded);
 
     /* ---- NULL / bad-arg guards ---- */
     {
@@ -291,6 +338,7 @@ int test_wallet_backup_port(void)
         char buf[64] = "x";
         WBP_CHECK("source_path false on NULL src_db",
                   !pnull.source_path(pnull.self, buf, sizeof(buf)));
+        WBP_CHECK("source_path clears output on NULL src_db", buf[0] == '\0');
         int64_t n = -7;
         WBP_CHECK("count_rows false on NULL src_db",
                   !pnull.count_rows(pnull.self, "wallet_keys", &n));
@@ -312,6 +360,8 @@ int test_wallet_backup_port(void)
             char buf[64] = "x";
             WBP_CHECK("source_path false for in-memory db",
                       !pm.source_path(pm.self, buf, sizeof(buf)));
+            WBP_CHECK("source_path clears output for in-memory db",
+                      buf[0] == '\0');
             sqlite3_close(mem);
         } else {
             if (mem) sqlite3_close(mem);

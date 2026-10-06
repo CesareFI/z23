@@ -84,13 +84,20 @@ static inline struct wallet_backup_store_sqlite_ctx *ctx_of(void *self)
  * Empty for an in-memory DB. */
 static bool wbs_store_source_path(void *self, char *out, size_t cap)
 {
+    if (out && cap)
+        out[0] = '\0';
     struct wallet_backup_store_sqlite_ctx *c = ctx_of(self);
     if (!c || !c->src_db || !out || cap == 0)
         return false;
     const char *p = sqlite3_db_filename(c->src_db, "main");
     if (!p || !*p)
         return false;
-    snprintf(out, cap, "%s", p);
+    size_t len = strlen(p);
+    if (len >= cap) {
+        out[0] = '\0';
+        return false;
+    }
+    memcpy(out, p, len + 1);
     return true;
 }
 

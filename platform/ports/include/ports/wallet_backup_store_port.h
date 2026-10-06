@@ -111,10 +111,12 @@ struct wallet_backup_store_port {
     void *self;
 
     /* Absolute on-disk path backing the bound source connection. Writes
-     * the NUL-terminated path into out (truncated to cap) and returns true
-     * on success; returns false (out untouched) if self/out is NULL, the
-     * source handle is NULL, or the source has no on-disk filename (an
-     * in-memory DB). */
+     * the complete NUL-terminated path into out and returns true only when
+     * it fits in cap. Returns false if self/out is NULL, cap is zero, the
+     * source handle is NULL, the source has no on-disk filename (an
+     * in-memory DB), or the path does not fit. Clears out[0] before any
+     * refusal when out is non-NULL and cap is nonzero; otherwise no output
+     * is written. */
     bool (*source_path)(void *self, char *out, size_t cap);
 
     /* "SELECT count(*) FROM <table>" over the bound source connection.
