@@ -3805,6 +3805,24 @@ $(TEST_PARALLEL_REL_CANDIDATE): | $(RESIDENT_CONTRACT_FIXTURE_BINS)
 $(TEST_PARALLEL_FAST_CANDIDATE): | $(RESIDENT_CONTRACT_FIXTURE_BINS)
 endif
 
+# semantic_sensor's root short-read case execs the sensor under this
+# LD_PRELOAD probe, which turns the process's first fread into a short read so
+# cm_read_file's allocated-buffer failure mode is deterministic instead of a
+# filesystem race. Linux-only (LD_PRELOAD); the case self-skips, visibly,
+# where the probe is absent.
+ifeq ($(ZCL_HOST_OS),Linux)
+CM_SHORT_READ_PROBE := $(BIN_DIR)/cm-short-read-probe.so
+$(CM_SHORT_READ_PROBE): tests/harness/fixtures/cm_short_read_probe.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic -fPIC -shared \
+	  -o $@ tests/harness/fixtures/cm_short_read_probe.c -ldl
+$(BIN_DIR)/test_zcl: | $(CM_SHORT_READ_PROBE)
+$(TEST_PARALLEL_BIN): | $(CM_SHORT_READ_PROBE)
+$(TEST_PARALLEL_FAST_BIN): | $(CM_SHORT_READ_PROBE)
+$(TEST_PARALLEL_REL_CANDIDATE): | $(CM_SHORT_READ_PROBE)
+$(TEST_PARALLEL_FAST_CANDIDATE): | $(CM_SHORT_READ_PROBE)
+endif
+
 # test_engine's end-to-end case runs $(ENGINE_UNIT_BIN) as a subprocess (same
 # reason test_acme_worker runs zclassic23-acme instead of linking it: the
 # binary carries a TLS client, and test_cold_join_sovereign P2 asserts no

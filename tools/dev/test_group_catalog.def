@@ -1558,6 +1558,15 @@ ZCL_TEST_GROUP(semantic_build_inputs)
  * ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE] runs a long range instead.
  * Self-skips, visibly, where the sensor has not been built. */
 ZCL_TEST_GROUP(semantic_facts_fuzz)
+/* Allocation-failure coverage for the libclang-free clang-manifest sensor
+ * support TUs (tools/sensors/clang_manifest_core.c, clang_manifest_warm.c):
+ * a shadow-dir entry whose strdup fails must never be stored in the table
+ * cm_sdir_read later qsorts, and must not advance its count. In-process,
+ * through zcl_alloc_fault_fail_nth — the sensor TUs are unity-built here
+ * because the standalone sensor binary is linked into no test binary. The
+ * sibling read-side "unreadable" guard is pinned on the real sensor binary by
+ * the semantic_sensor group's short-read probe. */
+ZCL_TEST_GROUP(clang_manifest_oom)
 ZCL_SPEC_GROUP(wallet_dashboard)
 ZCL_SPEC_GROUP(wallet_send)
 ZCL_SPEC_GROUP(wallet_receive)

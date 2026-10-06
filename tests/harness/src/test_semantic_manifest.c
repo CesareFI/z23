@@ -1282,6 +1282,65 @@ static int smt_t_sensor_home_guard(void)
     return failures;
 }
 
+/* cm_read_file fails with its buffer allocated when a file loses its bytes
+ * between ftell and fread; cm_cmd_root must then report the fixed reason
+ * "unreadable", never the uninitialized reason buffer. The cm-short-read
+ * probe reproduces the short read deterministically under LD_PRELOAD; Linux
+ * test builds provide it, elsewhere this case skips visibly. */
+static int smt_t_root_short_read(void)
+{
+    int failures = 0;
+    char cwd[1024], probe[PATH_MAX + 32], message[4096];
+    const char *argv_ok[] = {SMT_SENSOR, "root", SMT_FIXTURES "/base.bin",
+                             NULL};
+    const char *argv_short[8];
+    struct stat sb;
+    bool timed_out = false;
+    int rc;
+    if (getcwd(cwd, sizeof(cwd)) == NULL ||
+        snprintf(probe, sizeof(probe),
+                 "LD_PRELOAD=%s/build/bin/cm-short-read-probe.so", cwd) >=
+            (int)sizeof(probe)) {
+        printf("semantic_sensor: SKIP root short-read probe (no cwd)\n");
+        return 0;
+    }
+    if (stat("build/bin/cm-short-read-probe.so", &sb) != 0) {
+        printf("semantic_sensor: SKIP root short-read probe absent "
+               "(build/bin/cm-short-read-probe.so; Linux test builds provide "
+               "it)\n");
+        return 0;
+    }
+    TEST_CASE("semantic_sensor: a short read reports 'unreadable', never "
+              "stack bytes") {
+        /* Without the probe the stored fixture is a valid manifest. */
+        message[0] = '\0';
+        rc = zcl_spawn_capture_merged_observed(argv_ok, message,
+                                               sizeof(message), 60000,
+                                               &timed_out);
+        ASSERT(!timed_out && rc == 0 && strstr(message, "root ") != NULL);
+
+        /* With the probe the read comes up short after the buffer was
+         * allocated: the reason is exactly the fixed "unreadable" string. */
+        argv_short[0] = "env";
+        argv_short[1] = probe;
+        argv_short[2] = "CM_SHORT_READ=1";
+        argv_short[3] = SMT_SENSOR;
+        argv_short[4] = "root";
+        argv_short[5] = SMT_FIXTURES "/base.bin";
+        argv_short[6] = NULL;
+        message[0] = '\0';
+        rc = zcl_spawn_capture_merged_observed(argv_short, message,
+                                               sizeof(message), 60000,
+                                               &timed_out);
+        if (timed_out || rc == 0 || strstr(message,
+                        "not a valid manifest: unreadable") == NULL)
+            printf("  root short-read: rc=%d: %s\n", rc, message);
+        ASSERT(!timed_out && rc != 0);
+        ASSERT(strstr(message, "not a valid manifest: unreadable") != NULL);
+    } TEST_END
+    return failures;
+}
+
 /* Driver spellings that select a non-C language (or another driver) without
  * -x. Each must refuse with the language reason and leave no manifest, on
  * every host: the AST walk would otherwise describe a C++ or Objective-C
@@ -1926,6 +1985,7 @@ int test_semantic_sensor(void)
     failures += smt_t_sensor_invariance(&r);
     failures += smt_t_sensor_seeds(&r);
     failures += smt_t_sensor_home_guard();
+    failures += smt_t_root_short_read();
     failures += smt_t_sensor_language_aliases();
     failures += semantic_sensor_session_cases();
     failures += semantic_sensor_identity_tests();
