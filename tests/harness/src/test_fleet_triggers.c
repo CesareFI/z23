@@ -940,6 +940,46 @@ _test_next:;
     return failures;
 }
 
+static int ftx_case_cursor_capacity(void)
+{
+    int failures = 0;
+    char path[PATH_MAX], cursor[PATH_MAX], raw[128];
+    printf("fleet_triggers: 127-byte cursor accepted, 128-byte refused... ");
+    ftx_install_clock();
+    ftx_isolate("cursor_capacity");
+    ASSERT(zcl_trigger_landing_path(path, sizeof path));
+    ftx_write_file(path, "{\"state\":\"landed\"}\n");
+    ASSERT(zcl_trigger_cursor_path("landing_outcomes", cursor, sizeof cursor));
+    /* Resolving a cursor path does not create its parent directories. */
+    ftx_write_file(cursor, "");
+    struct stat st;
+    ASSERT_EQ(stat(path, &st), 0);
+    int n = snprintf(raw, sizeof raw, "%llu %llu %llu 1",
+                     (unsigned long long)st.st_ino,
+                     (unsigned long long)st.st_size,
+                     (unsigned long long)st.st_size);
+    ASSERT(n > 0 && (size_t)n < 127);
+    memset(raw + n, ' ', sizeof raw - (size_t)n);
+    for (size_t len = 127; len <= sizeof raw; len++) {
+        FILE *f = fopen(cursor, "wb");
+        ASSERT(f != NULL);
+        size_t written = fwrite(raw, 1, len, f);
+        int closed = fclose(f);
+        ASSERT_EQ(written, len);
+        ASSERT_EQ(closed, 0);
+        struct ftx_call c;
+        ftx_begin(&c, true, 0);
+        ASSERT(ftx_run(&c));
+        int64_t checked = ftx_int(&c, "checked");
+        ftx_end(&c);
+        ASSERT_EQ(checked, len == 127 ? 0 : 1);
+    }
+    PASS();
+_test_next:;
+    clock_reset_default();
+    return failures;
+}
+
 static int ftx_cursor_scalar_row(const char *cursor, const struct stat *st,
                                  const char *scalar, int expected)
 {
@@ -991,6 +1031,7 @@ int test_fleet_triggers(void)
 {
     int failures = 0;
     failures += ftx_case_cursor_extent();
+    failures += ftx_case_cursor_capacity();
     failures += ftx_case_cursor_scalar_range();
     failures += ftx_case_landed_ledger_once();
     failures += ftx_case_failed_prints();

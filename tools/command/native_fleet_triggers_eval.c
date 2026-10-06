@@ -221,8 +221,16 @@ static bool trg_cursor_read(const char *source_name, struct trg_cursor *out)
     if (!f)
         return true; /* no cursor yet: starts at zero */
     char raw[128];
-    size_t len = fread(raw, 1, sizeof raw - 1, f);
-    bool bad = ferror(f) || !feof(f);
+    size_t cap = sizeof raw - 1;
+    size_t len = fread(raw, 1, cap, f);
+    bool bad = ferror(f);
+    if (!bad && len < cap && !feof(f))
+        bad = true;
+    if (!bad && len == cap) {
+        int extra = fgetc(f);
+        if (extra != EOF || ferror(f))
+            bad = true;
+    }
     if (fclose(f) != 0)
         bad = true;
     if (bad || memchr(raw, 0, len))
