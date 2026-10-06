@@ -7,8 +7,8 @@
  * descriptor. Everything else in the module is a pure function of its
  * arguments, and that property is worth naming rather than losing quietly:
  * the append here opens one path the caller named, reads its tail, and
- * appends one line. It resolves no path of its own, follows no environment
- * variable, and writes nothing anywhere else.
+ * appends one line. Its head pin uses a flushed sibling stage and replacement;
+ * it follows no environment variable and creates no other state authority.
  */
 
 #include "engine/engine_receipt.h"
@@ -18,6 +18,10 @@
 #include "base/log_macros.h"
 #include "json/json.h"
 #include "sha3/sha3.h"
+#include "zutf8/zutf8.h"
+#include "platform/file_sync.h"
+#include "platform/private_file.h"
+#include <stdatomic.h>
 #if defined(_WIN32)
 #include "platform/windows_path.h"
 #endif
@@ -188,21 +192,46 @@ static bool head_path_of(const char *path, char *out, size_t cap)
 
 /* Write `path`.head as one 64-hex line. Called while the ledger fd is held
  * exclusive, so a concurrent append cannot publish a different pin first. */
+static bool receipt_replace_pin(const char *stage, const char *head)
+{
+#if defined(_WIN32)
+    wchar_t from[32768], to[32768];
+    return platform_windows_wide_path(stage, from)
+        && platform_windows_wide_path(head, to)
+        && MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+#else
+    return rename(stage, head) == 0;
+#endif
+}
+
 static bool write_head_pin(const char *path, const char *sha3_hex)
 {
-    char hpath[4096];
+    char hpath[4096], resolved[4096], parent[4096], stage[4096];
     if (!head_path_of(path, hpath, sizeof(hpath)))
         LOG_FAIL("engine_receipt", "head path for %s is too long", path);
-    const int fd = receipt_open(hpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (!platform_private_destination_resolve(hpath, resolved, sizeof(resolved),
+                                              parent, sizeof(parent)))
+        LOG_FAIL("engine_receipt", "cannot resolve head parent for %s", path);
+    static atomic_ulong sequence;
+    const int n = snprintf(stage, sizeof(stage), "%s/.receipt-pin.%ld.%lu.tmp", parent,
+                          (long)getpid(), atomic_fetch_add(&sequence, 1));
+    if (n < 0 || (size_t)n >= sizeof(stage))
+        LOG_FAIL("engine_receipt", "head staging path for %s is too long", path);
+    const int fd = receipt_open(stage, O_WRONLY | O_CREAT | O_EXCL, 0644);
     if (fd < 0)
         LOG_FAIL("engine_receipt", "cannot write the head pin for %s", path);
     char buf[65];
     memcpy(buf, sha3_hex, 64);
     buf[64] = '\n';
     const ssize_t wrote = write(fd, buf, 65);
+    const bool flushed = wrote == 65 && platform_file_sync(fd) == 0;
     const int closed = close(fd);
-    if (wrote != 65 || closed != 0)
-        LOG_FAIL("engine_receipt", "short write of the head pin for %s", path);
+    if (!flushed || closed != 0 || !receipt_replace_pin(stage, resolved)) {
+        (void)platform_private_file_unlink_missing_ok(stage);
+        LOG_FAIL("engine_receipt", "cannot publish complete head pin for %s", path);
+    }
+    if (!platform_private_parent_flush(parent))
+        LOG_FAIL("engine_receipt", "cannot flush head parent for %s", path);
     return true;
 }
 
@@ -547,6 +576,7 @@ static bool build_doc(struct json_value *doc, const struct engine_receipt *r,
 static bool build_line(const struct engine_receipt *r, const char *prev_sha3,
                        char *out, size_t cap, size_t *out_len)
 {
+    *out_len = 0;
     char unit_id[65];
     unit_id_of(r->task_sha3, r->engine, r->ts, unit_id);
 
@@ -588,6 +618,8 @@ static bool build_line(const struct engine_receipt *r, const char *prev_sha3,
                  "refusing a %zu-byte receipt line: over the %u-byte cap. A "
                  "truncated line would break every link after it and read as "
                  "tampering", n, (unsigned)ENGINE_RECEIPT_LINE_MAX);
+    if (!zutf8_validate_n(out, n))
+        LOG_FAIL("engine_receipt", "receipt text is not valid UTF-8");
     *out_len = n;
     return true;
 }

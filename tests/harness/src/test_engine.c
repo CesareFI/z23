@@ -42,6 +42,35 @@
 #include <sys/wait.h>
 #endif
 #include <unistd.h>
+#include "platform/file_sync.h"
+#include <errno.h>
+#include <signal.h>
+
+#if !defined(_WIN32)
+/* Compile the exact writer with local syscall faults, without runtime hooks. */
+static int pin_fault;
+static ssize_t pin_write(int fd, const void *buf, size_t n)
+{
+    if (pin_fault == 1) raise(SIGSTOP);
+    return write(fd, buf, n);
+}
+static int pin_sync(int fd)
+{
+    if (pin_fault == 2) { errno = EIO; return -1; }
+    return platform_file_sync(fd);
+}
+#define write pin_write
+#define platform_file_sync pin_sync
+#define engine_receipt_append pin_test_append
+#define engine_receipt_fits pin_test_fits
+#define engine_receipt_verify_chain pin_test_verify
+#include "../../../engine/modules/engine/src/engine_receipt.c"
+#undef engine_receipt_verify_chain
+#undef engine_receipt_fits
+#undef engine_receipt_append
+#undef platform_file_sync
+#undef write
+#endif
 
 #define EN_CHECK(name, expr) do {                    \
     printf("engine: %s... ", (name));                \
@@ -3182,6 +3211,145 @@ static int case_receipt_chain(void)
     return failures;
 }
 
+static int case_receipt_text_row(const char *text, bool valid)
+{
+    int failures = 0;
+    char path[512], head[600], before[16386] = {0}, after[16386] = {0};
+    char old_pin[66] = {0}, new_pin[66] = {0}, digest[65];
+    size_t before_n = 0, after_n = 0;
+    test_fmt_tmpdir(path, sizeof(path), "zcl_receipt_text", "chainlog");
+    receipt_unlink(path);
+    struct engine_receipt r = receipt_fixture("fixture", 1000);
+    EN_CHECK("text fixture seed appends", engine_receipt_append(path, &r, NULL));
+    receipt_head_path(path, head, sizeof(head));
+    EN_CHECK("capture text fixture ledger and pin",
+             receipt_read_whole(path, before, sizeof(before), &before_n)
+             && receipt_read_whole(head, old_pin, sizeof(old_pin), NULL));
+    r.group = text;
+    memset(digest, 'x', sizeof(digest));
+    EN_CHECK("text preflight matches UTF-8 validity", engine_receipt_fits(&r) == valid);
+    EN_CHECK("text append matches UTF-8 validity",
+             engine_receipt_append(path, &r, digest) == valid);
+    EN_CHECK("read text fixture after append",
+             receipt_read_whole(path, after, sizeof(after), &after_n)
+             && receipt_read_whole(head, new_pin, sizeof(new_pin), NULL));
+    if (valid) {
+        struct engine_receipt_chain_report report;
+        EN_CHECK("valid text keeps exact non-ASCII and escaped controls",
+                 strstr(after, "\"group\":\"caf\xc3\xa9\\n\\t\\\"\\\\\"") != NULL);
+        EN_CHECK("valid text chain verifies", engine_receipt_verify_chain(path, &report)
+                 && report.records == 2 && digest[0] != '\0');
+    } else {
+        EN_CHECK("invalid text preserves exact ledger and pin bytes",
+                 before_n == after_n && !memcmp(before, after, before_n)
+                 && !strcmp(old_pin, new_pin) && digest[0] == '\0');
+    }
+    receipt_unlink(path);
+    return failures;
+}
+
+static int case_receipt_text(void)
+{
+    int failures = 0;
+    EN_CHECK("text fixture root exists", test_ensure_tmproot());
+    failures += case_receipt_text_row("\xff", false);
+    failures += case_receipt_text_row("\xe2\x28\xa1", false);
+    failures += case_receipt_text_row("caf\xc3\xa9\n\t\"\\", true);
+    return failures;
+}
+
+#if !defined(_WIN32)
+static int case_pin_name_boundary(void)
+{
+    int failures = 0;
+    char path[4096], head[4096];
+    EN_CHECK("boundary fixture root exists", test_ensure_tmproot());
+    test_fmt_tmpdir(path, sizeof(path), "zcl_pin_boundary", "chainlog");
+    char *basename = strrchr(path, '/') + 1;
+    const size_t prefix = strlen(basename);
+    const bool fits = prefix <= 250
+        && (size_t)(basename - path) <= sizeof(path) - 256;
+    EN_CHECK("boundary fixture has room for a 250-byte basename", fits);
+    if (!fits)
+        return failures;
+    memset(basename + prefix, 'p', 250 - prefix);
+    basename[250] = '\0';
+    receipt_head_path(path, head, sizeof(head));
+    receipt_unlink(path);
+    struct engine_receipt r = receipt_fixture("fixture", 1000);
+    EN_CHECK("250-byte ledger basename appends genesis",
+             engine_receipt_append(path, &r, NULL));
+    EN_CHECK("255-byte head basename is installed", access(head, F_OK) == 0);
+    r.ts = 1001;
+    EN_CHECK("250-byte ledger basename appends successor",
+             engine_receipt_append(path, &r, NULL));
+    struct engine_receipt_chain_report report;
+    EN_CHECK("boundary chain and installed pin verify",
+             engine_receipt_verify_chain(path, &report) && report.records == 2);
+    receipt_unlink(path);
+    return failures;
+}
+
+static bool pin_fixture_stage(const char *path, long pid, char *stage, size_t cap)
+{
+    stage[0] = '\0';
+    char head[4096], resolved[4096], parent[4096];
+    receipt_head_path(path, head, sizeof(head));
+    if (!platform_private_destination_resolve(head, resolved, sizeof(resolved),
+                                             parent, sizeof(parent)))
+        return false;
+    const int n = snprintf(stage, cap, "%s/.receipt-pin.%ld.0.tmp", parent, pid);
+    return n >= 0 && (size_t)n < cap;
+}
+
+static int case_pin_interrupted(const char *path, const char *next)
+{
+    int failures = 0, status = 0;
+    char got[65], stage[640];
+    pid_t child = fork();
+    if (child == 0) { pin_fault = 1; _exit(write_head_pin(path, next) ? 0 : 1); }
+    bool stopped = child > 0 && waitpid(child, &status, WUNTRACED) == child
+        && WIFSTOPPED(status);
+    EN_CHECK("stopped pin writer leaves the whole old pin",
+             stopped && read_head_pin(path, got) == 1 && got[0] == 'a'
+             && strspn(got, "a") == 64);
+    if (child > 0) { (void)kill(child, SIGKILL); (void)waitpid(child, &status, 0); }
+    EN_CHECK("remove only the interrupted fixture stage",
+             pin_fixture_stage(path, (long)child, stage, sizeof(stage))
+             && platform_private_file_unlink_missing_ok(stage));
+    return failures;
+}
+static int case_pin_atomic(void)
+{
+    int failures = 0;
+    (void)pin_sync; /* The defective writer does not call the sync seam. */
+    char path[512], head[600], stage[640], old[66], next[65], got[66];
+    test_fmt_tmpdir(path, sizeof(path), "zcl_pin_atomic", "chainlog");
+    EN_CHECK("pin fixture root exists", test_ensure_tmproot());
+    receipt_head_path(path, head, sizeof(head));
+    memset(old, 'a', 64); old[64] = '\n'; old[65] = '\0';
+    memset(next, 'b', 64); next[64] = '\0';
+    EN_CHECK("seed exact old pin", receipt_write_whole(head, old, 65));
+    failures += case_pin_interrupted(path, next);
+    pin_fault = 2;
+    EN_CHECK("pin sync EIO refuses replacement", !write_head_pin(path, next));
+    EN_CHECK("sync refusal preserves exact old bytes",
+             receipt_read_whole(head, got, sizeof(got), NULL) && !strcmp(got, old));
+    EN_CHECK("sync refusal removes its stage",
+             pin_fixture_stage(path, (long)getpid(), stage, sizeof(stage))
+             && access(stage, F_OK) != 0
+             && errno == ENOENT);
+    pin_fault = 0;
+    EN_CHECK("normal pin replacement succeeds", write_head_pin(path, next));
+    EN_CHECK("whole new pin round trips", read_head_pin(path, got) == 1
+             && !strcmp(got, next));
+    EN_CHECK("seed malformed pin", receipt_write_whole(head, "bad\n", 4));
+    EN_CHECK("malformed existing pin refuses", read_head_pin(path, got) == -1);
+    receipt_unlink(path);
+    return failures;
+}
+#endif
+
 int test_engine(void)
 {
     int failures = 0;
@@ -3201,6 +3369,11 @@ int test_engine(void)
     failures += case_cli_observation();
     failures += case_default_engine();
     failures += case_receipt_chain();
+    failures += case_receipt_text();
+#if !defined(_WIN32)
+    failures += case_pin_name_boundary();
+    failures += case_pin_atomic();
+#endif
     failures += case_state();
     failures += case_engine_unit_state_e2e();
 #if !defined(_WIN32)

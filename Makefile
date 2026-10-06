@@ -12591,6 +12591,7 @@ $(MUTATION_CAMPAIGN_BIN): $(MUTATION_CAMPAIGN_SRCS)
 # it consults no certificate authority.
 ENGINE_UNIT_BIN = $(BIN_DIR)/zclassic23-engine-unit
 ENGINE_UNIT_SRCS = tools/engine_unit.c \
+	contexts/commons/packages/zutf8/src/zutf8.c \
 	tools/acme/tls_client.c \
 	engine/modules/engine/src/engine_registry.c \
 	engine/modules/engine/src/engine_cli.c \
@@ -12610,8 +12611,12 @@ ENGINE_UNIT_SRCS = tools/engine_unit.c \
 	platform/modules/base/src/result.c \
 	platform/modules/base/src/safe_alloc.c \
 	platform/modules/platform/src/clock.c \
+	platform/modules/platform/src/directory_compat.c \
+	platform/modules/platform/src/private_destination.c \
+	platform/modules/platform/src/private_file.c \
 	platform/modules/platform/src/positioned_file.c
 ENGINE_UNIT_INCLUDES = -Iplatform/modules/base/include -Iengine/modules/engine/include -Iplatform/modules/json/include \
+	-Icontexts/commons/packages/zutf8/include \
 	-Iplatform/modules/sha3/include \
 	-Iplatform/modules/platform/include -Iplatform/modules/util/include -Itools/acme -Ivendor/include
 .PHONY: engine-unit
