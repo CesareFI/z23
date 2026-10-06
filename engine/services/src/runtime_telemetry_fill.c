@@ -409,3 +409,35 @@ bool runtime_dump_state_fill(struct runtime_snapshot *s, const char **why)
     rt_dump_free(&hw);
     return true;
 }
+
+enum runtime_snapshot_status runtime_snapshot_publish(
+    struct runtime_snapshot_publication *pub, const struct runtime_snapshot *input)
+{
+    if (!pub || !input) return RUNTIME_SNAPSHOT_UNAVAILABLE;
+    if (atomic_flag_test_and_set_explicit(&pub->guard, memory_order_acquire))
+        return RUNTIME_SNAPSHOT_BUSY;
+    enum runtime_snapshot_status status = RUNTIME_SNAPSHOT_UNAVAILABLE;
+    if (pub->generation != UINT64_MAX) {
+        pub->snapshot = *input;
+        pub->generation++;
+        status = RUNTIME_SNAPSHOT_READY;
+    }
+    atomic_flag_clear_explicit(&pub->guard, memory_order_release);
+    return status;
+}
+
+enum runtime_snapshot_status runtime_snapshot_read(
+    struct runtime_snapshot_publication *pub, struct runtime_snapshot *out, uint64_t *generation)
+{
+    if (!pub || !out || !generation) return RUNTIME_SNAPSHOT_UNAVAILABLE;
+    if (atomic_flag_test_and_set_explicit(&pub->guard, memory_order_acquire))
+        return RUNTIME_SNAPSHOT_BUSY;
+    enum runtime_snapshot_status status = RUNTIME_SNAPSHOT_UNAVAILABLE;
+    if (pub->generation != 0) {
+        *out = pub->snapshot;
+        *generation = pub->generation;
+        status = RUNTIME_SNAPSHOT_READY;
+    }
+    atomic_flag_clear_explicit(&pub->guard, memory_order_release);
+    return status;
+}

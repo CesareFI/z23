@@ -31,6 +31,29 @@
 
 #include <stdbool.h>
 
+#include <stdatomic.h>
+#include <stdint.h>
+#include "util/telemetry_snapshots.h"
+
+/* Internal caller-owned cache: initialize once, never copy/reset while in use.
+ * Try-only calls: no RPC, allocation, retries or blocking. READY reads return
+ * the original capture metadata and a nonzero generation. BUSY/UNAVAILABLE
+ * leave storage and read outputs unchanged. NULL input signals producer failure.
+ * Snapshot reason tokens retain their required static lifetime. */
+enum runtime_snapshot_status {
+    RUNTIME_SNAPSHOT_READY, RUNTIME_SNAPSHOT_UNAVAILABLE, RUNTIME_SNAPSHOT_BUSY
+};
+struct runtime_snapshot_publication {
+    atomic_flag guard;
+    uint64_t generation;
+    struct runtime_snapshot snapshot;
+};
+#define RUNTIME_SNAPSHOT_PUBLICATION_INIT {.guard = ATOMIC_FLAG_INIT}
+enum runtime_snapshot_status runtime_snapshot_publish(
+    struct runtime_snapshot_publication *pub, const struct runtime_snapshot *input);
+enum runtime_snapshot_status runtime_snapshot_read(
+    struct runtime_snapshot_publication *pub, struct runtime_snapshot *out, uint64_t *generation);
+
 struct runtime_snapshot; /* util/telemetry_snapshots.h */
 
 /* Fill `snap` — which the CALLER must have zero-initialized, so that any leaf
