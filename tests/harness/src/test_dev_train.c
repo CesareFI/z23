@@ -374,6 +374,13 @@ int test_dev_train(void)
     }
 
     TEST("train drop: the conflicted stack also refuses, then --force removes it") {
+        char stack_dir[700], worktrees[8192];
+        ASSERT(snprintf(stack_dir, sizeof(stack_dir), "%s/z23-stackbeta",
+                        parent) < (int)sizeof(stack_dir));
+        ASSERT(platform_directory_probe_real(stack_dir) == PLATFORM_DIRECTORY_PROBE_OK);
+        const char *list[] = {"worktree", "list", "--porcelain", NULL};
+        ASSERT(dvt_git_capture(root, list, worktrees, sizeof(worktrees)));
+        ASSERT(strstr(worktrees, stack_dir) != NULL);
         struct json_value input;
         json_init(&input); json_set_object(&input);
         (void)json_push_kv_str(&input, "name", "beta");
@@ -389,6 +396,9 @@ int test_dev_train(void)
         (void)json_push_kv_bool(&input, "force", true);
         dvt_call(zcl_native_handle_dev_train_drop, root, &input, &reply);
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(platform_directory_probe_real(stack_dir) == PLATFORM_DIRECTORY_PROBE_MISSING);
+        ASSERT(dvt_git_capture(root, list, worktrees, sizeof(worktrees)));
+        ASSERT(strstr(worktrees, stack_dir) == NULL);
         zcl_command_reply_free(&reply);
         json_free(&input);
         PASS();
