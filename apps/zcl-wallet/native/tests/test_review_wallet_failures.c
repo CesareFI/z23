@@ -260,6 +260,18 @@ static void early_refusals(void)
         == ZCL_OUT_OF_RANGE);
     CHECK(calls == 0 && work_wipes == 1 && admission_wipes == 1);
     CHECK(memcmp(&fixture.review, &saved, sizeof(saved)) == 0);
+
+    reset(0, 0);
+    zcl_address *destination = &fixture.review.data.assessment.inputs[0].destination;
+    const zcl_network original = destination->network;
+    destination->network = original == ZCL_MAINNET ? ZCL_TESTNET : ZCL_MAINNET;
+    saved.data.assessment.inputs[0].destination.network = destination->network;
+    CHECK(zcl_review_input_wallet_check(&fixture.review, fixture.id, 100, 0, &supplied)
+        == ZCL_UNSUPPORTED);
+    CHECK(calls == 0 && work_wipes == 1 && admission_wipes == 1);
+    CHECK(memcmp(&fixture.review, &saved, sizeof(saved)) == 0);
+    destination->network = original;
+    saved.data.assessment.inputs[0].destination.network = original;
 }
 
 int main(void)

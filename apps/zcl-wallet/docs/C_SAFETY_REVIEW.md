@@ -5213,3 +5213,25 @@ custody calls; a vacuous-admission mutant restores failure. The retirement
 observer verifies the new parsed-record wipe. Focused Clang 20 and GCC 14
 ASan/UBSan/LSan tests and the complete 145/140 TLS-OFF matrix pass. This is
 native host evidence, not Android runtime or physical-device proof.
+
+## Review network admission before entropy ownership — 2026-10-06
+
+The review-claim record preflight now compares the parsed wallet network with
+the already reviewed public input destination before copying entropy or
+entering change custody. The existing post-custody comparison remains as an
+authoritative recheck for accepted claims.
+
+| Hazard | Review |
+| --- | --- |
+| Secret lifetime | A valid wallet record from the wrong network now reaches neither the entropy copy nor the custody owner. The parsed-record scratch and enclosing private work are fully wiped. |
+| Network validity | The comparison uses the same parsed record network and reviewed `zcl_address` network as the existing lower check. No network value is inferred or rewritten. |
+| Failure behavior | Network mismatch preserves `ZCL_UNSUPPORTED` and performs no storage, randomness, derivation or signature work. |
+| Review integrity | Review ID, lifetime, input index, destination kind, sighash context and final transaction verification are unchanged. |
+| Complexity | The existing helper gains one bounded comparison. Production remains M<=10 across 605 functions; tests remain M<=15. |
+| Consensus and custody | Transparent/shielded validity, record format, recovery, key derivation, monetary policy, consensus and TLS behavior are unchanged. |
+
+Canonical RED reaches custody for a valid cross-network claim. GREEN observes
+one parsed-record wipe and zero custody calls; removing only the network check
+restores RED. Focused dual-compiler ASan/UBSan/LSan tests and the complete
+145/140 TLS-OFF matrix pass. No Android runtime or physical-device claim is
+made.

@@ -8546,3 +8546,20 @@ gate passes both analyzers, all 145 Clang and 140 GCC tests, vendor/reference
 hashes and complexity at M<=10 production and M<=15 tests. Recovery, record
 format, storage, transaction validity, consensus and monetary rules remain
 unchanged. No Android runtime or physical-device claim is made.
+
+## Production continuation: review network admitted before secret copy — 2026-10-06
+
+Transaction review wallet claims now compare the parsed wallet-record network
+with the reviewed public input destination before copying entropy or entering
+custody. A valid cross-network record previously copied the secret and reached
+the lower custody owner before the existing network check refused it. The same
+`ZCL_UNSUPPORTED` result now occurs at public-input admission, while the lower
+comparison remains in place.
+
+Canonical RED observes the custody call. GREEN observes only the parsed-record
+wipe and final private-work wipe; removing the network comparison restores RED.
+Focused Clang 20 and GCC 14 sanitizer lanes pass. The exact-tree TLS-OFF gate
+passes both analyzers, all 145 Clang and 140 GCC tests, vendor/reference hashes
+and complexity limits. Review identity, lifetime, sighash binding, record
+format, recovery, transaction validity, monetary policy and consensus remain
+unchanged. No Android runtime or physical-device claim is made.

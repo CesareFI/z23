@@ -31,12 +31,15 @@ static zcl_status claim_profile(const zcl_review_wallet_input *claim)
     return claim_bounds(claim);
 }
 
-static zcl_status admit_claim_record(const zcl_review_wallet_input *claim)
+static zcl_status admit_claim_record(const zcl_review_wallet_input *claim,
+    const zcl_address *destination)
 {
     zcl_wallet_record parsed = {0};
     zcl_status status = zcl_wallet_record_parse(claim->record, claim->record_len, &parsed);
     if (status == ZCL_OK && claim->entropy_len != parsed.info.entropy_len)
         status = ZCL_OUT_OF_RANGE;
+    if (status == ZCL_OK && parsed.info.network != destination->network)
+        status = ZCL_UNSUPPORTED;
     zcl_secure_zero(&parsed, sizeof(parsed));
     return status;
 }
@@ -45,7 +48,7 @@ static zcl_status prepare_claim(review_wallet_work *work, const zcl_address *des
 {
     zcl_review_wallet_input *claim = &work->claim;
     zcl_status status = claim_profile(claim);
-    if (status == ZCL_OK) status = admit_claim_record(claim);
+    if (status == ZCL_OK) status = admit_claim_record(claim, destination);
     if (status != ZCL_OK) return status;
     memcpy(work->entropy, claim->entropy, claim->entropy_len);
     memcpy(work->directory, claim->directory, claim->directory_len);
