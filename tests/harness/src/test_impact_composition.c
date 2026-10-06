@@ -4397,6 +4397,29 @@ static bool ic_read_sha(const char *rel, char out[65])
     return true;
 }
 
+extern bool zcl_dev_proof_test_changed_set_bytes(char *bytes, size_t len,
+                                                char *why, size_t why_len);
+
+static int test_ic_changed_set_rejects_hidden_bytes(void)
+{
+    int failures = 0;
+    TEST("proof changed set: raw NUL refuses before path tokenization") {
+        char why[256] = {0};
+        char malformed[] = "M\tsrc.c\0suffix\n";
+        ASSERT(!zcl_dev_proof_test_changed_set_bytes(
+            malformed, sizeof(malformed) - 1, why, sizeof(why)));
+        ASSERT(strstr(why, "changed_set_invalid_or_truncated") != NULL);
+        char eof[] = "M\tsrc.c";
+        ASSERT(zcl_dev_proof_test_changed_set_bytes(
+            eof, sizeof(eof) - 1, why, sizeof(why)));
+        char lf[] = "M\tsrc.c\n";
+        ASSERT(zcl_dev_proof_test_changed_set_bytes(
+            lf, sizeof(lf) - 1, why, sizeof(why)));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_changed_set_carries_a_landing_batch(void)
 {
     int failures = 0;
@@ -11415,6 +11438,7 @@ int test_impact_composition(void)
     failures += test_ic_proof_dependency_link_refusals();
     failures += test_ic_ram_scratch_reservations_hold_under_concurrency();
 #endif
+    failures += test_ic_changed_set_rejects_hidden_bytes();
     failures += test_ic_changed_set_carries_a_landing_batch();
     failures += test_ic_changed_set_widens_structural_changes();
     failures += test_ic_changed_set_reads_a_private_generation_worktree();

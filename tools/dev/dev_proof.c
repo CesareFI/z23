@@ -1623,11 +1623,15 @@ static bool dp_changed_set_structural_change(char status)
  * an added, deleted or type-changed row is kept and marked in `mark`: it
  * widens the proof to its full closure rather than refusing it. An unknown
  * status, an unsafe path or a short list still refuses the whole set. */
-static bool dp_changed_set_rows(char *bytes, size_t count, const char **refs,
+static bool dp_changed_set_rows(char *bytes, size_t len, size_t count, const char **refs,
                                 size_t *persist_len,
                                 struct zcl_dev_proof_changed_set *mark,
                                 char *why, size_t why_len)
 {
+    if (memchr(bytes, '\0', len)) {
+        proof_why(why, why_len, "changed_set_invalid_or_truncated embedded_nul");
+        return false;
+    }
     size_t stored = 0;
     char *save = NULL;
     for (char *line = strtok_r(bytes, "\n", &save); line;
@@ -1660,6 +1664,19 @@ static bool dp_changed_set_rows(char *bytes, size_t count, const char **refs,
     }
     return true;
 }
+
+#if defined(ZCL_TESTING)
+bool zcl_dev_proof_test_changed_set_bytes(char *bytes, size_t len,
+                                         char *why, size_t why_len)
+{
+    const char *refs[2] = {0};
+    size_t count = dp_changed_set_count(bytes, len), persist_len = 0;
+    struct zcl_dev_proof_changed_set mark = {0};
+    return count > 0 && count <= 2 &&
+           dp_changed_set_rows(bytes, len, count, refs, &persist_len, &mark,
+                               why, why_len);
+}
+#endif
 
 /* Write the accepted list beside the proof state, newline-terminated and
  * read-only. No persist path asked for means nothing to do. */
@@ -1726,7 +1743,7 @@ bool zcl_dev_proof_changed_set_capture(const char *repo_root, const char *base,
         return false;
     }
     size_t persist_len = 0;
-    if (!dp_changed_set_rows(bytes, count, refs, &persist_len, out, why,
+    if (!dp_changed_set_rows(bytes, len, count, refs, &persist_len, out, why,
                              why_len) ||
         !dp_changed_set_persist(persist_path, refs, count, persist_len, why,
                                 why_len)) {
