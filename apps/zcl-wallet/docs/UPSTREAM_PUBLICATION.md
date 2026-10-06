@@ -2276,3 +2276,43 @@ verify in the candidate's ignored `.cache/wallet-publication/` directory. The
 final manifest SHA256 is
 `0e3694451c312fa806cfc43c210ed83ff500aa5845a4b66d4c073f7846270ab2`.
 No external publication or reviewer-request action was attempted.
+
+### Recovery status datadir exact-copy candidate qualified
+
+Branch `agent/upstream-wallet-recovery-status-datadir-bound-20261006`, signed
+head `f1e1a72a7d220744bafa7bba002edf0eb2039134`, stacks the independently
+qualified fleet fixture on upstream base
+`3a93e60ebf922af3d119b9facc1d95803f42844b`. Its wallet-only review is three
+files, +37/-1. The recovery-status command now rejects a supplied datadir that
+cannot fit byte-for-byte in its native target buffer. It returns invalid input
+with `DATADIR_TOO_LONG` before lock or read-only database inspection. Valid
+paths and the existing missing-path default remain unchanged, as do damaged-
+database preservation, writer exclusion, recovery derivation, consensus,
+monetary policy, PoW, upgrade rules, transparent validity and shielded validity.
+
+The deterministic RED regression fails on the prior production source because
+a 1,024-byte caller path is truncated to a different 1,023-byte target; the
+handler attempts that path and reports `DATADIR_LOCKED`. GREEN requires invalid
+input, the named `DATADIR_TOO_LONG` refusal and `mutated=false`. The focused
+wallet-recovery-safety group passes 1/1 with zero skips, and ASan/UBSan/LSan
+passes the same group 1/1. Focused compilation uses GCC 14.2.0 and the sanitizer
+lane uses Clang 18.1.3. The cap-15 complexity gate covers 68,755 functions;
+architecture covers five authorities, six contexts and 63 modules;
+documentation covers 612 Markdown files and 152 bound claims; package anatomy
+covers 80 packages; the generated inventory covers 1,517 capabilities and
+1,187 registered roots. The candidate-only security scan is CLEAN.
+
+The fresh unprivileged exact proof passes all 215 lint gates in 197.412s and all
+64 impact-selected groups in 271.198s. It is cold and records zero failures,
+skips, cache hits, unobserved cases or load-flaky outcomes, no eligible donor and
+`receipt_reused=false`; foreground time is 476.421s. Receipt SHA256 is
+`bd468233ed80aadbf7dc94599166cf9974f90527006c0a79da608e2377755523`.
+The preserved proof checkout is
+`/home/worldstreamproof/z23-wallet-recovery-status-datadir-proof-20261006`.
+
+Local bundle, wallet-only mbox, deterministic RED/GREEN and sanitizer logs,
+exact receipt and logs, CLEAN candidate-only security scan, qualification
+record and PR draft verify in the candidate's ignored
+`.cache/wallet-publication/` directory. The final manifest SHA256 is
+`5aee46103455293ca515f639818004e1e375af7126962fa82d7c4caba76fb240`.
+No external publication or reviewer-request action was attempted.
