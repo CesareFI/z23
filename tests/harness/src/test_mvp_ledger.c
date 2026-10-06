@@ -14,6 +14,8 @@
 #include "test/test_core.h"
 
 #include "mvp_ledger.h"
+#include "json/json.h"
+#include "zutf8/zutf8.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -974,6 +976,42 @@ static int test_mvp_ledger_xp(void)
 {
     int failures = 0;
 
+    TEST("XP JSON preserves outcome lane identities and refuses invalid UTF-8") {
+        char tmp[PATH_MAX], path[PATH_MAX], err[MVL_ERR_CAP], out[1024];
+        struct mvl_outcomes outcomes = {0};
+        struct mvl_plan plan = {0}; struct mvl_xp_agent row = {0};
+        struct mvl_xp_board board = {.rows = &row, .count = 1};
+        const char *lanes[] = {"a\1b", "a b", "a\"\\b", "a\xc3\xa9" "b"};
+        ASSERT(test_mkdtemp(tmp, sizeof(tmp), "mvljson") != NULL);
+        (void)snprintf(path, sizeof(path), "%s/outcomes.jsonl", tmp);
+        char fixture[PATH_MAX + 64];
+        (void)snprintf(fixture, sizeof(fixture),
+                       "{\"state\":\"failed\",\"worktree\":\"%s/a\\u0001b\"}\n", tmp);
+        mvl_write_file(tmp, "outcomes.jsonl", fixture);
+        ASSERT(mvl_outcomes_alloc(&outcomes));
+        ASSERT(mvl_read_outcomes(path, &outcomes, NULL, err, sizeof(err)));
+        ASSERT_EQ(outcomes.count, 1);
+        ASSERT_STR_EQ(outcomes.rows[0].agent, lanes[0]);
+        for (size_t i = 0; i < sizeof(lanes) / sizeof(lanes[0]); i++) {
+            struct json_value v = {0};
+            (void)snprintf(row.agent, sizeof(row.agent), "%s", lanes[i]);
+            size_t n = mvl_render_xp_json(&plan, &board, out, sizeof(out));
+            ASSERT(n < sizeof(out) && zutf8_validate_n(out, n));
+            ASSERT(json_read(&v, out, n));
+            ASSERT_STR_EQ(json_get_str(json_get(json_at(json_get(&v, "agents"), 0), "agent")), lanes[i]);
+            json_free(&v);
+        }
+        ASSERT(mvl_render_xp_json(&plan, &board, out, 8) >= 8);
+        ASSERT(out[0] == '\0');
+        const char *bad[] = {"a\xff" "b", "\xc0\xaf", "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xe2\x82"};
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+            (void)snprintf(row.agent, sizeof(row.agent), "%s", bad[i]);
+            ASSERT(mvl_render_xp_json(&plan, &board, out, sizeof(out)) >= sizeof(out));
+            ASSERT(out[0] == '\0');
+        }
+        mvl_outcomes_free(&outcomes); test_rm_rf_recursive(tmp);
+        PASS();
+    }
     TEST("the milestone multiplier is read from the plan's own titles: a "
          "consensus, wallet, node, sync or store/payment milestone pays x3, "
          "the proof and publication machinery x2, everything else x1") {

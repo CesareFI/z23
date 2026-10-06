@@ -543,6 +543,23 @@ size_t mvl_render_xp(const struct mvl_plan *plan,
     return mvl_render_xp_gaps(board, out, out_cap, used);
 }
 
+/* RFC 3629 scalar encodings, without adding a standalone link dependency. */
+static bool mvl_json_utf8(const char *s)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned char b = *p++;
+        if (b < 0x80) continue;
+        unsigned n = b < 0xe0 ? 1 : b < 0xf0 ? 2 : 3;
+        if ((unsigned)(b - 0xc2) > 0x32) return false;
+        unsigned lo = b == 0xe0 ? 0xa0 : b == 0xf0 ? 0x90 : 0x80;
+        unsigned hi = b == 0xed ? 0x9f : b == 0xf4 ? 0x8f : 0xbf;
+        if ((unsigned)(*p - lo) > hi - lo) return false;
+        p++;
+        while (--n) { if ((unsigned)(*p - 0x80) > 0x3f) return false; p++; }
+    }
+    return true;
+}
 /* A JSON string cell. Lane names are word-shaped, but a quote or a
  * backslash arriving from a plan row must never break the object. */
 static size_t mvl_render_json_str(const char *s, char *out, size_t cap,
@@ -555,7 +572,7 @@ static size_t mvl_render_json_str(const char *s, char *out, size_t cap,
         if (b == '"' || b == '\\')
             used = mvl_appendf(out, cap, used, "\\%c", (char)b);
         else if (b < 0x20)
-            used = mvl_appendf(out, cap, used, " ");
+            used = mvl_appendf(out, cap, used, "\\u%04x", (unsigned)b);
         else
             used = mvl_appendf(out, cap, used, "%c", (char)b);
     }
@@ -582,6 +599,12 @@ size_t mvl_render_xp_json(const struct mvl_plan *plan,
                           const struct mvl_xp_board *board, char *out,
                           size_t out_cap)
 {
+    for (size_t i = 0; i < board->count; i++) {
+        if (!mvl_json_utf8(board->rows[i].agent)) {
+            if (out && out_cap) out[0] = '\0';
+            return out_cap; /* snprintf-style refusal: no usable document. */
+        }
+    }
     size_t used = mvl_appendf(out, out_cap, 0,
                               "{\"kind\":\"mvp_xp_v1\",\"multipliers\":{");
 
@@ -602,5 +625,7 @@ size_t mvl_render_xp_json(const struct mvl_plan *plan,
     for (size_t i = 0; i < board->count; i++)
         used = mvl_render_json_agent(&board->rows[i], out, out_cap, used,
                                      i == 0);
-    return mvl_appendf(out, out_cap, used, "]}\n");
+    used = mvl_appendf(out, out_cap, used, "]}\n");
+    if (used >= out_cap && out && out_cap) out[0] = '\0';
+    return used;
 }
