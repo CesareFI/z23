@@ -366,7 +366,21 @@ int test_dev_index(void)
     }
 
     TEST("index: search scoped to one source ignores the rest") {
+        ASSERT(dvi_append(
+            board_file,
+            "{\"ts\":\"2026-09-01T03:00:00Z\",\"id\":\"scope-other\","
+            "\"host\":\"node1\",\"agent\":\"fixture\",\"kind\":\"note\","
+            "\"ref\":\"\",\"text\":\"state:landed\"}\n"));
+        struct dev_index_ingest_result r;
+        ASSERT(dev_index_ingest_source(db, board_src, root, &r, err,
+                                       sizeof(err)));
+        ASSERT(r.rows_added == 1);
         struct dev_index_search_result res;
+        ASSERT(dev_index_search(db, "state:landed", NULL, 10, &res, err,
+                                sizeof(err)));
+        ASSERT(res.count == 2);
+        ASSERT_STR_EQ(res.hits[0].source_id, "board");
+        ASSERT_STR_EQ(res.hits[1].source_id, "landing");
         ASSERT(dev_index_search(db, "state:landed", "landing", 10, &res, err,
                                 sizeof(err)));
         ASSERT(res.count == 1);
