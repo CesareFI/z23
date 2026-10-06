@@ -16,6 +16,7 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "util/spawn.h"
+#include "zutf8/zutf8.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -193,6 +194,47 @@ int test_devagent_hot(void)
         PASS();
     }
 
+    TEST("hot: unresolved next input preserves foreign path text") {
+        const char *paths[] = {"a\"b.c", "a\\n.c", "a\n\001.c", "a\xc3\xa9.c"};
+        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            struct dvx_call c;
+            struct json_value decoded;
+            ASSERT(dvx_write(root, paths[i], "/* unresolved */\n"));
+            dvx_begin(&c);
+            (void)json_push_kv_str(&c.input, "cwd", root);
+            (void)json_push_kv_str(&c.input, "path", paths[i]);
+            ASSERT(dvx_run(&c) && dvx_ok(&c));
+            const struct json_value *next = dvx_arr(&c, "next");
+            ASSERT(next && next->num_children == 1);
+            const char *command = json_get_str(&next->children[0]);
+            const char *input = strstr(command, "--input='");
+            ASSERT(input != NULL);
+            input += strlen("--input='");
+            size_t n = strlen(input);
+            ASSERT(n > 1 && input[n - 1] == '\'');
+            ASSERT(zutf8_validate_n(input, n - 1));
+            json_init(&decoded);
+            ASSERT(json_read(&decoded, input, n - 1));
+            ASSERT_STR_EQ(json_get_str(json_get(&decoded, "path")), paths[i]);
+            json_free(&decoded);
+            dvx_end(&c);
+        }
+        char expanded[100];
+        memset(expanded, 1, sizeof(expanded) - 1);
+        expanded[sizeof(expanded) - 1] = '\0';
+        const char *refused[] = {"a\xff.c", "a'b.c", expanded};
+        for (size_t i = 0; i < 3; i++) {
+            struct dvx_call c;
+            ASSERT(dvx_write(root, refused[i], "/* unresolved */\n"));
+            dvx_begin(&c);
+            (void)json_push_kv_str(&c.input, "cwd", root);
+            (void)json_push_kv_str(&c.input, "path", refused[i]);
+            ASSERT(dvx_run(&c) && !dvx_ok(&c) && dvx_arr(&c, "next") == NULL);
+            ASSERT_STR_EQ(c.reply.error.code, "BAD_INPUT");
+            dvx_end(&c);
+        }
+        PASS();
+    }
     TEST("hot: a group override that names nothing is UNRESOLVED") {
         struct dvx_call c;
         dvx_begin(&c);

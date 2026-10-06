@@ -72,9 +72,6 @@
  * The leaf starts no node, touches no datadir, and writes nothing itself;
  * make and the runner write only under the checkout's build/.
  *
- * Implement this file only; the test
- * tests/harness/src/test_devagent_hot.c is the acceptance bar and must
- * not be edited.
  */
 
 #include "command/native_command.h"
@@ -84,6 +81,7 @@
 #include "controllers/agent_impact_rules.h"
 #include "dev/test_group_catalog.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "platform/time_compat.h"
 
 #include <limits.h>
@@ -158,10 +156,23 @@ static void dvh_push_next(struct json_value *data, const char *command)
 static void dvh_emit_unresolved(struct zcl_command_reply *reply,
                                 const char *path, int64_t t0_ms)
 {
-    char next[512];
-    (void)snprintf(next, sizeof(next),
-                   "build/bin/z23-dev code tests --input='{\"path\":\"%s\"}'",
-                   path ? path : "");
+    char next[512], encoded[512];
+    struct json_value value;
+    json_init(&value);
+    if (path && zutf8_validate(path) && !strchr(path, '\''))
+        json_set_str(&value, path);
+    size_t n = json_write(&value, encoded, sizeof(encoded));
+    bool ok = value.type == JSON_STR && n < sizeof(encoded);
+    json_free(&value);
+    int w = ok ? snprintf(next, sizeof(next),
+                         "build/bin/z23-dev code tests --input='{\"path\":%s}'",
+                         encoded) : -1;
+    if (w < 0 || (size_t)w >= sizeof(next)) {
+        dvh_refuse(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                   "BAD_INPUT", "encode", "path cannot fit a valid next input",
+                   "path encoding or command capacity", "use a shorter UTF-8 path");
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "leaf", DVH_LEAF);
     (void)json_push_kv_str(&reply->data, "path", path ? path : "");
     (void)json_push_kv_str(&reply->data, "group", "");
