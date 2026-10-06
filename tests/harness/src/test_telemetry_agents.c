@@ -62,7 +62,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <threads.h>
+#include <pthread.h>
+#include <sched.h>
 
 /* One label-free assertion per line, for the same reason as
  * test_telemetry_render: TEST/ASSERT mint a per-function `_test_next` label,
@@ -718,11 +719,11 @@ static bool at_publication_matches(const struct agents_snapshot *out)
         out->collected_unix_meta.presence == TELEMETRY_PRESENT &&
         out->collected_unix_meta.age_ms == 17;
 }
-static int at_publication_writer(void *arg)
+static void *at_publication_writer(void *arg)
 {
     struct at_publication_test *test = arg;
     atomic_fetch_add_explicit(&test->ready, 1, memory_order_release);
-    while (!atomic_load_explicit(&test->go, memory_order_acquire)) thrd_yield();
+    while (!atomic_load_explicit(&test->go, memory_order_acquire)) sched_yield();
     int result = 0;
     for (uint64_t i = 2; i <= 256; i++) {
         struct agents_snapshot snap = at_publication_pattern(i);
@@ -732,19 +733,19 @@ static int at_publication_writer(void *arg)
         if (status != AGENTS_SNAPSHOT_READY) { result = 1; break; }
     }
     atomic_fetch_add_explicit(&test->done, 1, memory_order_release);
-    return result;
+    return result ? test : NULL;
 }
 static int check_publication_concurrency(struct at_publication_test *test)
 {
     int failures = 0;
     struct agents_snapshot out;
     uint64_t generation, previous = 1;
-    thrd_t writers[2];
+    pthread_t writers[2];
     unsigned started = 0;
     for (; started < 2; started++)
-        if (thrd_create(&writers[started], at_publication_writer, test) != thrd_success) break;
+        if (pthread_create(&writers[started], NULL, at_publication_writer, test) != 0) break;
     TA_CHECK("[publication] both writers start", started == 2);
-    while (atomic_load_explicit(&test->ready, memory_order_acquire) < started) thrd_yield();
+    while (atomic_load_explicit(&test->ready, memory_order_acquire) < started) sched_yield();
     atomic_store_explicit(&test->go, true, memory_order_release);
     bool mixed = false;
     if (started) {
@@ -757,11 +758,11 @@ static int check_publication_concurrency(struct at_publication_test *test)
         } while (atomic_load_explicit(&test->done, memory_order_acquire) < started);
         int errors = 0;
         for (unsigned i = 0; i < started; i++) {
-            int result;
-            if (thrd_join(writers[i], &result) != thrd_success) {
+            void *result;
+            if (pthread_join(writers[i], &result) != 0) {
                 fprintf(stderr, "FAIL publication writer join\n"); abort();
             }
-            errors |= result;
+            errors |= result != NULL;
         }
         TA_CHECK("[publication] two writers complete without mixed reads", !mixed && errors == 0);
         TA_CHECK("[publication] generation counts every successful publish",
