@@ -620,6 +620,40 @@ static bool fmc_grant_id_eq(const char *a, const char *b)
     return diff == 0;
 }
 
+static int fmc_grant_line_read(FILE *f, char line[FMC_LINE_CAP])
+{
+    size_t n = 0;
+    struct fmc_grant g;
+    int ch;
+    while ((ch = fgetc(f)) != EOF && ch != '\n') {
+        if (ch == 0 || n == FMC_LINE_CAP - 1) {
+            LOG_ERROR(FMC_LOG, "grant record contains NUL or exceeds its bound");
+            return -1;
+        }
+        line[n++] = (char)ch;
+    }
+    line[n] = '\0';
+    if (ferror(f)) {
+        LOG_ERROR(FMC_LOG, "grant store read failed");
+        return -1;
+    }
+    if (n == 0 && ch == EOF) return 0;
+    if (line[strspn(line, " \t\r")] != '{' || !json_valid(line, n) ||
+        !fmc_grant_parse(line, &g)) {
+        LOG_ERROR(FMC_LOG, "grant record is not one complete JSON object");
+        return -1;
+    }
+    return 1;
+}
+
+static bool fmc_grant_scan_end(FILE *f, int status)
+{
+    bool complete = fclose(f) == 0 && status == 0;
+    if (!complete)
+        LOG_ERROR(FMC_LOG, "grant store scan incomplete or close failed");
+    return complete;
+}
+
 /* Find the LAST row naming id (later rows supersede). False when absent. */
 static bool fmc_grant_find(const char *path, const char *id,
                            struct fmc_grant *out)
@@ -628,12 +662,13 @@ static bool fmc_grant_find(const char *path, const char *id,
     char line[FMC_LINE_CAP];
     bool found = false;
     struct fmc_grant g;
+    int status;
     if (!path || !id || !out)
         return false;
     f = fopen(path, "rb");
     if (!f)
         return false;
-    while (fgets(line, sizeof(line), f)) {
+    while ((status = fmc_grant_line_read(f, line)) > 0) {
         if (!fmc_grant_parse(line, &g))
             continue;
         if (fmc_grant_id_eq(g.id, id)) {
@@ -641,7 +676,7 @@ static bool fmc_grant_find(const char *path, const char *id,
             found = true;
         }
     }
-    (void)fclose(f);
+    if (!fmc_grant_scan_end(f, status)) found = false;
     return found;
 }
 
@@ -752,16 +787,18 @@ static bool fmc_grant_set_load(const char *path, const char *label,
     FILE *f;
     char line[FMC_LINE_CAP];
     struct fmc_grant g;
+    int status;
     s->n = 0;
     f = fopen(path, "rb");
     if (!f)
         return false;
-    while (fgets(line, sizeof(line), f)) {
+    while ((status = fmc_grant_line_read(f, line)) > 0) {
         if (fmc_grant_parse(line, &g) && strcmp(g.label, label) == 0)
             fmc_grant_set_put(s, &g);
     }
-    (void)fclose(f);
-    return true;
+    if (fmc_grant_scan_end(f, status)) return true;
+    s->n = 0;
+    return false;
 }
 
 /* One row's verdict for a label admission. NULL admits. */
@@ -5145,17 +5182,19 @@ static void fmc_list_emit(struct json_value *arr, const struct fmc_grant *g,
  * the window; a later row for an id still held supersedes it and is not
  * another grant. An id already evicted is no longer recognized. */
 static size_t fmc_list_collect(const char *path, struct fmc_grant *set,
-                               size_t *total)
+                               size_t *total, bool *complete)
 {
     FILE *f;
     char line[FMC_LINE_CAP];
     struct fmc_grant g;
     size_t n = 0;
+    int status;
+    *complete = true;
     *total = 0;
     f = fopen(path, "rb");
     if (!f)
         return 0;
-    while (fgets(line, sizeof(line), f)) {
+    while ((status = fmc_grant_line_read(f, line)) > 0) {
         if (!fmc_grant_parse(line, &g))
             continue;
         /* A later row for an id already counted supersedes that row. It is
@@ -5163,7 +5202,8 @@ static size_t fmc_list_collect(const char *path, struct fmc_grant *set,
         if (fmc_list_put(set, &n, &g))
             (*total)++;
     }
-    (void)fclose(f);
+    *complete = fmc_grant_scan_end(f, status);
+    if (!*complete) { *total = 0; return 0; }
     return n;
 }
 
@@ -5176,6 +5216,7 @@ static void fmc_grant_list(const struct zcl_command_request *req,
     size_t n, i, total = 0, live = 0;
     long long now;
     int r;
+    bool complete;
     (void)req;
     if (!fmc_dirs(steerdir, sizeof(steerdir))) {
         fmc_fail(reply, "STATE_DIR_FAILED",
@@ -5197,7 +5238,7 @@ static void fmc_grant_list(const struct zcl_command_request *req,
         return;
     }
     now = (long long)platform_time_wall_time_t();
-    n = fmc_list_collect(path, set, &total);
+    n = fmc_list_collect(path, set, &total, &complete);
     json_init(&arr);
     json_set_array(&arr);
     for (i = 0; i < n; i++) {
@@ -5206,6 +5247,11 @@ static void fmc_grant_list(const struct zcl_command_request *req,
             live++;
     }
     free(set);
+    if (!complete) {
+        json_free(&arr);
+        fmc_fail(reply, "GRANT_LIST_FAILED", "grant store is incomplete", path);
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "leaf", FMC_GRANT_LEAF);
     (void)json_push_kv(&reply->data, "grants", &arr);
     (void)json_push_kv_int(&reply->data, "shown", (long long)n);

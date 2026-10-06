@@ -2385,6 +2385,61 @@ static void fmx_state_file(const char *dirrel, const char *file,
         fmx_fixture_fail("cannot finish an isolated state file");
 }
 
+static int fmx_t_grant_records(void)
+{
+    int failures = 0;
+    TEST("steer: only complete physical grant records authorize") {
+        static const char grant[] = "{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+            "\"scopes\":\"send\",\"created\":0,\"expires\":0,"
+            "\"revoked\":\"0\",\"label\":\"victim\"}";
+        fmx_isolate("grant_records");
+        for (int mode = 0; mode < 6; mode++) {
+            char row[8220], path[1400];
+            size_t len = sizeof(grant) - 1;
+            memcpy(row, grant, len);
+            if (mode == 1) row[len++] = '\n';
+            if (mode == 2) {
+                memcpy(row + len, "\0revoked suffix\n", 16); len += 16;
+            }
+            if (mode == 3) { memcpy(row + len, "{}\n", 3); len += 3; }
+            if (mode == 4) row[len - 1] = '\n';
+            if (mode == 5) {
+                memset(row + len, 'x', 8191 - len);
+                memcpy(row + 8191, ",\"revoked\":\"1\"}\n", 16); len = 8207;
+            }
+            fmx_state_file("steer", "grants.jsonl", "", false);
+            int n = snprintf(path, sizeof(path), "%s/z23/dev/steer/grants.jsonl",
+                             g_fmx_state);
+            ASSERT(n > 0 && (size_t)n < sizeof(path));
+            FILE *f = fopen(path, "wb");
+            ASSERT(f != NULL);
+            if (mode >= 2) ASSERT(fwrite(grant, 1, sizeof(grant) - 1, f)
+                == sizeof(grant) - 1 && fputc('\n', f) != EOF);
+            size_t written = fwrite(row, 1, len, f);
+            int closed = fclose(f);
+            ASSERT(written == len && closed == 0);
+            long long expiry = -1;
+            ASSERT(zcl_fleet_steer_grant_expiry("victim", "send", &expiry)
+                   == (mode < 2));
+            struct fmx_call c;
+            fmx_begin(&c, FMX_GRANT_PATH, "zcl.fleet_steer_grant.v1");
+            (void)json_push_kv_str(&c.input, "action", "list");
+            ASSERT(fmx_run(&c, zcl_native_handle_fleet_steer_grant));
+            ASSERT(fmx_ok(&c) == (mode < 2));
+            if (mode < 2) ASSERT_EQ(fmx_int(&c, "live"), 1);
+            fmx_end(&c);
+            fmx_begin(&c, FMX_GRANT_PATH, "zcl.fleet_steer_grant.v1");
+            (void)json_push_kv_str(&c.input, "action", "revoke");
+            (void)json_push_kv_str(&c.input, "id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            ASSERT(fmx_run(&c, zcl_native_handle_fleet_steer_grant));
+            ASSERT(fmx_ok(&c) == (mode < 2));
+            fmx_end(&c);
+        }
+        PASS();
+    } _test_next:;
+    fmx_restore();
+    return failures;
+}
 /* The mail dir chain exists before fmx_seed_inbox, which makes one level
  * only. An empty stream file is no row at all. */
 static void fmx_prime_mail(void)
@@ -4871,6 +4926,7 @@ int test_fleet_steer(void)
     failures += fmx_t_sent_needs_receiver();
     failures += fmx_t_sent_local_ack();
     failures += fmx_t_grants();
+    failures += fmx_t_grant_records();
     failures += fmx_t_grant_list();
     failures += fmx_t_grant_list_full();
     failures += fmx_t_peer_grants();
