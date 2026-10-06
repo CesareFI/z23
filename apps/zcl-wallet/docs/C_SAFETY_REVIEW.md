@@ -5279,3 +5279,29 @@ Canonical RED invokes randomness for a 16-byte header paired with a supported
 removing only the equality check restores RED. Both affected JNI suites pass
 under Clang 20 and GCC 14 ASan/UBSan/LSan, followed by the complete 145/140
 TLS-OFF matrix. No Android runtime or physical-device claim is made.
+
+## Fresh-wallet entropy match before custody — 2026-10-06
+
+`createFreshWalletStorage` now retains the parsed public record's declared
+entropy length through JNI admission and compares it with the copied supported
+entropy span before entering change custody. The lower custody owner still
+re-parses the record and repeats the exact profile check before derivation or
+storage.
+
+| Hazard | Review |
+| --- | --- |
+| Secret lifetime | A record/entropy length mismatch still retires the complete 32-byte native entropy scratch, but now reaches zero custody-core calls. |
+| Bounds and conversion | Both lengths are `size_t` values bounded to at most 32 bytes. The comparison adds no arithmetic or signed conversion. |
+| Parser ownership | The admission helper publishes the declared length only after successful parsing and immediately wipes the complete parsed-record scratch. |
+| JNI exceptions | The existing six path, record and entropy length/region operations are unchanged. Pending exceptions still prevent later work and every native scratch keeps its final wipe. |
+| Storage atomicity | Mismatch is refused before the custody/storage owner, so it cannot create a wallet, journal, lock or temporary file. The lower owner retains authoritative validation for admitted input. |
+| Complexity | Production remains M<=10 across 605 functions; tests remain M<=15 across 1,858 functions without suppression. |
+| Custody and consensus | Valid creation, encryption, 12-word recovery, no-overwrite behavior, monetary policy, transaction validity and consensus are unchanged. |
+
+Canonical RED observes one custody-core call for a valid 32-byte record paired
+with 16 bytes of entropy. GREEN preserves the six bounded JNI operations and
+full entropy wipe but observes zero custody calls; removing only the equality
+check restores RED. The storage JNI and deterministic fuzz-regression suites
+pass under Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0, followed by the complete
+145/140 TLS-OFF matrix and both static analyzers. TLS remains quarantined. This
+fake-VM evidence makes no ART, emulator, hardware or physical-device claim.

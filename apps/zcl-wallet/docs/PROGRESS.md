@@ -8599,3 +8599,24 @@ passes both analyzers, all 145 Clang and 140 GCC tests, vendor/reference hashes
 and complexity limits. Review identity, lifetime, sighash binding, record
 format, recovery, transaction validity, monetary policy and consensus remain
 unchanged. No Android runtime or physical-device claim is made.
+
+## Production continuation: fresh entropy matched before custody — 2026-10-06
+
+JNI fresh-wallet creation now carries the parsed public wallet record's entropy
+length through admission and compares it with the copied entropy span before
+entering the custody/storage owner. A valid record declaring 32 bytes paired
+with a supported 16-byte entropy span previously reached the lower core before
+its deterministic refusal. It now stops at the JNI boundary with zero core or
+filesystem calls, while retaining all six bounded JNI operations and the full
+32-byte entropy-scratch wipe. The lower owner keeps its authoritative reparse
+and profile check for admitted requests.
+
+Canonical RED observes one custody-core call. GREEN observes zero; removing
+only the equality check restores RED, and saved production/test hashes verify
+byte-exact restoration. Focused storage JNI and fuzz-regression lanes pass with
+Clang 20.1.2 ASan/UBSan/LSan and GCC 14.2.0. The exact-tree TLS-OFF safety gate
+passes both analyzers, all 145 Clang and 140 GCC tests, vendor/reference hashes,
+production M<=10 and test M<=15. Valid encryption, deterministic recovery,
+storage durability, no-overwrite behavior, transaction validity, monetary
+policy and consensus are unchanged. No Android runtime or physical-device
+claim is made.

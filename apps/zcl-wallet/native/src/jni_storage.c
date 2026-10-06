@@ -46,10 +46,13 @@ static jint write_record(JNIEnv *env, jbyteArray path_input, jbyteArray record_i
     return (jint)status;
 }
 
-static zcl_status admit_wallet_record(const uint8_t *record, size_t length)
+static zcl_status admit_wallet_record(const uint8_t *record, size_t length,
+                                      size_t *entropy_length)
 {
     zcl_wallet_record parsed = {0};
     const zcl_status status = zcl_wallet_record_parse(record, length, &parsed);
+    if (status == ZCL_OK)
+        *entropy_length = parsed.info.entropy_len;
     zcl_secure_zero(&parsed, sizeof(parsed));
     return status;
 }
@@ -68,14 +71,16 @@ Java_org_zclassic_wallet_core_NativeCore_createFreshWalletStorage(JNIEnv *env, j
 {
     (void)type;
     uint8_t path[1024] = {0}, record[140] = {0}, entropy[32] = {0};
-    size_t path_len = 0, record_len = 0, entropy_len = 0;
+    size_t path_len = 0, record_len = 0, entropy_len = 0, expected_entropy_len = 0;
     zcl_status status = zcl_jni_read_bytes(env, path_input, path, sizeof(path), &path_len);
     if (status == ZCL_OK)
         status = zcl_jni_read_bytes(env, record_input, record, sizeof(record), &record_len);
     if (status == ZCL_OK)
-        status = admit_wallet_record(record, record_len);
+        status = admit_wallet_record(record, record_len, &expected_entropy_len);
     if (status == ZCL_OK)
         status = zcl_jni_read_bytes(env, entropy_input, entropy, sizeof(entropy), &entropy_len);
+    if (status == ZCL_OK && entropy_len != expected_entropy_len)
+        status = ZCL_OUT_OF_RANGE;
     if (status == ZCL_OK)
         status = zcl_wallet_change_create_owned(path, path_len, record, record_len,
             entropy, entropy_len, sizeof(entropy));

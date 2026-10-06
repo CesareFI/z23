@@ -477,7 +477,7 @@ static int entropy_creation_attempt(const storage_fixture *fixture, const change
         (jbyteArray)&entropy_array);
     CHECK(status == (jint)wanted && !live_entropy_after_core && !live_entropy_at_storage);
     CHECK(storage_calls == (fault == 0 ? 1u : 0u));
-    CHECK(core_calls == 1 && vm_calls == 6 && zero_calls == 1 && !pending);
+    CHECK(core_calls == (fault == 1 ? 0u : 1u) && vm_calls == 6 && zero_calls == 1 && !pending);
     return 0;
 }
 
