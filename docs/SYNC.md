@@ -4,11 +4,22 @@
 
 Copyright 2026 Rhett Creighton. Licensed under the Apache License, Version 2.0.
 
-How a fresh z23 node reaches chain tip, plus the one legacy-bootstrap
-path that exists only while the native peer network is still small. Primary =
-z23-native; legacy = pulling data from the old C++ `zclassicd`. Overlay
-proofs, swarm piece ids, and the file-service handshake use SHA3-256;
-consensus block hashes stay SHA-256d. The operator map is
+Use this guide to choose a sync path, prepare its inputs, and inspect the
+node's progress toward chain tip (the latest active block). You need a built
+`build/bin/z23` and a reachable peer for native peer-to-peer (P2P) sync.
+Legacy bootstrap instead needs a synced local C++ `zclassicd` datadir
+(the directory holding its persistent node data).
+
+| Path | Input | Current boundary |
+|------|-------|------------------|
+| 1: native fast | z23 snapshot | Staging; activation contained |
+| 2: native full | Peer blocks | From genesis; no snapshot |
+| 3: legacy | Local `zclassicd` | Candidates; local validation required |
+
+A snapshot is a saved state payload. The UTXO set contains unspent
+transaction outputs. Overlay proofs, swarm piece identifiers, and the
+file-service handshake's key derivation function (KDF) use SHA3-256;
+consensus block hashes stay SHA-256d (double SHA-256). See the operator map in
 [`OVERLAY.md`](OVERLAY.md).
 
 ## Canonical Authority Model
@@ -20,8 +31,9 @@ evidence gate:
 - `chain_advance_coordinator` chooses which input source may provide candidate
   headers or bodies.
 - `chain_activation_controller` is the block-connection entrypoint.
-- the chain-evidence logic (now in `chain_evidence_persistence_service`/`_authority_service`/`_snapshot`)
-  decides whether a tip transition has enough local evidence to publish.
+- the chain-evidence services (`chain_evidence_persistence_service`,
+  `chain_evidence_authority_service`, and `chain_evidence_snapshot`) decide
+  whether a tip transition has enough local evidence to publish.
 - `chain_state_repository` performs the atomic in-memory/persistent state
   update, and `chain_tip` is the public active-tip publication wrapper.
 - `legacy_mirror_sync_service` may fetch candidate data from `zclassicd` and
@@ -38,18 +50,20 @@ source and trust class only. Any `unsafe_overrides_total > 0` is fail-loud.
 ## Method 1 (native): P2P Fast Sync (~60 s design target, not yet the proven everyday path)
 
 A fresh node downloads a verified UTXO snapshot from another z23 peer,
-then catches up the tail via standard P2P. Activation is automatic — any peer
-advertising service bit `NODE_ZCL23` (`core/modules/net/include/net/fast_sync.h`)
+then catches up the tail via standard P2P. Candidate discovery is automatic:
+any peer
+advertising service bit `NODE_ZCL23`
+(`core/modules/net/include/net/fast_sync.h`)
 becomes a snapshot candidate. Caught-up z23 peers also advertise SHA3
-block-piece manifests for IBD assist without the UTXO-export lock cost.
+block-piece manifests for initial block download (IBD) assist without the
+UTXO-export lock cost.
 The machinery below is built and code-tested, but Method 1 as coded still
 cannot publish: `SNAPSYNC_VERIFYING → SNAPSYNC_COMPLETE` is a false transition
 under Phase-0 containment (`core/modules/sync/src/sync_state.c:238-241`).
 Whether a fresh z23-to-z23 sync-to-tip has been proven end-to-end on a live
 network is acceptance criterion C3, tracked in [`MVP.md`](MVP.md) with the run
 dates and artifact paths for each attempt — read the status there, not here.
-Today's proven cold-start is Method 3 below. Overlay hashes and the
-file-service KDF are SHA3-256; see [`OVERLAY.md`](OVERLAY.md).
+Today's proven cold-start is Method 3 below.
 
 ```bash
 build/bin/z23 -addnode=<z23_peer>
@@ -58,12 +72,14 @@ build/bin/z23 -addnode=<z23_peer>
 What happens:
 1. Find a peer advertising `NODE_ZCL23`.
 2. Receive a strict v2 UTXO snapshot manifest (protocol/schema version,
-   anchor height/hash, serving peer tip, chainwork, UTXO SHA3, byte length,
+   anchor height/hash, serving peer tip, chainwork (accumulated proof-of-work,
+   or PoW), UTXO SHA3, byte length,
    UTXO count, chunk size/count, and per-chunk hashes).
 3. Download chunks in parallel, verify each chunk hash before import.
-4. Verify the FlyClient MMR/MMB proof for the advertised header history and
-   reject missing or non-competitive chainwork. This does **not** bind the
-   peer's UTXO payload to ZClassic consensus; headers commit no UTXO root.
+4. Verify the FlyClient Merkle Mountain Range (MMR)/Merkle Mountain Belt
+   (MMB) proof for the advertised header history and reject missing or
+   non-competitive chainwork. This does **not** bind the peer's UTXO payload to
+   ZClassic consensus; headers commit no UTXO root.
 5. Verify the imported UTXO bytes exactly match the peer manifest's SHA3. This
    is integrity under assisted trust, not a consensus proof.
 6. Keep the verified payload in staging. Runtime activation is Phase-0
@@ -78,18 +94,12 @@ bootstrap authority. A contained activation ends in the typed
 
 ### State offers over the peer link (ZRC-0011 phase 1a)
 
-A node used to have no way to ask a peer it was already connected to whether
-that peer held a recent state. The handshake carried `zfileaddr`, which said
-only "my file service is on port N" — no height, no digest, no producer — and
-boot armed bundle-fetch seeds from a *cached* table of past advertisements, so
-a node's very first start, with an empty datadir and an empty cache, had nobody
-to ask. It fell back to a from-genesis fold and named
-`bootstrap.no_state_source`.
-
-`zfileaddr` now carries an optional **signed state-offer batch** appended after
-its two-byte port. Each offer names the bundle's height, its block hash, its
-whole-file SHA3, the ROM chunk-manifest root the fetch path already serves
-against, the offering peer's own tip, its MMB peaks digest and the producing
+`zfileaddr`, the peer message advertising a file-service port, carries an
+optional **signed state-offer batch** appended after its two-byte port. Each
+offer names the bundle's height, its block hash, its
+whole-file SHA3, the bootstrap artifact seeding (ROM) chunk-manifest root
+the fetch path already serves against, the offering peer's own tip, its MMB
+peaks digest and the producing
 mint, and is signed with the offering node's durable Ed25519 online identity.
 Old and new nodes stay readable to each other: an older peer reads its two
 bytes and ignores the rest; a newer peer reading an older message records a
@@ -124,8 +134,8 @@ What a consuming node does with them:
 - **The wait is bounded and loud.** From the first connected peer the node
   keeps doing headers while it waits up to two minutes for an acceptable
   offer. If none arrives it stops waiting and says so, naming the newest height
-  any peer offered, through `bootstrap.stale_offers_only` — never a silent drop
-  back to genesis.
+  any peer offered, through `bootstrap.stale_offers_only` — never a silent
+  drop back to genesis.
 - **Discovery is capped.** At most four offers per peer per message, sixteen
   retained across all peers, deduplicated on content digest.
 
@@ -135,7 +145,7 @@ height and digest, fetch progress, and the fallback reason once the wait
 closes.
 
 Phase 1a moves the bytes over the existing file-service dial, so an onion-only
-peer's offer is recorded but not fetchable — that transport has no route to it.
+peer's offer is recorded but not fetchable: the transport has no route to it.
 Phase 1b moves the transfer onto the ZRC-0002 peer-link stream, which removes
 that limit and makes the transfer resumable across peers.
 
@@ -164,7 +174,8 @@ publication is separate: offer-worker startup has no profile check, but is
 deferred in bootstrap receiver mode or when headers lead the active chain by
 more than 1000 blocks (`engine/composition/src/boot_services.c:1296-1312`).
 The worker attempts block-piece publication on its default path, without a
-file-service profile check (`engine/composition/src/boot_snapshot_offer.c:411-425`).
+file-service profile check
+(`engine/composition/src/boot_snapshot_offer.c:411-425`).
 Publication requires enough bodies, header lag within the swarm limit, a
 non-empty datadir, and a successful active-chain manifest build
 (`engine/composition/src/boot_snapshot_offer.c:119-163`). For service-enabled
@@ -190,10 +201,10 @@ Trustless sync from genesis over the standard P2P protocol. No snapshot.
 build/bin/z23 -addnode=<any_peer>
 ```
 
-Headers → blocks → connect. Scripts/signatures below deferred proof validation
-height (h=3,100,000, the latest mainnet checkpoint) are accepted; full validation
-runs above that. Background
-services then re-verify every hash, signature, and proof end to end.
+Headers → blocks → connect. Scripts/signatures below deferred proof
+validation height (h=3,100,000, the latest mainnet checkpoint) are accepted;
+full validation runs above that. Background services then re-verify every hash,
+signature, and proof end to end.
 
 Use when no snapshot source is available, or as the path toward local
 sovereignty. The current end-to-end genesis-to-tip timing/validation claim still
@@ -201,7 +212,8 @@ requires exact-candidate proof; see `docs/HANDOFF.md`.
 
 ### Per-stage throughput measurement (`sync_throughput`)
 
-The `sync_throughput` registered test group (`tests/harness/src/test_sync_throughput.c`,
+The `sync_throughput` registered test group
+(`tests/harness/src/test_sync_throughput.c`,
 `make t-fast ONLY=sync_throughput`) is a hermetic, in-process benchmark of the
 seven functions initial block sync spends its time in: header wire
 round-trip, Equihash PoW verify, merkle root computation, structural block
@@ -212,8 +224,9 @@ network, no canonical datadir — and every timed stage carries teeth (a
 mutated fixture must fail with the exact historical reject reason) so a
 benchmark of a hollow verifier cannot pass. Budgets are declared in
 reference-box units and scaled for the running host's load by
-`test/test_timing_budget.h`, so a busy machine reports a smaller margin
-rather than a false failure. Two throughput fixes measured here are live in
+`tests/harness/include/test/test_timing_budget.h`, so a busy machine reports a
+smaller margin rather than a false failure. Two throughput fixes measured here
+are live in
 `engine/services/src/block_index_flat_header.c` and
 `engine/services/src/block_index_loader.c`: a batched cursor over the flat
 block index (`block_index_flat_cursor_open`/`_read`/`_close`) that pays one
@@ -244,7 +257,7 @@ This is the canonical home for the recipe — **two steps, in this order**:
 
 ```bash
 # 1. Headers FIRST — imports ~3.1M headers in ~60-74 s from the legacy datadir.
-build/bin/z23 --importblockindex $HOME/.zclassic
+build/bin/z23 --importblockindex "$HOME/.zclassic"
 
 # 2. Then a NORMAL boot — legacy import is on by default; it auto-reads/links
 #    ~/.zclassic and follows the legacy import path. Opt out with
@@ -256,8 +269,10 @@ Skipping step 1 is a footgun: importing UTXOs without the header import leaves a
 ~3.1M-header hole (headers=960) and the node pins. The old single-flag forms
 (`-cold-import=`/`-fastimport=`) no longer exist. Passing one does **not**
 silently no-op: the argv loop prints
-`Warning: unrecognized flag '<f>' (ignored) — check spelling or docs/RUNBOOK.md`
-to stderr on every boot (`engine/composition/src/args.c`). It is advisory, never fatal, so
+`Warning: unrecognized flag '<f>' (ignored) — check spelling or
+docs/RUNBOOK.md`
+to stderr on every boot (`engine/composition/src/args.c`). It is advisory,
+never fatal, so
 grep stderr for `unrecognized flag` after any flag change.
 
 **Caveat:** the legacy cold import is slow (a ~12k-block header band backfills
@@ -266,16 +281,18 @@ The robust path for a known-good datadir is to copy one onto the target lane.
 
 ### Consolidated daily-driver loader (assisted legacy bootstrap)
 
-The deployed path is `-load-snapshot-at-own-height`: it loads a
+The deployed path is `-load-snapshot-at-own-height=<PATH>`: it loads a
 digest-verified borrowed UTXO snapshot above coins-best and folds forward.
 Verify current sync state with `z23 status` /
 `z23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current
 state, never this doc. The snapshot's `anchor_block_hash` must byte-equal
-this node's in-binary PoW header at the seed height or boot FATALs — a
-wrong-chain or missing anchor fails closed (`engine/composition/src/boot_refold_staged.c`,
-the load-snapshot-at-own-height path; the anchor-hash cross-check is at ~line
-1064). When the seed height is above the coins-best active-chain window, the
-loader extends that window forward to the PoW-proven header tip
+this node's PoW header at the seed height. A wrong-chain anchor fails closed. If
+headers have not reached the seed height, the loader
+skips the seed and continues normal P2P IBD; a missing anchor below an
+already-synced header tip fails closed
+(`engine/composition/src/boot_refold_staged.c:1019-1075`). When the seed height
+is above the coins-best active-chain window, the loader extends that window
+forward to the PoW-proven header tip
 (`active_chain_extend_window`, line 1017) instead of FATAL-ing "Run
 --importblockindex". The artifact is **release-assisted borrowed state**:
 its payload digest authenticates bytes and the header match verifies chain
@@ -284,8 +301,8 @@ ZClassic headers commit no such roots. The **fold-from-checkpoint** path
 below (`-refold-from-anchor` / `-load-verify-boot`) folds forward from the
 verified compiled checkpoint instead of accepting this loader's borrowed
 tip-height seed; making it the cold-start default and deleting the
-borrowed-seed machinery is still open work — design `work/never-stuck-plan.md`,
-posture `HANDOFF.md`.
+borrowed-seed machinery is still open work — design
+`work/never-stuck-plan.md`, posture `HANDOFF.md`.
 
 ### Fold from checkpoint (skip the from-genesis reducer fold)
 
@@ -301,19 +318,22 @@ build/bin/z23 --importblockindex "$HOME/.zclassic"   # headers + legacy body lin
 build/bin/z23 -refold-from-anchor                    # or -load-verify-boot to auto-detect
 ```
 
-What happens: the loader re-seeds `coins_kv` from the snapshot and
-HARD-ASSERTs the result against the compiled checkpoint's SHA3 digest and
-UTXO count (`coins_kv_verify_against_checkpoint`) — a mismatch FATALs rather
-than silently falling back to a from-genesis fold. On success it forces all
-eight reducer-stage cursors (`header_admit`, `validate_headers`,
-`body_fetch`, `body_persist`, `script_validate`, `proof_validate`,
-`utxo_apply`, `tip_finalize`) to the checkpoint height instead of genesis, so
-the fold resumes at the checkpoint and climbs only the tail —
-`current header tip − checkpoint height` blocks — over on-disk bodies,
-instead of the full from-genesis span. The anchor→tip replay canary
+What happens:
+
+1. The loader re-seeds `coins_kv` from the snapshot.
+2. It checks the compiled checkpoint's SHA3 digest and UTXO count with
+   `coins_kv_verify_against_checkpoint`. A mismatch FATALs; it does not fall
+   back to a from-genesis fold.
+3. On success it forces all eight reducer-stage cursors (`header_admit`,
+   `validate_headers`, `body_fetch`, `body_persist`, `script_validate`,
+   `proof_validate`, `utxo_apply`, `tip_finalize`) to the checkpoint height.
+4. The fold resumes there and climbs only the tail over on-disk bodies:
+   `current header tip − checkpoint height` blocks.
+
+The anchor→tip replay canary
 (`tools/scripts/replay_canary.sh`) is built around a ~45-minute tail fold on
 the present chain length: that is the band its pass/fail bounds are centred on
-(300 s floor, 7200 s ceiling — `tools/scripts/replay_canary.sh:106,116-117`),
+(300 s floor, 7200 s ceiling — `tools/scripts/replay_canary.sh:128-129`),
 not a figure any run has reported here. Method 2's full genesis fold takes
 hours longer.
 
@@ -340,7 +360,7 @@ Rules:
   runtime windows, local consensus checks, or z23 quorum before it
   elevates trust.
 - Force reimport after a first run:
-  `build/bin/z23 -reimport-utxos -datadir=~/.zclassic-c23`
+  `build/bin/z23 -reimport-utxos -datadir="$HOME/.zclassic-c23"`
 
 The live/default legacy reference is the `zclassicd` systemd user service.
 `zclassicd-peer.service` is only the operator-specific example unit committed
@@ -437,8 +457,10 @@ for bootstrap acceleration, but it is not trusted P2P snapshot sync.
 
 Quorum model: votes are grouped by source class — local z23, local
 zclassicd, remote z23 peers. Remote votes are keyed by unique peer and
-expire by TTL; rolling-anchor commits require a matching source-class quorum when
-multiple classes are available. Splits halt anchor extension and are visible
+expire by time-to-live (TTL); rolling-anchor commits require a matching
+source-class quorum
+when multiple classes are available. Splits halt anchor extension and are
+visible
 through the quorum/oracle dumpstate surface.
 
 Rolling anchors: runtime SHA3 windows are persisted only for fully immutable
@@ -452,7 +474,7 @@ continuity-checked against compiled anchors; failures discard the runtime file.
 
 Use `z23 status`, `z23 core sync status`, and
 `z23 core sync validation`. The native RPC fallback is
-`z23 rpc getblockchaininfo`. Status and state
+`z23 getblockchaininfo`. Status and state
 surfaces include sync phase, local/header/peer heights, immutable height,
 snapshot anchor, UTXO root, chainwork/quorum verdict, watchdog state, last
 recovery, and active acceleration source where available.
