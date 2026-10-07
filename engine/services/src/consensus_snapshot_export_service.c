@@ -87,6 +87,11 @@ static bool export_path(char *out, size_t out_size, const char *datadir,
     return n >= 0 && (size_t)n < out_size;
 }
 
+static bool export_datadir_valid(const char *datadir)
+{
+    return datadir && datadir[0] != '\0';
+}
+
 static bool export_snapshot_paths(const char *datadir,
                                   char *src_path, size_t src_size,
                                   char *dst_path, size_t dst_size,
@@ -495,8 +500,8 @@ static struct zcl_result consensus_snapshot_export_service_run_internal(
     const char *datadir, int32_t state_height,
     const uint8_t state_block_hash[32])
 {
-    if (!datadir)
-        return ZCL_ERR(-1, "export_snapshot: NULL datadir");
+    if (!export_datadir_valid(datadir))
+        return ZCL_ERR(-1, "export_snapshot: invalid datadir");
     if (state_height < 0 || !state_block_hash)
         return ZCL_ERR(-1, "export_snapshot: invalid state binding");
 
