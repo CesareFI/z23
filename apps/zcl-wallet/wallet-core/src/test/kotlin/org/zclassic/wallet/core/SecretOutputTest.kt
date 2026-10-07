@@ -47,6 +47,20 @@ class SecretOutputTest {
         }
     }
 
+    @Test fun twelveWordCreationRetiresEveryPartialOutputOnFailure() {
+        for (prefix in 0..16) {
+            var bytes: ByteArray? = null
+            assertFailsWith<IllegalStateException> {
+                SecretOutput.bytes(16) { output ->
+                    bytes = output
+                    output.fill(0x42, 0, prefix)
+                    throw IllegalStateException("public fixture failure")
+                }
+            }
+            assertTrue(bytes!!.all { it == 0.toByte() })
+        }
+    }
+
     @Test fun exactResultTransfersTheOneOwner() {
         var bytes: ByteArray? = null
         var chars: CharArray? = null

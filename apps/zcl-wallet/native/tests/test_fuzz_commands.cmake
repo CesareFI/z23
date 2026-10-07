@@ -4,6 +4,10 @@ file(READ "${COMMANDS_FILE}" commands)
 string(JSON count LENGTH "${commands}")
 math(EXPR last "${count} - 1")
 file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
+# Each checker reads its own immutable full manifest. Bound parallelism to two
+# so adding a native test target need not exhaust the unchanged outer deadline.
+file(WRITE "${OUTPUT_DIRECTORY}/CTestTestfile.cmake" "# Generated full-manifest checks.\n")
+set_property(GLOBAL PROPERTY ZCL_FUZZ_MUTATION_COUNT 0)
 # Parse the source manifest once. Repeated full-array JSON parsing while
 # locating each mutation otherwise dominates this bounded configuration test.
 foreach(index RANGE 0 ${last})
@@ -14,18 +18,14 @@ foreach(index RANGE 0 ${last})
 endforeach()
 
 function(check_manifest label content reason)
-    set(path "${OUTPUT_DIRECTORY}/${label}.json")
+    get_property(ordinal GLOBAL PROPERTY ZCL_FUZZ_MUTATION_COUNT)
+    math(EXPR ordinal "${ordinal} + 1")
+    set_property(GLOBAL PROPERTY ZCL_FUZZ_MUTATION_COUNT "${ordinal}")
+    set(path "${OUTPUT_DIRECTORY}/${ordinal}-${label}.json")
     file(WRITE "${path}" "${content}")
-    execute_process(COMMAND "${CMAKE_COMMAND}" "-DCOMMANDS_FILE=${path}" -P "${CHECKER}"
-        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 20)
-    string(REGEX REPLACE "[ \r\n\t]+" " " error_flat "${error}")
-    if(reason STREQUAL "")
-        if(NOT result EQUAL 0)
-            message(FATAL_ERROR "Valid manifest control ${label} was refused: ${output} ${error}")
-        endif()
-    elseif(result EQUAL 0 OR NOT error_flat MATCHES "${reason}")
-        message(FATAL_ERROR "Manifest mutation ${label} was not refused for its required reason: ${output} ${error}")
-    endif()
+    file(APPEND "${OUTPUT_DIRECTORY}/CTestTestfile.cmake"
+        "add_test(manifest_${ordinal} [==[${CMAKE_COMMAND}]==] [==[-DCOMMANDS_FILE=${path}]==] [==[-DCHECKER=${CHECKER}]==] [==[-DREASON=${reason}]==] -P [==[${CMAKE_CURRENT_LIST_DIR}/check_fuzz_mutation.cmake]==])\n"
+        "set_tests_properties(manifest_${ordinal} PROPERTIES TIMEOUT 20)\n")
 endfunction()
 
 function(replace_flag target flag replacement reason)
@@ -144,4 +144,12 @@ check_manifest(no_harnesses "${no_harnesses}" "No fuzz harness compile commands 
 check_manifest(empty "[]" "No authored/provider compile commands were checked")
 check_manifest(unrelated "[{\"file\":\"/fixture/test.c\",\"command\":\"cc /fixture/test.c\"}]"
     "No authored/provider compile commands were checked")
+find_program(ctest_command NAMES ctest REQUIRED)
+execute_process(COMMAND "${ctest_command}" --test-dir "${OUTPUT_DIRECTORY}"
+    --parallel 2 --output-on-failure --no-tests=error
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 60)
+if(NOT result EQUAL 0)
+    message(FATAL_ERROR "Manifest mutation checks failed: ${output} ${error}")
+endif()
+message(STATUS "${output}")
 message(STATUS "All sanitizer/coverage/empty-scope manifest mutations refused")

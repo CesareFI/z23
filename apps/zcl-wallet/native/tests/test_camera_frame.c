@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_camera.h"
 #include "scan_fixture.h"
+#include "scan_result_reference.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,19 +87,75 @@ static void packets(void)
     CHECK(zcl_camera_packet_scan(packet, 446, ZCL_MAINNET, NULL) == ZCL_INVALID_ARGUMENT);
 }
 
+static const uint8_t request[] = "zclassic:t1T8yaLVhNqxA5KJcmiqqFN88e8DNp2PBfF?amount=1.25&label=Public%20fixture&message=Hello";
+
+static void mismatch_then_restore(const zcl_payment_request *expected, zcl_payment_request *changed)
+{
+    CHECK(!scan_result_matches(request, sizeof(request) - 1, ZCL_MAINNET, changed));
+    *changed = *expected;
+}
+
+static void corrupt_address(const zcl_payment_request *expected)
+{
+    zcl_payment_request changed = *expected;
+    changed.address.network = ZCL_TESTNET;
+    mismatch_then_restore(expected, &changed);
+    changed.address.kind = ZCL_P2SH;
+    mismatch_then_restore(expected, &changed);
+    for (size_t i = 0; i < sizeof(changed.address.hash); ++i) {
+        changed.address.hash[i] ^= UINT8_C(1);
+        mismatch_then_restore(expected, &changed);
+    }
+    for (size_t i = 0; i < sizeof(changed.address_text); ++i) {
+        changed.address_text[i] ^= UINT8_C(1);
+        mismatch_then_restore(expected, &changed);
+    }
+}
+
+static void corrupt_fields(const zcl_payment_request *expected)
+{
+    zcl_payment_request changed = *expected;
+    changed.has_amount = false;
+    mismatch_then_restore(expected, &changed);
+    changed.has_label = false;
+    mismatch_then_restore(expected, &changed);
+    changed.has_message = false;
+    mismatch_then_restore(expected, &changed);
+    ++changed.amount;
+    mismatch_then_restore(expected, &changed);
+    changed.label_len = SIZE_MAX;
+    mismatch_then_restore(expected, &changed);
+    changed.message_len = SIZE_MAX;
+    mismatch_then_restore(expected, &changed);
+    for (size_t i = 0; i < expected->label_len; ++i) {
+        changed.label[i] ^= UINT8_C(1);
+        mismatch_then_restore(expected, &changed);
+    }
+    for (size_t i = 0; i < expected->message_len; ++i) {
+        changed.message[i] ^= UINT8_C(1);
+        mismatch_then_restore(expected, &changed);
+    }
+}
+
 static void request_text(void)
 {
-    static const uint8_t text[] = "zclassic:t1T8yaLVhNqxA5KJcmiqqFN88e8DNp2PBfF?amount=1.25&label=Public%20fixture";
     zcl_qr_image layout = {0};
     size_t image_len = 0, length = 0;
-    uint8_t *image = scan_fixture(text, sizeof(text) - 1, 4, 0, 2, 7, &layout, &image_len);
+    uint8_t *image = scan_fixture(request, sizeof(request) - 1, 4, 0, 2, 7, &layout, &image_len);
     CHECK(image != NULL);
     CHECK(zcl_camera_frame_pack(image, image_len, &layout, packet, sizeof(packet), &length) == ZCL_OK);
     zcl_scanned_request decoded = {0};
     CHECK(zcl_camera_packet_scan(packet, length, ZCL_MAINNET, &decoded) == ZCL_OK);
-    CHECK(decoded.text_len == sizeof(text) - 1);
-    CHECK(memcmp(decoded.text, text, decoded.text_len) == 0);
+    CHECK(decoded.text_len == sizeof(request) - 1);
+    CHECK(memcmp(decoded.text, request, decoded.text_len) == 0);
     CHECK(decoded.request.has_amount && decoded.request.amount == UINT64_C(125000000));
+    CHECK(scan_result_matches(request, sizeof(request) - 1, ZCL_MAINNET, &decoded.request));
+    CHECK(!scan_result_matches(NULL, sizeof(request) - 1, ZCL_MAINNET, &decoded.request));
+    CHECK(!scan_result_matches(request, 0, ZCL_MAINNET, &decoded.request));
+    CHECK(!scan_result_matches(request, sizeof(request) - 1, ZCL_TESTNET, &decoded.request));
+    CHECK(!scan_result_matches(request, sizeof(request) - 1, ZCL_MAINNET, NULL));
+    corrupt_address(&decoded.request);
+    corrupt_fields(&decoded.request);
     CHECK(zcl_camera_packet_scan(packet, length, ZCL_TESTNET, &decoded) != ZCL_OK);
     free(image);
 }
