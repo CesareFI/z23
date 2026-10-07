@@ -297,6 +297,52 @@ static int test_property(void) {
   return 0;
 }
 
+static int test_equal_lines(void) {
+  char a[] = "repeat\nrepeat";
+  char b[] = "repeat\nrepeat\n";
+  zdiff_line al[2], bl[2];
+  uint32_t dp[9];
+  zdiff_op ops[4];
+  size_t out = 0;
+  CHECK(zdiff_texts(a, sizeof a - 1, al, 2, b, sizeof b - 1, bl, 2,
+                   dp, 9, ops, 4, &out) == ZDIFF_OK);
+  CHECK(out == 2);
+  for (size_t i = 0; i < out; i++)
+    CHECK(ops[i].kind == ZDIFF_KEEP && ops[i].old_line == i &&
+          ops[i].new_line == i);
+
+  /* Same count and lengths, distinct final bytes: equality must be verified. */
+  b[sizeof b - 3] = 'X';
+  CHECK(zdiff_texts(a, sizeof a - 1, al, 2, b, sizeof b - 1, bl, 2,
+                   dp, 9, ops, 4, &out) == ZDIFF_OK);
+  CHECK(out == 3);
+  CHECK(ops[0].kind == ZDIFF_KEEP);
+  CHECK(ops[1].kind == ZDIFF_DEL && ops[1].old_line == 1);
+  CHECK(ops[2].kind == ZDIFF_INS && ops[2].new_line == 1);
+  return 0;
+}
+
+static int test_equal_capacity(void) {
+  char a[] = "x", b[] = "x\n";
+  zdiff_line line = {0, 1};
+  uint32_t dp[4];
+  zdiff_op op = {ZDIFF_DEL, 99, 99};
+  size_t out = 99;
+  CHECK(zdiff_run(a, &line, 1, b, &line, 1, dp, 3, &op, 1,
+                 &out) == ZDIFF_SPACE);
+  CHECK(out == 0 && op.old_line == 99);
+  CHECK(zdiff_run(a, &line, 1, b, &line, 1, NULL, 4, &op, 1,
+                 &out) == ZDIFF_ARG);
+  CHECK(out == 0 && op.old_line == 99);
+  CHECK(zdiff_run(a, &line, 1, b, &line, 1, dp, 4, &op, 0,
+                 &out) == ZDIFF_SPACE);
+  CHECK(out == 1 && op.old_line == 99);
+  CHECK(zdiff_run(a, &line, 1, b, &line, 1, dp, 4, NULL, 1,
+                 &out) == ZDIFF_ARG);
+  CHECK(out == 1);
+  return 0;
+}
+
 int main(void) {
   struct {
     const char *name;
@@ -305,6 +351,7 @@ int main(void) {
       {"split", test_split},         {"kat", test_kat},
       {"bounds", test_bounds},       {"null_safety", test_null_safety},
       {"property", test_property},
+      {"equal_lines", test_equal_lines}, {"equal_capacity", test_equal_capacity},
   };
   for (size_t i = 0; i < sizeof tests / sizeof tests[0]; i++) {
     if (tests[i].fn() != 0) {

@@ -7,7 +7,9 @@ caller storage.
 
 - Exact and deterministic: full LCS dynamic program, ties break
   toward deletion first, so the same inputs always produce the same
-  script.
+  script. Identical line sequences take a linear comparison path and
+  emit KEEP operations without filling the quadratic scratch table.
+  All line, cell, workspace and output-capacity bounds still apply.
 - Bounded and total: at most `ZDIFF_MAX_LINES` (65535) lines per side
   and `ZDIFF_MAX_CELLS` (4 Mi) DP cells per comparison; anything
   larger fails with `ZDIFF_BOUND`, never with an allocation surprise.

@@ -6,7 +6,8 @@
  *          caller-supplied, and oversized inputs fail with a status
  *          instead of exhausting memory.
  *
- * Algorithm: full O((n+1)*(m+1)) LCS dynamic program with backtrack.
+ * Algorithm: linear comparison for identical line sequences; otherwise
+ * a full O((n+1)*(m+1)) LCS dynamic program with backtrack.
  * Exact, deterministic (ties break toward deletion first), and simple
  * to audit; the price is quadratic working memory, so inputs are
  * fail-closed bounded: at most ZDIFF_MAX_LINES lines per side and
@@ -63,7 +64,8 @@ size_t zdiff_split(const char *text, size_t len, zdiff_line *lines,
 size_t zdiff_cells(size_t old_lines, size_t new_lines);
 
 /* Compute the edit script between two pre-split line arrays.
- * dp must hold at least zdiff_cells(old_count, new_count) cells.
+ * dp must hold at least zdiff_cells(old_count, new_count) cells, including
+ * for identical input. Its contents are scratch, not a returned result.
  * On ZDIFF_OK, *ops_out receives the script length (<= old+new lines).
  * On ZDIFF_SPACE with sufficient dp, *ops_out receives the script
  * length that would have been produced. */
