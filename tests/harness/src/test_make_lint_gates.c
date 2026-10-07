@@ -11,7 +11,7 @@
  *
  * The checks live in the sibling lint_gate_*.c files, grouped by gate family;
  * lint_gate_selftests.h is the map and shared surface. This file owns the
- * entry table (g_lint_gate_entries, the one list of every check and its lane),
+ * entry table (g_lint_gate_entries, the partitioned checks and their lanes),
  * the partition that hands each entry to exactly one registered test group,
  * and the per-lane runners.
  *
@@ -526,7 +526,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
      * run_lint.sh, never writing into the worktree. */
     N_(t_lint_gate_wiring_gate),
     N_(t_lint_umbrellas_share_built_prereqs),
-    N_(t_lint_explicit_gates_run_once),
+    /* Dispatch regression runs directly in the exact base group below. */
     N_(t_dev_proof_helpers_include_lint_tool),
     N_(t_dev_proof_prefork_runs_before_the_dimensions),
 #if defined(__linux__)
@@ -931,7 +931,7 @@ int test_make_lint_gates_heavy_03(void)
     return lint_run_owned(LINT_OWNER_HEAVY_BASE + 2);
 }
 
-/* The exclusive lane: stale sandbox cleanup and the read-only root probe.
+/* The exclusive lane: dispatch regressions, stale sandbox cleanup and root probe.
  * Keeps the group name `make_lint_gates` so `--only=make_lint_gates` (a
  * substring match) selects it plus every shard. */
 int test_make_lint_gates(void)
@@ -943,6 +943,7 @@ int test_make_lint_gates(void)
     printf("\n=== make_lint_gates tests ===\n");
 
     if (t_build_needs_overlap() != 0) return 1;
+    if (t_lint_explicit_gates_run_once() != 0) return 1;
     /* Reap leaked sandbox bases; safe only here, before any shard exists. */
     lint_purge_stale_sandboxes(real_root);
 

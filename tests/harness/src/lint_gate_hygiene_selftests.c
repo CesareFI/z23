@@ -1239,10 +1239,18 @@ static bool lint_built_prereqs_contract(const char *makefile)
 int t_lint_explicit_gates_run_once(void)
 {
     int failures = 0;
-    TEST("[lint-gate] explicit Make goals execute once and failures propagate") {
-        ASSERT(run_gate_script("tools/scripts/test_lint_explicit_gates.sh", NULL) == 0);
+    char fixture[PATH_MAX] = {0};
+    bool created = test_mkdtemp(fixture, sizeof(fixture), "lint_explicit") != NULL;
+    TEST("[lint-gate] fast generated gates and explicit goals execute and propagate failures") {
+        ASSERT(created);
+        ASSERT(run_gate_script_arg("tools/scripts/test_lint_explicit_gates.sh",
+                                  NULL, fixture) == 0);
         PASS();
     } _test_next:;
+    if (created && test_rm_rf_recursive(fixture) != 0) {
+        fprintf(stderr, "lint dispatch: fixture cleanup failed: %s\n", fixture);
+        failures++;
+    }
     return failures;
 }
 

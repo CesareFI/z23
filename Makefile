@@ -6189,10 +6189,14 @@ LINT_FAST_GATES := \
     check-windows-acceptance-guard \
     check-pipefail-status-pipe \
     check-doc-counts \
+    check-capability-inventory-generated \
+    check-zcode-package-registry \
     check-orient-facts \
     check-arena-view-stub \
     check-hotfork-stories
 
+# These gates check docs/CAPABILITY_INVENTORY.jsonl and package registry
+# roots, including zcode-package.json dependency pins. Both also run in full lint.
 ifeq ($(ZCL_LINT_SERIAL),1)
 lint-fast: $(LINT_FAST_GATES)
 	@echo "lint-fast: OK (serial)"
@@ -6247,11 +6251,11 @@ lint-land: $(EQUIHASH_FACT_TOOL) $(LINTC_TOOL) $(FILE_SIZE_POLICY_BIN) tor-prove
 	@echo "lint-land: OK"
 endif
 
-# lint-preflight — the full-lint-only gates most likely to trip on a change
+# lint-preflight — the gates most likely to trip on a change
 # to tools/command/*.c, engine/composition/**/*.def, contexts/**/*.def, or a
-# new .c file, none of which lint-fast runs. These are members of LINT_GATES
-# (not LINT_FAST_GATES), already wired in run_lint.sh's gate_command() table
-# and named in docs/DEFENSIVE_CODING.md's LINT-GATES block, so this target
+# new .c file. These are members of LINT_GATES, already wired in
+# run_lint.sh's gate_command() table and named in docs/DEFENSIVE_CODING.md's
+# LINT-GATES block. Inventory freshness also runs in lint-fast. This target
 # adds no new gate and needs no new wiring — it is a second, narrower
 # aggregate over gates that already exist, the same relationship lint-fast
 # has to lint. Run it before submitting a lane touching those file classes,
