@@ -16,6 +16,7 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
 
 /* ASSERT jumps out of the subcase. Release its isolated ring and worker
  * before recording an assertion failure, including partially filled rings. */
@@ -39,13 +40,20 @@ static void stall_cb(void *ctx)
     atomic_store(&g_last_ctx_value, (int)(intptr_t)ctx);
 }
 
-static void sleep_ms(int ms)
+static int (*sleep_call)(const struct timespec *, struct timespec *) = nanosleep;
+
+static bool sleep_ms(int ms)
 {
     struct timespec ts = {
         .tv_sec  = ms / 1000,
         .tv_nsec = (long)(ms % 1000) * 1000000L,
     };
-    nanosleep(&ts, NULL);
+    while (sleep_call(&ts, &ts) != 0) {
+        if (errno == EINTR) continue;
+        fprintf(stderr, "heartbeat sleep_ms(%d): nanosleep: %s\n", ms, strerror(errno));
+        return false;
+    }
+    return true;
 }
 
 /* Monotonic elapsed microseconds since an arbitrary fixed point. */
@@ -54,6 +62,47 @@ static int64_t monotonic_us(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);  // platform-ok:test-monotonic-jitter-realtime
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+static int sleep_script_left, sleep_script_calls;
+static bool sleep_script_bad, sleep_script_error;
+static long sleep_script_expected;
+
+static int sleep_script(const struct timespec *request, struct timespec *remaining)
+{
+    sleep_script_calls++;
+    if (!remaining || request->tv_sec != 0 ||
+        request->tv_nsec != sleep_script_expected) sleep_script_bad = true;
+    if (sleep_script_error) { errno = EINVAL; return -1; }
+    if (!sleep_script_left) return 0;
+    sleep_script_left--;
+    sleep_script_expected -= 100000000L;
+    *remaining = (struct timespec){ .tv_nsec = sleep_script_expected };
+    errno = EINTR;
+    return -1;
+}
+
+static int test_heartbeat_interrupted_sleep(void)
+{
+    int failures = 0;
+    sleep_call = sleep_script;
+    for (int count = 0; count <= 2; count++) {
+        sleep_script_left = count;
+        sleep_script_calls = 0;
+        sleep_script_bad = sleep_script_error = false;
+        sleep_script_expected = 300000000L;
+        bool slept = sleep_ms(300);
+        if (!slept || sleep_script_bad || sleep_script_left != 0 ||
+            sleep_script_calls != count + 1) failures++;
+    }
+    sleep_script_error = true;
+    sleep_script_calls = 0;
+    sleep_script_bad = false;
+    sleep_script_expected = 300000000L;
+    if (sleep_ms(300) || sleep_script_bad || sleep_script_calls != 1) failures++;
+    sleep_call = nanosleep;
+    if (failures) fprintf(stderr, "heartbeat interrupted sleep: %d failures\n", failures);
+    return failures;
 }
 
 static int test_heartbeat_register_and_snapshot(void)
@@ -315,6 +364,7 @@ static int test_heartbeat_assertion_cleanup(void)
 int test_heartbeat(void)
 {
     int failures = 0;
+    failures += test_heartbeat_interrupted_sleep();
     failures += test_heartbeat_assertion_cleanup();
     failures += test_heartbeat_register_and_snapshot();
     failures += test_heartbeat_invalid_inputs();
