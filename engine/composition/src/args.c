@@ -24,6 +24,8 @@
 #include "util/util.h"
 #include "util/clientversion.h"
 #include <stdatomic.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -497,18 +499,45 @@ static int args_arm_core_identity(const char *arg,
     return ARGS_ARM_TAKEN;
 }
 
+static bool args_parse_port(const char *text, bool bounded, int *out)
+{
+    const char *digits = text;
+    if (*digits == '+' || *digits == '-') digits++;
+    if (!*digits || digits[strspn(digits, "0123456789")] != '\0')
+        return false;
+    errno = 0;
+    char *end = NULL;
+    long value = strtol(text, &end, 10);
+    if (errno == ERANGE || *end || value < INT_MIN || value > INT_MAX)
+        return false;
+    if (bounded && (value < 0 || value > 65535)) return false;
+    *out = (int)value;
+    return true;
+}
+
 static int args_arm_ports(const char *arg,
                           struct args_arm_state *st)
 {
     struct app_context *ctx = st->ctx;
-    if (strncmp(arg, "-port=", 6) == 0) { ctx->p2p_port = atoi(arg+6); ctx->listen = true; }
-    else if (strncmp(arg, "-rpcport=", 9) == 0) ctx->rpc_port = atoi(arg+9);
-    else if (strncmp(arg, "-httpsport=", 11) == 0) ctx->https_port = atoi(arg+11);
-    else if (strncmp(arg, "-fsport=", 8) == 0) ctx->fs_port = atoi(arg+8);
+    int *port = NULL;
+    const char *text = NULL;
+    if (strncmp(arg, "-port=", 6) == 0) { port = &ctx->p2p_port; text = arg+6; }
+    else if (strncmp(arg, "-rpcport=", 9) == 0) { port = &ctx->rpc_port; text = arg+9; }
+    else if (strncmp(arg, "-httpsport=", 11) == 0) { port = &ctx->https_port; text = arg+11; }
+    else if (strncmp(arg, "-fsport=", 8) == 0) { port = &ctx->fs_port; text = arg+8; }
     else if (strncmp(arg, "-rpcuser=", 9) == 0) ctx->rpc_user = arg+9;
     else if (strncmp(arg, "-rpcpassword=", 13) == 0) ctx->rpc_password = arg+13;
     else if (strcmp(arg, "-listen") == 0) ctx->listen = true;
     else return ARGS_ARM_NOMATCH;
+    if (port) {
+        int value = 0;
+        if (!args_parse_port(text, port != &ctx->https_port, &value)) {
+            fprintf(stderr, "Invalid port option: %s\n", arg);
+            return 1;
+        }
+        *port = value;
+        if (port == &ctx->p2p_port) ctx->listen = true;
+    }
     return ARGS_ARM_TAKEN;
 }
 

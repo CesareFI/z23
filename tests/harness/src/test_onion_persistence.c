@@ -560,6 +560,40 @@ static int test_auto_local_peer_refuses_self_endpoint(void)
     return failures;
 }
 
+static int test_port_args_parse(void)
+{
+    int failures = 0;
+    const char *keys[] = { "port", "rpcport", "httpsport", "fsport" };
+    const char *values[] = { "8033junk", "", "999999999999999999999",
+                            "-1", "65537", "0", "1", "65535", "8443" };
+    const int accepted[] = { 0, 0, 0, -1, 65537, 0, 1, 65535, 8443 };
+    for (size_t k = 0; k < sizeof(keys)/sizeof(keys[0]); k++) {
+        for (size_t v = 0; v < sizeof(values)/sizeof(values[0]); v++) {
+            struct app_context ctx = {0};
+            ctx.runtime_profile = ZCL_RUNTIME_ZCLASSIC_ONLY;
+            ctx.p2p_port = 8033; ctx.rpc_port = 18232;
+            ctx.https_port = 8443; ctx.fs_port = 8034;
+            bool show_metrics = false;
+            char option[96];
+            snprintf(option, sizeof(option), "-%s=%s", keys[k], values[v]);
+            char *argv[] = { "zclassic23", option };
+            int *ports[] = { &ctx.p2p_port, &ctx.rpc_port,
+                            &ctx.https_port, &ctx.fs_port };
+            int before = *ports[k];
+            bool refused = v < 3 || (k != 2 && (v == 3 || v == 4));
+            int rc = args_parse_node_options(2, argv, &ctx, &show_metrics);
+            int expected = refused ? before : accepted[v];
+            if (rc != (refused ? 1 : -1) || *ports[k] != expected ||
+                ctx.listen != (k == 0 && !refused)) {
+                printf("FAIL port args %s: rc=%d port=%d listen=%d\n",
+                       option, rc, *ports[k], ctx.listen);
+                failures++;
+            }
+        }
+    }
+    return failures;
+}
+
 int test_onion_persistence(void)
 {
     int failures = 0;
@@ -576,6 +610,7 @@ int test_onion_persistence(void)
     failures += test_stability_control_args_parse();
     failures += test_full_fold_target_args_parse();
     failures += test_auto_local_peer_refuses_self_endpoint();
+    failures += test_port_args_parse();
 
     printf("Persistent onion identity: %d failures\n", failures);
     return failures;
