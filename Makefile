@@ -6189,9 +6189,21 @@ LINT_FAST_GATES := \
     check-windows-acceptance-guard \
     check-pipefail-status-pipe \
     check-doc-counts \
+    check-capability-inventory-generated \
+    check-zcode-package-registry \
     check-orient-facts \
     check-arena-view-stub \
     check-hotfork-stories
+
+# check-doc-counts catches CODEBASE_MAP drift, but two generated-drift
+# classes still escaped lint-fast and only failed at full lint time
+# (measured on 2026-10-07: two candidate rounds burned full lint cycles on
+# each): docs/CAPABILITY_INVENTORY.jsonl staleness after any source edit
+# that shifts function lines, and zcode-package.json dependency-pin drift
+# after any edit inside a package's sources. Both are deterministic,
+# regenerate-through-canonical-target checks, so they belong in the cheap
+# pre-review path exactly like check-doc-counts. Adding them does not
+# weaken or replace any full-landing gate.
 
 ifeq ($(ZCL_LINT_SERIAL),1)
 lint-fast: $(LINT_FAST_GATES)
