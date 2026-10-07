@@ -15,6 +15,34 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#if !defined(_WIN32)
+#include <dlfcn.h>
+/* Only this thread's exact fixture path can fail, and only its first rb+ open.
+ * Other streams use libc unchanged; no host files or library are modified. */
+static _Thread_local const char *dbio_fault_path;
+static _Thread_local int dbio_open_error, dbio_open_hits;
+FILE *fopen(const char *path, const char *mode)
+{
+    if (dbio_fault_path && strcmp(path, dbio_fault_path) == 0 &&
+        strcmp(mode, "rb+") == 0 && dbio_open_error) {
+        errno = dbio_open_error;
+        dbio_open_error = 0;
+        dbio_open_hits++;
+        return NULL;
+    }
+    void *symbol = dlsym(RTLD_NEXT, "fopen");
+    FILE *(*native_open)(const char *, const char *);
+    static_assert(sizeof(native_open) == sizeof(symbol));
+    if (!symbol) {
+        fprintf(stderr, "disk block fixture: cannot resolve libc fopen\n");
+        errno = ENOSYS;
+        return NULL;
+    }
+    memcpy(&native_open, &symbol, sizeof(native_open));
+    return native_open(path, mode);
+}
+#endif
+
 #if defined(_WIN32)
 #include <windows.h>
 /* NTFS hard links via the Win32 API; errno set for the fixture message. */
@@ -1167,10 +1195,91 @@ _test_next:
 
 /* ── Entry point ─────────────────────────────────────────── */
 
+#if !defined(_WIN32)
+static long dbio_fixture_bytes(const char *path, unsigned char *buf, size_t cap)
+{
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        fprintf(stderr, "disk block fixture: cannot read %s\n", path);
+        return -1;
+    }
+    size_t n = fread(buf, 1, cap, file);
+    bool ok = feof(file) && !ferror(file);
+    if (fclose(file) != 0) ok = false;
+    if (!ok) fprintf(stderr, "disk block fixture: incomplete read of %s\n", path);
+    return ok ? (long)n : -1;
+}
+
+static int test_open_error_preserves_frames(int error)
+{
+    int failures = 0;
+    char tmpdir[256], path[512];
+    unsigned char before[8192], after[8192];
+    make_test_dir(tmpdir, sizeof(tmpdir));
+    struct disk_block_pos pos = {.nFile = 1, .nPos = 0};
+    get_block_pos_filename(path, sizeof(path), tmpdir, &pos, "blk");
+    TEST(error == EIO ? "block open: EIO preserves frames" :
+                       "block open: EINTR preserves frames") {
+        ASSERT(write_test_block(tmpdir, &pos, 100));
+        long first = dbio_fixture_bytes(path, before, sizeof(before));
+        ASSERT(first > 0);
+        pos.nPos = (uint32_t)first;
+        ASSERT(write_test_block(tmpdir, &pos, 200));
+        long size = dbio_fixture_bytes(path, before, sizeof(before));
+        ASSERT(size > first);
+        pos.nPos = 0;
+        dbio_fault_path = path;
+        dbio_open_error = error;
+        dbio_open_hits = 0;
+        FILE *file = open_block_file(tmpdir, &pos, false);
+        dbio_fault_path = NULL;
+        dbio_open_error = 0;
+        bool refused = file == NULL;
+        if (file) fclose(file);
+        ASSERT(dbio_open_hits == 1);
+        ASSERT(refused);
+        ASSERT(dbio_fixture_bytes(path, after, sizeof(after)) == size);
+        ASSERT(memcmp(before, after, (size_t)size) == 0);
+        printf("OK\n");
+    }
+_test_next:
+    cleanup_test_dir(tmpdir);
+    return failures;
+}
+#endif
+
+static int test_open_missing_file(void)
+{
+    int failures = 0;
+    char tmpdir[256], path[512];
+    make_test_dir(tmpdir, sizeof(tmpdir));
+    struct disk_block_pos pos = {.nFile = 1, .nPos = 0};
+    get_block_pos_filename(path, sizeof(path), tmpdir, &pos, "blk");
+    TEST("block open: absent file creates only for writing") {
+        disk_block_io_close_cache();
+        ASSERT(open_block_file(tmpdir, &pos, true) == NULL);
+        ASSERT(access(path, F_OK) == -1 && errno == ENOENT);
+        FILE *file = open_block_file(tmpdir, &pos, false);
+        ASSERT(file != NULL);
+        ASSERT(fclose(file) == 0);
+        ASSERT(access(path, F_OK) == 0);
+        printf("OK\n");
+    }
+_test_next:
+    disk_block_io_close_cache();
+    cleanup_test_dir(tmpdir);
+    return failures;
+}
+
 int test_disk_block_io(void)
 {
     printf("\n=== disk_block_io (pread thread safety) ===\n");
     int failures = 0;
+    failures += test_open_missing_file();
+#if !defined(_WIN32)
+    failures += test_open_error_preserves_frames(EIO);
+    failures += test_open_error_preserves_frames(EINTR);
+#endif
     failures += test_pread_basic_read();
     failures += test_pread_matches_fread();
     failures += test_concurrent_reads();

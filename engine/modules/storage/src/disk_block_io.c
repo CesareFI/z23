@@ -360,6 +360,12 @@ void disk_block_io_close_cache_while_locked(void)
     disk_block_io_close_cache_locked();
 }
 
+/* A failed update open permits creation only when the path was absent. */
+static bool disk_file_creation_allowed(bool read_only)
+{
+    return !read_only && errno == ENOENT;
+}
+
 FILE *open_disk_file(const char *datadir,
                      const struct disk_block_pos *pos,
                      const char *prefix, bool read_only)
@@ -396,7 +402,7 @@ FILE *open_disk_file(const char *datadir,
     get_block_pos_filename(path, sizeof(path), datadir, pos, prefix);
 
     FILE *file = fopen(path, "rb+");
-    if (!file && !read_only)
+    if (!file && disk_file_creation_allowed(read_only))
         file = fopen(path, "wb+");
     if (!file) {
         fprintf(stderr, "open_disk_file: cannot open %s: %s\n",
