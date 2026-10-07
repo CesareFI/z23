@@ -11,6 +11,7 @@
 #include "codeindex/codeindex_merkle.h"
 #include "command/native_command.h"
 #include "config/command_catalog.h"
+#include "controllers/agent_impact_rules.h"
 #include "controllers/rpc_client.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
@@ -10547,6 +10548,74 @@ static int test_zd_publish_routes_to_store_owner(void)
     return failures;
 }
 
+/* Invalid database leaves must be refused before resolving identity or
+ * checking a macOS sidecar that may not exist. */
+static int test_zd_owner_probe_directory(void)
+{
+    int failures = 0;
+    char dir[512] = {0}, missing[600];
+    TEST("zcode_dev: directory database leaf is a probe error") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "owner-probe-dir") != NULL);
+        ASSERT_EQ(node_db_owner_lease_probe(dir),
+                  NODE_DB_OWNER_LEASE_PROBE_ERROR);
+        int written = snprintf(missing, sizeof(missing), "%s/missing.db", dir);
+        ASSERT(written > 0 && (size_t)written < sizeof(missing));
+        ASSERT_EQ(node_db_owner_lease_probe(missing),
+                  NODE_DB_OWNER_LEASE_UNOWNED);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int test_zd_owner_probe_regular_symlink(void)
+{
+    int failures = 0;
+    char dir[512] = {0}, target[600];
+    bool relocated = false;
+    struct node_db ndb = {0};
+    ndb.lifetime_owner_lease_slot = -1;
+    TEST("zcode_dev: regular database symlink cannot bypass leaf rejection") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "owner-probe-link") != NULL);
+        int written = snprintf(ndb.path, sizeof(ndb.path), "%s/node.db", dir);
+        ASSERT(written > 0 && (size_t)written < sizeof(ndb.path));
+        written = snprintf(target, sizeof(target), "%s/target.db", dir);
+        ASSERT(written > 0 && (size_t)written < sizeof(target));
+        ASSERT(node_db_owner_lease_acquire(&ndb, true));
+        /* On macOS the lease creates only the sidecar, so seed the leaf. */
+        FILE *file = fopen(ndb.path, "wb");
+        ASSERT(file != NULL);
+        ASSERT_EQ(fclose(file), 0);
+        ASSERT_EQ(node_db_owner_lease_probe(ndb.path),
+                  NODE_DB_OWNER_LEASE_OWNED_SELF);
+        /* Replace the registered spelling with a symlink. Without the leaf
+         * check Linux returns the registry's SELF; macOS resolves the target
+         * and returns UNOWNED because its sidecar does not exist. */
+        ASSERT_EQ(rename(ndb.path, target), 0);
+        relocated = true;
+        ASSERT_EQ(symlink(target, ndb.path), 0);
+        ASSERT_EQ(node_db_owner_lease_probe(ndb.path),
+                  NODE_DB_OWNER_LEASE_PROBE_ERROR);
+        ASSERT_EQ(unlink(ndb.path), 0);
+        ASSERT_EQ(rename(target, ndb.path), 0);
+        relocated = false;
+        node_db_owner_lease_release(&ndb);
+        ASSERT_EQ(node_db_owner_lease_probe(ndb.path),
+                  NODE_DB_OWNER_LEASE_UNOWNED);
+        PASS();
+    } _test_next:;
+    if (relocated) {
+        (void)unlink(ndb.path);
+        if (rename(target, ndb.path) != 0) {
+            printf("FAIL restoring owner-probe fixture: %s\n", strerror(errno));
+            failures++;
+        }
+    }
+    node_db_owner_lease_release(&ndb);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 /* An owner lease the harness cannot probe is a refusal, never a guess that
  * the store is free to write. */
 static int test_zd_publish_owner_probe_error(void)
@@ -10740,6 +10809,38 @@ static int test_zd_publish_in_running_node(void)
 }
 #endif
 
+static bool zd_owner_probe_has_group(const struct agent_impact_acc *acc,
+                                    const char *group)
+{
+    for (size_t i = 0; i < acc->groups_len; i++)
+        if (strcmp(acc->groups[i], group) == 0)
+            return true;
+    return false;
+}
+
+static int test_zd_owner_probe_routes(void)
+{
+    int failures = 0;
+    TEST("zcode_dev: database owner paths select leaf proof") {
+        static const char *const paths[] = {
+            "engine/models/src/database_owner_lease.c",
+            "engine/models/include/models/database_owner_lease.h",
+            "tests/harness/src/test_zcode_dev_objects.c",
+        };
+        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            struct agent_impact_acc impact = {0};
+            ASSERT(agent_impact_apply_shared_rules(paths[i], &impact));
+            ASSERT(!impact.groups_lost);
+            ASSERT(zd_owner_probe_has_group(&impact, "zcode_dev_objects"));
+            ASSERT(zd_owner_probe_has_group(&impact, "sqlite"));
+            ASSERT(zd_owner_probe_has_group(&impact, "store_listing"));
+            ASSERT(zd_owner_probe_has_group(&impact, "make_lint_gates"));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Every sub-suite below keeps its package stores (and the node/zcode
  * datadirs around them) in per-pid test-tmp directories that this same
  * process writes, reads back and removes; none of them cuts power or kills a
@@ -10760,7 +10861,10 @@ int test_zcode_dev_objects(void)
     int failures = 0;
     bool zd_prior_store_sync = vcs_package_store_deferred_sync_enabled();
     vcs_package_store_set_deferred_sync(true);
+    failures += test_zd_owner_probe_routes();
 #if !defined(_WIN32)
+    failures += test_zd_owner_probe_directory();
+    failures += test_zd_owner_probe_regular_symlink();
     failures += test_zd_publish_routes_to_store_owner();
     failures += test_zd_publish_owner_probe_error();
     failures += test_zd_publish_store_lease();

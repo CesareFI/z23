@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #if defined(_WIN32)
@@ -178,35 +179,23 @@ static bool node_db_owner_lock_path(char out[NODE_DB_OWNER_PATH_MAX],
 #endif
 }
 
-enum node_db_owner_lease_probe node_db_owner_lease_probe(const char *path)
+static bool owner_lease_owned_self(const char *identity)
 {
-    char identity[NODE_DB_OWNER_PATH_MAX];
-    char lock_path[NODE_DB_OWNER_PATH_MAX];
-    if (!path || !path[0]) return NODE_DB_OWNER_LEASE_PROBE_ERROR;
-    if (strcmp(path, ":memory:") == 0) return NODE_DB_OWNER_LEASE_UNOWNED;
-    if (!platform_path_identity(identity, sizeof(identity), path))
-        return NODE_DB_OWNER_LEASE_PROBE_ERROR;
     pthread_mutex_lock(&g_owner_lease_mutex);
     for (int i = 0; i < NODE_DB_OWNER_LEASES; i++) {
         struct node_db_owner_lease *lease = &g_owner_leases[i];
         if (lease->refs > 0 && lease->pid == getpid() &&
             strcmp(lease->path, identity) == 0) {
             pthread_mutex_unlock(&g_owner_lease_mutex);
-            return NODE_DB_OWNER_LEASE_OWNED_SELF;
+            return true;
         }
     }
     pthread_mutex_unlock(&g_owner_lease_mutex);
-    if (!node_db_owner_lock_path(lock_path, identity))
-        return NODE_DB_OWNER_LEASE_PROBE_ERROR;
-#if defined(__APPLE__)
-    if (access(path, F_OK) != 0)
-        return errno == ENOENT ? NODE_DB_OWNER_LEASE_UNOWNED
-                               : NODE_DB_OWNER_LEASE_PROBE_ERROR;
-#endif
-    int fd = owner_lease_open(lock_path, false, false);
-    if (fd < 0)
-        return errno == ENOENT ? NODE_DB_OWNER_LEASE_UNOWNED
-                               : NODE_DB_OWNER_LEASE_PROBE_ERROR;
+    return false;
+}
+
+static enum node_db_owner_lease_probe owner_lease_probe_fd(int fd)
+{
 #if defined(__APPLE__)
     /* The read-only probe descriptor cannot carry F_SETLK write attempts, so
      * the lease byte is interrogated instead: F_GETLK reports whichever
@@ -238,6 +227,33 @@ enum node_db_owner_lease_probe node_db_owner_lease_probe(const char *path)
     return saved == EWOULDBLOCK || saved == EAGAIN
         ? NODE_DB_OWNER_LEASE_LIVE : NODE_DB_OWNER_LEASE_PROBE_ERROR;
 #endif
+}
+
+enum node_db_owner_lease_probe node_db_owner_lease_probe(const char *path)
+{
+    char identity[NODE_DB_OWNER_PATH_MAX];
+    char lock_path[NODE_DB_OWNER_PATH_MAX];
+    if (!path || !path[0]) return NODE_DB_OWNER_LEASE_PROBE_ERROR;
+    if (strcmp(path, ":memory:") == 0) return NODE_DB_OWNER_LEASE_UNOWNED;
+#if !defined(_WIN32)
+    /* Inspect the caller's leaf before realpath can erase a symlink or the
+     * registry/sidecar can classify an invalid database as unowned. */
+    struct stat st;
+    if (lstat(path, &st) != 0)
+        return errno == ENOENT ? NODE_DB_OWNER_LEASE_UNOWNED
+                               : NODE_DB_OWNER_LEASE_PROBE_ERROR;
+    if (!S_ISREG(st.st_mode)) return NODE_DB_OWNER_LEASE_PROBE_ERROR;
+#endif
+    if (!platform_path_identity(identity, sizeof(identity), path))
+        return NODE_DB_OWNER_LEASE_PROBE_ERROR;
+    if (owner_lease_owned_self(identity)) return NODE_DB_OWNER_LEASE_OWNED_SELF;
+    if (!node_db_owner_lock_path(lock_path, identity))
+        return NODE_DB_OWNER_LEASE_PROBE_ERROR;
+    int fd = owner_lease_open(lock_path, false, false);
+    if (fd < 0)
+        return errno == ENOENT ? NODE_DB_OWNER_LEASE_UNOWNED
+                               : NODE_DB_OWNER_LEASE_PROBE_ERROR;
+    return owner_lease_probe_fd(fd);
 }
 
 void node_db_owner_lease_release(struct node_db *ndb)

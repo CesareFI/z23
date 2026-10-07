@@ -24,7 +24,10 @@ void node_db_owner_lease_release(struct node_db *ndb);
 
 /* Probe the cross-process ownership lock without changing it.  LIVE means a
  * canonical or explicitly leased mutable handle owns the exact pathname;
- * ERROR is distinct from an offline/unowned database and must fail closed. */
+ * ERROR is distinct from an offline/unowned database and must fail closed.
+ * On POSIX, inspect the caller's database leaf before resolving identity:
+ * missing leaves are UNOWNED; symlinks and other nonregular leaves are ERROR.
+ * The special :memory: path is UNOWNED. */
 enum node_db_owner_lease_probe node_db_owner_lease_probe(const char *path);
 
 #endif
