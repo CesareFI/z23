@@ -6705,16 +6705,52 @@ static int dlx_row_utf8_refuses(const char *name, const char *text, bool detail)
 {
     int failures = 0;
     TEST(name) {
-        char out[8192];
+        char out[8192], unchanged[8192];
         size_t len = 123;
         memset(out, 'X', sizeof(out));
+        memcpy(unchanged, out, sizeof(out));
         ASSERT(!zcl_native_dev_land_test_encode_text(text, detail, out,
                                                      sizeof(out), &len));
         ASSERT_EQ(len, 123);
-        ASSERT_EQ(out[0], 'X');
+        ASSERT(memcmp(out, unchanged, sizeof(out)) == 0);
         PASS();
     } _test_next:;
     return failures;
+}
+
+static bool dlx_row_text_roundtrips(const char *out, size_t len,
+                                    const char *text, bool detail)
+{
+    struct json_value doc;
+    json_init(&doc);
+    bool ok = json_read(&doc, out, len);
+    const char *decoded = json_get_str(json_get(&doc, detail ? "detail" : "note"));
+    ok = ok && decoded && strcmp(decoded, text) == 0;
+    json_free(&doc);
+    return ok;
+}
+
+static bool dlx_row_empty_capacity(bool detail)
+{
+    char out[8192];
+    size_t len = 0;
+    if (!zcl_native_dev_land_test_encode_text("", detail, out, sizeof(out), &len))
+        return false;
+    if (len >= sizeof(out))
+        return false;
+    size_t exact = len + 1;
+    if (!zcl_native_dev_land_test_encode_text("", detail, out, exact, &len))
+        return false;
+    size_t unchanged = len;
+    if (zcl_native_dev_land_test_encode_text("", detail, out, exact - 1, &len) ||
+        len != unchanged)
+        return false;
+    if (zcl_native_dev_land_test_encode_text("", detail, out, 0, &len) ||
+        len != unchanged)
+        return false;
+    if (zcl_native_dev_land_test_encode_text("", detail, NULL, 1, &len))
+        return false;
+    return len == unchanged;
 }
 
 static int dlx_row_utf8_valid(bool detail)
@@ -6735,6 +6771,7 @@ static int dlx_row_utf8_valid(bool detail)
                                                     sizeof(out), &len));
         ASSERT(strstr(out, escaped) != NULL);
         ASSERT_EQ(len, strlen(out));
+        ASSERT(dlx_row_text_roundtrips(out, len, text, detail));
         ASSERT(len + 1 < sizeof(exact));
         ASSERT(zcl_native_dev_land_test_encode_text(text, detail, exact,
                                                     len + 1, &got));
@@ -6744,6 +6781,7 @@ static int dlx_row_utf8_valid(bool detail)
         ASSERT(!zcl_native_dev_land_test_encode_text(text, detail, exact,
                                                      len, &got));
         ASSERT_EQ(got, 123);
+        ASSERT(dlx_row_empty_capacity(detail));
         PASS();
     } _test_next:;
     return failures;
@@ -6774,11 +6812,15 @@ static int dlx_row_utf8_cases(void)
     static const struct { const char *name; const char *text; } cases[] = {
         { "land: refuse stray continuation in a row", "a\x80" },
         { "land: refuse overlong two-byte UTF-8 in a row", "\xc0\xaf" },
+        { "land: refuse C1 overlong UTF-8 in a row", "\xc1\xbf" },
         { "land: refuse overlong three-byte UTF-8 in a row", "\xe0\x80\xaf" },
         { "land: refuse overlong four-byte UTF-8 in a row", "\xf0\x80\x80\xaf" },
         { "land: refuse a UTF-16 surrogate in a row", "\xed\xa0\x80" },
         { "land: refuse a scalar above U+10FFFF in a row", "\xf4\x90\x80\x80" },
         { "land: refuse an illegal lead byte in a row", "\xff" },
+        { "land: refuse F5 lead byte in a row", "\xf5\x80\x80\x80" },
+        { "land: refuse an illegal lead after a prefix in a row", "prefix\xff" },
+        { "land: refuse bad two-byte continuation in a row", "\xc2" "A" },
         { "land: refuse bad continuation in a row", "\xe2(\xa1" },
         { "land: refuse truncated two-byte UTF-8 in a row", "\xc2" },
         { "land: refuse truncated three-byte UTF-8 in a row", "\xe2\x82" },

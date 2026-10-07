@@ -2510,7 +2510,8 @@ void zcl_native_handle_dev_land(
     struct zcl_command_reply *reply);
 #if defined(ZCL_TESTING)
 /* Serialize a zero-initialized landing row with text in note or detail.
- * Refusal leaves len_out unchanged; text must fit its selected field. */
+ * Refusal leaves len_out unchanged; text must fit its selected field.
+ * Invalid UTF-8 leaves the entire output buffer unchanged. */
 bool zcl_native_dev_land_test_encode_text(const char *text, bool detail,
                                          char *out, size_t cap,
                                          size_t *len_out);
