@@ -68,6 +68,20 @@ static bool copy_address(const struct addrinfo *entry, zcl_net_address *output)
     return false;
 }
 
+static void append_distinct(zcl_endpoint *endpoint, const struct addrinfo *entry)
+{
+    zcl_net_address candidate = {0};
+    if (!copy_address(entry, &candidate)) return;
+    /* copy_address admits only 4/16 bytes. The caller bounds count below 8;
+     * retain first-seen order without spending slots on repeated OS answers. */
+    for (size_t i = 0; i < endpoint->address_count; ++i) {
+        const zcl_net_address *present = &endpoint->addresses[i];
+        if (present->length == candidate.length &&
+            memcmp(present->bytes, candidate.bytes, candidate.length) == 0) return;
+    }
+    endpoint->addresses[endpoint->address_count++] = candidate;
+}
+
 static zcl_status resolve_addresses(zcl_endpoint *endpoint)
 {
     char hostname[ZCL_NET_HOST_MAX + 1], port[6];
@@ -85,8 +99,7 @@ static zcl_status resolve_addresses(zcl_endpoint *endpoint)
     const struct addrinfo *entry = addresses;
     for (size_t visited = 0; entry != NULL && visited < 32; ++visited) {
         if (endpoint->address_count == ZCL_NET_ADDRESSES_MAX) break;
-        if (copy_address(entry, &endpoint->addresses[endpoint->address_count]))
-            ++endpoint->address_count;
+        append_distinct(endpoint, entry);
         entry = entry->ai_next;
     }
     freeaddrinfo(addresses);
