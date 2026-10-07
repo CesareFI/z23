@@ -159,6 +159,9 @@ static void api_name_service_filtered_directory_json(
     bool supports_onion = false;
     bool supports_direct_p2p = false;
     bool supports_bootstrap = false;
+    bool valid_onion = false;
+    bool valid_direct_p2p = false;
+    bool valid_bootstrap = false;
 
     json_set_object(out);
     api_name_service_copy_str_field(out, base, "schema");
@@ -213,10 +216,14 @@ static void api_name_service_filtered_directory_json(
             endpoint_count++;
             valid_endpoint =
                 json_get_bool(json_get(record, "endpoint_hint_valid"));
-            if (valid_endpoint)
+            if (valid_endpoint) {
                 valid_endpoint_count++;
-            else
+                api_name_service_accumulate_transport(record, &valid_onion,
+                                                      &valid_direct_p2p,
+                                                      &valid_bootstrap);
+            } else {
                 invalid_endpoint_count++;
+            }
 
             json_copy(&copy, record);
             json_push_back(&endpoints, &copy);
@@ -237,9 +244,9 @@ static void api_name_service_filtered_directory_json(
     api_name_service_routing_plan_json(&plan, endpoint_count,
                                        valid_endpoint_count,
                                        invalid_endpoint_count,
-                                       supports_onion,
-                                       supports_direct_p2p,
-                                       supports_bootstrap);
+                                       valid_onion,
+                                       valid_direct_p2p,
+                                       valid_bootstrap);
     json_push_kv(out, "routing_plan", &plan);
     json_free(&plan);
 

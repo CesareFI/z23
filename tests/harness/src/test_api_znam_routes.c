@@ -133,6 +133,55 @@ int api_directory_store_status_focused_tests(void)
     return failures;
 }
 
+static bool api_test_filtered_valid_routing(struct node_db *db)
+{
+    static const char *queries[] = {
+        "endpoint_only=true", "transport=p2p", "valid=false",
+        "transport=p2p&valid=true"
+    };
+    static const char *preferred[] = {"onion", "none", "none", "p2p"};
+    struct znam_entry entry = {0};
+    if (!db_znam_find(db, "alice", &entry))
+        return false;
+    snprintf(entry.name, sizeof(entry.name), "filtered-routing");
+    bool ok = db_znam_save(db, &entry) &&
+              db_znam_text_save(db, entry.name, "service.p2p", "peer:0") &&
+              db_znam_text_save(db, entry.name, "service.onion", "alice.onion");
+    for (size_t i = 0; i < sizeof(queries) / sizeof(queries[0]); i++) {
+        struct json_value result = {0};
+        char path[192];
+        char err[192] = {0};
+        if (i == 3)
+            ok = db_znam_text_save(db, entry.name, "service.p2p", "peer:8033") && ok;
+        snprintf(path, sizeof(path), "/api/v1/names/%s/services?%s",
+                 entry.name, queries[i]);
+        rpc_name_set_state(db);
+        bool resolved = api_name_service_directory_path(entry.name, path,
+                                                        &result, err, sizeof(err));
+        rpc_name_set_state(NULL);
+        const struct json_value *plan = json_get(&result, "routing_plan");
+        const char *actual = json_get_str(json_get(plan, "preferred_transport"));
+        const struct json_value *records = json_get(&result, "records");
+        const struct json_value *p2p = api_test_find_str_field(records, "key", "service.p2p");
+        const char *value = json_get_str(json_get(p2p, "value"));
+        int count = i == 0 ? 2 : 1;
+        ok &= resolved && !err[0] && actual && strcmp(actual, preferred[i]) == 0;
+        ok &= value && strcmp(value, i == 3 ? "peer:8033" : "peer:0") == 0;
+        ok &= json_size(records) == (size_t)count;
+        ok &= json_size(json_get(&result, "endpoints")) == (size_t)count;
+        ok &= json_get_int(json_get(&result, "service_record_count")) == count;
+        ok &= json_get_int(json_get(&result, "endpoint_count")) == count;
+        ok &= json_get_int(json_get(&result, "valid_endpoint_count")) == (i == 0 || i == 3);
+        ok &= json_get_int(json_get(&result, "invalid_endpoint_count")) == (i != 3);
+        ok &= json_get_bool(json_get(&result, "supports_direct_p2p"));
+        ok &= json_get_bool(json_get(&result, "supports_onion")) == (i == 0);
+        ok &= !json_get_bool(json_get(&result, "supports_bootstrap"));
+        ok &= json_get_bool(json_get(plan, "requires_runtime_probe"));
+        json_free(&result);
+    }
+    return ok;
+}
+
 int api_znam_routes_focused_tests(void)
 {
     int failures = 0;
@@ -937,8 +986,11 @@ int api_znam_routes_focused_tests(void)
         }
 
         rpc_name_set_state(NULL);
-        if (opened)
+        if (opened) {
+            bool routing_ok = api_test_filtered_valid_routing(&ndb);
+            ok &= routing_ok;
             node_db_close(&ndb);
+        }
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
         system(cmd);
