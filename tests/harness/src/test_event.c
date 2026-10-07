@@ -964,6 +964,124 @@ static int test_error_ring_dump_json_parses(void)
     return failures;
 }
 
+/* Model the observer's retained bytes without acquiring a real timestamp. */
+static void error_json_fixture(struct error_ring *ring, const char *message,
+                                size_t length, int count)
+{
+    error_ring_init(ring);
+    size_t retained = length;
+    if (retained >= sizeof(ring->entries[0].message))
+        retained = sizeof(ring->entries[0].message) - 1;
+    for (int i = 0; i < count; i++) {
+        ring->entries[i].type = EV_DB_ERROR;
+        ring->entries[i].timestamp_us = 123000000;
+        memcpy(ring->entries[i].message, message, retained);
+        ring->entries[i].message[retained] = '\0';
+    }
+    atomic_store(&ring->write_pos, count);
+    atomic_store(&ring->total_count, count);
+}
+
+static int test_error_ring_dump_json_escaped_message(void)
+{
+    int failures = 0;
+    struct json_value doc;
+    json_init(&doc);
+
+    TEST("error_ring_dump_json preserves escaped message bytes") {
+        const char message[] = "bad \"input\"\\next\n\t\b\f\r\001\037"
+                               "\xc2\xa2\xe2\x82\xac\xf0\x9f\x98\x80";
+        struct error_ring ring;
+        error_json_fixture(&ring, message, sizeof(message) - 1, 1);
+
+        char buf[2048];
+        size_t len = error_ring_dump_json(&ring, buf, sizeof(buf));
+        ASSERT(len > 0 && len < sizeof(buf));
+        ASSERT(json_read(&doc, buf, len));
+        const struct json_value *total = json_get(&doc, "total");
+        ASSERT(total != NULL && total->type == JSON_INT);
+        ASSERT(json_get_int(total) == 1);
+        const struct json_value *errors = json_get(&doc, "errors");
+        ASSERT(errors != NULL && errors->type == JSON_ARR);
+        ASSERT(errors->num_children == 1);
+        const struct json_value *entry = json_at(errors, 0);
+        const struct json_value *msg = json_get(entry, "msg");
+        ASSERT(msg != NULL && msg->type == JSON_STR);
+        ASSERT(strcmp(json_get_str(msg), message) == 0);
+        const struct json_value *type = json_get(entry, "type");
+        ASSERT(type != NULL && type->type == JSON_STR);
+        ASSERT(strcmp(json_get_str(type), event_type_name(EV_DB_ERROR)) == 0);
+        const struct json_value *time = json_get(entry, "time");
+        ASSERT(time != NULL && time->type == JSON_INT);
+        ASSERT(json_get_int(time) == 123);
+        PASS();
+    } _test_next:;
+
+    json_free(&doc);
+    return failures;
+}
+
+static int test_error_ring_dump_json_invalid_utf8(void)
+{
+    int failures = 0;
+    TEST("error_ring_dump_json refuses invalid retained UTF-8") {
+        char split[257];
+        memset(split, 'a', 254);
+        split[254] = '\xc2';
+        split[255] = '\xa2';
+        split[256] = '\0';
+        const char *messages[] = { "\xff", split };
+        const size_t lengths[] = { 1, 256 };
+        for (size_t i = 0; i < 2; i++) {
+            struct error_ring ring;
+            error_json_fixture(&ring, messages[i], lengths[i], 1);
+            char buf[2048];
+            memset(buf, 'X', sizeof(buf));
+            ASSERT(error_ring_dump_json(&ring, buf, sizeof(buf)) == 0);
+            ASSERT(buf[0] == '\0');
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_error_ring_dump_json_capacity(void)
+{
+    int failures = 0;
+    struct json_value doc;
+    json_init(&doc);
+    TEST("error_ring_dump_json refuses partial documents at every boundary") {
+        char message[256];
+        memset(message, 1, sizeof(message) - 1);
+        message[sizeof(message) - 1] = '\0';
+        struct error_ring ring;
+        char small[64];
+        error_json_fixture(&ring, message, sizeof(message) - 1, 1);
+        ASSERT(error_ring_dump_json(&ring, small, sizeof(small)) == 0);
+        ASSERT(small[0] == '\0');
+        error_json_fixture(&ring, message, sizeof(message) - 1, ERROR_RING_SIZE);
+        char full[16384];
+        size_t len = error_ring_dump_json(&ring, full, sizeof(full));
+        ASSERT(len > 2048 && len < sizeof(full));
+        ASSERT(json_read(&doc, full, len));
+        ASSERT(json_get_int(json_get(&doc, "total")) == ERROR_RING_SIZE);
+        const struct json_value *errors = json_get(&doc, "errors");
+        ASSERT(errors != NULL && errors->num_children == ERROR_RING_SIZE);
+        char buf[sizeof(full)];
+        for (size_t capacity = 3; capacity <= len; capacity++) {
+            memset(buf, 'X', sizeof(buf));
+            ASSERT(error_ring_dump_json(&ring, buf, capacity) == 0);
+            ASSERT(buf[0] == '\0');
+            ASSERT(buf[capacity] == 'X');
+        }
+        ASSERT(error_ring_dump_json(&ring, buf, len + 1) == len);
+        ASSERT(memcmp(full, buf, len + 1) == 0);
+        PASS();
+    } _test_next:;
+    json_free(&doc);
+    return failures;
+}
+
 /* A buffer too small to hold even an empty result is refused, not written
  * into (the dump's clamping is size_t and wraps under size 3). */
 static int test_error_ring_dump_json_tiny_buffer(void)
@@ -1161,6 +1279,9 @@ int test_event(void)
     failures += test_async_dispatch_lifecycle();
     failures += test_crash_handler_stderr_survives_exit();
     failures += test_error_ring_dump_json_parses();
+    failures += test_error_ring_dump_json_escaped_message();
+    failures += test_error_ring_dump_json_invalid_utf8();
+    failures += test_error_ring_dump_json_capacity();
     failures += test_error_ring_dump_json_tiny_buffer();
 
     return failures;

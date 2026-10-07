@@ -6,6 +6,8 @@
 
 #include "platform/time_compat.h"
 #include "event/event.h"
+#include "json/json.h"
+#include "zutf8/zutf8.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -52,27 +54,56 @@ const struct error_entry *error_ring_last(const struct error_ring *r)
     return &r->entries[pos];
 }
 
+/* Advance only after a complete write, including room for its terminator. */
+static bool error_json_advance(int written, size_t capacity, size_t *offset)
+{
+    if (written < 0 || (size_t)written >= capacity - *offset)
+        return false;
+    *offset += (size_t)written;
+    return true;
+}
+
+static bool error_json_entry(const struct error_entry *e, char *buf,
+                             size_t capacity, size_t *offset)
+{
+    size_t message_len = 0;
+    while (message_len < sizeof(e->message) && e->message[message_len])
+        message_len++;
+    if (message_len == sizeof(e->message) ||
+        !zutf8_validate_n(e->message, message_len))
+        return false;
+
+    /* Borrow terminated storage synchronously; do not free it as owned JSON.
+     * Each retained byte needs at most six JSON bytes, plus quotes and NUL. */
+    const struct json_value message = {
+        .type = JSON_STR, .val.s = (char *)e->message
+    };
+    char escaped[6 * (sizeof(e->message) - 1) + 3];
+    size_t escaped_len = json_write(&message, escaped, sizeof(escaped));
+    if (escaped_len >= sizeof(escaped))
+        return false;
+    int written = snprintf(buf + *offset, capacity - *offset,
+        "{\"type\":\"%s\",\"time\":%lld,\"msg\":%s}",
+        event_type_name(e->type),
+        (long long)(e->timestamp_us / 1000000), escaped);
+    return error_json_advance(written, capacity, offset);
+}
+
 size_t error_ring_dump_json(const struct error_ring *r, char *buf, size_t sz)
 {
-    /* Every write below assumes at least the three bytes an empty result
-     * needs ("[", "]", NUL). Below that, sz - 2 and sz - 3 wrap as size_t
-     * and the clamps become huge values, so refuse outright. */
+    /* Preserve the existing no-write contract for invalid/tiny buffers. */
     if (!r || !buf || sz < 3) return 0;
 
     int total = atomic_load(&r->total_count);
     int count = total < ERROR_RING_SIZE ? total : ERROR_RING_SIZE;
     int wp = atomic_load(&r->write_pos);
 
-    /* snprintf returns the WOULD-BE length, not the truncated length.
-     * Accumulating that into `off` without clamping lets `off` run past
-     * `sz`, and the next `sz - off` becomes a huge unsigned value — a
-     * buffer overrun on every subsequent write. Clamp after every call. */
+    /* snprintf reports the would-be length. Never advance on truncation. */
     size_t off = 0;
     int wr = snprintf(buf, sz, "{\"total\":%d,\"errors\":[", total);
-    if (wr < 0) return 0;
-    off = (size_t)wr < sz ? (size_t)wr : sz - 1;
+    if (!error_json_advance(wr, sz, &off)) goto refused;
 
-    for (int i = 0; i < count && off < sz - 2; i++) {
+    for (int i = 0; i < count; i++) {
         int idx = (wp - count + i + ERROR_RING_SIZE) % ERROR_RING_SIZE;
         const struct error_entry *e = &r->entries[idx];
         /* Separator only BETWEEN entries: an unconditional comma here
@@ -82,23 +113,19 @@ size_t error_ring_dump_json(const struct error_ring *r, char *buf, size_t sz)
          * as "no recent errors" in exactly the case it exists for. */
         if (i > 0) {
             wr = snprintf(buf + off, sz - off, ",");
-            if (wr < 0) break;
-            off += (size_t)wr < sz - off ? (size_t)wr : sz - off - 1;
+            if (!error_json_advance(wr, sz, &off)) goto refused;
         }
 
-        wr = snprintf(buf + off, sz - off,
-            "{\"type\":\"%s\",\"time\":%lld,\"msg\":\"%s\"}",
-            event_type_name(e->type),
-            (long long)(e->timestamp_us / 1000000),
-            e->message);
-        if (wr < 0) break;
-        off += (size_t)wr < sz - off ? (size_t)wr : sz - off - 1;
+        if (!error_json_entry(e, buf, sz, &off)) goto refused;
     }
 
-    if (off >= sz - 2) off = sz - 3 > 0 ? sz - 3 : 0;
     wr = snprintf(buf + off, sz - off, "]}");
-    if (wr > 0) off += (size_t)wr < sz - off ? (size_t)wr : sz - off - 1;
+    if (!error_json_advance(wr, sz, &off)) goto refused;
     return off;
+
+refused:
+    buf[0] = '\0';
+    return 0;
 }
 
 struct error_ring *error_ring_global(void)
