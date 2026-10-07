@@ -115,6 +115,8 @@ enum platform_directory_result platform_directory_lock_acquire(
 void platform_directory_lock_release(struct platform_directory_lock *lock);
 
 #ifdef ZCL_TESTING
+/* Return and reset this thread's calls to the native listing sort. */
+size_t platform_directory_names_test_take_sort_calls(void);
 /* One-shot seam proving that a successful rename followed by an unprovable
  * directory flush reports OUTCOME_UNKNOWN rather than ordinary failure. */
 void platform_directory_child_move_test_fail_durability_once(void);

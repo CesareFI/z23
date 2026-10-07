@@ -2892,24 +2892,11 @@ AGENT_IMPACT_RULE("platform/modules/platform/src/watcher_lease.c|platform/module
  * source that had no rule at all. Every verdict here was re-derived from the
  * symbols and the preprocessor state, not inherited from a neighbour. */
 
-/* The public header of the retained, owner-verified directory handle. Its .c
- * is carried by the watcher-family rule above, which paired every other
- * member of that family with the header the merge added beside it and missed
- * this one. Re-checked rather than inherited, and the verdict is the same:
- * NOTHING under tests/harness/src names a platform_directory_transaction_,
- * platform_directory_child_ or platform_directory_lock_ symbol, and every one
- * of the twelve includers in tools/command and tools/dev opens its use with
- * "#if defined(_WIN32)" -- checked line by line, the first use in each file
- * sits inside that arm. So no line of the POSIX arm executes on this host and
- * the lint tier alone is honest. What observes it is
- * check-windows-platform-seam, whose mingw -fsyntax-only pass over
- * platform/modules/platform/src compiles directory_transaction.c and therefore this
- * header, plus the directory_transaction and watcher_store rows of the
- * acceptance catalog -- a compile, not an execution. Closing this needs a
- * registered tests/harness/src group that opens a scratch directory through
- * platform_directory_transaction_open and drives the child
- * create/write/replace/unlink path directly. */
-AGENT_IMPACT_RULE("platform/modules/platform/include/platform/directory_transaction.h", "make_lint_gates")
+/* test_zcode_release.c:zr_listing_check observes native listing sort calls
+ * for empty, subdirectory-only, singleton and two-name lists. These rows do
+ * not establish the child replace/unlink contracts. */
+AGENT_IMPACT_RULE("platform/modules/platform/src/directory_transaction.c", "zcode_release make_lint_gates")
+AGENT_IMPACT_RULE("platform/modules/platform/include/platform/directory_transaction.h", "zcode_release make_lint_gates")
 
 /* The internal header of the Windows owner+SYSTEM ACL helper. Its .c sits in
  * the five-Windows-boundary-units rule above, which names .c files only, so

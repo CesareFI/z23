@@ -22,7 +22,9 @@
  *   4. A non-decoding .zid file is a hard BATCH_LOAD error that NAMES the
  *      offending file — never a silently smaller batch, which would
  *      change what an already-issued proof means.
- *   5. A missing releases directory is 0 releases, not a load error.
+ *   5. A missing releases directory is 0 releases, not a load error;
+ *      direct directory listings skip sorting empty and singleton lists,
+ *      exclude subdirectories, and sort larger lists.
  *   6. The named verify errors — DOC_EXPIRED, BAD_SIGNATURE,
  *      NOT_A_RELEASE_BODY, DOC_DECODE_FAILED — each fire on the right
  *      input and ONLY on it.
@@ -50,10 +52,12 @@
 #include "models/database.h"
 #include "models/zanc.h"
 #include "platform/time_compat.h"
+#include "platform/directory_transaction.h"
 #include "test/transaction_lab_simnet.h"
 #include "zid/zid.h"
 #include "zanc/zanc.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1079,6 +1083,85 @@ static int test_zr_mined_anchor(void)
     return failures;
 }
 
+/* Observe the actual sort call independently of sanitizer configuration. */
+static int zr_listing_check(struct platform_directory_transaction *directory,
+                            size_t count, const char *label)
+{
+    struct platform_directory_names names = {0};
+    (void)platform_directory_names_test_take_sort_calls();
+    bool ok = platform_directory_transaction_list_regular(directory, &names);
+    size_t calls = platform_directory_names_test_take_sort_calls();
+    ok = ok && names.count == count && calls == (count > 1 ? 1u : 0u);
+    if (count == 0)
+        ok = ok && names.items == NULL;
+    else if (ok) {
+        ok = strcmp(names.items[0], "a") == 0;
+        if (count == 2)
+            ok = ok && strcmp(names.items[1], "z") == 0;
+    }
+    platform_directory_names_free(&names);
+    printf("zcode_release directory listing: %s sort calls=%zu... %s\n",
+           label, calls, ok ? "OK" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+static bool zr_listing_file(struct platform_directory_transaction *directory,
+                            const char *leaf)
+{
+    struct platform_directory_child file;
+    platform_directory_child_init(&file);
+    bool ok = platform_directory_child_create(directory, leaf, &file);
+    platform_directory_child_close(&file);
+    return ok;
+}
+
+static int zr_listing_cleanup(const char *path)
+{
+    test_cleanup_tmpdir(path);
+    return access(path, F_OK) == 0 || errno != ENOENT ? 1 : 0;
+}
+
+static int zr_directory_listing_case(size_t count, bool subdirectory,
+                                     const char *label)
+{
+    char path[256];
+    if (!test_mkdtemp(path, sizeof(path), "zrel_listing"))
+        return 1;
+    struct platform_directory_transaction directory, child;
+    platform_directory_transaction_init(&directory);
+    platform_directory_transaction_init(&child);
+    bool ready = platform_directory_transaction_open(&directory, path);
+    if (ready && subdirectory)
+        ready = platform_directory_transaction_open_child(&directory, "child", true,
+                    &child) == PLATFORM_DIRECTORY_OK;
+    if (ready && count == 2)
+        ready = zr_listing_file(&directory, "z");
+    if (ready && count > 0)
+        ready = zr_listing_file(&directory, "a");
+    int failures = ready ? zr_listing_check(&directory, count, label) : 1;
+    platform_directory_transaction_close(&child);
+    platform_directory_transaction_close(&directory);
+    /* The helper removes regular files; remove the child directory first. */
+    if (subdirectory) {
+        char child_path[320];
+        int n = snprintf(child_path, sizeof(child_path), "%s/child", path);
+        if (n <= 0 || (size_t)n >= sizeof(child_path))
+            failures++;
+        else
+            failures += zr_listing_cleanup(child_path);
+    }
+    return failures + zr_listing_cleanup(path);
+}
+
+static int test_zr_directory_listing(void)
+{
+    int failures = zr_directory_listing_case(0, false, "existing empty directory");
+    failures += zr_directory_listing_case(0, true, "subdirectory only");
+    failures += zr_directory_listing_case(1, false, "singleton");
+    failures += zr_directory_listing_case(2, false, "two names sorted");
+    return failures;
+}
+
 /* ── entry point ───────────────────────────────────────────────────── */
 
 int test_zcode_release(void)
@@ -1092,6 +1175,7 @@ int test_zcode_release(void)
     failures += test_zr_seed_hygiene();
     failures += test_zr_batch_determinism();
     failures += test_zr_batch_load();
+    failures += test_zr_directory_listing();
     failures += test_zr_verify_errors();
     failures += test_zr_prove_verify();
     failures += test_zr_mined_anchor();

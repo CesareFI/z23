@@ -17,6 +17,7 @@
 #endif
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +49,29 @@ static bool valid_leaf(const char *leaf)
 
 static int name_compare(const void *a, const void *b)
 { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+#ifdef ZCL_TESTING
+static thread_local size_t directory_sort_calls;
+
+size_t platform_directory_names_test_take_sort_calls(void)
+{
+    size_t calls = directory_sort_calls;
+    directory_sort_calls = 0;
+    return calls;
+}
+#endif
+
+static void directory_names_sort(struct platform_directory_names *out)
+{
+#ifdef ZCL_TESTING
+    directory_sort_calls++;
+#endif
+    qsort(out->items, out->count, sizeof(*out->items), name_compare);
+}
+
+/* Empty lists have a null base; singleton lists already have their order. */
+#define DIRECTORY_NAMES_SORT(out) \
+    ((out)->count > 1 ? directory_names_sort(out) : (void)0)
 
 void platform_directory_transaction_init(struct platform_directory_transaction *d)
 { if (d) d->native = UINTPTR_MAX; }
@@ -605,6 +629,28 @@ void platform_directory_lock_release(struct platform_directory_lock *lock)
     platform_directory_lock_init(lock);
 }
 
+static bool directory_names_append_windows(
+    struct platform_directory_names *out, const FILE_ID_BOTH_DIR_INFO *entry)
+{
+    if (out->count >= SIZE_MAX / sizeof(*out->items) ||
+        entry->FileNameLength / sizeof(wchar_t) > INT_MAX) return false;
+    int chars = (int)(entry->FileNameLength / sizeof(wchar_t));
+    int need = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+        entry->FileName, chars, NULL, 0, NULL, NULL);
+    char *name = need > 0 ? zcl_malloc((size_t)need + 1u,
+        "directory_transaction_list_name") : NULL;
+    bool converted = name && WideCharToMultiByte(CP_UTF8,
+        WC_ERR_INVALID_CHARS, entry->FileName, chars, name, need,
+        NULL, NULL) == need;
+    char **items = converted ? zcl_realloc(out->items,
+        (out->count + 1u) * sizeof(*items),
+        "directory_transaction_list_items") : NULL;
+    if (!items) { free(name); return false; }
+    name[need] = 0; out->items = items;
+    out->items[out->count++] = name;
+    return true;
+}
+
 bool platform_directory_transaction_list_regular(
     struct platform_directory_transaction *d, struct platform_directory_names *out)
 {
@@ -632,28 +678,16 @@ bool platform_directory_transaction_list_regular(
         for (;;) {
             if ((entry->FileAttributes & (FILE_ATTRIBUTE_DIRECTORY |
                                           FILE_ATTRIBUTE_REPARSE_POINT)) == 0) {
-                int chars = (int)(entry->FileNameLength / sizeof(wchar_t));
-                int need = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
-                    entry->FileName, chars, NULL, 0, NULL, NULL);
-                char *name = need > 0 ? zcl_malloc((size_t)need + 1u,
-                    "directory_transaction_list_name") : NULL;
-                char **items = name ? zcl_realloc(out->items,
-                    (out->count + 1u) * sizeof(*items),
-                    "directory_transaction_list_items") : NULL;
-                if (!items || WideCharToMultiByte(CP_UTF8,
-                    WC_ERR_INVALID_CHARS, entry->FileName, chars, name, need,
-                    NULL, NULL) != need) {
-                    free(name); platform_directory_names_free(out); return false;
+                if (!directory_names_append_windows(out, entry)) {
+                    platform_directory_names_free(out); return false;
                 }
-                name[need] = 0; out->items = items;
-                out->items[out->count++] = name;
             }
             if (!entry->NextEntryOffset) break;
             entry = (FILE_ID_BOTH_DIR_INFO *)
                 ((BYTE *)entry + entry->NextEntryOffset);
         }
     }
-    qsort(out->items, out->count, sizeof(*out->items), name_compare);
+    DIRECTORY_NAMES_SORT(out);
     return true;
 }
 
@@ -804,7 +838,52 @@ enum platform_directory_result platform_directory_child_unlink_result(struct pla
 bool platform_directory_child_unlink(struct platform_directory_transaction*d,const char*l,bool missing){enum platform_directory_result r=platform_directory_child_unlink_result(d,l);return r==PLATFORM_DIRECTORY_OK||(missing&&r==PLATFORM_DIRECTORY_MISSING);}
 enum platform_directory_result platform_directory_lock_acquire(struct platform_directory_transaction*d,const char*l,bool create,enum platform_directory_lock_mode mode,struct platform_directory_lock*lock){if(!lock||lock->native!=UINTPTR_MAX)return PLATFORM_DIRECTORY_INVALID;struct platform_directory_child f;platform_directory_child_init(&f);enum platform_directory_result r=platform_directory_child_open_result(d,l,create,create,&f,NULL);if(r!=PLATFORM_DIRECTORY_OK)return r;if(flock(ff(&f),(mode==PLATFORM_DIRECTORY_LOCK_EXCLUSIVE?LOCK_EX:LOCK_SH)|LOCK_NB)!=0){platform_directory_child_close(&f);return errno==EWOULDBLOCK||errno==EAGAIN?PLATFORM_DIRECTORY_REFUSED:PLATFORM_DIRECTORY_IO;}lock->native=f.native;f.native=UINTPTR_MAX;return PLATFORM_DIRECTORY_OK;}
 void platform_directory_lock_release(struct platform_directory_lock*l){if(!l||l->native==UINTPTR_MAX)return;(void)flock((int)l->native,LOCK_UN);close((int)l->native);platform_directory_lock_init(l);}
-bool platform_directory_transaction_list_regular(struct platform_directory_transaction*d,struct platform_directory_names*out){if(!out)return false;memset(out,0,sizeof(*out));if(!d)return false;int dupfd=dup(dd(d));DIR*dir=dupfd>=0?fdopendir(dupfd):NULL;if(!dir){if(dupfd>=0)close(dupfd);return false;}struct dirent*e;while((e=readdir(dir))){struct stat s;if(!valid_leaf(e->d_name)||fstatat(dd(d),e->d_name,&s,AT_SYMLINK_NOFOLLOW)||!S_ISREG(s.st_mode))continue;char*n=zcl_strdup(e->d_name,"directory-child-name");if(!n){closedir(dir);platform_directory_names_free(out);return false;}char**items=zcl_realloc(out->items,(out->count+1)*sizeof(*items),"directory-child-list");if(!items){free(n);closedir(dir);platform_directory_names_free(out);return false;}out->items=items;out->items[out->count++]=n;}closedir(dir);qsort(out->items,out->count,sizeof(*out->items),name_compare);return true;}
+static DIR *directory_stream_open(struct platform_directory_transaction *d)
+{
+    int dupfd = dup(dd(d));
+    DIR *dir = dupfd >= 0 ? fdopendir(dupfd) : NULL;
+    if (!dir && dupfd >= 0) close(dupfd);
+    return dir;
+}
+
+static bool directory_names_append_posix(struct platform_directory_names *out,
+                                         const char *leaf)
+{
+    if (out->count >= SIZE_MAX / sizeof(*out->items)) return false;
+    char *name = zcl_strdup(leaf, "directory-child-name");
+    if (!name) return false;
+    char **items = zcl_realloc(out->items,
+        (out->count + 1u) * sizeof(*items), "directory-child-list");
+    if (!items) { free(name); return false; }
+    out->items = items;
+    out->items[out->count++] = name;
+    return true;
+}
+
+bool platform_directory_transaction_list_regular(
+    struct platform_directory_transaction *d, struct platform_directory_names *out)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!d) return false;
+    DIR *dir = directory_stream_open(d);
+    if (!dir) return false;
+    struct dirent *entry;
+    while ((entry = readdir(dir))) {
+        struct stat info;
+        if (!valid_leaf(entry->d_name) ||
+            fstatat(dd(d), entry->d_name, &info, AT_SYMLINK_NOFOLLOW) ||
+            !S_ISREG(info.st_mode)) continue;
+        if (!directory_names_append_posix(out, entry->d_name)) {
+            closedir(dir);
+            platform_directory_names_free(out);
+            return false;
+        }
+    }
+    closedir(dir);
+    DIRECTORY_NAMES_SORT(out);
+    return true;
+}
 #endif
 
 enum platform_directory_result platform_directory_child_move_between(
