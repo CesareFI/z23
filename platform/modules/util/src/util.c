@@ -228,7 +228,7 @@ void GetConfigFilePath(const char *datadir, char *out, size_t out_size)
     snprintf(out, out_size, "%s/%s", dir, ZCL_NODE_CONFIG_FILENAME);
 }
 
-/* -datadir= / --datadir= from ANYWHERE in argv.
+/* Last nonempty -datadir= / --datadir= from ANYWHERE in argv.
  *
  * The argument TABLE cannot answer this on its own: ParseParameters stops at
  * the first token that does not begin with '-', so for a CLI invocation like
@@ -245,6 +245,7 @@ bool ArgvDataDir(int argc, const char *const argv[], char *out, size_t out_size)
     out[0] = '\0';
     if (!argv)
         return false;
+    bool found = false;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!a)
@@ -256,9 +257,9 @@ bool ArgvDataDir(int argc, const char *const argv[], char *out, size_t out_size)
         if (!a[9])
             continue;
         snprintf(out, out_size, "%s", a + 9);
-        return true;
+        found = true;
     }
-    return false;
+    return found;
 }
 const char *GetArg(const char *arg, const char *default_val)
 {

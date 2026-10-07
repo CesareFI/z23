@@ -250,6 +250,46 @@ static int test_argv_datadir_scans_past_a_subcommand(void)
     return failures;
 }
 
+static int test_argv_datadir_last_nonempty_wins(void)
+{
+    int failures = 0;
+
+    TEST("node-config: the last nonempty -datadir wins across argv") {
+        char out[512], first[512], last[512];
+        char first_flag[1024], last_flag[1024], double_flag[1024];
+        test_fmt_tmpdir(first, sizeof(first), "node_conf", "first");
+        test_fmt_tmpdir(last, sizeof(last), "node_conf", "last");
+        snprintf(first_flag, sizeof(first_flag), "-datadir=%s", first);
+        snprintf(last_flag, sizeof(last_flag), "-datadir=%s", last);
+        snprintf(double_flag, sizeof(double_flag), "--datadir=%s", first);
+
+        const char *duplicate[] = { "z23", first_flag, last_flag };
+        ncf_set_argv(duplicate, 3);
+        ASSERT(ArgvDataDir(3, duplicate, out, sizeof(out)));
+        ASSERT_STR_EQ(out, last);
+        ASSERT_STR_EQ(out, GetArg("-datadir", "unset"));
+
+        const char *command[] = { "z23", "status", first_flag, last_flag };
+        ncf_set_argv(command, 4);
+        ASSERT(ArgvDataDir(4, command, out, sizeof(out)));
+        ASSERT_STR_EQ(out, last);
+        ASSERT_STR_EQ(GetArg("-datadir", "unset"), "unset");
+
+        const char *mixed[] = { "z23", double_flag, NULL, last_flag,
+                                "--datadir=" };
+        ASSERT(ArgvDataDir(5, mixed, out, sizeof(out)));
+        ASSERT_STR_EQ(out, last);
+
+        const char *single[] = { "z23", first_flag };
+        ASSERT(ArgvDataDir(2, single, out, sizeof(out)));
+        ASSERT_STR_EQ(out, first);
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_argv_datadir_absent_and_degenerate(void)
 {
     int failures = 0;
@@ -357,6 +397,7 @@ int test_node_config_file(void)
     failures += test_path_resolution_creates_nothing();
     failures += test_path_falls_back_to_the_argument_table();
     failures += test_argv_datadir_scans_past_a_subcommand();
+    failures += test_argv_datadir_last_nonempty_wins();
     failures += test_argv_datadir_absent_and_degenerate();
     failures += test_log_accept_null_category();
     failures += test_log_accept_named_category();
