@@ -10,14 +10,28 @@
 
 #include "test/test_core.h"
 #include "health/heartbeat.h"
+#include "json/json.h"
 #include "core/utiltime.h"
 
 #include <stdatomic.h>
 #include <string.h>
 #include <time.h>
 
+/* ASSERT jumps out of the subcase. Release its isolated ring and worker
+ * before recording an assertion failure, including partially filled rings. */
+#define HEALTH_ASSERT(cond) do { \
+    if (!(cond)) { \
+        health_reset_for_test(); \
+        printf("FAIL at %s:%d (%s)\n", __FILE__, __LINE__, #cond); \
+        failures++; goto _test_next; \
+    } \
+} while (0)
+
 static _Atomic int g_stall_count;
 static _Atomic int g_last_ctx_value;
+static bool g_cleanup_inject_context;
+static bool g_cleanup_inject_prefix;
+static bool g_cleanup_injected;
 
 static void stall_cb(void *ctx)
 {
@@ -51,19 +65,19 @@ static int test_heartbeat_register_and_snapshot(void)
 
         health_subsystem_id id = health_register("test.foo", 10,
                                                   stall_cb, (void *)0xAA);
-        ASSERT(id >= 0);
+        HEALTH_ASSERT(id >= 0);
 
         struct health_snapshot snap[4];
         int n = health_snapshot_all(snap, 4);
-        ASSERT(n == 1);
-        ASSERT_STR_EQ(snap[0].name, "test.foo");
-        ASSERT(snap[0].deadline_secs == 10);
-        ASSERT(snap[0].on_stall_fired == 0);
-        ASSERT(!snap[0].currently_stalled);
+        HEALTH_ASSERT(n == 1);
+        HEALTH_ASSERT(strcmp(snap[0].name, "test.foo") == 0);
+        HEALTH_ASSERT(snap[0].deadline_secs == 10);
+        HEALTH_ASSERT(snap[0].on_stall_fired == 0);
+        HEALTH_ASSERT(!snap[0].currently_stalled);
 
         health_unregister(id);
         n = health_snapshot_all(snap, 4);
-        ASSERT(n == 0);
+        HEALTH_ASSERT(n == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -78,13 +92,13 @@ static int test_heartbeat_edge_triggered_stall(void)
         atomic_store(&g_last_ctx_value, 0);
 
         health_set_check_interval_ms(20);
-        ASSERT(health_start());
+        HEALTH_ASSERT(health_start());
 
         /* Deadline = 1s; wait > 1.1s without heartbeating. The sweeper runs
          * every 20ms; the edge trigger must clamp to exactly one call. */
         health_subsystem_id id = health_register("test.bar", 1,
                                                   stall_cb, (void *)0xBB);
-        ASSERT(id >= 0);
+        HEALTH_ASSERT(id >= 0);
 
         sleep_ms(1300);
 
@@ -93,7 +107,11 @@ static int test_heartbeat_edge_triggered_stall(void)
             printf("FAIL (expected 1 stall fire, got %d)\n", n);
             failures++; goto _cleanup;
         }
-        ASSERT(atomic_load(&g_last_ctx_value) == 0xBB);
+        if (g_cleanup_inject_context) {
+            atomic_store(&g_last_ctx_value, 0);
+            g_cleanup_injected = true;
+        }
+        HEALTH_ASSERT(atomic_load(&g_last_ctx_value) == 0xBB);
 
         /* A fresh heartbeat re-arms the edge. Subsequent stall should
          * fire one more time. */
@@ -121,11 +139,11 @@ static int test_heartbeat_resets_freshness(void)
         health_reset_for_test();
         atomic_store(&g_stall_count, 0);
         health_set_check_interval_ms(20);
-        ASSERT(health_start());
+        HEALTH_ASSERT(health_start());
 
         health_subsystem_id id = health_register("test.baz", 1,
                                                   stall_cb, NULL);
-        ASSERT(id >= 0);
+        HEALTH_ASSERT(id >= 0);
 
         /* Beat every 100ms for 1.5s. Deadline is 1s, so freshness is
          * always within budget; stall must not fire. */
@@ -156,11 +174,16 @@ static int test_heartbeat_registry_full(void)
         for (int i = 0; i < HEALTH_REGISTRY_CAP; i++) {
             snprintf(name, sizeof(name), "test.fill.%d", i);
             ids[i] = health_register(name, 10, stall_cb, NULL);
-            ASSERT(ids[i] >= 0);
+            if (g_cleanup_inject_prefix && i == 3 && ids[i] >= 0) {
+                /* Four real slots exist; fail the real assertion below. */
+                ids[i] = HEALTH_INVALID_ID;
+                g_cleanup_injected = true;
+            }
+            HEALTH_ASSERT(ids[i] >= 0);
         }
         health_subsystem_id overflow = health_register("test.overflow", 10,
                                                         stall_cb, NULL);
-        ASSERT(overflow == HEALTH_INVALID_ID);
+        HEALTH_ASSERT(overflow == HEALTH_INVALID_ID);
 
         for (int i = 0; i < HEALTH_REGISTRY_CAP; i++)
             health_unregister(ids[i]);
@@ -197,14 +220,14 @@ static int test_heartbeat_periodic_tick(void)
         health_reset_for_test();
         atomic_store(&g_stall_count, 0);
         health_set_check_interval_ms(20);
-        ASSERT(health_start());
+        HEALTH_ASSERT(health_start());
 
         /* period = 1s. Over 3.3s we expect ~3 fires; the 2..5 band tolerates
          * sweeper jitter. Poll a monotonic clock so the count is judged at the
          * real 3300ms boundary rather than after a fixed sleep. */
         health_subsystem_id id = health_register_periodic("test.tick", 1,
                                                            stall_cb, NULL);
-        ASSERT(id >= 0);
+        HEALTH_ASSERT(id >= 0);
 
         const int64_t start_us  = monotonic_us();
         const int64_t window_us = 3300 * 1000;  /* observe over 3.3s real time */
@@ -244,9 +267,55 @@ _cleanup:
     return failures;
 }
 
+/* Expected inner failures use the same assertion exit as the real subcases.
+ * The marker separates an injected verdict from an acquisition failure. */
+static int heartbeat_failing_subcase(bool context_case, bool *injected)
+{
+    g_cleanup_injected = false;
+    g_cleanup_inject_context = context_case;
+    g_cleanup_inject_prefix = !context_case;
+    int failures = context_case
+        ? test_heartbeat_edge_triggered_stall()
+        : test_heartbeat_registry_full();
+    g_cleanup_inject_context = false;
+    g_cleanup_inject_prefix = false;
+    *injected = g_cleanup_injected;
+    return failures;
+}
+
+static int test_heartbeat_assertion_cleanup(void)
+{
+    int failures = 0;
+    TEST("heartbeat: expected inner failures release worker and prefix slots") {
+        for (int kind = 0; kind < 2; kind++) {
+            bool injected = false;
+            int inner = heartbeat_failing_subcase(kind == 0, &injected);
+            struct health_snapshot snap[HEALTH_REGISTRY_CAP];
+            int retained = health_snapshot_all(snap, HEALTH_REGISTRY_CAP);
+            struct json_value out;
+            json_init(&out);
+            json_set_object(&out);
+            bool dumped = health_dump_state_json(&out, NULL);
+            const struct json_value *running = json_get(&out, "sweeper_running");
+            bool stopped = running && running->type == JSON_BOOL &&
+                           !json_get_bool(running);
+            json_free(&out);
+            /* Observe before cleanup; contain a restored defect afterward. */
+            health_reset_for_test();
+            ASSERT(injected);
+            ASSERT(inner == 1);
+            ASSERT(retained == 0);
+            ASSERT(dumped && stopped);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_heartbeat(void)
 {
     int failures = 0;
+    failures += test_heartbeat_assertion_cleanup();
     failures += test_heartbeat_register_and_snapshot();
     failures += test_heartbeat_invalid_inputs();
     failures += test_heartbeat_registry_full();
