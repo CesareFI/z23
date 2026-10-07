@@ -5,6 +5,7 @@
 #include "test/test_core.h"
 #include "util/alerts.h"
 #include "event/event.h"
+#include "json/json.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -141,6 +142,44 @@ static int test_add_custom_rule(void)
         ASSERT(!alerts_add_rule(&custom));
         ASSERT(alerts_rule_count() == 7);
 
+        alerts_shutdown();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_rule_name_boundary(void)
+{
+    int failures = 0;
+    TEST("alerts: rule names require an in-field terminator") {
+        alerts_shutdown();
+        unsetenv("ZCL_ALERTS_DISABLE");
+        unsetenv("ZCL_ALERT_WEBHOOK_URL");
+        alerts_init();
+        size_t before = alerts_rule_count();
+        struct alert_rule rule = {
+            .trigger = EV_TCP_CONNECTED,
+            .threshold = 1,
+            .window_sec = 60,
+            .cooldown_sec = 60,
+            .enabled = true,
+        };
+        memset(rule.name, 'A', sizeof(rule.name));
+        ASSERT(!alerts_add_rule(&rule));
+        ASSERT(alerts_rule_count() == before);
+        char buf[4096];
+        size_t len = alerts_report_json(buf, sizeof(buf));
+        ASSERT(len > 0 && len < sizeof(buf));
+        struct json_value doc;
+        json_init(&doc);
+        ASSERT(json_read(&doc, buf, len));
+        ASSERT(json_get_int(json_get(&doc, "total_rules")) == (int64_t)before);
+        json_free(&doc);
+        rule.name[sizeof(rule.name) - 1] = '\0';
+        ASSERT(alerts_add_rule(&rule));
+        ASSERT(alerts_rule_count() == before + 1);
+        ASSERT(!alerts_add_rule(&rule));
+        ASSERT(alerts_rule_count() == before + 1);
         alerts_shutdown();
         PASS();
     } _test_next:;
@@ -375,6 +414,7 @@ int test_alerts(void)
     failures += test_cooldown_suppresses_repeat();
     failures += test_multi_event_threshold();
     failures += test_add_custom_rule();
+    failures += test_rule_name_boundary();
     failures += test_report_json_shape();
     failures += test_reset_clears_state();
     failures += test_rule_table_full();

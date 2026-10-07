@@ -372,7 +372,8 @@ void alerts_shutdown(void)
 
 bool alerts_add_rule(const struct alert_rule *rule)
 {
-    if (!rule || !rule->name[0]) return false;
+    if (!rule || !rule->name[0] ||
+        !memchr(rule->name, '\0', sizeof(rule->name))) return false;
 
     pthread_mutex_lock(&g_lock);
 
