@@ -276,6 +276,62 @@ static int case_agreement(void)
     return failures;
 }
 
+static void maximal_missing_sources(struct fd_attestation att[6])
+{
+    const char *origin = "ooooooooooooooo";
+    const char *reason = "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr";
+
+    answered(&att[0], "baked", k_pin_a);
+    answered(&att[1], "dns", k_pin_a);
+    for (size_t i = 2; i < 6; i++)
+        fd_attestation_unreachable(&att[i], origin, reason);
+}
+
+static int case_unreachable_list_bounds(void)
+{
+    int failures = 0;
+    const char *three =
+        "ooooooooooooooo=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr, "
+        "ooooooooooooooo=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr, "
+        "ooooooooooooooo=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr";
+    struct fd_attestation att[6];
+    struct fd_agreement got;
+
+    maximal_missing_sources(att);
+
+    fd_agree(att + 2, 3, &got);
+    FD_CHECK("three maximal missing sources remain exact",
+             got.verdict == FD_VERDICT_NO_QUORUM && got.total == 3 &&
+             got.answered == 0 && strlen(got.unreachable) == 145 &&
+             strcmp(got.unreachable, three) == 0);
+    fd_agree(att, 5, &got);
+    FD_CHECK("a complete maximal list preserves quorum",
+             got.verdict == FD_VERDICT_AGREED && got.answered == 2 &&
+             strcmp(got.agreed.text, k_pin_a) == 0 &&
+             strcmp(got.unreachable, three) == 0);
+    return failures;
+}
+
+static int case_unreachable_list_overflow(void)
+{
+    int failures = 0;
+    struct fd_attestation att[6];
+    struct fd_agreement got;
+
+    maximal_missing_sources(att);
+    fd_agree(att + 2, 4, &got);
+    FD_CHECK("four maximal missing sources report list overflow",
+             got.verdict == FD_VERDICT_NO_QUORUM && got.total == 4 &&
+             got.answered == 0 && got.agreed.text[0] == '\0' &&
+             strcmp(got.unreachable, "unreachable-list-too-long") == 0);
+    fd_agree(att, 6, &got);
+    FD_CHECK("list overflow refuses even with two agreeing answers",
+             got.verdict == FD_VERDICT_NO_QUORUM && got.total == 6 &&
+             got.answered == 2 && got.agreed.text[0] == '\0' &&
+             strcmp(got.unreachable, "unreachable-list-too-long") == 0);
+    return failures;
+}
+
 /* ── 4. The evidence handed to the second stage ────────────────────────── */
 static int case_attest_arg(void)
 {
@@ -604,6 +660,8 @@ int test_z23_front_door(void)
     failures += case_attestation_oversized();
     failures += case_attestation_controls();
     failures += case_agreement();
+    failures += case_unreachable_list_bounds();
+    failures += case_unreachable_list_overflow();
     failures += case_attest_arg();
     failures += case_platform();
     failures += case_dns_query();

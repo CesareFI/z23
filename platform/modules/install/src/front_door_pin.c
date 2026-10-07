@@ -232,15 +232,18 @@ void fd_attestation_unreachable(struct fd_attestation *a, const char *origin,
  * `UNREACHABLE="$UNREACHABLE${UNREACHABLE:+, }$1=$3"` did. A truncated list
  * would be a quiet lie about what was missing, so the buffer is sized for all
  * three sources at their longest and the append refuses to run past it. */
-static void unreachable_append(char *list, size_t list_len,
+static bool unreachable_append(char *list, size_t list_len,
                                const char *origin, const char *reason)
 {
     const size_t used = strlen(list);
     const char *sep = used > 0 ? ", " : "";
     const int want = snprintf(list + used, list_len - used, "%s%s=%s",
                               sep, origin, reason);
-    if (want < 0 || (size_t)want >= list_len - used)
+    if (want < 0 || (size_t)want >= list_len - used) {
         list[used] = '\0';
+        return false;
+    }
+    return true;
 }
 
 void fd_agree(const struct fd_attestation *att, size_t count,
@@ -257,8 +260,13 @@ void fd_agree(const struct fd_attestation *att, size_t count,
     for (size_t i = 0; i < count; i++) {
         const struct fd_attestation *a = &att[i];
         if (!a->answered) {
-            unreachable_append(out->unreachable, sizeof out->unreachable,
-                               a->origin, a->reason);
+            if (!unreachable_append(out->unreachable, sizeof out->unreachable,
+                                    a->origin, a->reason)) {
+                copy_bounded(out->unreachable, sizeof out->unreachable,
+                             "unreachable-list-too-long");
+                out->verdict = FD_VERDICT_NO_QUORUM;
+                return;
+            }
             continue;
         }
         out->answered++;
