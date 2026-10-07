@@ -915,6 +915,12 @@ whose bytes changed, for the plain plan and for the facts plan, and test
 groups for the plain and facts plans. `report` prints a headline, per-commit
 rows and totals.
 
+`report` refuses a result table with embedded NUL bytes, extra records,
+unequal header and row widths, or more than 128 columns. It checks the header
+width in each run against the first accepted header. A complete final row
+without LF is accepted. Runs with an absent `result.tsv` are skipped; other
+result read failures return exit 1 before report output.
+
 A step exits 3 when an object make rebuilt has changed code and the facts
 plan left it out: a code false negative. That object would have been stale if
 the plan had been trusted. The step writes the TU to `MISSES.tsv` and stops

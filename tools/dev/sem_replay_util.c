@@ -262,8 +262,12 @@ bool sr_read_file(const char *path, char **out, size_t *len)
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0)
         return false;
+    errno = 0;
     bool ok = drain(fd, out, len);
+    int read_errno = errno;
     close(fd);
+    if (!ok)
+        errno = read_errno ? read_errno : EIO;
     return ok;
 }
 

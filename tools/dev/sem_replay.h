@@ -51,7 +51,8 @@ int sr_capture(char *const argv[], const char *cwd, const char *log,
                char **out, size_t *len);
 
 /* Success publishes owned NUL-terminated bytes. Refusal leaves *out NULL
- * and *len 0. */
+ * and *len 0. On refusal errno identifies the open/read failure (EIO when
+ * the reader supplies no error code); ENOENT identifies an absent path. */
 bool sr_read_file(const char *path, char **out, size_t *len);
 bool sr_write_file(const char *path, const char *data, size_t len);
 bool sr_mkdirs(const char *path); /* mkdir -p */

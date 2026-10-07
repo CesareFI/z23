@@ -10,6 +10,7 @@
 #include "sem_replay_record.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -189,7 +190,9 @@ static size_t split_tabs(char *line, char **f)
 {
     size_t n = 0;
     line[strcspn(line, "\n")] = '\0';
-    for (char *p = line; p && n < SR_COLS; n++) {
+    for (char *p = line; p; n++) {
+        if (n == SR_COLS)
+            return 0;
         f[n] = p;
         p = strchr(p, '\t');
         if (p)
@@ -211,17 +214,46 @@ static double num(const struct table *t, const struct row *r, const char *name)
     return strtod(col(t, r, name), NULL);
 }
 
-static bool table_add(struct table *t, char *text)
+/* Exactly a header and one complete data record, with optional final LF. */
+static bool table_frame(char *text, size_t len)
 {
+    if (memchr(text, '\0', len) != NULL)
+        return false;
     char *nl = strchr(text, '\n');
     if (nl == NULL)
         return false;
+    char *end = memchr(nl + 1, '\n', len - (size_t)(nl + 1 - text));
+    if (nl + 1 == text + len || (end && end != text + len - 1))
+        return false;
+    return true;
+}
+
+static size_t table_header_width(const char *text)
+{
+    size_t n = 1;
+    for (const char *p = text; *p; p++) {
+        if (*p == '\t' && ++n > SR_COLS)
+            return 0;
+    }
+    return n;
+}
+
+static bool table_add(struct table *t, char *text, size_t len)
+{
+    if (!table_frame(text, len))
+        return false;
+    char *nl = strchr(text, '\n');
     *nl = '\0';
+    size_t local_nh = table_header_width(text);
+    if (local_nh == 0 || (t->head_line != NULL && local_nh != t->nh))
+        return false;
     if (t->head_line == NULL) {
         t->head_line = zcl_strdup(text, "sem_replay_table_head");
         if (t->head_line == NULL)
             return false;
         t->nh = split_tabs(t->head_line, t->h);
+        if (t->nh == 0)
+            return false;
     }
     if (t->n == t->cap) {
         size_t cap = t->cap ? t->cap * 2 : 64;
@@ -237,6 +269,8 @@ static bool table_add(struct table *t, char *text)
         return false;
     r->n = split_tabs(r->line, r->f);
     t->n++;
+    if (r->n == 0 || r->n != t->nh)
+        return false;
     return true;
 }
 
@@ -267,9 +301,15 @@ static bool load_runs(const char *state, struct pricing *pr, struct table *t,
         size_t len = 0;
         snprintf(file, sizeof(file), "%s/%s/result.tsv", path, dirs->v[i]);
         size_t before = t->n;
-        if (sr_read_file(file, &text, &len) && !table_add(t, text))
+        bool read_ok = sr_read_file(file, &text, &len);
+        if (!read_ok && errno == ENOENT)
+            continue; /* A run without a published result is not yet complete. */
+        bool malformed = !read_ok || !table_add(t, text, len);
+        if (malformed)
             fprintf(stderr, "sem-replay: malformed %s\n", file);
         free(text);
+        if (malformed)
+            return false;
         if (t->n == before)
             continue;
         snprintf(file, sizeof(file), "%s/%s/sets.tsv", path, dirs->v[i]);

@@ -1038,10 +1038,11 @@ static bool srt_reader_fixture(const struct srt_fx *fx, char bin[PATH_MAX])
         "static ssize_t injected(int fd, void *p, size_t n) {\n"
         "(void)fd; if(n<3)return -1; int c=calls++;\n"
         "if(c==0){errno=EINTR;return -1;}\n"
-        "if(c==1){memcpy(p,\"abc\",3);return 3;}\n"
+        "if(c==1){memcpy(p,\"x\\nx\",3);return 3;}\n"
         "if(mode){errno=EIO;return -1;}return 0;}\n"
         "#define read injected\n#include \"tools/dev/sem_replay_util.c\"\n"
-        "#undef read\nint64_t clock_now_monotonic_ns(void){return 0;}\n"
+        "#undef read\n#include \"tools/dev/sem_replay_report.c\"\n"
+        "int64_t clock_now_monotonic_ns(void){return 0;}\n"
         "static int check(int capture, int error){\n"
         "char sentinel;char *p=&sentinel;size_t n=99;calls=0;mode=error;\n"
         "char *a[]={\"true\",NULL};\n"
@@ -1049,9 +1050,13 @@ static bool srt_reader_fixture(const struct srt_fx *fx, char bin[PATH_MAX])
         "(sr_read_file(\"/dev/null\",&p,&n)?0:-1);\n"
         "if(error)return rc!=-1||p!=NULL||n!=0||calls!=3;\n"
         "if(rc||!p||n!=3||calls!=3)return 1;\n"
-        "int bad=memcmp(p,\"abc\",4)!=0;\n"
+        "int bad=memcmp(p,\"x\\nx\",4)!=0;\n"
         "struct sr_strv s={.v=&p,.n=1};sr_strv_clear(&s);return bad;}\n"
-        "int main(int argc,char **argv){if(argc!=2)return 9;\n"
+        "int main(int argc,char **argv){\n"
+        "if(argc==3){struct sr_cfg cfg={0};mode=argv[1][0]-'0';\n"
+        "snprintf(cfg.state,sizeof cfg.state,\"%s\",argv[2]);\n"
+        "return sr_report(&cfg);}\n"
+        "if(argc!=2)return 9;\n"
         "int row=argv[1][0]-'0';return check(row/2,row%2);}\n";
     char src[PATH_MAX + 32];
     if (!srt_write(fx->tools, "reader.c", source))
@@ -1409,6 +1414,107 @@ _test_next:;
     return failures + test_srt_darwin_feature();
 }
 
+/* Two fixed-width records; the final row deliberately has no LF. */
+static void srt_table_columns(char body[600], size_t cols)
+{
+    size_t n = 0;
+    for (size_t row = 0; row < 2; row++) {
+        for (size_t c = 0; c < cols; c++) {
+            body[n++] = 'x';
+            if (c + 1 < cols)
+                body[n++] = '\t';
+        }
+        if (row == 0)
+            body[n++] = '\n';
+    }
+    body[n] = '\0';
+}
+
+static int srt_table_case(const struct srt_fx *fx, const char *body,
+                          size_t len, int want, bool later)
+{
+    int failures = 0;
+    char state[PATH_MAX + 32], path[PATH_MAX + 80];
+    const char *rel = later ? "table-multi/run/b/result.tsv" :
+                              "table-bounds/run/a/result.tsv";
+    snprintf(state, sizeof state, "%s/%s", fx->root,
+             later ? "table-multi" : "table-bounds");
+    snprintf(path, sizeof path, "%s/%s", fx->root, rel);
+    const char *argv[] = {fx->tool, "report", "--state", state, NULL};
+    TEST("replay report validates each measured table and header") {
+        ASSERT(srt_write(fx->root, rel, ""));
+        FILE *fp = fopen(path, "wb");
+        ASSERT(fp != NULL);
+        bool wrote = fwrite(body, 1, len, fp) == len;
+        int closed = fclose(fp);
+        ASSERT(wrote);
+        ASSERT_EQ(closed, 0);
+        ASSERT_EQ(srt_run(argv), want);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int srt_table_bounds(const struct srt_fx *fx)
+{
+    char body[600];
+    int failures = 0;
+    srt_table_columns(body, 128);
+    failures += srt_table_case(fx, body, strlen(body), 0, false);
+    srt_table_columns(body, 129);
+    failures += srt_table_case(fx, body, strlen(body), 1, false);
+    static const struct { const char *body; size_t len; int want; } cases[] = {
+        {"x\nx\n\0junk\n", 10, 1}, {"x\nx\0y", 5, 1},
+        {"x\nx\nx\n", 6, 1}, {"x\nx\n", 4, 0},
+        {"x\ty\nx", 5, 1}, {"x\n", 2, 1}
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++)
+        failures += srt_table_case(fx, cases[i].body, cases[i].len,
+                                   cases[i].want, false);
+    if (!srt_write(fx->root, "table-multi/run/a/result.tsv", "x\nx\n"))
+        return failures + 1;
+    failures += srt_table_case(fx, "x\ty\nx\n", 6, 1, true);
+    char *row = strchr(body, '\n') + 1;
+    memcpy(row, "x\n", 3); /* Only the later header exceeds the bound. */
+    failures += srt_table_case(fx, body, strlen(body), 1, true);
+    failures += srt_table_case(fx, "x\nx", 3, 0, true);
+    failures += srt_table_case(fx, "x\nx\n", 4, 0, true);
+    return failures;
+}
+
+static int srt_report_read_errors(const struct srt_fx *fx)
+{
+    int failures = 0;
+    char state[PATH_MAX + 32], path[PATH_MAX + 80], bin[PATH_MAX];
+    snprintf(state, sizeof state, "%s/table-read", fx->root);
+    snprintf(path, sizeof path, "%s/run/a/result.tsv", state);
+    const char *argv[] = {fx->tool, "report", "--state", state, NULL};
+    TEST("replay report skips absent results and refuses read failures") {
+        ASSERT(srt_mkdir_p(path)); /* Existing directory: open succeeds, read fails. */
+        ASSERT_EQ(srt_run(argv), 1);
+        ASSERT_EQ(rmdir(path), 0);
+        ASSERT_EQ(srt_run(argv), 0); /* The unpublished result remains absent. */
+        ASSERT(srt_write(fx->root, "table-read/run/a/result.tsv", "x\nx"));
+        ASSERT(srt_reader_fixture(fx, bin));
+        const char *good[] = {bin, "0", state, NULL};
+        const char *bad[] = {bin, "1", state, NULL};
+        ASSERT_EQ(srt_run(good), 0);
+        ASSERT_EQ(srt_run(bad), 1); /* EINTR, valid-looking prefix, then EIO. */
+        ASSERT(strstr(g_srt_out, "sem-replay: read:") != NULL);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int srt_table_regressions(const struct srt_fx *fx)
+{
+    if (!fx->tool[0])
+        return 0;
+    return srt_table_bounds(fx) + srt_report_read_errors(fx);
+}
+
 #endif /* !_WIN32 */
 
 int test_sem_replay(void)
@@ -1630,6 +1736,7 @@ int test_sem_replay(void)
     }
 
 _test_next:;
+    failures += srt_table_regressions(&fx);
     if (fx.root[0])
         (void)test_rm_rf_recursive(fx.root);
     if (failures == 0)
