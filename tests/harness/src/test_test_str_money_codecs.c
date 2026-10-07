@@ -283,6 +283,16 @@ int test_test_str_money_codecs(void)
 
     /* ───────────────────────── EncodeBase64 / DecodeBase64 ───────────────────────── */
 
+    TEST("EncodeBase64: zero capacity preserves output and skips input") {
+        char sentinel = 'X';
+        ASSERT_EQ(EncodeBase64(NULL, 0, &sentinel, 0), (size_t)0);
+        ASSERT_EQ(sentinel, 'X');
+        ASSERT_EQ(EncodeBase64(NULL, 0, NULL, 0), (size_t)0);
+        ASSERT_EQ(EncodeBase64(NULL, 1, &sentinel, 0), (size_t)0);
+        ASSERT_EQ(sentinel, 'X');
+        PASS();
+    }
+
     TEST("EncodeBase64: 3-byte input needs no padding") {
         char out[16];
         size_t n = EncodeBase64((const unsigned char *)"Man", 3, out, sizeof(out));
