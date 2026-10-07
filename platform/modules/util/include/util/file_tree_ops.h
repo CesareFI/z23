@@ -62,6 +62,8 @@ typedef bool (*zcl_tree_filter_fn)(const char *name, bool is_dir, void *ctx);
  *   - `src` a symlink       → REFUSED (never followed).
  *   - a symlink entry found inside the tree → REFUSED.
  *   - any other file type (fifo/socket/device) → REFUSED.
+ *   - a regular file selected for copying onto the same inode → REFUSED
+ *     before truncation, including an identical path or a distinct hardlink.
  *
  * Regular files are copied via a 256 KB read/write loop; the source mode is
  * preserved (fchmod). `flags` is a bitwise-OR of ZCL_COPY_*; `filter`/`fctx`

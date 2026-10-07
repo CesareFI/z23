@@ -93,6 +93,27 @@ static struct zcl_result copy_bytes(int in, int out, char *iobuf,
     }
 }
 
+/* Compare the opened objects before any destructive destination operation. */
+static struct zcl_result copy_prepare_destination(int in, int out,
+                                                  const char *src_disp,
+                                                  const char *dst_disp)
+{
+    struct stat src_st, dst_st;
+    if (fstat(in, &src_st) != 0)
+        return ZCL_ERR(-1, "fstat src failed: %s: %s", src_disp,
+                       strerror(errno));
+    if (fstat(out, &dst_st) != 0)
+        return ZCL_ERR(-1, "fstat dst failed: %s: %s", dst_disp,
+                       strerror(errno));
+    if (src_st.st_dev == dst_st.st_dev && src_st.st_ino == dst_st.st_ino)
+        return ZCL_ERR(-1, "refusing same-inode copy: %s -> %s",
+                       src_disp, dst_disp);
+    if (ftruncate(out, 0) != 0)
+        return ZCL_ERR(-1, "truncate dst failed: %s: %s", dst_disp,
+                       strerror(errno));
+    return ZCL_OK;
+}
+
 /* Copy one regular file `s_dfd/sname` -> `d_dfd/dname`. `st` is the already
  * lstat'd source. Honors ZCL_COPY_UPDATE_ONLY (skip when dst mtime >= src)
  * and ZCL_COPY_PRESERVE_TIMES (futimens dst = src atime/mtime). */
@@ -124,7 +145,7 @@ static struct zcl_result copy_regular_at(int s_dfd, const char *sname,
 
     mode_t mode = st->st_mode & 07777;
     int out = openat(d_dfd, dname,
-                     O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
+                     O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC,
                      mode);
     if (out < 0) {
         int e = errno;
@@ -132,7 +153,9 @@ static struct zcl_result copy_regular_at(int s_dfd, const char *sname,
         return ZCL_ERR(-1, "open dst failed: %s: %s", dst_disp, strerror(e));
     }
 
-    struct zcl_result r = copy_bytes(in, out, iobuf, dst_disp);
+    struct zcl_result r = copy_prepare_destination(in, out, src_disp, dst_disp);
+    if (r.ok)
+        r = copy_bytes(in, out, iobuf, dst_disp);
     if (r.ok) {
         /* Set the exact mode even under a restrictive umask. */
         if (fchmod(out, mode) != 0)

@@ -8,6 +8,7 @@
  *     (ZCL_COPY_PRESERVE_TIMES matches `cp -a`; mirrors
  *     chainstate_dir_signature in utxo_recovery_ldb_copy.c);
  *   - ZCL_COPY_UPDATE_ONLY skips a newer destination, copies an older one;
+ *   - identical paths and hardlinks refuse without losing source bytes;
  *   - a filter skips "LOCK" + a prefix/suffix pattern;
  *   - a symlink root and a symlink entry inside a tree are refused;
  *   - zcl_tree_remove empties a nested tree and treats ENOENT as success;
@@ -189,6 +190,43 @@ static int test_nested_copy_signature_parity(void)
         PASS();
     } _test_next:;
 
+    return failures;
+}
+
+static bool fto_same_inode_preserved(bool hardlink)
+{
+    char root[PATH_MAX];
+    char *dir = test_mkdtemp(root, sizeof(root), "fto_same");
+    if (!dir)
+        return false;
+    /* The helper bounds root to PATH_MAX; these fixed suffixes fit. */
+    char src[PATH_MAX + 16], alias[PATH_MAX + 16], buf[8];
+    snprintf(src, sizeof(src), "%s/src", dir);
+    snprintf(alias, sizeof(alias), "%s/alias", dir);
+    bool ok = fto_write(src, "KEEP");
+    if (hardlink)
+        ok = ok && link(src, alias) == 0;
+    if (ok) {
+        const char *dst = hardlink ? alias : src;
+        struct zcl_result r = zcl_tree_copy(src, dst, 0, NULL, NULL);
+        ok = !r.ok && strstr(r.message, "same-inode") != NULL;
+        struct stat st;
+        ok = ok && stat(src, &st) == 0 && st.st_size == 4;
+        ok = ok && fto_read(src, buf, sizeof(buf)) && strcmp(buf, "KEEP") == 0;
+        ok = ok && fto_read(dst, buf, sizeof(buf)) && strcmp(buf, "KEEP") == 0;
+    }
+    struct zcl_result rr = zcl_tree_remove(dir);
+    return rr.ok && ok;
+}
+
+static int test_same_inode_refuse(bool hardlink)
+{
+    int failures = 0;
+    TEST(hardlink ? "file_tree_ops hardlink refuses without losing KEEP"
+                  : "file_tree_ops identical path refuses without losing KEEP") {
+        ASSERT(fto_same_inode_preserved(hardlink));
+        PASS();
+    } _test_next:;
     return failures;
 }
 
@@ -477,6 +515,8 @@ static int test_file_tree_ops_platform_arm(void)
     int failures = 0;
 
     failures += test_nested_copy_signature_parity();
+    failures += test_same_inode_refuse(false);
+    failures += test_same_inode_refuse(true);
     failures += test_update_only();
     failures += test_filter();
     failures += test_symlink_refuse();
