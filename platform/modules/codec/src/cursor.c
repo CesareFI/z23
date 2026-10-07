@@ -293,9 +293,14 @@ bool zcl_codec_read_u16_string(struct zcl_codec_reader *reader, char *out,
 bool zcl_codec_write_u16_string(struct zcl_codec_writer *writer,
                                 const char *string, size_t length)
 {
+    if (!writer || writer->error != ZCL_CODEC_OK) return false;
     if (!string && length) {
         if (writer && writer->error == ZCL_CODEC_OK)
             writer->error = ZCL_CODEC_INVALID;
+        return false;
+    }
+    if (length > UINT16_MAX) {
+        writer->error = ZCL_CODEC_LENGTH;
         return false;
     }
     if (string && memchr(string, '\0', length) != NULL) {

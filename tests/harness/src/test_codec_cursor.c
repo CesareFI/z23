@@ -1,9 +1,114 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: atomicity, truncation, bounds, and round-trip cursor proofs. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "test/test_core.h"
 #include "codec/cursor.h"
 #include <stdint.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <sys/mman.h>
+#include <sys/wait.h>
+#endif
+
+#if !defined(_WIN32)
+static void codec_guarded_child(const char *source)
+{
+    alarm(5);
+    uint8_t wire[2] = {0x5a, 0x5a};
+    struct zcl_codec_writer w;
+    const size_t lengths[2] = {(size_t)UINT16_MAX + 1u, SIZE_MAX};
+    for (size_t i = 0; i < 2; i++) {
+        zcl_codec_writer_init(&w, wire, sizeof(wire));
+        if (zcl_codec_write_u16_string(&w, source, lengths[i]) ||
+            w.error != ZCL_CODEC_LENGTH || w.position != 0 ||
+            wire[0] != 0x5a || wire[1] != 0x5a) _exit(1);
+    }
+    w.error = ZCL_CODEC_BOUNDS;
+    if (zcl_codec_write_u16_string(&w, source, 2) ||
+        w.error != ZCL_CODEC_BOUNDS || w.position != 0 ||
+        wire[0] != 0x5a || wire[1] != 0x5a) _exit(2);
+    if (zcl_codec_write_u16_string(NULL, source, 2)) _exit(3);
+    _exit(0);
+}
+#endif
+
+static bool codec_guarded_refusals(void)
+{
+#if !defined(_WIN32)
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0 || (size_t)page > SIZE_MAX / 2u) return false;
+    size_t extent = (size_t)page * 2u;
+    char *mapping = mmap(NULL, extent, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapping == MAP_FAILED) return false;
+    if (mprotect(mapping + page, (size_t)page, PROT_NONE) != 0) {
+        (void)munmap(mapping, extent);
+        return false;
+    }
+    mapping[page - 1] = 'x';
+    pid_t child = fork();
+    if (child == 0) codec_guarded_child(mapping + page - 1);
+    int status = 0;
+    pid_t waited = -1;
+    if (child > 0) {
+        do { waited = waitpid(child, &status, 0); }
+        while (waited < 0 && errno == EINTR);
+    }
+    bool unmapped = munmap(mapping, extent) == 0;
+    return unmapped && child > 0 && waited == child &&
+           WIFEXITED(status) && WEXITSTATUS(status) == 0;
+#else
+    /* This required protected-page witness cannot pass without execution. */
+    return false;
+#endif
+}
+
+static int codec_test_string_bounds(void)
+{
+    int failures = 0;
+    TEST("codec cursor: refuse impossible strings before scanning") {
+        static char source[65536];
+        memset(source, 'x', sizeof(source));
+        source[65535] = '\0';
+        uint8_t wire[2] = {0x5a, 0x5a};
+        struct zcl_codec_writer w;
+        zcl_codec_writer_init(&w, wire, sizeof(wire));
+        ASSERT(!zcl_codec_write_u16_string(&w, source, sizeof(source)));
+        ASSERT(w.error == ZCL_CODEC_LENGTH && w.position == 0);
+        ASSERT(wire[0] == 0x5a && wire[1] == 0x5a);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int codec_test_string_controls(void)
+{
+    int failures = 0;
+    TEST("codec cursor: string refusal guard and in-range controls") {
+        ASSERT(codec_guarded_refusals());
+        uint8_t wire[4] = {0x5a, 0x5a, 0x5a, 0x5a};
+        struct zcl_codec_writer w;
+        zcl_codec_writer_init(&w, wire + 1, 2);
+        ASSERT(zcl_codec_write_u16_string(&w, NULL, 0) && w.position == 2);
+        ASSERT(wire[0] == 0x5a && wire[1] == 0 && wire[2] == 0 && wire[3] == 0x5a);
+        zcl_codec_writer_init(&w, wire, sizeof(wire));
+        ASSERT(zcl_codec_write_u16_string(&w, "xy", 2) && w.position == 4);
+        ASSERT(wire[0] == 2 && wire[1] == 0 && wire[2] == 'x' && wire[3] == 'y');
+        uint8_t before[4]; memcpy(before, wire, sizeof(wire));
+        zcl_codec_writer_init(&w, wire, sizeof(wire));
+        ASSERT(!zcl_codec_write_u16_string(&w, "x\0", 2));
+        ASSERT(w.error == ZCL_CODEC_INVALID && w.position == 0);
+        ASSERT(memcmp(wire, before, sizeof(wire)) == 0);
+        zcl_codec_writer_init(&w, wire, 3);
+        ASSERT(!zcl_codec_write_u16_string(&w, "xy", 2));
+        ASSERT(w.error == ZCL_CODEC_BOUNDS && w.position == 0);
+        ASSERT(memcmp(wire, before, sizeof(wire)) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
 
 static int codec_test_kat(void)
 {
@@ -134,5 +239,6 @@ static int codec_test_properties(void)
 
 int test_codec_cursor(void)
 {
-    return codec_test_kat() + codec_test_failures() + codec_test_properties();
+    return codec_test_kat() + codec_test_failures() + codec_test_properties() +
+           codec_test_string_bounds() + codec_test_string_controls();
 }
