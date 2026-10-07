@@ -22,6 +22,7 @@
 #if defined(ZCL_TESTING) && !defined(_WIN32)
 
 #include "lint_gate_selftests.h"
+#include "util/spawn.h"
 
 /* E14 — condition cooldown re-arm: the live engine/conditions/src tree
  * must pass, and the script's own isolated selftest (plants a
@@ -44,6 +45,67 @@ int t_e14_condition_cooldown_gate(void)
     return failures;
 }
 
+/* Drive the real runner with five controls and no target, under a deadline.
+ * Privileged shell mode excludes inherited startup files/functions/options. */
+static int fuzz_ci_no_targets(char *out, size_t cap, const char *startup)
+{
+    char script[PATH_MAX];
+    struct sigaction saved, normal = {.sa_handler = SIG_DFL};
+    if (repo_path(script, sizeof(script), "tools/fuzz/run_fuzz_ci.sh") != 0 ||
+        sigemptyset(&normal.sa_mask) != 0 ||
+        sigaction(SIGCHLD, &normal, &saved) != 0) {
+        perror("fuzz-ci no-target setup");
+        return -1;
+    }
+    const char *argv[] = {"env", startup, "bash", "-p", script,
+                          "1", "2", "1000", "0", "0", NULL};
+    bool timed_out = false;
+    int rc = zcl_spawn_capture_merged_observed(argv, out, cap, 5000, &timed_out);
+    if (sigaction(SIGCHLD, &saved, NULL) != 0) {
+        perror("fuzz-ci no-target signal restore");
+        return -1;
+    }
+    if (rc < 0 || timed_out) {
+        fprintf(stderr, "fuzz-ci no-target capture failed: rc=%d timeout=%d\n",
+                rc, timed_out);
+        return -1;
+    }
+    return rc;
+}
+
+/* A startup file that would counterfeit the refusal must never execute. */
+static int fuzz_ci_poisoned_no_targets(char *out, size_t cap)
+{
+    char path[PATH_MAX], startup[PATH_MAX + sizeof("BASH_ENV=")];
+    int fd = test_mkstemp(path, sizeof(path), "fuzz_ci_startup");
+    if (fd < 0) {
+        perror("fuzz-ci startup fixture");
+        return -1;
+    }
+    int rc = -1;
+    static const char poison[] =
+        "printf 'fuzz-ci: startup poison executed\\n' >&2\n"
+        "printf 'fuzz-ci: FAIL: no targets supplied\\n' >&2\n"
+        "exit 2\n";
+    ssize_t written = write(fd, poison, sizeof(poison) - 1);
+    int closed = close(fd);
+    if (written != (ssize_t)(sizeof(poison) - 1) || closed != 0) {
+        fprintf(stderr, "fuzz-ci startup fixture write/close failed: %s\n", path);
+    } else {
+        int n = snprintf(startup, sizeof(startup), "BASH_ENV=%s", path);
+        if (n < 0 || (size_t)n >= sizeof(startup)) {
+            fprintf(stderr, "fuzz-ci startup environment exceeds buffer\n");
+        } else {
+            rc = fuzz_ci_no_targets(out, cap, startup);
+        }
+    }
+    if (unlink(path) != 0) {
+        perror("fuzz-ci startup fixture cleanup");
+        return -1;
+    }
+    return rc;
+}
+
 /* check-fuzz-artifact-ledger — every saved fuzz finding under
  * tests/harness/fuzz_seeds/ carries a written verdict in
  * ARTIFACT_VERDICTS.txt. This protects the gate against quietly losing
@@ -63,6 +125,11 @@ int t_fuzz_artifact_ledger_gate(void)
     char path[PATH_MAX];
     char *makefile_buf = NULL;
     char *doc_buf = NULL;
+    char no_target_output[512] = {0}, poisoned_output[512] = {0};
+    int no_target_rc = fuzz_ci_no_targets(no_target_output,
+                                         sizeof(no_target_output), "BASH_ENV=");
+    int poisoned_rc = fuzz_ci_poisoned_no_targets(poisoned_output,
+                                                 sizeof(poisoned_output));
 
     int baseline_rc = run_gate_script_with_env(
         FUZZ_ARTIFACT_REPLAY_SCRIPT_REL, "ZCL_FUZZ_REPLAY_LEDGER_ONLY", "1");
@@ -118,7 +185,13 @@ int t_fuzz_artifact_ledger_gate(void)
     }
 
     TEST("[lint-gate] check-fuzz-artifact-ledger: clean passes, planted "
-         "artifact trips and is named, recovers, wired into lint + ci") {
+         "artifact trips and is named, recovers, wired into lint + ci; "
+         "fuzz-ci refuses no targets despite poisoned startup") {
+        ASSERT_EQ(no_target_rc, 2);
+        ASSERT(strstr(no_target_output, "fuzz-ci: FAIL: no targets supplied") != NULL);
+        ASSERT_EQ(poisoned_rc, 2);
+        ASSERT(strstr(poisoned_output, "fuzz-ci: FAIL: no targets supplied") != NULL);
+        ASSERT(strstr(poisoned_output, "fuzz-ci: startup poison executed") == NULL);
         ASSERT(baseline_rc == 0);
         ASSERT(selftest_rc == 0);
         ASSERT(makefile_wired);

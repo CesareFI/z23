@@ -45,6 +45,10 @@ set -u
 
 SLOT="$1"; WALL="$2"; FLOOR="$3"; PRINT_FUNCS="$4"; LEAKS="$5"; shift 5
 TARGETS=("$@")
+if [ "${#TARGETS[@]}" -eq 0 ]; then
+    echo "fuzz-ci: FAIL: no targets supplied" >&2
+    exit 2
+fi
 
 if [ "$LEAKS" = "1" ]; then
     SUFFIX="_leaks"; LABEL=", leak detection ON"; ASAN_ENV=""
