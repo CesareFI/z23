@@ -412,6 +412,22 @@ static inline size_t zcl_command_registry_input_reject_detail(
  * function — so a caller sizing a buffer or a frame can never disagree with
  * the validator. Unknown/NULL keys get the conservative default. */
 size_t zcl_command_registry_input_str_max(const char *key);
+/* Narrow shared descriptors for path/query/side and after/after_epoch/
+ * timeout_ms/heartbeat_ms. Strings are nonempty; max_bytes counts UTF-8
+ * bytes, not JSON Schema characters. side also requires input or output.
+ * This is not a complete schema or permission to dispatch a command.
+ * Unknown, undeclared and path-special keys return false, with *out zeroed.
+ * NULL spec/path/key/out returns false (a non-NULL out is zeroed). */
+struct zcl_command_input_descriptor {
+    enum json_type type;
+    int64_t minimum;
+    int64_t maximum;
+    size_t max_bytes;
+    bool required;
+};
+bool zcl_command_registry_input_descriptor(
+    const struct zcl_command_spec *spec, const char *key,
+    struct zcl_command_input_descriptor *out);
 /* Largest `--input` document `spec` can legally carry, in bytes: the sum of
  * its declared keys' own value bounds plus JSON punctuation, floored at
  * ZCL_COMMAND_MAX_INPUT. This is the read/parse bound for every transport;

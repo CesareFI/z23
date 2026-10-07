@@ -152,8 +152,7 @@ struct cr_int_bound {
     int64_t hi;
 };
 
-static bool cr_match_int_table(const char *key, const struct json_value *value,
-                               bool *type_ok)
+static const struct cr_int_bound *cr_find_int_bound(const char *key)
 {
     static const struct cr_int_bound k_bounds[] = {
         { "decimals", 0, 8 },
@@ -234,10 +233,19 @@ static bool cr_match_int_table(const char *key, const struct json_value *value,
     for (size_t i = 0; i < sizeof(k_bounds) / sizeof(k_bounds[0]); i++) {
         if (strcmp(key, k_bounds[i].key) != 0)
             continue;
-        *type_ok = cr_int_range(value, k_bounds[i].lo, k_bounds[i].hi);
-        return true;
+        return &k_bounds[i];
     }
-    return false;
+    return NULL;
+}
+
+static bool cr_match_int_table(const char *key, const struct json_value *value,
+                               bool *type_ok)
+{
+    const struct cr_int_bound *bound = cr_find_int_bound(key);
+    if (!bound)
+        return false;
+    *type_ok = cr_int_range(value, bound->lo, bound->hi);
+    return true;
 }
 
 static bool cr_match_dual(const char *key, const struct json_value *value,
@@ -474,16 +482,52 @@ bool command_registry_input_type_why(const char *key,
     return false;
 }
 
+static const char *cr_required_discovery_key(const char *path)
+{
+    if (strcmp(path, "discover.search") == 0)
+        return "query";
+    if (strcmp(path, "discover.describe") == 0 ||
+        strcmp(path, "discover.schema") == 0)
+        return "path";
+    return NULL;
+}
+
+bool zcl_command_registry_input_descriptor(
+    const struct zcl_command_spec *spec, const char *key,
+    struct zcl_command_input_descriptor *out)
+{
+    static const char *const strings[] = { "path", "query", "side" };
+    static const char *const integers[] = {
+        "after", "after_epoch", "timeout_ms", "heartbeat_ms"
+    };
+    if (!out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    if (!spec || !spec->path || !key || !cr_csv_has(spec->input_keys, key))
+        return false;
+    if (cr_key_in(key, strings, sizeof(strings) / sizeof(strings[0]))) {
+        out->type = JSON_STR;
+        out->max_bytes = zcl_command_registry_input_str_max(key);
+    } else if (cr_key_in(key, integers, sizeof(integers) / sizeof(integers[0]))) {
+        const struct cr_int_bound *bound = cr_find_int_bound(key);
+        if (!bound)
+            return false;
+        out->type = JSON_INT;
+        out->minimum = bound->lo;
+        out->maximum = bound->hi;
+    } else {
+        return false;
+    }
+    const char *required = cr_required_discovery_key(spec->path);
+    out->required = required && strcmp(required, key) == 0;
+    return true;
+}
+
 bool command_registry_input_required_discovery(
     const struct zcl_command_spec *spec, const struct json_value *input,
     char *why, size_t why_size)
 {
-    const char *required_key = NULL;
-    if (strcmp(spec->path, "discover.search") == 0)
-        required_key = "query";
-    else if (strcmp(spec->path, "discover.describe") == 0 ||
-             strcmp(spec->path, "discover.schema") == 0)
-        required_key = "path";
+    const char *required_key = cr_required_discovery_key(spec->path);
     if (!required_key)
         return true;
     const char *value = json_get_str(json_get(input, required_key));
@@ -519,6 +563,13 @@ bool command_registry_input_value_type_ok(const struct zcl_command_spec *spec,
     if (!type_ok || !key || !value)
         return false;
     *type_ok = false;
+    struct zcl_command_input_descriptor descriptor;
+    if (zcl_command_registry_input_descriptor(spec, key, &descriptor)) {
+        *type_ok = descriptor.type == JSON_INT
+            ? cr_int_range(value, descriptor.minimum, descriptor.maximum)
+            : cr_default_string(key, value);
+        return true;
+    }
     if (cr_match_shaped(key, value, type_ok))
         return true;
     if (cr_match_int_table(key, value, type_ok))
