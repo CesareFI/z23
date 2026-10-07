@@ -36,6 +36,7 @@
 #include "test/test_core.h"
 
 #include "command/native_command.h"
+#include "base/safe_alloc.h"
 #include "config/command_catalog.h"
 #include "controllers/file_market_controller.h"
 #include "controllers/rpc_client.h"
@@ -855,9 +856,74 @@ static int test_registry_cap_breaks_rescan_promise(void)
     return failures;
 }
 
+static const char *g_sbp_observed_body;
+
+static char *sbp_malformed_rpc(const char *method, const char *params_json)
+{
+    (void)method;
+    (void)params_json;
+    return zcl_strdup(g_sbp_observed_body, "source_bundle_publish.test_reply");
+}
+
+static int sbp_refuses_malformed_reply(const char *label, const char *body)
+{
+    int failures = 0;
+    TEST(label) {
+        char workspace[1200];
+        ASSERT(test_mkdtemp(workspace, sizeof(workspace), "sbpub_reply"));
+        struct zcl_command_reply reply;
+        g_sbp_observed_body = body;
+        node_rpc_client_set_test_hook(sbp_malformed_rpc);
+        sbp_run_leaf(workspace, NULL, &reply);
+        node_rpc_client_set_test_hook(NULL);
+        g_sbp_observed_body = NULL;
+        test_cleanup_tmpdir(workspace);
+        bool failed = reply.status == ZCL_COMMAND_STATUS_FAILED;
+        bool malformed = strcmp(reply.error.code,
+                                "SOURCE_BUNDLE_PUBLISH_MALFORMED_REPLY") == 0;
+        bool mutated = reply.error.mutated;
+        bool offered = json_get(&reply.data, "offered") != NULL;
+        bool root = json_get(&reply.data, "source_root") != NULL;
+        bool next = json_get(&reply.data, "next") != NULL;
+        zcl_command_reply_free(&reply);
+        ASSERT(access(workspace, F_OK) != 0);
+        ASSERT(failed);
+        ASSERT(malformed);
+        ASSERT(!mutated);
+        ASSERT(!offered);
+        ASSERT(!root);
+        ASSERT(!next);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_malformed_published_reply(void)
+{
+    static const char root[] =
+        "{\"status\":\"published\",\"source_root\":\"a\\\"b\"}";
+    static const char filename[] =
+        "{\"status\":\"published\",\"source_root\":\""
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "\",\"filename\":\"\xff\"}";
+    static const char error[] = "{\"error\":{\"message\":\"\xff\"}}";
+    static const char result[] = "{\"status\":\"refused\",\"result\":\"\xff\"}";
+    int failures = 0;
+    failures += sbp_refuses_malformed_reply(
+        "published RPC observation refuses a quote-bearing source root", root);
+    failures += sbp_refuses_malformed_reply(
+        "published RPC observation refuses invalid UTF-8 filename", filename);
+    failures += sbp_refuses_malformed_reply(
+        "publish RPC observation refuses invalid UTF-8 error message", error);
+    failures += sbp_refuses_malformed_reply(
+        "publish RPC observation refuses invalid UTF-8 result text", result);
+    return failures;
+}
+
 int test_source_bundle_publish(void)
 {
     int failures = 0;
+    failures += test_malformed_published_reply();
     failures += test_publish_then_fetch_elsewhere();
     failures += test_republish_is_idempotent();
     failures += test_malformed_existing_bundle_is_preserved();

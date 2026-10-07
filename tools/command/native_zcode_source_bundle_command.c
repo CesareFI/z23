@@ -7,6 +7,7 @@
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "platform/directory_compat.h"
 #include "platform/directory_transaction.h"
 #include "platform/positioned_file.h"
@@ -643,10 +644,10 @@ static void zsb_carry(struct json_value *out, const struct json_value *body,
         (void)json_push_kv_bool(out, key, json_get_bool(v));
 }
 
-void zcl_native_handle_zcode_source_bundle_publish(
+static char *zsb_publish_dispatch(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
-    if (!request || !reply) return;
+    if (!request || !reply) return NULL;
     const char *workspace = zsb_str(request->input, "workspace");
     const char *pin_hex = zsb_str(request->input, "source_root");
     char workspace_real[ZSB_PATH_MAX];
@@ -658,7 +659,7 @@ void zcl_native_handle_zcode_source_bundle_publish(
                                            sizeof(workspace_real))) {
         zsb_fail(reply, "BAD_SOURCE_BUNDLE_PUBLISH_INPUT", "validate",
                  "workspace must resolve to a real directory, and source_root, when given, must be 64 lower-case hex characters");
-        return;
+        return NULL;
     }
 
     struct rpc_arg_builder args;
@@ -669,7 +670,7 @@ void zcl_native_handle_zcode_source_bundle_publish(
     if (!params_json) {
         zsb_fail(reply, "SOURCE_BUNDLE_PUBLISH_ARGS", "normalize",
                  "the publish parameters could not be encoded");
-        return;
+        return NULL;
     }
 
     zcl_native_bridge_ensure_rpc();
@@ -681,28 +682,55 @@ void zcl_native_handle_zcode_source_bundle_publish(
                                "dispatch", true, false,
                                "no running node answered; a bundle can only be offered by the process that holds the file service",
                                "zcode.workspace.source.bundle");
-        return;
+        return NULL;
     }
-    struct json_value body;
-    json_init(&body);
-    bool parsed = json_read(&body, raw, strlen(raw));
+    return raw;
+}
+
+static bool zsb_publish_observation(char *raw, struct json_value *body,
+                                    struct zcl_command_reply *reply)
+{
+    size_t len = strlen(raw);
+    bool valid_utf8 = zutf8_validate_n(raw, len);
+    bool parsed = valid_utf8 && json_read(body, raw, len);
     free(raw);
-    const char *rpc_error = parsed ? zsb_rpc_error(&body) : "unparseable body";
-    const struct json_value *status = parsed ? json_get(&body, "status") : NULL;
-    const char *status_str =
-        status && status->type == JSON_STR ? json_get_str(status) : NULL;
-    if (rpc_error || !status_str || strcmp(status_str, "published") != 0) {
-        const struct json_value *why = parsed ? json_get(&body, "result") : NULL;
+    if (!valid_utf8) {
+        zsb_fail(reply, "SOURCE_BUNDLE_PUBLISH_MALFORMED_REPLY", "publish",
+                 "the published reply must contain valid UTF-8 text");
+        return false;
+    }
+    const char *rpc_error = parsed ? zsb_rpc_error(body) : "unparseable body";
+    const char *status_str = json_get_str(json_get(body, "status"));
+    if (rpc_error || strcmp(status_str, "published") != 0) {
+        const struct json_value *why = parsed ? json_get(body, "result") : NULL;
         char detail[256];
         (void)snprintf(detail, sizeof(detail), "%s",
                        rpc_error ? rpc_error
                        : (why && why->type == JSON_STR
                               ? json_get_str(why)
                               : "the node did not report the bundle as offered"));
-        json_free(&body);
+        json_free(body);
         zsb_fail(reply, "SOURCE_BUNDLE_PUBLISH_REFUSED", "publish", detail);
-        return;
+        return false;
     }
+    uint8_t observed_root[32] = {0};
+    if (!zsb_root(body, observed_root)) {
+        json_free(body);
+        zsb_fail(reply, "SOURCE_BUNDLE_PUBLISH_MALFORMED_REPLY", "publish",
+                 "the published reply requires a 64-character lower-case hex source_root");
+        return false;
+    }
+    return true;
+}
+
+void zcl_native_handle_zcode_source_bundle_publish(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    char *raw = zsb_publish_dispatch(request, reply);
+    if (!raw) return;
+    struct json_value body;
+    json_init(&body);
+    if (!zsb_publish_observation(raw, &body, reply)) return;
 
     /* Success means one thing only: the node's registry confirmed, by root,
      * that a chunk request for this artifact would be answered. Everything
@@ -733,7 +761,7 @@ void zcl_native_handle_zcode_source_bundle_publish(
         "another machine needs only this source_root: z23 zcode workspace "
         "source bundle fetch --input='{\"source_root\":\"%s\",\"output\":"
         "\"/tmp/source.zvsb\",\"peers\":\"NODE_ADDRESS:%lld\"}'",
-        root_v && root_v->type == JSON_STR ? json_get_str(root_v) : "",
+        json_get_str(root_v),
         (long long)(port && port->type == JSON_INT ? json_get_int(port) : 0));
     (void)json_push_kv_str(&reply->data, "next", next);
     if (rescan && rescan->type == JSON_BOOL && !json_get_bool(rescan))
