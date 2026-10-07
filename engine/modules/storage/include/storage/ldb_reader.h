@@ -89,7 +89,8 @@ ldbr_t *ldbr_open(const ldbr_options_t *options, const char *name,
 void ldbr_close(ldbr_t *db);
 
 /* Returns a malloc'd value of *vallen bytes, or NULL when the key is
- * absent. *errptr is set only on a real failure (corruption, I/O). */
+ * absent. *vallen is zero on absence or failure. *errptr is set only on a
+ * real failure (corruption, I/O, or an unrepresentable internal-key size). */
 char *ldbr_get(ldbr_t *db, const ldbr_readoptions_t *options, const char *key,
                size_t keylen, size_t *vallen, char **errptr);
 
@@ -114,6 +115,8 @@ ldbr_iterator_t *ldbr_create_iterator(ldbr_t *db,
 void ldbr_iter_destroy(ldbr_iterator_t *it);
 unsigned char ldbr_iter_valid(const ldbr_iterator_t *it);
 void ldbr_iter_seek_to_first(ldbr_iterator_t *it);
+/* An unrepresentable internal-key size sets the iterator error without
+ * changing its position or seek-buffer capacity; iter_valid then returns 0. */
 void ldbr_iter_seek(ldbr_iterator_t *it, const char *k, size_t klen);
 void ldbr_iter_next(ldbr_iterator_t *it);
 const char *ldbr_iter_key(const ldbr_iterator_t *it, size_t *klen);
@@ -173,6 +176,10 @@ void ldbr_env_destroy(ldbr_env_t *env);
  * write-ahead-log entries replayed into the memtable. */
 size_t ldbr_stat_table_count(const ldbr_t *db);
 size_t ldbr_stat_memtable_entries(const ldbr_t *db);
+
+#ifdef ZCL_TESTING
+bool ldbr_test_internal_key_size(size_t key_len, size_t *out_size);
+#endif
 
 #ifdef __cplusplus
 }

@@ -367,12 +367,294 @@ static bool lr_copy(const char *src, const char *dst)
     return r.ok;
 }
 
-int test_ldb_reader(void)
+static int lr_test_internal_key_size_bounds(void)
+{
+    printf("ldb_reader: internal-key size bounds... ");
+    size_t size = SIZE_MAX;
+    bool ok = ldbr_test_internal_key_size(0, &size) && size == 8;
+    ok = ok && ldbr_test_internal_key_size(SIZE_MAX - 8, &size) &&
+         size == SIZE_MAX;
+    size = SIZE_MAX;
+    ok = ok && !ldbr_test_internal_key_size(SIZE_MAX - 7, &size) && size == 0;
+    size = SIZE_MAX;
+    ok = ok && !ldbr_test_internal_key_size(SIZE_MAX, &size) && size == 0;
+    ok = ok && !ldbr_test_internal_key_size(0, NULL);
+    if (ok)
+        printf("OK\n");
+    else
+        printf("FAIL\n");
+    return ok ? 0 : 1;
+}
+
+static bool lr_point_key_refused(ldbr_t *db, ldbr_readoptions_t *ro,
+                                 size_t key_len)
+{
+    char key = 0;
+    char *err = NULL;
+    size_t value_len = SIZE_MAX;
+    char *value = ldbr_get(db, ro, &key, key_len, &value_len, &err);
+    bool get_refused = !value && value_len == 0 && err &&
+                       strstr(err, "could not build a lookup key");
+    ldbr_free(value);
+    ldbr_free(err);
+    return get_refused;
+}
+
+static bool lr_extreme_key_refused(ldbr_t *db, ldbr_readoptions_t *ro,
+                                   size_t key_len)
+{
+    bool get_refused = lr_point_key_refused(db, ro, key_len);
+    char key = 0;
+    char *err = NULL;
+
+    ldbr_iterator_t *it = ldbr_create_iterator(db, ro);
+    if (!it)
+        return false;
+    /* Allocate a seek buffer through the real caller before refusing a size. */
+    ldbr_iter_seek(it, &key, 1);
+    bool positioned = ldbr_iter_valid(it) != 0;
+    ldbr_iter_seek(it, &key, key_len);
+    ldbr_iter_get_error(it, &err);
+    bool seek_refused = err && strstr(err, "could not build a seek key");
+    bool invalid = ldbr_iter_valid(it) == 0;
+    ldbr_free(err);
+    ldbr_iter_destroy(it);
+    return get_refused && positioned && seek_refused && invalid;
+}
+
+static int lr_test_extreme_key_length_refusals(const char *dir)
+{
+    printf("ldb_reader: extreme point/seek key lengths fail closed... ");
+    char *err = NULL;
+    ldbr_options_t *o = ldbr_options_create();
+    if (!o) {
+        printf("FAIL\n");
+        return 1;
+    }
+    ldbr_options_set_create_if_missing(o, 0);
+    ldbr_t *db = ldbr_open(o, dir, &err);
+    ldbr_options_destroy(o);
+    if (!db) {
+        ldbr_free(err);
+        printf("FAIL\n");
+        return 1;
+    }
+
+    ldbr_readoptions_t *ro = ldbr_readoptions_create();
+    if (!ro) {
+        ldbr_close(db);
+        printf("FAIL\n");
+        return 1;
+    }
+    bool first = lr_extreme_key_refused(db, ro, SIZE_MAX - 7);
+    bool last = lr_extreme_key_refused(db, ro, SIZE_MAX);
+    ldbr_readoptions_destroy(ro);
+    ldbr_close(db);
+    bool ok = first && last;
+    printf(ok ? "OK\n" : "FAIL\n");
+    return ok ? 0 : 1;
+}
+
+static int lr_test_wal_replayed(const char *c23)
 {
     int failures = 0;
+    /* The C23 side read a tree the C++ library never recovered, so matching
+     * it proves the write-ahead log was replayed. */
+    printf("ldb_reader: write-ahead log actually replayed... ");
+    {
+        char *err = NULL;
+        ldbr_options_t *o = ldbr_options_create();
+        if (!o) {
+            printf("FAIL (options allocation)\n");
+            return 1;
+        }
+        ldbr_options_set_create_if_missing(o, 0);
+        ldbr_t *db = ldbr_open(o, c23, &err);
+        ldbr_options_destroy(o);
+        if (!db) {
+            printf("FAIL (open: %s)\n", err ? err : "null");
+            ldbr_free(err);
+            failures++;
+        } else {
+            size_t entries = ldbr_stat_memtable_entries(db);
+            size_t tables = ldbr_stat_table_count(db);
+            if (entries == 0 || tables == 0) {
+                printf("FAIL (memtable=%zu tables=%zu — one path was never "
+                       "taken)\n", entries, tables);
+                failures++;
+            } else {
+                printf("OK (%zu log entries over %zu tables)\n", entries,
+                       tables);
+            }
+            ldbr_close(db);
+        }
+    }
+
+    return failures;
+}
+
+static bool lr_empty_point_reads(ldbr_t *db, ldbr_readoptions_t *ro)
+{
+    char key = 0;
+    char *err = NULL;
+    size_t value_len = SIZE_MAX;
+    char *value = ldbr_get(db, ro, &key, 1, &value_len, &err);
+    bool absent = !value && value_len == 0 && !err;
+    ldbr_free(value);
+    ldbr_free(err);
+    bool first = lr_point_key_refused(db, ro, SIZE_MAX - 7);
+    bool last = lr_point_key_refused(db, ro, SIZE_MAX);
+    printf("ldb_reader: empty point reads reject overflowing key lengths... ");
+    bool ok = absent && first && last;
+    printf(ok ? "OK\n" : "FAIL\n");
+    return ok;
+}
+
+static int lr_test_empty_database(void)
+{
+    int failures = 0;
+    printf("ldb_reader: missing CURRENT is an empty database, not a crash... ");
+    {
+        char empty[600];
+        test_make_tmpdir(empty, sizeof(empty), "ldb_reader", "empty");
+        char *err = NULL;
+        ldbr_options_t *o = ldbr_options_create();
+        if (!o) {
+            printf("FAIL (options allocation)\n");
+            test_rm_rf(empty);
+            return 1;
+        }
+        ldbr_options_set_create_if_missing(o, 1);
+        ldbr_t *db = ldbr_open(o, empty, &err);
+        ldbr_options_destroy(o);
+        if (!db) {
+            printf("FAIL (%s)\n", err ? err : "null");
+            ldbr_free(err);
+            failures++;
+        } else {
+            ldbr_readoptions_t *ro = ldbr_readoptions_create();
+            if (!ro) {
+                printf("FAIL (read options allocation)\n");
+                ldbr_close(db);
+                test_rm_rf(empty);
+                return 1;
+            }
+            ldbr_iterator_t *it = ldbr_create_iterator(db, ro);
+            if (!it) {
+                printf("FAIL (iterator allocation)\n");
+                ldbr_readoptions_destroy(ro);
+                ldbr_close(db);
+                test_rm_rf(empty);
+                return 1;
+            }
+            ldbr_iter_seek_to_first(it);
+            bool any = ldbr_iter_valid(it) != 0;
+            ldbr_iter_destroy(it);
+            bool point_reads = lr_empty_point_reads(db, ro);
+            ldbr_readoptions_destroy(ro);
+            ldbr_close(db);
+            if (any || !point_reads) {
+                printf("FAIL (empty iteration or point-read contract)\n");
+                failures++;
+            } else {
+                printf("OK\n");
+            }
+        }
+        test_rm_rf(empty);
+    }
+
+    return failures;
+}
+
+static bool lr_stage_damage(const char *dmg, int kind)
+{
+    char path[600];
+    bool prepared = false;
+    struct stat st;
+    switch (kind) {
+    case 0:
+        prepared = lr_first_with_suffix(dmg, ".ldb", path,
+                                        sizeof(path)) &&
+                   stat(path, &st) == 0 &&
+                   lr_truncate_file(path, st.st_size / 2);
+        break;
+    case 1:
+        prepared = lr_first_with_suffix(dmg, ".ldb", path,
+                                        sizeof(path)) &&
+                   lr_flip_byte(path, 32);
+        break;
+    case 2:
+        prepared = lr_first_with_suffix(dmg, ".log", path,
+                                        sizeof(path)) &&
+                   lr_flip_byte(path, 40);
+        break;
+    case 3: {
+        snprintf(path, sizeof(path), "%s/CURRENT", dmg);
+        int fd = open(path, O_WRONLY | O_TRUNC);
+        if (fd >= 0) {
+            prepared = write(fd, "MANIFEST-999999\n", 16) == 16;
+            close(fd);
+        }
+        break;
+    }
+    case 4:
+        prepared = lr_first_with_suffix(dmg, ".ldb", path,
+                                        sizeof(path)) &&
+                   stat(path, &st) == 0 && st.st_size > 8 &&
+                   lr_flip_byte(path, st.st_size - 4);
+        break;
+    default:
+        break;
+    }
+    return prepared;
+}
+
+static int lr_test_damaged_input(const char *src, const char *dmg)
+{
+    int failures = 0;
+    printf("ldb_reader: refuses damaged input rather than inventing data\n");
+    {
+        struct {
+            const char *what;
+            int kind;       /* 0 truncate table, 1 flip in table, 2 flip in
+                             * log, 3 clobber CURRENT, 4 shred footer */
+        } cases[] = {
+            { "table truncated mid-file", 0 },
+            { "bit flipped inside a data block", 1 },
+            { "bit flipped inside a write-ahead-log record", 2 },
+            { "CURRENT names a nonexistent manifest", 3 },
+            { "table footer magic destroyed", 4 },
+        };
+        for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            if (!lr_copy(src, dmg)) {
+                printf("  %s -> FAIL (copy)\n", cases[c].what);
+                failures++;
+                continue;
+            }
+            bool prepared = lr_stage_damage(dmg, cases[c].kind);
+            if (!prepared) {
+                printf("  %s -> FAIL (could not stage the damage)\n",
+                       cases[c].what);
+                failures++;
+                continue;
+            }
+            if (!lr_refuses(dmg, cases[c].what))
+                failures++;
+        }
+    }
+
+    return failures;
+}
+
+int test_ldb_reader(void)
+{
+    int failures = lr_test_internal_key_size_bounds();
     char src[512], cxx[512], c23[512], dmg[512];
 
-    mkdir("test-tmp", 0755);
+    if (!test_ensure_tmproot()) {
+        printf("ldb_reader: FAIL (temporary root)\n");
+        return failures + 1;
+    }
     test_fmt_tmpdir(src, sizeof(src), "ldb_reader", "src");
     test_fmt_tmpdir(cxx, sizeof(cxx), "ldb_reader", "cxx");
     test_fmt_tmpdir(c23, sizeof(c23), "ldb_reader", "c23");
@@ -422,134 +704,13 @@ int test_ldb_reader(void)
         }
     }
 
-    /* The C23 side read a tree the C++ library never recovered, so matching
-     * it proves the write-ahead log was replayed. */
-    printf("ldb_reader: write-ahead log actually replayed... ");
-    {
-        char *err = NULL;
-        ldbr_options_t *o = ldbr_options_create();
-        ldbr_options_set_create_if_missing(o, 0);
-        ldbr_t *db = ldbr_open(o, c23, &err);
-        ldbr_options_destroy(o);
-        if (!db) {
-            printf("FAIL (open: %s)\n", err ? err : "null");
-            free(err);
-            failures++;
-        } else {
-            size_t entries = ldbr_stat_memtable_entries(db);
-            size_t tables = ldbr_stat_table_count(db);
-            if (entries == 0 || tables == 0) {
-                printf("FAIL (memtable=%zu tables=%zu — one path was never "
-                       "taken)\n", entries, tables);
-                failures++;
-            } else {
-                printf("OK (%zu log entries over %zu tables)\n", entries,
-                       tables);
-            }
-            ldbr_close(db);
-        }
-    }
+    failures += lr_test_extreme_key_length_refusals(c23);
 
-    printf("ldb_reader: missing CURRENT is an empty database, not a crash... ");
-    {
-        char empty[600];
-        snprintf(empty, sizeof(empty), "%s_empty", src);
-        test_rm_rf(empty);
-        mkdir(empty, 0755);
-        char *err = NULL;
-        ldbr_options_t *o = ldbr_options_create();
-        ldbr_options_set_create_if_missing(o, 1);
-        ldbr_t *db = ldbr_open(o, empty, &err);
-        ldbr_options_destroy(o);
-        if (!db) {
-            printf("FAIL (%s)\n", err ? err : "null");
-            free(err);
-            failures++;
-        } else {
-            ldbr_readoptions_t *ro = ldbr_readoptions_create();
-            ldbr_iterator_t *it = ldbr_create_iterator(db, ro);
-            ldbr_iter_seek_to_first(it);
-            bool any = ldbr_iter_valid(it) != 0;
-            ldbr_iter_destroy(it);
-            ldbr_readoptions_destroy(ro);
-            ldbr_close(db);
-            if (any) {
-                printf("FAIL (empty database yielded a record)\n");
-                failures++;
-            } else {
-                printf("OK\n");
-            }
-        }
-        test_rm_rf(empty);
-    }
+    failures += lr_test_wal_replayed(c23);
 
-    printf("ldb_reader: refuses damaged input rather than inventing data\n");
-    {
-        struct {
-            const char *what;
-            int kind;       /* 0 truncate table, 1 flip in table, 2 flip in
-                             * log, 3 clobber CURRENT, 4 shred footer */
-        } cases[] = {
-            { "table truncated mid-file", 0 },
-            { "bit flipped inside a data block", 1 },
-            { "bit flipped inside a write-ahead-log record", 2 },
-            { "CURRENT names a nonexistent manifest", 3 },
-            { "table footer magic destroyed", 4 },
-        };
-        for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
-            if (!lr_copy(src, dmg)) {
-                printf("  %s -> FAIL (copy)\n", cases[c].what);
-                failures++;
-                continue;
-            }
-            char path[600];
-            bool prepared = false;
-            struct stat st;
-            switch (cases[c].kind) {
-            case 0:
-                prepared = lr_first_with_suffix(dmg, ".ldb", path,
-                                                sizeof(path)) &&
-                           stat(path, &st) == 0 &&
-                           lr_truncate_file(path, st.st_size / 2);
-                break;
-            case 1:
-                prepared = lr_first_with_suffix(dmg, ".ldb", path,
-                                                sizeof(path)) &&
-                           lr_flip_byte(path, 32);
-                break;
-            case 2:
-                prepared = lr_first_with_suffix(dmg, ".log", path,
-                                                sizeof(path)) &&
-                           lr_flip_byte(path, 40);
-                break;
-            case 3: {
-                snprintf(path, sizeof(path), "%s/CURRENT", dmg);
-                int fd = open(path, O_WRONLY | O_TRUNC);
-                if (fd >= 0) {
-                    prepared = write(fd, "MANIFEST-999999\n", 16) == 16;
-                    close(fd);
-                }
-                break;
-            }
-            case 4:
-                prepared = lr_first_with_suffix(dmg, ".ldb", path,
-                                                sizeof(path)) &&
-                           stat(path, &st) == 0 && st.st_size > 8 &&
-                           lr_flip_byte(path, st.st_size - 4);
-                break;
-            default:
-                break;
-            }
-            if (!prepared) {
-                printf("  %s -> FAIL (could not stage the damage)\n",
-                       cases[c].what);
-                failures++;
-                continue;
-            }
-            if (!lr_refuses(dmg, cases[c].what))
-                failures++;
-        }
-    }
+    failures += lr_test_empty_database();
+
+    failures += lr_test_damaged_input(src, dmg);
 
     test_rm_rf(src);
     test_rm_rf(cxx);

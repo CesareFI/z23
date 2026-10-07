@@ -512,36 +512,12 @@ static bool file_may_contain(const struct ldb_file_meta *f, const uint8_t *ukey,
            ldb_ukey_cmp(ukey, klen, f->largest, f->largest_len - 8) <= 0;
 }
 
-bool ldbr_db_get_internal(struct ldbr_db *db, const uint8_t *ukey, size_t klen,
-                          uint8_t **val, size_t *vlen, char **err)
+static bool memtable_point_get(struct ldbr_db *db, const uint8_t *lookup,
+                               size_t lookup_len, const uint8_t *ukey,
+                               size_t klen, bool *found, uint8_t **val,
+                               size_t *vlen, char **err)
 {
-    *val = NULL;
-    *vlen = 0;
-    if (db->empty)
-        return true;
-
-    uint8_t stack[512];
-    uint8_t *lookup = stack;
-    uint8_t *heap = NULL;
-    if (klen + 8 > sizeof(stack)) {
-        heap = zcl_malloc(klen + 8, "ldb_lookup_key");
-        if (!heap) {
-            *err = ldb_strdup("ldb: out of memory");
-            return false;
-        }
-        lookup = heap;
-    }
-    size_t lookup_len = 0;
-    if (!ldb_ikey_build(lookup, klen + 8, ukey, klen, LDB_MAX_SEQUENCE,
-                        LDB_TYPE_VALUE, &lookup_len)) {
-        free(heap);
-        *err = ldb_strdup("ldb: could not build a lookup key");
-        return false;
-    }
-
     bool ok = true;
-    bool found = false;
-
     /* 1. memtable — the newest writes live only here until a flush. */
     if (db->mem.n > 0) {
         size_t lo = 0, hi = db->mem.n;
@@ -561,7 +537,7 @@ bool ldbr_db_get_internal(struct ldbr_db *db, const uint8_t *ukey, size_t klen,
                 *err = ldb_strdup("ldb: malformed internal key in memtable");
                 ok = false;
             } else if (ldb_ukey_cmp(user.p, user.n, ukey, klen) == 0) {
-                found = true;
+                *found = true;
                 if (type == LDB_TYPE_VALUE) {
                     size_t n = db->mem.e[lo].val_len;
                     *val = zcl_malloc(n ? n : 1, "ldb_get_value");
@@ -578,17 +554,18 @@ bool ldbr_db_get_internal(struct ldbr_db *db, const uint8_t *ukey, size_t klen,
         }
     }
 
-    /* 2. level 0, newest file number first (these files overlap). */
-    for (size_t i = 0; ok && !found && i < db->version.levels[0].n; i++) {
-        struct ldb_file_meta *f = &db->version.levels[0].files[i];
-        if (!file_may_contain(f, ukey, klen))
-            continue;
-        ok = table_point_get(f->table, lookup, lookup_len, ukey, klen, &found,
-                             val, vlen, err);
-    }
+    return ok;
+}
 
+static bool sorted_levels_point_get(struct ldbr_db *db,
+                                     const uint8_t *lookup, size_t lookup_len,
+                                     const uint8_t *ukey, size_t klen,
+                                     bool *found, uint8_t **val, size_t *vlen,
+                                     char **err)
+{
+    bool ok = true;
     /* 3. levels 1..6: disjoint and sorted, so one binary search each. */
-    for (int lv = 1; ok && !found && lv < LDB_MAX_LEVEL; lv++) {
+    for (int lv = 1; ok && !*found && lv < LDB_MAX_LEVEL; lv++) {
         struct ldb_level *l = &db->version.levels[lv];
         if (l->n == 0)
             continue;
@@ -604,8 +581,63 @@ bool ldbr_db_get_internal(struct ldbr_db *db, const uint8_t *ukey, size_t klen,
         if (lo >= l->n || !file_may_contain(&l->files[lo], ukey, klen))
             continue;
         ok = table_point_get(l->files[lo].table, lookup, lookup_len, ukey, klen,
-                             &found, val, vlen, err);
+                             found, val, vlen, err);
     }
+
+    return ok;
+}
+
+bool ldbr_db_get_internal(struct ldbr_db *db, const uint8_t *ukey, size_t klen,
+                          uint8_t **val, size_t *vlen, char **err)
+{
+    *val = NULL;
+    *vlen = 0;
+    *err = NULL;
+    size_t lookup_cap = ldb_ikey_size(klen);
+    if (lookup_cap == 0) {
+        *err = ldb_strdup("ldb: could not build a lookup key");
+        return false;
+    }
+    if (db->empty)
+        return true;
+
+    uint8_t stack[512];
+    uint8_t *lookup = stack;
+    uint8_t *heap = NULL;
+    if (lookup_cap > sizeof(stack)) {
+        heap = zcl_malloc(lookup_cap, "ldb_lookup_key");
+        if (!heap) {
+            *err = ldb_strdup("ldb: out of memory");
+            return false;
+        }
+        lookup = heap;
+    }
+    size_t lookup_len = 0;
+    if (!ldb_ikey_build(lookup, lookup_cap, ukey, klen, LDB_MAX_SEQUENCE,
+                        LDB_TYPE_VALUE, &lookup_len)) {
+        free(heap);
+        *err = ldb_strdup("ldb: could not build a lookup key");
+        return false;
+    }
+
+    bool ok = true;
+    bool found = false;
+
+    ok = memtable_point_get(db, lookup, lookup_len, ukey, klen, &found,
+                             val, vlen, err);
+
+    /* 2. level 0, newest file number first (these files overlap). */
+    for (size_t i = 0; ok && !found && i < db->version.levels[0].n; i++) {
+        struct ldb_file_meta *f = &db->version.levels[0].files[i];
+        if (!file_may_contain(f, ukey, klen))
+            continue;
+        ok = table_point_get(f->table, lookup, lookup_len, ukey, klen, &found,
+                             val, vlen, err);
+    }
+
+    if (ok && !found)
+        ok = sorted_levels_point_get(db, lookup, lookup_len, ukey, klen,
+                                      &found, val, vlen, err);
 
     free(heap);
     if (!ok) {
@@ -728,10 +760,21 @@ void ldbr_iter_seek(struct ldbr_iterator *it, const char *k, size_t klen)
 {
     if (!it || !it->inner_open || it->err)
         return;
-    if (klen + 8 > it->seek_cap) {
+    size_t required = ldb_ikey_size(klen);
+    if (required == 0) {
+        it->valid = false;
+        it->err = ldb_strdup("ldb: could not build a seek key");
+        return;
+    }
+    if (required > it->seek_cap) {
         size_t cap = it->seek_cap ? it->seek_cap : 64;
-        while (cap < klen + 8)
+        while (cap < required) {
+            if (cap > SIZE_MAX / 2) {
+                cap = required;
+                break;
+            }
             cap *= 2;
+        }
         uint8_t *nb = zcl_realloc(it->seek_buf, cap, "ldb_iter_seek_buf");
         if (!nb) {
             it->err = ldb_strdup("ldb: out of memory");

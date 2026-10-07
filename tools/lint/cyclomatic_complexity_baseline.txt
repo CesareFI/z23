@@ -2046,7 +2046,6 @@ engine/modules/storage/src/event_log.c:event_log_append:16
 engine/modules/storage/src/event_log.c:event_log_read:17
 engine/modules/storage/src/event_log.c:event_log_stream:19
 engine/modules/storage/src/event_log.c:recover_truncate_partial:17
-engine/modules/storage/src/ldb_reader_db.c:ldbr_db_get_internal:28
 engine/modules/storage/src/ldb_reader_format.c:ldb_map_file:20
 engine/modules/storage/src/ldb_reader_version.c:apply_edit:34
 engine/modules/storage/src/ldb_reader_version.c:ldb_memtable_load:16
@@ -2855,7 +2854,6 @@ tests/harness/src/test_land_queue.c:case_canonical_bytes:28
 tests/harness/src/test_land_queue.c:case_two_submitters_race:21
 tests/harness/src/test_ldb_reader.c:lr_build_fixture:24
 tests/harness/src/test_ldb_reader.c:lr_compare:33
-tests/harness/src/test_ldb_reader.c:test_ldb_reader:32
 tests/harness/src/test_ldb_snapshot.c:test_ldb_snapshot:27
 tests/harness/src/test_load_verify_boot.c:test_load_verify_boot:141
 tests/harness/src/test_log_level.c:test_log_level:23
