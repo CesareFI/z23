@@ -140,7 +140,20 @@ void json_set_object(struct json_value *v)
 static bool json_grow(struct json_value *v)
 {
     if (v->num_children >= v->children_cap) {
+        if (v->children_cap > SIZE_MAX / 2) {
+            fprintf(stderr, "json_grow: capacity doubling overflow (cap=%zu)\n",
+                    v->children_cap);
+            return false;
+        }
         size_t newcap = v->children_cap == 0 ? 8 : v->children_cap * 2;
+        if (newcap > SIZE_MAX / sizeof(*v->children) ||
+            newcap > SIZE_MAX / sizeof(*v->keys) ||
+            v->num_children >= newcap) {
+            fprintf(stderr, "json_grow: unrepresentable growth or no append slot "
+                    "(count=%zu, cap=%zu, next=%zu)\n",
+                    v->num_children, v->children_cap, newcap);
+            return false;
+        }
         struct json_value *nc = json_heap_resize(v->children,
                                         newcap * sizeof(*nc), "json_children");
         if (!nc) return false;

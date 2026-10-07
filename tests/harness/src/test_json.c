@@ -34,6 +34,72 @@ _test_next:;
     return failures;
 }
 
+static bool json_growth_refusal_case(size_t cap, size_t count)
+{
+    struct json_value arr, child;
+    json_init(&arr); json_set_array(&arr);
+    json_init(&child); json_set_int(&child, 7);
+    arr.children_cap = cap;
+    arr.num_children = count;
+    zcl_alloc_fault_fail_next("json_children");
+    bool refused = !json_push_back(&arr, &child);
+    const char *armed = zcl_alloc_fault_armed_label();
+    bool unchanged = arr.type == JSON_ARR && arr.children == NULL &&
+        arr.keys == NULL && arr.children_cap == cap && arr.num_children == count;
+    bool retained = armed != NULL && strcmp(armed, "json_children") == 0;
+    zcl_alloc_fault_clear();
+    /* Forged metadata has no backing storage; restore before lifecycle cleanup. */
+    arr.num_children = 0; arr.children_cap = 0;
+    json_free(&arr); json_free(&child);
+    return refused && unchanged && retained;
+}
+
+static bool json_growth_normal_case(void)
+{
+    struct json_value arr, obj, child;
+    json_init(&arr); json_set_array(&arr);
+    json_init(&obj); json_set_object(&obj);
+    json_init(&child);
+    bool ok = json_size(&arr) == 0;
+    for (int i = 0; i < 10; i++) {
+        json_set_int(&child, i);
+        bool pushed = json_push_back(&arr, &child);
+        ok = pushed && ok;
+        ok = json_get_int(json_at(&arr, (size_t)i)) == i && ok;
+    }
+    bool keyed = json_push_kv(&obj, "last", &child);
+    ok = keyed && ok && json_size(&arr) == 10 && json_size(&obj) == 1 &&
+        json_get_int(json_get(&obj, "last")) == 9;
+    json_free(&arr); json_free(&obj); json_free(&child);
+    return ok;
+}
+
+static int json_growth_cases(void)
+{
+    int failures = 0;
+    printf("json growth refuses doubling overflow before allocation... ");
+    if (json_growth_refusal_case(SIZE_MAX / 2 + 2, SIZE_MAX / 2 + 2))
+        printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    printf("json growth refuses children byte overflow before allocation... ");
+    size_t cap = (SIZE_MAX / sizeof(struct json_value)) / 2 + 1;
+    if (json_growth_refusal_case(cap, cap)) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    printf("json growth refuses keys byte overflow before allocation... ");
+    /* Step past the first overflowing key capacity so the restored growth
+     * also requests positive child bytes and consumes its injected refusal. */
+    cap = (SIZE_MAX / sizeof(char *)) / 2 + 2;
+    if (json_growth_refusal_case(cap, cap)) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    printf("json growth refuses metadata with no next append slot... ");
+    if (json_growth_refusal_case(8, 16)) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    printf("json growth preserves empty, ten-element and keyed appends... ");
+    if (json_growth_normal_case()) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    return failures;
+}
+
 static bool json_valid_matches_read(void)
 {
     /* A caller tells malformed input from exhausted memory by asking
@@ -249,7 +315,7 @@ static int json_number_cases(void)
 
 int test_json(void)
 {
-    int failures = json_unicode_cases() + json_number_cases() + json_heap_accounting_cases() + cgo_decoder_tests() + cgo_passive_tests() + cga_goal_tests();
+    int failures = json_unicode_cases() + json_number_cases() + json_heap_accounting_cases() + json_growth_cases() + cgo_decoder_tests() + cgo_passive_tests() + cga_goal_tests();
 
     printf("json parse integer... ");
     {
