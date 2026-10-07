@@ -384,6 +384,25 @@ static struct zcl_result bil_flat_payload_read(
     return ZCL_OK;
 }
 
+/* No pprev or forward-pass work has run on refusal. Remove only this
+ * attempt's arena pointers before releasing the arena; resident entries
+ * retain their bytes and probe chains. Integer addresses avoid relational
+ * comparisons between unrelated C objects. The caller checked arena size. */
+static void bil_flat_rollback(struct block_map *bm,
+                               struct block_index *arena, uint32_t count)
+{
+    uintptr_t start = (uintptr_t)arena;
+    size_t bytes = (size_t)count * sizeof(*arena);
+    for (size_t slot = 0; slot < bm->capacity; slot++) {
+        uintptr_t index = (uintptr_t)bm->buckets[slot].index;
+        if (bm->buckets[slot].occupied && index >= start &&
+            index - start < bytes) {
+            bm->buckets[slot] = (struct block_map_entry){0};
+            bm->size--;
+        }
+    }
+}
+
 static struct zcl_result bil_flat_insert_rows(
     struct main_state *ms, const struct block_index_flat *entries,
     uint32_t count, struct block_index *arena)
@@ -424,12 +443,14 @@ static struct zcl_result bil_flat_insert_rows(
         struct block_index *pindex = &arena[i];
         enum bil_flat_admit admit =
             bil_flat_probe_claim(bm, entries[i].hash, pindex);
-        if (admit == BIL_FLAT_ADMIT_FULL)
+        if (admit == BIL_FLAT_ADMIT_FULL) {
+            bil_flat_rollback(bm, arena, count);
             return ZCL_ERR(-11, "block_index_flat: hash table full "
                            "(capacity=%zu, resident=%zu) inserting row %u — "
                            "an earlier rung left no headroom; refusing "
                            "instead of probing forever",
                            bm->capacity, bm->size, i);
+        }
         if (admit == BIL_FLAT_ADMIT_DUPLICATE)
             continue;
         bil_flat_fill_pindex(pindex, &entries[i]);
@@ -451,25 +472,6 @@ static struct zcl_result bil_flat_insert_rows(
                  (long long)stripped_failed, ckpt_h, (long long)demoted_failed);
 
     return ZCL_OK;
-}
-
-/* No pprev or forward-pass work has run on refusal. Remove only this
- * attempt's arena pointers before releasing the arena; resident entries
- * retain their bytes and probe chains. Integer addresses avoid relational
- * comparisons between unrelated C objects. The caller checked arena size. */
-static void bil_flat_rollback(struct block_map *bm,
-                               struct block_index *arena, uint32_t count)
-{
-    uintptr_t start = (uintptr_t)arena;
-    size_t bytes = (size_t)count * sizeof(*arena);
-    for (size_t slot = 0; slot < bm->capacity; slot++) {
-        uintptr_t index = (uintptr_t)bm->buckets[slot].index;
-        if (bm->buckets[slot].occupied && index >= start &&
-            index - start < bytes) {
-            bm->buckets[slot] = (struct block_map_entry){0};
-            bm->size--;
-        }
-    }
 }
 
 static void bil_flat_link_rows(
@@ -609,7 +611,6 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
     int64_t t_parse_ms = 0, t_fwd_ms = 0;
     result = bil_flat_insert_rows(ms, input.entries, count, arena);
     if (!result.ok) {
-        bil_flat_rollback(&ms->map_block_index, arena, count);
         goto finish;
     }
     bil_flat_link_rows(&ms->map_block_index, input.entries, count, arena);

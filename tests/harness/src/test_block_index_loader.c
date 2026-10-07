@@ -277,6 +277,8 @@ static bool bil_union_fresh_row_clamped(struct main_state *ms,
         ((fresh->nStatus & BLOCK_VALID_MASK) <= BLOCK_VALID_TREE);
 }
 
+static int bil_flat_capacity_cases(void);
+
 /* 15a case driver: build the fixture, run the hydrate, and check both
  * verdicts (earlier rung kept, fresh rows clamped). */
 static int bil_union_boot_case(void)
@@ -284,7 +286,7 @@ static int bil_union_boot_case(void)
     int failures = 0;
     const int N = 60;
     const int PRE = 30;   /* rows the flat rung already loaded */
-    struct uint256 *hashes = malloc((size_t)N * sizeof(*hashes)); // raw-alloc-ok:test-fixture
+    struct uint256 hashes[60];
 
     struct node_db ndb;
     memset(&ndb, 0, sizeof(ndb));
@@ -305,7 +307,7 @@ static int bil_union_boot_case(void)
 
     block_map_free(&ms.map_block_index);
     if (ndb.db) sqlite3_close(ndb.db);
-    free(hashes);
+    failures += bil_flat_capacity_cases();
     return failures;
 }
 
@@ -2206,6 +2208,15 @@ static int bil_flat_probe_case(const char *tmpdir, size_t vacant,
     bool result_ok = duplicates ? r.ok : (!r.ok && r.code == -11);
     BIL_CHECK("bil: flat load into a full map refuses cleanly "
               "(no infinite probe), or skips exact duplicates", result_ok);
+    if (!duplicates) {
+        char retained_counts[96];
+        int written = snprintf(retained_counts, sizeof(retained_counts),
+                               "(capacity=%zu, resident=%zu)",
+                               ms2.map_block_index.capacity, resident);
+        BIL_CHECK("bil: flat refusal reports retained resident count",
+                  written > 0 && (size_t)written < sizeof(retained_counts) &&
+                  strstr(r.message, retained_counts) != NULL);
+    }
     BIL_CHECK("bil: refusal rolls back partial insertion; resident buckets kept",
               ms2.map_block_index.size == resident &&
               ms2.map_block_index.capacity == 4096 &&
@@ -2220,10 +2231,8 @@ static int bil_flat_probe_case(const char *tmpdir, size_t vacant,
     return failures;
 }
 
-/* Separate registered group keeps the existing large loader suite unchanged.
- * The supervised group deadline detects an uncapped probe; tests inspect
- * the refusal and retained state, without comparing a real clock. */
-int test_block_index_flat_probe(void)
+/* Capacity cases are shared by the loader and focused probe groups. */
+static int bil_flat_capacity_cases(void)
 {
     int failures = 0;
     char tmpdir[PATH_MAX];
@@ -2234,13 +2243,17 @@ int test_block_index_flat_probe(void)
     bool saved = bil_probe_save_fixture(tmpdir);
     BIL_CHECK("bil: full-map flat fixture saved", saved);
     if (saved) {
+        failures += bil_flat_probe_case(tmpdir, 0, true);
         failures += bil_flat_probe_case(tmpdir, 0, false);
         failures += bil_flat_probe_case(tmpdir, 1, false);
-        failures += bil_flat_probe_case(tmpdir, 0, true);
     }
-    char path[PATH_MAX + 32];
-    snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
-    BIL_CHECK("bil: full-map file cleanup", unlink(path) == 0);
-    BIL_CHECK("bil: full-map directory cleanup", rmdir(tmpdir) == 0);
+    test_cleanup_tmpdir(tmpdir);
+    BIL_CHECK("bil: full-map directory cleanup", access(tmpdir, F_OK) != 0 &&
+              errno == ENOENT);
     return failures;
+}
+
+int test_block_index_flat_probe(void)
+{
+    return bil_flat_capacity_cases();
 }
