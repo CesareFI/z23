@@ -6132,6 +6132,7 @@ static bool dp_cancel_active_child_poll(void *opaque)
     char *end = NULL;
     errno = 0;
     long pid = strtol(fixture->result.output, &end, 10);
+    /* A partial output drain is not evidence of the child's exact PID. */
     if (errno != 0 || pid <= 1 || *end != '\n')
         return false;
     fixture->pid = pid;
@@ -6144,14 +6145,19 @@ static bool dp_cancel_run_fixture(struct dp_cancel_fixture *fixture)
 {
     char saved_copy[4096];
     const char *saved = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    bool had_saved = saved != NULL;
     if (saved) {
         size_t len = strlen(saved);
-        if (len >= sizeof(saved_copy))
+        if (len >= sizeof(saved_copy)) {
+            fprintf(stderr, "dev platform: cancellation fixture environment too long\n");
             return false;
+        }
         memcpy(saved_copy, saved, len + 1);
     }
-    if (platform_environment_set("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0)
+    if (platform_environment_set("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0) {
+        perror("dev platform: enable cancellation fixture");
         return false;
+    }
     const clock_iface_t *previous = clock_default();
     static clock_iface_t clock;
     clock = (clock_iface_t){dp_cancel_clock_ns, dp_cancel_clock_wall_ms, fixture};
@@ -6169,12 +6175,15 @@ static bool dp_cancel_run_fixture(struct dp_cancel_fixture *fixture)
     fixture->refusal_errno = errno;
     zcl_devloop_process_cancel_clear();
     clock_set_default(previous);
+    int restored = had_saved
+        ? platform_environment_set("ZCL_DEVLOOP_TEST_PROCESS", saved_copy, 1)
+        : dp_environment_unset("ZCL_DEVLOOP_TEST_PROCESS");
+    if (restored != 0)
+        perror("dev platform: restore cancellation fixture environment");
     printf("  dev platform: cancel virtual_elapsed_us=%lld "
            "injected_pause_us=%lld\n", (long long)elapsed_us,
            (long long)(fixture->entered ? 9000000 : 0));
-    return saved
-        ? platform_environment_set("ZCL_DEVLOOP_TEST_PROCESS", saved_copy, 1) == 0
-        : dp_environment_unset("ZCL_DEVLOOP_TEST_PROCESS") == 0;
+    return restored == 0;
 }
 
 static int test_resident_process_cancellation(void)
