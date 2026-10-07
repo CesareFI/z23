@@ -2800,55 +2800,153 @@ static int test_cycle_seal_batch(void)
         }                                                                    \
     } while (0)
 
-/* Holds the cycle lock exclusively, as a sealer does across journal fsyncs,
- * until released or five seconds pass. */
-static pid_t drive_wait_lock_holder(const char *state_dir, int ready_fd,
-                                    int release_fd)
+/* Hold the seal lock until explicit release; the runner bounds liveness. */
+static pid_t drive_wait_lock_holder(const char *state_dir, int ready[2],
+                                    int release[2])
 {
     pid_t child = fork();
     if (child != 0)
         return child;
+    if (close(ready[0]) != 0 || close(release[1]) != 0)
+        _exit(1);
     char path[PATH_MAX];
     int n = snprintf(path, sizeof(path), "%s/cycle-state.lock", state_dir);
     int fd = n > 0 && n < PATH_MAX ? open(path, O_RDWR | O_CLOEXEC) : -1;
-    if (fd < 0 || flock(fd, LOCK_EX) != 0 || write(ready_fd, "r", 1) != 1)
+    if (fd < 0 || flock(fd, LOCK_EX) != 0 || write(ready[1], "r", 1) != 1)
         _exit(1);
-    struct pollfd release = {.fd = release_fd, .events = POLLIN};
-    (void)poll(&release, 1, 5000);
-    _exit(0);
+    char byte;
+    ssize_t got;
+    do { got = read(release[0], &byte, 1); } while (got < 0 && errno == EINTR);
+    _exit(got == 1 && byte == 'x' ? 0 : 1);
 }
 
-/* Publishes one ring event after 200 ms, without sealing it. */
-static pid_t drive_wait_late_publisher(const char *repo)
+static bool drive_wait_pipes(int ready[2], int release[2])
 {
-    pid_t child = fork();
-    if (child != 0)
-        return child;
-    char why[192] = {0};
-    int64_t epoch = 0;
-    platform_sleep_ms(200);
-    _exit(zcl_devloop_cycle_stream_publish(
-              repo, g_seal_batch_event, sizeof(g_seal_batch_event) - 1,
-              &epoch, why, sizeof(why)) ? 0 : 1);
+    if (pipe(ready) != 0)
+        return false;
+    if (pipe(release) != 0) {
+        (void)close(ready[0]);
+        (void)close(ready[1]);
+        return false;
+    }
+    return true;
+}
+
+/* The child retains its readiness writer until exit. HUP observes retirement
+ * without sleep polling; a failed observation kills and reaps the exact child. */
+static bool drive_wait_retired(pid_t holder, int ready_fd, int expected)
+{
+    if (holder <= 0)
+        return false;
+    struct pollfd ready = {.fd = ready_fd, .events = POLLIN};
+    int observed = poll(&ready, 1, 1000);
+    bool retired = observed == 1 && (ready.revents & POLLHUP) != 0;
+    if (!retired)
+        (void)kill(holder, SIGKILL);
+    int status = 0;
+    pid_t reaped;
+    do { reaped = waitpid(holder, &status, 0); }
+    while (reaped < 0 && errno == EINTR);
+    return retired && reaped == holder && WIFEXITED(status) &&
+           WEXITSTATUS(status) == expected;
+}
+
+/* EOF must retire a holder with failure, rather than simulate x release. */
+static bool drive_wait_holder_eof(const char *state_dir)
+{
+    int ready[2], release[2];
+    if (!drive_wait_pipes(ready, release))
+        return false;
+    pid_t holder = drive_wait_lock_holder(state_dir, ready, release);
+    (void)close(ready[1]);
+    (void)close(release[0]);
+    char byte = 0;
+    bool held = holder > 0 && read(ready[0], &byte, 1) == 1 && byte == 'r';
+    (void)close(release[1]);
+    bool retired = drive_wait_retired(holder, ready[0], 1);
+    (void)close(ready[0]);
+    if (!held || !retired)
+        fprintf(stderr, "drive-wait EOF: held=%d retired_status_1=%d\n",
+                held, retired);
+    return held && retired;
+}
+
+static struct {
+    const clock_iface_t *saved;
+    const char *repo;
+    unsigned reads;
+    bool late;
+    bool published;
+    int64_t epoch;
+} g_drive_wait_clock;
+
+/* The second clock read in wait_after follows its first ABSENT lookup.
+ * Publication is gated by that production-path acknowledgment, not a sleep.
+ * Advance time by 2100 ms to model preemption inside the wait. */
+static int64_t drive_wait_clock_now(void *opaque)
+{
+    (void)opaque;
+    ++g_drive_wait_clock.reads;
+    if (g_drive_wait_clock.late && g_drive_wait_clock.reads == 2) {
+        char why[192] = {0};
+        g_drive_wait_clock.published = zcl_devloop_cycle_stream_publish(
+            g_drive_wait_clock.repo, g_seal_batch_event,
+            sizeof(g_seal_batch_event) - 1, &g_drive_wait_clock.epoch,
+            why, sizeof(why));
+        if (!g_drive_wait_clock.published)
+            fprintf(stderr, "drive-wait publication refused: %s\n", why);
+    }
+    if (g_drive_wait_clock.reads == 1)
+        return INT64_C(300000000); /* Virtual entry delay. */
+    return g_drive_wait_clock.late && g_drive_wait_clock.reads == 2
+        ? INT64_C(2400000000) : INT64_C(10300000000);
+}
+
+static int64_t drive_wait_clock_wall(void *opaque)
+{
+    (void)opaque;
+    return 0;
+}
+
+static enum zcl_devloop_state_lookup drive_wait_lookup(
+    const char *repo, int64_t after, int timeout_ms, bool late,
+    char out[4096], size_t *len, int64_t *epoch, char why[192])
+{
+    static const clock_iface_t clock = {
+        .now_monotonic_ns = drive_wait_clock_now,
+        .now_wall_ms = drive_wait_clock_wall,
+    };
+    g_drive_wait_clock.saved = clock_default();
+    g_drive_wait_clock.repo = repo;
+    g_drive_wait_clock.reads = 0;
+    g_drive_wait_clock.late = late;
+    g_drive_wait_clock.published = false;
+    g_drive_wait_clock.epoch = 0;
+    clock_set_default(&clock);
+    enum zcl_devloop_state_lookup got = zcl_devloop_cycle_state_wait_after(
+        repo, after, timeout_ms, out, 4096, len, epoch, why, 192);
+    clock_set_default(g_drive_wait_clock.saved);
+    return got;
 }
 
 static bool drive_wait_found(const char *repo, int64_t after,
-                             int64_t expect_epoch)
+                             int64_t expect_epoch, bool late)
 {
     char out[4096], why[192] = {0};
     size_t len = 0;
     int64_t epoch = 0;
-    int64_t started = platform_time_monotonic_us();
-    enum zcl_devloop_state_lookup got = zcl_devloop_cycle_state_wait_after(
-        repo, after, 10000, out, sizeof(out), &len, &epoch, why, sizeof(why));
-    int64_t elapsed_ms = (platform_time_monotonic_us() - started) / 1000;
+    enum zcl_devloop_state_lookup got = drive_wait_lookup(
+        repo, after, 10000, late, out, &len, &epoch, why);
     if (got == ZCL_DEVLOOP_STATE_FOUND && epoch == expect_epoch &&
-        elapsed_ms < 2000)
+        (!late || (g_drive_wait_clock.reads == 2 &&
+                   g_drive_wait_clock.published &&
+                   g_drive_wait_clock.epoch == expect_epoch)))
         return true;
     fprintf(stderr, "drive wait after=%lld: lookup=%d epoch=%lld "
-                    "elapsed=%lld ms why=%s\n",
+                    "entered=%u published=%d why=%s\n",
             (long long)after, (int)got, (long long)epoch,
-            (long long)elapsed_ms, why);
+            late ? g_drive_wait_clock.reads : 0,
+            late && g_drive_wait_clock.published, why);
     return false;
 }
 
@@ -2860,17 +2958,11 @@ static bool drive_wait_under_lock(const char *repo, int64_t sealed)
     char out[4096], why[192] = {0};
     size_t len = 0;
     int64_t epoch = 0;
-    DW_CHECK(drive_wait_found(repo, sealed - 1, sealed));
-    pid_t publisher = drive_wait_late_publisher(repo);
-    DW_CHECK(publisher > 0);
-    bool late = drive_wait_found(repo, sealed, sealed + 1);
-    int status = 0;
-    DW_CHECK(waitpid(publisher, &status, 0) == publisher &&
-             WIFEXITED(status) && WEXITSTATUS(status) == 0);
-    DW_CHECK(late);
-    DW_CHECK(zcl_devloop_cycle_state_wait_after(
-                 repo, sealed + 1, 300, out, sizeof(out), &len, &epoch, why,
-                 sizeof(why)) == ZCL_DEVLOOP_STATE_ABSENT &&
+    DW_CHECK(drive_wait_found(repo, sealed - 1, sealed, false));
+    DW_CHECK(drive_wait_found(repo, sealed, sealed + 1, true));
+    DW_CHECK(drive_wait_lookup(
+                 repo, sealed + 1, 300, false, out, &len, &epoch, why)
+                 == ZCL_DEVLOOP_STATE_ABSENT &&
              epoch == sealed + 1);
     return true;
 }
@@ -2882,9 +2974,9 @@ static bool drive_wait_undurable(const char *repo, int64_t sealed)
     char out[4096], why[192] = {0};
     size_t len = 0;
     int64_t epoch = 0;
-    DW_CHECK(zcl_devloop_cycle_state_wait_after(
-                 repo, sealed, 300, out, sizeof(out), &len, &epoch, why,
-                 sizeof(why)) == ZCL_DEVLOOP_STATE_ABSENT &&
+    DW_CHECK(drive_wait_lookup(
+                 repo, sealed, 300, false, out, &len, &epoch, why)
+                 == ZCL_DEVLOOP_STATE_ABSENT &&
              epoch == sealed);
     return true;
 }
@@ -2895,20 +2987,21 @@ static bool drive_wait_with_lock(const char *repo, const char *state_dir,
                                  bool (*under)(const char *, int64_t))
 {
     int ready[2] = {-1, -1}, release[2] = {-1, -1};
-    DW_CHECK(pipe(ready) == 0 && pipe(release) == 0);
-    pid_t holder = drive_wait_lock_holder(state_dir, ready[1], release[0]);
+    DW_CHECK(drive_wait_pipes(ready, release));
+    pid_t holder = drive_wait_lock_holder(state_dir, ready, release);
+    bool ready_closed = close(ready[1]) == 0;
+    (void)close(release[0]);
     char byte = 0;
-    bool held = holder > 0 && read(ready[0], &byte, 1) == 1;
+    bool held = holder > 0 && ready_closed && read(ready[0], &byte, 1) == 1 &&
+                byte == 'r';
     bool ok = held && under(repo, epoch);
     int status = 0;
-    bool released = write(release[1], "x", 1) == 1 && holder > 0 &&
-                    waitpid(holder, &status, 0) == holder &&
-                    WIFEXITED(status) && WEXITSTATUS(status) == 0;
-    for (int i = 0; i < 2; i++) {
-        (void)close(ready[i]);
-        (void)close(release[i]);
-    }
-    return ok && released;
+    bool alive = holder > 0 && waitpid(holder, &status, WNOHANG) == 0;
+    bool released = held && alive && write(release[1], "x", 1) == 1;
+    (void)close(release[1]);
+    bool retired = drive_wait_retired(holder, ready[0], 0);
+    (void)close(ready[0]);
+    return ok && alive && released && retired;
 }
 
 static bool drive_wait_fixture(const char *repo, const char *state_dir)
@@ -2926,6 +3019,7 @@ static bool drive_wait_fixture(const char *repo, const char *state_dir)
                  &epoch, why, sizeof(why)) &&
              zcl_devloop_cycle_stream_flush_through(repo, epoch, why,
                                                     sizeof(why)));
+    DW_CHECK(drive_wait_holder_eof(state_dir));
     DW_CHECK(drive_wait_with_lock(repo, state_dir, epoch,
                                   drive_wait_under_lock));
     /* The late publisher left epoch + 1 in the ring. Seal it, then restart
