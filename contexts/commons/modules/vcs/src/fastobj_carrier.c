@@ -253,23 +253,29 @@ static int fc_entry_cmp(const void *a, const void *b)
                   ((const struct fc_entry *)b)->key);
 }
 
-/* Collect the sorted entry keys of a fastobj cache. A pair member with
- * no twin is a torn entry and refuses. */
-static bool fc_scan_cache(const char *cache_dir, struct fc_entry **entries,
-                          size_t *count, char *err, size_t err_cap)
+/* A cache scan that finds no valid entries reaches the sort with list ==
+ * NULL and n == 0 (qsort's base is declared nonnull — UB for a no-op
+ * sort). Keep the guard in the small sorting helper. */
+static void fc_entries_sort(struct fc_entry *list, size_t n)
+{
+    if (n > 1)
+        qsort(list, n, sizeof(*list), fc_entry_cmp);
+}
+
+static DIR *fc_scan_objects(const char *cache_dir, char *err, size_t err_cap)
 {
     char objects[4096];
     int on = snprintf(objects, sizeof(objects), "%s/objects", cache_dir);
     if (on <= 0 || (size_t)on >= sizeof(objects)) {
         (void)snprintf(err, err_cap, "cache path overflow");
-        return false;
+        return NULL;
     }
     int rootfd = open(cache_dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
                                  O_CLOEXEC);
     if (rootfd < 0) {
         (void)snprintf(err, err_cap,
                        "cache root unavailable or linked: %s", cache_dir);
-        return false;
+        return NULL;
     }
     int objectsfd = openat(rootfd, "objects", O_RDONLY | O_DIRECTORY |
                                               O_NOFOLLOW | O_CLOEXEC);
@@ -277,76 +283,72 @@ static bool fc_scan_cache(const char *cache_dir, struct fc_entry **entries,
     if (objectsfd < 0) {
         (void)snprintf(err, err_cap,
                        "objects/ unavailable or linked under %s", cache_dir);
-        return false;
+        return NULL;
     }
     DIR *shards = fdopendir(objectsfd);
     if (!shards) {
         close(objectsfd);
         (void)snprintf(err, err_cap, "cannot scan objects/ under %s",
                        cache_dir);
-        return false;
+        return NULL;
     }
-    struct fc_entry *list = NULL;
-    size_t n = 0, cap = 0;
+    return shards;
+}
+
+static bool fc_entry_add(struct fc_entry **list, size_t *n, size_t *cap,
+                          const char key[65], uint8_t member,
+                          char *err, size_t err_cap)
+{
+    for (size_t i = 0; i < *n; i++) {
+        if (strcmp((*list)[i].key, key) == 0) {
+            (*list)[i].members |= member;
+            return true;
+        }
+    }
+    if (*n == *cap) {
+        if (*cap > SIZE_MAX / 2u / sizeof(**list)) {
+            (void)snprintf(err, err_cap, "entry scan size overflow");
+            return false;
+        }
+        size_t want = *cap ? *cap * 2u : 64u;
+        struct fc_entry *grown = zcl_realloc(*list,
+            want * sizeof(**list), "fastobj-carrier-scan");
+        if (!grown) {
+            (void)snprintf(err, err_cap, "entry scan alloc");
+            return false;
+        }
+        *list = grown;
+        *cap = want;
+    }
+    memcpy((*list)[*n].key, key, 65);
+    (*list)[*n].members = member;
+    (*n)++;
+    return true;
+}
+
+static bool fc_scan_member(const char *shard, const struct dirent *e,
+                            struct fc_entry **list, size_t *n, size_t *cap,
+                            char *err, size_t err_cap)
+{
+    size_t namelen = strlen(e->d_name);
+    /* A member is <62 hex>.o or <62 hex>.json; anything else is
+     * not a cache entry and is ignored. */
+    bool is_obj = namelen == 64 && strcmp(e->d_name + 62, ".o") == 0;
+    bool is_side = namelen == 67 && strcmp(e->d_name + 62, ".json") == 0;
+    if ((!is_obj && !is_side) || !fc_is_lower_hex(e->d_name, 62))
+        return true;
+    char key[65];
+    key[0] = shard[0];
+    key[1] = shard[1];
+    memcpy(key + 2, e->d_name, 62);
+    key[64] = '\0';
+    return fc_entry_add(list, n, cap, key, is_obj ? 1u : 2u, err, err_cap);
+}
+
+static bool fc_entries_valid(const struct fc_entry *list, size_t n,
+                              char *err, size_t err_cap)
+{
     bool ok = true;
-    struct dirent *sh;
-    while (ok && (sh = readdir(shards)) != NULL) {
-        /* The shard directory name IS the key's first two hex chars. */
-        if (strlen(sh->d_name) != 2 || !fc_is_lower_hex(sh->d_name, 2))
-            continue;
-        bool skip = false;
-        DIR *d = fc_open_shard(shards, sh->d_name, &skip, err, err_cap);
-        if (!d) {
-            if (skip)
-                continue;
-            ok = false;
-            break;
-        }
-        struct dirent *e;
-        while ((e = readdir(d)) != NULL) {
-            size_t namelen = strlen(e->d_name);
-            /* A member is <62 hex>.o or <62 hex>.json; anything else is
-             * not a cache entry and is ignored. */
-            bool is_obj = namelen == 64 && strcmp(e->d_name + 62, ".o") == 0;
-            bool is_side = namelen == 67 &&
-                           strcmp(e->d_name + 62, ".json") == 0;
-            if ((!is_obj && !is_side) || !fc_is_lower_hex(e->d_name, 62))
-                continue;
-            char key[65];
-            key[0] = sh->d_name[0];
-            key[1] = sh->d_name[1];
-            memcpy(key + 2, e->d_name, 62);
-            key[64] = '\0';
-            uint8_t member = is_obj ? 1u : 2u;
-            bool found = false;
-            for (size_t i = 0; i < n; i++) {
-                if (strcmp(list[i].key, key) == 0) {
-                    list[i].members |= member;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                if (n == cap) {
-                    size_t want = cap ? cap * 2u : 64u;
-                    struct fc_entry *grown = zcl_realloc(list,
-                        want * sizeof(*list), "fastobj-carrier-scan");
-                    if (!grown) {
-                        (void)snprintf(err, err_cap, "entry scan alloc");
-                        ok = false;
-                        break;
-                    }
-                    list = grown;
-                    cap = want;
-                }
-                memcpy(list[n].key, key, 65);
-                list[n].members = member;
-                n++;
-            }
-        }
-        closedir(d);
-    }
-    closedir(shards);
     if (ok) {
         for (size_t i = 0; i < n; i++) {
             if (list[i].members != 3u) {
@@ -365,11 +367,44 @@ static bool fc_scan_cache(const char *cache_dir, struct fc_entry **entries,
                        VCS_FASTOBJ_CARRIER_MAX_ENTRIES);
         ok = false;
     }
+    return ok;
+}
+
+/* Collect the sorted entry keys of a fastobj cache. A pair member with
+ * no twin is a torn entry and refuses. */
+static bool fc_scan_cache(const char *cache_dir, struct fc_entry **entries,
+                          size_t *count, char *err, size_t err_cap)
+{
+    *entries = NULL;
+    *count = 0;
+    DIR *shards = fc_scan_objects(cache_dir, err, err_cap);
+    if (!shards) return false;
+    struct fc_entry *list = NULL;
+    size_t n = 0, cap = 0;
+    bool ok = true;
+    struct dirent *sh;
+    while (ok && (sh = readdir(shards)) != NULL) {
+        if (strlen(sh->d_name) != 2 || !fc_is_lower_hex(sh->d_name, 2))
+            continue;
+        bool skip = false;
+        DIR *d = fc_open_shard(shards, sh->d_name, &skip, err, err_cap);
+        if (!d) {
+            if (skip) continue;
+            ok = false;
+            break;
+        }
+        struct dirent *e;
+        while (ok && (e = readdir(d)) != NULL)
+            ok = fc_scan_member(sh->d_name, e, &list, &n, &cap, err, err_cap);
+        closedir(d);
+    }
+    closedir(shards);
+    if (ok) ok = fc_entries_valid(list, n, err, err_cap);
     if (!ok) {
         free(list);
         return false;
     }
-    qsort(list, n, sizeof(*list), fc_entry_cmp);
+    fc_entries_sort(list, n);
     *entries = list;
     *count = n;
     return true;

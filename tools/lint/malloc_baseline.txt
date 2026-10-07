@@ -34,7 +34,6 @@ contexts/commons/packages/zini/src/zini.c:realloc
 contexts/commons/packages/zintern/src/zintern.c:malloc
 contexts/commons/packages/zintern/tests/test_zintern.c:malloc
 contexts/commons/packages/zlru/tests/test_zlru.c:calloc
-contexts/commons/packages/zmap/app/main.c:malloc
 contexts/commons/packages/zmap/src/zmap.c:calloc
 contexts/commons/packages/zmap/tests/test_zmap.c:calloc
 contexts/commons/packages/znetstring/app/main.c:malloc

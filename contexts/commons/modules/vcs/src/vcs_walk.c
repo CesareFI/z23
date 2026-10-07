@@ -162,13 +162,18 @@ static bool walk_windows_time(LARGE_INTEGER value, int64_t *nanoseconds)
     return true;
 }
 
-static bool walk_dir_windows(struct walk_ctx *w, HANDLE directory,
-                             const char *rel,
-                             walk_nt_create_file_fn create_file,
-                             walk_nt_query_directory_file_fn query_directory)
+/* An enumeration yielding no non-dot entries reaches the sort with
+ * names == NULL and count == 0 (qsort's base is declared nonnull — UB
+ * for a no-op sort). Keep the guard in the small sorting helper. */
+static void walk_names_sort(char **names, size_t count)
 {
-    char **names = NULL;
-    size_t count = 0;
+    if (count > 1)
+        qsort(names, count, sizeof(*names), walk_name_compare);
+}
+
+static bool walk_windows_names(HANDLE directory,
+    walk_nt_query_directory_file_fn query_directory, char ***names, size_t *count)
+{
     bool restart = true, ok = true;
     unsigned char buffer[16384];
     for (;;) {
@@ -185,7 +190,7 @@ static bool walk_dir_windows(struct walk_ctx *w, HANDLE directory,
             bool dot = (chars == 1 && entry->FileName[0] == L'.') ||
                 (chars == 2 && entry->FileName[0] == L'.' &&
                  entry->FileName[1] == L'.');
-            if (!dot && !walk_append_name(&names, &count, entry->FileName, chars)) {
+            if (!dot && !walk_append_name(names, count, entry->FileName, chars)) {
                 ok = false;
                 break;
             }
@@ -195,7 +200,78 @@ static bool walk_dir_windows(struct walk_ctx *w, HANDLE directory,
         }
         if (!ok) break;
     }
-    qsort(names, count, sizeof(*names), walk_name_compare);
+    return ok;
+}
+
+static bool walk_windows_file(struct walk_ctx *w, const char *childrel,
+    const BY_HANDLE_FILE_INFORMATION *file_info, const FILE_BASIC_INFO *file_basic)
+{
+    BY_HANDLE_FILE_INFORMATION info = *file_info;
+    FILE_BASIC_INFO basic = *file_basic;
+    bool ok = true;
+    uint64_t size = ((uint64_t)info.nFileSizeHigh << 32) |
+                    info.nFileSizeLow;
+    uint32_t mode = (uint32_t)(_S_IFREG | _S_IREAD);
+    if (!(info.dwFileAttributes & FILE_ATTRIBUTE_READONLY))
+        mode |= (uint32_t)_S_IWRITE;
+    int64_t modified = 0, changed = 0;
+    if (!walk_windows_time(basic.LastWriteTime, &modified) ||
+        !walk_windows_time(basic.ChangeTime, &changed)) {
+        ok = false;
+    } else if (!w->cb(childrel, mode, size,
+                      modified, changed, w->user)) {
+        w->aborted = true;
+    }
+    return ok;
+}
+
+static bool walk_dir_windows(struct walk_ctx *w, HANDLE directory,
+                             const char *rel,
+                             walk_nt_create_file_fn create_file,
+                             walk_nt_query_directory_file_fn query_directory);
+
+static bool walk_windows_child(struct walk_ctx *w, HANDLE directory,
+    const char *name, const char *childrel, walk_nt_create_file_fn create_file,
+    walk_nt_query_directory_file_fn query_directory)
+{
+    bool ok = true;
+    bool vanished = false;
+    HANDLE child = walk_open_child(directory, name, create_file,
+                                   &vanished);
+    BY_HANDLE_FILE_INFORMATION info = {0};
+    FILE_BASIC_INFO basic = {0};
+    if (child == INVALID_HANDLE_VALUE) {
+        return vanished;
+    }
+    if (!GetFileInformationByHandle(child, &info) ||
+        !GetFileInformationByHandleEx(child, FileBasicInfo, &basic,
+                                       sizeof(basic))) {
+        CloseHandle(child);
+        return false;
+    }
+    if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        CloseHandle(child);
+        return true;
+    }
+    if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        ok = walk_dir_windows(w, child, childrel, create_file,
+                              query_directory);
+    } else if (GetFileType(child) == FILE_TYPE_DISK) {
+        ok = walk_windows_file(w, childrel, &info, &basic);
+    }
+    CloseHandle(child);
+    return ok;
+}
+
+static bool walk_dir_windows(struct walk_ctx *w, HANDLE directory,
+                             const char *rel,
+                             walk_nt_create_file_fn create_file,
+                             walk_nt_query_directory_file_fn query_directory)
+{
+    char **names = NULL;
+    size_t count = 0;
+    bool ok = walk_windows_names(directory, query_directory, &names, &count);
+    walk_names_sort(names, count);
     for (size_t i = 0; i < count && ok && !w->aborted; ++i) {
         char childrel[4096];
         int n = rel[0] ? snprintf(childrel, sizeof(childrel), "%s/%s", rel,
@@ -204,45 +280,8 @@ static bool walk_dir_windows(struct walk_ctx *w, HANDLE directory,
         if (n <= 0 || (size_t)n >= sizeof(childrel) ||
             vcs_path_ignored(childrel))
             continue;
-        bool vanished = false;
-        HANDLE child = walk_open_child(directory, names[i], create_file,
-                                       &vanished);
-        BY_HANDLE_FILE_INFORMATION info = {0};
-        FILE_BASIC_INFO basic = {0};
-        if (child == INVALID_HANDLE_VALUE) {
-            if (!vanished) ok = false;
-            continue;
-        }
-        if (!GetFileInformationByHandle(child, &info) ||
-            !GetFileInformationByHandleEx(child, FileBasicInfo, &basic,
-                                           sizeof(basic))) {
-            CloseHandle(child);
-            ok = false;
-            break;
-        }
-        if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-            CloseHandle(child);
-            continue;
-        }
-        if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            ok = walk_dir_windows(w, child, childrel, create_file,
-                                  query_directory);
-        } else if (GetFileType(child) == FILE_TYPE_DISK) {
-            uint64_t size = ((uint64_t)info.nFileSizeHigh << 32) |
-                            info.nFileSizeLow;
-            uint32_t mode = (uint32_t)(_S_IFREG | _S_IREAD);
-            if (!(info.dwFileAttributes & FILE_ATTRIBUTE_READONLY))
-                mode |= (uint32_t)_S_IWRITE;
-            int64_t modified = 0, changed = 0;
-            if (!walk_windows_time(basic.LastWriteTime, &modified) ||
-                !walk_windows_time(basic.ChangeTime, &changed)) {
-                ok = false;
-            } else if (!w->cb(childrel, mode, size,
-                              modified, changed, w->user)) {
-                w->aborted = true;
-            }
-        }
-        CloseHandle(child);
+        ok = walk_windows_child(w, directory, names[i], childrel,
+                                 create_file, query_directory);
     }
     for (size_t i = 0; i < count; ++i) free(names[i]);
     free(names);

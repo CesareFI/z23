@@ -12,6 +12,44 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Compile the production caller privately with an observer at its library
+ * boundary. This detects no-op sorts without sanitizer-specific behavior. */
+static int shadow_evidence_cmp(const void *, const void *);
+static size_t seed_small_sorts, seed_evidence_sorts;
+static void seed_observe_sort(void *base, size_t count, size_t width,
+                              int (*compare)(const void *, const void *))
+{
+    if (compare != shadow_evidence_cmp) {
+        qsort(base, count, width, compare);
+        return;
+    }
+    if (count < 2) {
+        seed_small_sorts++;
+        return;
+    }
+    seed_evidence_sorts++;
+    qsort(base, count, width, compare);
+}
+
+static const char *seed_observed_error_string(enum vcs_c23_shadow_election_error);
+static enum vcs_c23_shadow_election_error seed_observed_snapshot_build(
+    const struct vcs_c23_evidence_snapshot_input *,
+    struct vcs_c23_evidence_snapshot_row *, size_t,
+    struct vcs_c23_evidence_snapshot_v1 *);
+static enum vcs_c23_shadow_election_error seed_observed_election_build(
+    const struct vcs_c23_shadow_election_input *,
+    struct vcs_c23_shadow_election_seat *, size_t,
+    struct vcs_c23_shadow_election_v1 *);
+#define vcs_c23_shadow_election_error_string seed_observed_error_string
+#define vcs_c23_evidence_snapshot_build seed_observed_snapshot_build
+#define vcs_c23_shadow_election_build seed_observed_election_build
+#define qsort seed_observe_sort
+#include "../../../contexts/commons/modules/vcs/src/zcode_shadow_election.c"
+#undef qsort
+#undef vcs_c23_shadow_election_build
+#undef vcs_c23_evidence_snapshot_build
+#undef vcs_c23_shadow_election_error_string
+
 #define SEED_FIXTURE_COUNT 6u
 
 static const char seed_fixture_root_hex[] =
@@ -417,10 +455,73 @@ static int test_shadow_elections(void)
     return failures;
 }
 
+/* Observe empty and singleton evidence through the production caller. */
+static int seed_empty_evidence_regression(void)
+{
+    int failures = 0;
+    (void)seed_observed_error_string;
+    (void)seed_observed_election_build;
+    TEST("empty and singleton evidence preserve canonical base weights") {
+        struct vcs_c23_seed_v1 seed;
+        uint8_t zid_secret[32], zcl_secret[32];
+        ASSERT(seed_test_fixture(&seed, 0, zid_secret, zcl_secret));
+        struct vcs_c23_shadow_seed_input seed_input = {.seed = &seed};
+        uint8_t policy[32], freeze_hash[32];
+        seed_test_fill(policy, 0x22);
+        seed_test_fill(freeze_hash, 0x23);
+        struct vcs_c23_evidence_snapshot_input input = {
+            .network_genesis_root = seed.network_genesis_root,
+            .policy_root = policy, .seeds = &seed_input, .seed_count = 1,
+            .evidence = NULL, .evidence_count = 0, .election_epoch = 30,
+            .freeze_height = 8500, .freeze_hash = freeze_hash,
+            .active_height = 9000, .active_mtp = 700000,
+            .anchor_is_active = seed_test_anchor,
+        };
+        struct vcs_c23_evidence_snapshot_row row;
+        struct vcs_c23_evidence_snapshot_v1 empty, singleton;
+        seed_small_sorts = seed_evidence_sorts = 0;
+        ASSERT_EQ(seed_observed_snapshot_build(&input, &row, 1, &empty),
+                  VCS_C23_SHADOW_ELECTION_OK);
+        ASSERT_EQ(seed_small_sorts, 0);
+        ASSERT_EQ(empty.total_weight, 1);
+        ASSERT_EQ(row.weight, 1);
+        ASSERT(memcmp(row.zid_pubkey, seed.zid_pubkey, 32) == 0);
+        struct vcs_c23_shadow_evidence_input evidence[2] = {
+            {.event_epoch = 29, .points = 1},
+            {.event_epoch = 29, .points = 1},
+        };
+        seed_test_fill(evidence[0].contribution_root, 2);
+        seed_test_fill(evidence[1].contribution_root, 1);
+        memcpy(evidence[0].zid_pubkey, seed.zid_pubkey, 32);
+        memcpy(evidence[1].zid_pubkey, seed.zid_pubkey, 32);
+        input.evidence = evidence;
+        input.evidence_count = 1;
+        ASSERT_EQ(seed_observed_snapshot_build(&input, &row, 1, &singleton),
+                  VCS_C23_SHADOW_ELECTION_OK);
+        ASSERT_EQ(seed_small_sorts, 0);
+        ASSERT_EQ(row.weight, 2);
+        ASSERT(memcmp(empty.evidence_set_root, singleton.evidence_set_root, 32) != 0);
+        input.evidence_count = 2;
+        struct vcs_c23_evidence_snapshot_v1 observed, linked;
+        struct vcs_c23_evidence_snapshot_row linked_row;
+        ASSERT_EQ(seed_observed_snapshot_build(&input, &row, 1, &observed),
+                  VCS_C23_SHADOW_ELECTION_OK);
+        ASSERT_EQ(seed_evidence_sorts, 1);
+        ASSERT_EQ(seed_small_sorts, 0);
+        ASSERT_EQ(vcs_c23_evidence_snapshot_build(&input, &linked_row, 1, &linked),
+                  VCS_C23_SHADOW_ELECTION_OK);
+        ASSERT_EQ(observed.total_weight, 3);
+        ASSERT(memcmp(observed.snapshot_root, linked.snapshot_root, 32) == 0);
+        ASSERT(memcmp(&row, &linked_row, sizeof(row)) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_seed_election(void)
 {
     int failures = test_seed_wire() + test_seed_maturity() +
-                   test_shadow_elections();
+                   test_shadow_elections() + seed_empty_evidence_regression();
     TEST("C23 seed and shadow election APIs fail closed") {
         struct vcs_c23_seed_v1 seed;
         struct vcs_c23_shadow_election_v1 election;

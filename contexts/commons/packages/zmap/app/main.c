@@ -43,6 +43,42 @@ static int entry_cmp(const void *va, const void *vb) {
   return strcmp(a->word, b->word);
 }
 
+/* Empty input leaves n == 0; avoid a no-op library sort. */
+static void entries_sort(entry *entries, size_t n) {
+  if (n > 1)
+    qsort(entries, n, sizeof(*entries), entry_cmp);
+}
+
+static void count_words(zmap *m, const char *input, size_t len) {
+  size_t at = 0;
+  while (at < len) {
+    while (at < len && !isalnum((unsigned char)input[at]) && input[at] != '\'')
+      at++;
+    size_t start = at;
+    while (at < len && (isalnum((unsigned char)input[at]) || input[at] == '\''))
+      at++;
+    if (at > start)
+      bump(m, input + start, at - start);
+  }
+}
+
+static entry *collect_entries(zmap *m, size_t n, const zmap_alloc *alloc) {
+  if (n > SIZE_MAX / sizeof(entry))
+    return nullptr;
+  entry *entries = alloc->alloc(alloc->ctx, n ? n * sizeof(*entries) : 1u);
+  if (!entries)
+    return nullptr;
+  size_t k = 0;
+  const char *word;
+  void *value;
+  for (zmap_iter it = ZMAP_ITER_INIT; zmap_next(m, &it, &word, &value);) {
+    entries[k].word = word; /* borrowed until the map is destroyed */
+    entries[k].count = (uintptr_t)value;
+    k++;
+  }
+  return entries;
+}
+
 int main(int argc, char **argv) {
   long top = 20;
   if (argc > 1) {
@@ -69,39 +105,17 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  size_t at = 0;
-  while (at < len) {
-    while (at < len && !isalnum((unsigned char)input[at]) && input[at] != '\'')
-      at++;
-    size_t start = at;
-    while (at < len && (isalnum((unsigned char)input[at]) || input[at] == '\''))
-      at++;
-    if (at > start)
-      bump(m, input + start, at - start);
-  }
+  count_words(m, input, len);
 
   size_t n = zmap_size(m);
-  entry *entries = malloc(n * sizeof(*entries));
-  if (!entries && n > 0) {
+  zmap_alloc alloc = zmap_alloc_malloc();
+  entry *entries = collect_entries(m, n, &alloc);
+  if (!entries) {
     fprintf(stderr, "wordfreq: out of memory\n");
     zmap_destroy(m, nullptr, nullptr);
     return 2;
   }
-  size_t k = 0;
-  const char *word;
-  void *value;
-  for (zmap_iter it = ZMAP_ITER_INIT; zmap_next(m, &it, &word, &value);) {
-    entries[k].word = strdup(word); /* outlives the map */
-    if (!entries[k].word) {
-      fprintf(stderr, "wordfreq: out of memory\n");
-      zmap_destroy(m, nullptr, nullptr);
-      free(entries);
-      return 2;
-    }
-    entries[k].count = (uintptr_t)value;
-    k++;
-  }
-  qsort(entries, n, sizeof(*entries), entry_cmp);
+  entries_sort(entries, n);
 
   size_t shown = top == 0 || (size_t)top > n ? n : (size_t)top;
   for (size_t i = 0; i < shown; i++)
@@ -109,9 +123,7 @@ int main(int argc, char **argv) {
            entries[i].word);
   fprintf(stderr, "%zu distinct words\n", n);
 
-  for (size_t i = 0; i < n; i++)
-    free((void *)entries[i].word);
-  free(entries);
+  alloc.dealloc(alloc.ctx, entries);
   zmap_destroy(m, nullptr, nullptr);
   return 0;
 }

@@ -1132,6 +1132,40 @@ static int fcw_linked_admit_shard_refusal(
     return failures;
 }
 
+static int fcw_empty_export_regression(void)
+{
+    int failures = 0;
+    char base[PATH_MAX] = "", empty_cache[PATH_MAX], empty_objects[PATH_MAX];
+    char store_dir[PATH_MAX], err[512] = "";
+    uint8_t root[32] = {0};
+    struct vcs_fastobj_carrier_stats stats = {0};
+    struct vcs_package_store *store = NULL;
+    bool owned = test_mkdtemp(base, sizeof(base), "fastobj_empty_export") != NULL;
+    FC_CHECK("empty carrier scratch prepared", owned);
+    if (!owned) return failures;
+    int ec = snprintf(empty_cache, sizeof(empty_cache), "%s/empty-export", base);
+    int eo = snprintf(empty_objects, sizeof(empty_objects),
+                      "%s/empty-export/objects", base);
+    int sd = snprintf(store_dir, sizeof(store_dir), "%s/store", base);
+    bool ready = ec > 0 && (size_t)ec < sizeof(empty_cache) &&
+                 eo > 0 && (size_t)eo < sizeof(empty_objects) &&
+                 sd > 0 && (size_t)sd < sizeof(store_dir) &&
+                 fcw_mkdir_p(empty_objects);
+    if (ready)
+        store = vcs_package_store_open(store_dir,
+                                       VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
+    FC_CHECK("empty carrier fixture prepared", store != NULL);
+    if (store) {
+        FC_CHECK("empty cache export retains no-entry refusal",
+                 !vcs_fastobj_carrier_export(empty_cache, store, root,
+                                             &stats, err, sizeof(err)) &&
+                 strstr(err, "holds no entries") != NULL);
+        vcs_package_store_close(store);
+    }
+    FC_CHECK("empty carrier fixture removed", test_rm_rf_recursive(base) == 0);
+    return failures;
+}
+
 static int test_fastobj_carrier_platform_arm(void)
 {
     int failures = 0;
@@ -1836,5 +1870,9 @@ static int test_fastobj_carrier_platform_arm(void)
 
 int test_fastobj_carrier(void)
 {
-    return test_fastobj_carrier_platform_arm();
+    int failures = 0;
+#if !defined(_WIN32)
+    failures += fcw_empty_export_regression();
+#endif
+    return failures + test_fastobj_carrier_platform_arm();
 }

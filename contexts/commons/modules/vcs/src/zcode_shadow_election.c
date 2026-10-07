@@ -149,18 +149,29 @@ static void shadow_snapshot_root(
     sha3_256_finalize(&sha, out);
 }
 
-enum vcs_c23_shadow_election_error vcs_c23_evidence_snapshot_build(
-    const struct vcs_c23_evidence_snapshot_input *input,
-    struct vcs_c23_evidence_snapshot_row *rows, size_t row_capacity,
-    struct vcs_c23_evidence_snapshot_v1 *out)
+/* evidence_count == 0 is a valid input and leaves evidence == NULL;
+ * qsort's base is declared nonnull, so sorting the empty set is UB for
+ * a no-op. Keep the guard in the small sorting helper. */
+static void shadow_evidence_sort(struct shadow_evidence *evidence, size_t n)
 {
-    if (out) memset(out, 0, sizeof(*out));
-    if (rows && row_capacity)
-        memset(rows, 0, row_capacity * sizeof(*rows));
+    if (n > 1)
+        qsort(evidence, n, sizeof(*evidence), shadow_evidence_cmp);
+}
+
+static bool shadow_input_present(const struct vcs_c23_evidence_snapshot_input *input,
+                                 const struct vcs_c23_evidence_snapshot_row *rows,
+                                 const struct vcs_c23_evidence_snapshot_v1 *out)
+{
     if (!input || !rows || !out || !input->network_genesis_root ||
         !input->policy_root || !input->seeds || !input->freeze_hash ||
         !input->anchor_is_active)
-        return VCS_C23_SHADOW_ELECTION_NULL;
+        return false;
+    return true;
+}
+
+static enum vcs_c23_shadow_election_error shadow_input_validate(
+    const struct vcs_c23_evidence_snapshot_input *input, size_t row_capacity)
+{
     if (!zcl_bytes_any_set(input->network_genesis_root, 32) ||
         !zcl_bytes_any_set(input->policy_root, 32) ||
         !zcl_bytes_any_set(input->freeze_hash, 32))
@@ -178,61 +189,51 @@ enum vcs_c23_shadow_election_error vcs_c23_evidence_snapshot_build(
                                  input->freeze_hash))
         return VCS_C23_SHADOW_ELECTION_ANCHOR;
 
-    struct shadow_candidate *candidates = zcl_calloc(
-        input->seed_count, sizeof(*candidates), "c23_shadow_candidates");
-    if (!candidates) return VCS_C23_SHADOW_ELECTION_ALLOCATION;
-    enum vcs_c23_shadow_election_error error =
-        VCS_C23_SHADOW_ELECTION_OK;
-    for (size_t i = 0; i < input->seed_count; i++) {
-        const struct vcs_c23_seed_v1 *seed = input->seeds[i].seed;
-        uint64_t maturity_height = 0; int64_t maturity_mtp = 0;
-        if (!seed || vcs_c23_seed_root(seed, candidates[i].seed_root) !=
-                         VCS_C23_SEED_OK) {
-            error = VCS_C23_SHADOW_ELECTION_ROOT;
-            goto done;
-        }
-        if (memcmp(seed->network_genesis_root,
-                   input->network_genesis_root, 32) != 0) {
-            error = VCS_C23_SHADOW_ELECTION_NETWORK;
-            goto done;
-        }
-        enum vcs_c23_seed_error maturity = vcs_c23_seed_maturity(
-            seed, input->active_height, input->active_mtp,
-            input->anchor_is_active, input->anchor_opaque,
-            &maturity_height, &maturity_mtp);
-        (void)maturity_height; (void)maturity_mtp;
-        if (maturity != VCS_C23_SEED_OK) {
-            if (maturity == VCS_C23_SEED_ERR_IMMATURE)
-                error = VCS_C23_SHADOW_ELECTION_IMMATURE;
-            else if (maturity == VCS_C23_SEED_ERR_REORG)
-                error = VCS_C23_SHADOW_ELECTION_ANCHOR;
-            else
-                error = VCS_C23_SHADOW_ELECTION_EVIDENCE;
-            goto done;
-        }
-        candidates[i].seed = seed;
-        memcpy(candidates[i].zid_pubkey, seed->zid_pubkey, 32);
-        candidates[i].weight = 1;
-    }
-    qsort(candidates, input->seed_count, sizeof(*candidates),
-          shadow_candidate_cmp);
-    for (size_t i = 1; i < input->seed_count; i++) {
-        if (memcmp(candidates[i - 1].zid_pubkey,
-                   candidates[i].zid_pubkey, 32) == 0) {
-            error = VCS_C23_SHADOW_ELECTION_DUPLICATE;
-            goto done;
-        }
-    }
+    return VCS_C23_SHADOW_ELECTION_OK;
+}
 
-    struct shadow_evidence *evidence = NULL;
-    if (input->evidence_count != 0) {
-        evidence = zcl_calloc(input->evidence_count, sizeof(*evidence),
-                              "c23_shadow_evidence");
-        if (!evidence) {
-            error = VCS_C23_SHADOW_ELECTION_ALLOCATION;
-            goto done;
-        }
+static enum vcs_c23_shadow_election_error shadow_candidate_init(
+    const struct vcs_c23_evidence_snapshot_input *input,
+    const struct vcs_c23_shadow_seed_input *seed_input,
+    struct shadow_candidate *candidate)
+{
+    enum vcs_c23_shadow_election_error error;
+    const struct vcs_c23_seed_v1 *seed = seed_input->seed;
+    uint64_t maturity_height = 0; int64_t maturity_mtp = 0;
+    if (!seed || vcs_c23_seed_root(seed, candidate->seed_root) !=
+                     VCS_C23_SEED_OK) {
+        error = VCS_C23_SHADOW_ELECTION_ROOT;
+        return error;
     }
+    if (memcmp(seed->network_genesis_root,
+               input->network_genesis_root, 32) != 0) {
+        error = VCS_C23_SHADOW_ELECTION_NETWORK;
+        return error;
+    }
+    enum vcs_c23_seed_error maturity = vcs_c23_seed_maturity(
+        seed, input->active_height, input->active_mtp,
+        input->anchor_is_active, input->anchor_opaque,
+        &maturity_height, &maturity_mtp);
+    (void)maturity_height; (void)maturity_mtp;
+    if (maturity != VCS_C23_SEED_OK) {
+        if (maturity == VCS_C23_SEED_ERR_IMMATURE)
+            error = VCS_C23_SHADOW_ELECTION_IMMATURE;
+        else if (maturity == VCS_C23_SEED_ERR_REORG)
+            error = VCS_C23_SHADOW_ELECTION_ANCHOR;
+        else
+            error = VCS_C23_SHADOW_ELECTION_EVIDENCE;
+        return error;
+    }
+    candidate->seed = seed;
+    memcpy(candidate->zid_pubkey, seed->zid_pubkey, 32);
+    candidate->weight = 1;
+    return VCS_C23_SHADOW_ELECTION_OK;
+}
+
+static enum vcs_c23_shadow_election_error shadow_evidence_copy(
+    const struct vcs_c23_evidence_snapshot_input *input,
+    struct shadow_evidence *evidence)
+{
     for (size_t i = 0; i < input->evidence_count; i++) {
         memcpy(evidence[i].contribution_root,
                input->evidence[i].contribution_root, 32);
@@ -242,23 +243,28 @@ enum vcs_c23_shadow_election_error vcs_c23_evidence_snapshot_build(
         if (!zcl_bytes_any_set(evidence[i].contribution_root, 32) ||
             !zcl_bytes_any_set(evidence[i].zid_pubkey, 32) ||
             evidence[i].event_epoch >= input->election_epoch) {
-            error = VCS_C23_SHADOW_ELECTION_EVIDENCE;
-            goto evidence_done;
+            return VCS_C23_SHADOW_ELECTION_EVIDENCE;
         }
     }
-    qsort(evidence, input->evidence_count, sizeof(*evidence),
-          shadow_evidence_cmp);
+    return VCS_C23_SHADOW_ELECTION_OK;
+}
+
+static enum vcs_c23_shadow_election_error shadow_evidence_apply(
+    const struct vcs_c23_evidence_snapshot_input *input,
+    const struct shadow_evidence *evidence, struct shadow_candidate *candidates)
+{
+    enum vcs_c23_shadow_election_error error;
     for (size_t i = 0; i < input->evidence_count; i++) {
         if (i != 0 && memcmp(evidence[i - 1].contribution_root,
                              evidence[i].contribution_root, 32) == 0) {
             error = VCS_C23_SHADOW_ELECTION_DUPLICATE;
-            goto evidence_done;
+            return error;
         }
         struct shadow_candidate *candidate = shadow_find_candidate(
             candidates, input->seed_count, evidence[i].zid_pubkey);
         if (!candidate) {
             error = VCS_C23_SHADOW_ELECTION_IDENTITY;
-            goto evidence_done;
+            return error;
         }
         uint64_t credit = 0;
         if (!shadow_evidence_credit(
@@ -266,17 +272,25 @@ enum vcs_c23_shadow_election_error vcs_c23_evidence_snapshot_build(
                 input->election_epoch - evidence[i].event_epoch,
                 &credit)) {
             error = VCS_C23_SHADOW_ELECTION_EVIDENCE;
-            goto evidence_done;
+            return error;
         }
         uint64_t weight = 0;
         if (!zcl_u64_add(candidate->weight, credit, &weight)) {
             error = VCS_C23_SHADOW_ELECTION_OVERFLOW;
-            goto evidence_done;
+            return error;
         }
         candidate->weight = weight > VCS_C23_SHADOW_MAX_WEIGHT
             ? VCS_C23_SHADOW_MAX_WEIGHT : weight;
     }
 
+    return VCS_C23_SHADOW_ELECTION_OK;
+}
+
+static enum vcs_c23_shadow_election_error shadow_snapshot_fill(
+    const struct vcs_c23_evidence_snapshot_input *input,
+    const struct shadow_candidate *candidates, const struct shadow_evidence *evidence,
+    struct vcs_c23_evidence_snapshot_row *rows, struct vcs_c23_evidence_snapshot_v1 *out)
+{
     out->schema_version = VCS_C23_SHADOW_ELECTION_VERSION;
     out->election_epoch = input->election_epoch;
     out->freeze_height = input->freeze_height;
@@ -293,11 +307,73 @@ enum vcs_c23_shadow_election_error vcs_c23_evidence_snapshot_build(
         rows[i].weight = candidates[i].weight;
         if (!zcl_u64_add(out->total_weight, rows[i].weight,
                          &out->total_weight)) {
-            error = VCS_C23_SHADOW_ELECTION_OVERFLOW;
-            goto evidence_done;
+            return VCS_C23_SHADOW_ELECTION_OVERFLOW;
         }
     }
     shadow_snapshot_root(out, out->snapshot_root);
+    return VCS_C23_SHADOW_ELECTION_OK;
+}
+
+static enum vcs_c23_shadow_election_error shadow_candidates_prepare(
+    const struct vcs_c23_evidence_snapshot_input *input,
+    struct shadow_candidate *candidates)
+{
+    enum vcs_c23_shadow_election_error error;
+    for (size_t i = 0; i < input->seed_count; i++) {
+        error = shadow_candidate_init(input, &input->seeds[i], &candidates[i]);
+        if (error != VCS_C23_SHADOW_ELECTION_OK) return error;
+    }
+    qsort(candidates, input->seed_count, sizeof(*candidates),
+          shadow_candidate_cmp);
+    for (size_t i = 1; i < input->seed_count; i++) {
+        if (memcmp(candidates[i - 1].zid_pubkey,
+                   candidates[i].zid_pubkey, 32) == 0) {
+            error = VCS_C23_SHADOW_ELECTION_DUPLICATE;
+            return error;
+        }
+    }
+
+    return VCS_C23_SHADOW_ELECTION_OK;
+}
+
+enum vcs_c23_shadow_election_error vcs_c23_evidence_snapshot_build(
+    const struct vcs_c23_evidence_snapshot_input *input,
+    struct vcs_c23_evidence_snapshot_row *rows, size_t row_capacity,
+    struct vcs_c23_evidence_snapshot_v1 *out)
+{
+    if (out) memset(out, 0, sizeof(*out));
+    if (row_capacity > SIZE_MAX / sizeof(*rows))
+        return VCS_C23_SHADOW_ELECTION_LIMIT;
+    if (rows && row_capacity)
+        memset(rows, 0, row_capacity * sizeof(*rows));
+    if (!shadow_input_present(input, rows, out))
+        return VCS_C23_SHADOW_ELECTION_NULL;
+    enum vcs_c23_shadow_election_error error =
+        shadow_input_validate(input, row_capacity);
+    if (error != VCS_C23_SHADOW_ELECTION_OK) return error;
+
+    struct shadow_candidate *candidates = zcl_calloc(
+        input->seed_count, sizeof(*candidates), "c23_shadow_candidates");
+    if (!candidates) return VCS_C23_SHADOW_ELECTION_ALLOCATION;
+    error = shadow_candidates_prepare(input, candidates);
+    if (error != VCS_C23_SHADOW_ELECTION_OK) goto done;
+
+    struct shadow_evidence *evidence = NULL;
+    if (input->evidence_count != 0) {
+        evidence = zcl_calloc(input->evidence_count, sizeof(*evidence),
+                              "c23_shadow_evidence");
+        if (!evidence) {
+            error = VCS_C23_SHADOW_ELECTION_ALLOCATION;
+            goto done;
+        }
+    }
+    error = shadow_evidence_copy(input, evidence);
+    if (error != VCS_C23_SHADOW_ELECTION_OK) goto evidence_done;
+    shadow_evidence_sort(evidence, input->evidence_count);
+    error = shadow_evidence_apply(input, evidence, candidates);
+    if (error != VCS_C23_SHADOW_ELECTION_OK) goto evidence_done;
+
+    error = shadow_snapshot_fill(input, candidates, evidence, rows, out);
 
 evidence_done:
     free(evidence);

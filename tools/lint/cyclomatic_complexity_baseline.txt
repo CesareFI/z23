@@ -301,7 +301,6 @@ contexts/commons/modules/vcs/src/build_execution_observation.c:vcs_build_executi
 contexts/commons/modules/vcs/src/fastobj.c:vcs_fastobj_sidecar_verify:28
 contexts/commons/modules/vcs/src/fastobj_carrier.c:fc_carrier_apply:29
 contexts/commons/modules/vcs/src/fastobj_carrier.c:fc_hash_object_stream:17
-contexts/commons/modules/vcs/src/fastobj_carrier.c:fc_scan_cache:32
 contexts/commons/modules/vcs/src/fastobj_carrier.c:vcs_fastobj_carrier_export:51
 contexts/commons/modules/vcs/src/fastobj_carrier_fetch.c:vcs_fastobj_carrier_fetch:22
 contexts/commons/modules/vcs/src/moderation_attestation_compose.c:zcl_moderation_compose_v1:22
@@ -457,7 +456,6 @@ contexts/commons/modules/vcs/src/vcs_object.c:object_write_mode:20
 contexts/commons/modules/vcs/src/vcs_revert.c:vcs_revert:25
 contexts/commons/modules/vcs/src/vcs_seal.c:vcs_seal_load_globs:21
 contexts/commons/modules/vcs/src/vcs_walk.c:walk_dir:32
-contexts/commons/modules/vcs/src/vcs_walk.c:walk_dir_windows:34
 contexts/commons/modules/vcs/src/zcode_accepted_work.c:vcs_zcode_accepted_work_resolve:28
 contexts/commons/modules/vcs/src/zcode_accepted_work_bundle.c:accepted_bundle_parse:21
 contexts/commons/modules/vcs/src/zcode_accepted_work_bundle.c:vcs_zcode_accepted_work_bundle_export:29
@@ -657,7 +655,6 @@ contexts/commons/modules/vcs/src/zcode_seed.c:seed_fields:19
 contexts/commons/modules/vcs/src/zcode_seed.c:vcs_c23_seed_error_string:19
 contexts/commons/modules/vcs/src/zcode_seed.c:vcs_c23_seed_parse:37
 contexts/commons/modules/vcs/src/zcode_shadow_election.c:shadow_snapshot_valid:18
-contexts/commons/modules/vcs/src/zcode_shadow_election.c:vcs_c23_evidence_snapshot_build:49
 contexts/commons/modules/vcs/src/zcode_shadow_election.c:vcs_c23_shadow_election_build:27
 contexts/commons/modules/vcs/src/zcode_shadow_policy.c:vcs_zcode_approved_reproducer_set_parse:34
 contexts/commons/modules/vcs/src/zcode_shadow_policy.c:vcs_zcode_approved_reproducer_set_serialize:28
@@ -754,7 +751,6 @@ contexts/commons/packages/zjsonp/src/zjsonp.c:zjsonp_str_decode:45
 contexts/commons/packages/zjsonp/tests/test_zjsonp.c:gen_value:18
 contexts/commons/packages/zlev/src/zlev.c:zlev_distance_bounded:28
 contexts/commons/packages/zlog/src/zlog.c:zlog_write:16
-contexts/commons/packages/zmap/app/main.c:main:24
 contexts/commons/packages/zmath/app/main.c:main:22
 contexts/commons/packages/zmath/src/zmath.c:zmath_mul_i64:16
 contexts/commons/packages/zmath/tests/test_zmath.c:test_checked_i64:19

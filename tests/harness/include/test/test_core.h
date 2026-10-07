@@ -294,6 +294,7 @@ int test_blob_read_bounds(void);
 int test_boot_snapshot_drop_bodiless(void);
 int test_tor(void);
 int test_game(void);
+int test_wordfreq(void);
 int test_store(void);
 int test_store_listing(void);
 int test_store_buyer(void);

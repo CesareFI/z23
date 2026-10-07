@@ -867,7 +867,8 @@ ADAPTERS_SRCS = $(call zcl_filter_ephemeral_sources,\
 
 # tools/ header root (the "command/" prefix for the native command adapter,
 # plus any other tools headers).
-TOOLS_INCLUDES = -Itools -Icontexts/commons/packages/zutf8/include
+TOOLS_INCLUDES = -Itools -Icontexts/commons/packages/zutf8/include \
+	-Icontexts/commons/packages/zmap/include
 # The per-node mind (tools/mind): the resident that owns index rebuilds and
 # the state every reader of it shares. Its own header root so nothing has to
 # reach it through a relative path.
@@ -3132,6 +3133,7 @@ $(BUILD_DIR)/fixtures/rlc_child_broken$(ZCL_HOST_EXEEXT): $(RESIDENT_CONTRACT_FI
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tests/harness/src/*.c))
+TEST_SRCS += contexts/commons/packages/zmap/src/zmap.c
 # test_skycombat_macho_loader.c already includes the actual zsha256 source.
 TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c \
 	tools/dev/component_receiver.c \
