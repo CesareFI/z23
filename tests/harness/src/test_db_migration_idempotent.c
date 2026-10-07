@@ -16,6 +16,7 @@
 #include "crypto/ed25519.h"
 #include "sha3/sha3.h"
 #include "util/fleet_role_check.h"
+#include "platform/time_compat.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -223,8 +224,18 @@ static bool db_mig_family_same(const struct db_mig_family_snapshot *a,
             fa->ctime.tv_sec != fb->ctime.tv_sec ||
             fa->ctime.tv_nsec != fb->ctime.tv_nsec ||
             memcmp(fa->sha3, fb->sha3, sizeof(fa->sha3)) != 0) {
-            fprintf(stderr, "db_mig family file changed: %s/%s\n",
-                    fa->name, fb->name);
+            fprintf(stderr, "db_mig family file changed: %s/%s "
+                    "size=%lld/%lld mode=%o/%o "
+                    "mtime=%lld.%09ld/%lld.%09ld "
+                    "ctime=%lld.%09ld/%lld.%09ld hash_equal=%d\n",
+                    fa->name, fb->name,
+                    (long long)fa->size, (long long)fb->size,
+                    (unsigned)fa->mode, (unsigned)fb->mode,
+                    (long long)fa->mtime.tv_sec, fa->mtime.tv_nsec,
+                    (long long)fb->mtime.tv_sec, fb->mtime.tv_nsec,
+                    (long long)fa->ctime.tv_sec, fa->ctime.tv_nsec,
+                    (long long)fb->ctime.tv_sec, fb->ctime.tv_nsec,
+                    memcmp(fa->sha3, fb->sha3, sizeof(fa->sha3)) == 0);
             return false;
         }
     }
@@ -949,7 +960,9 @@ static int t_newer_schema_only_in_uncheckpointed_wal(void)
         ASSERT(main_ver <= NODE_DB_MAX_SCHEMA);
         sqlite3_close(main_only);
 
-        ASSERT(db_mig_refusal_preserves_family(dbpath, 1));
+        /* Separate setup from observation even on a coarse clock tick. */
+        platform_sleep_ms(50);
+        ASSERT(db_mig_refusal_preserves_family(dbpath, 8));
         sqlite3_close(writer);
         writer = NULL;
         PASS();

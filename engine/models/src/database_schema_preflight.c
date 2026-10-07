@@ -10,6 +10,7 @@
  */
 
 #include "models/database_internal.h"
+#include "models/database_lifetime.h"
 #include "platform/fd_path.h"
 
 #include <errno.h>
@@ -431,6 +432,9 @@ struct node_db_schema_preflight node_db_schema_preflight_existing(
     }
 
     const char *open_branch = NULL;
+    struct db_lifetime_scope scope;
+    db_lifetime_scope_enter(&scope, "node_db.schema_preflight",
+                            DB_LIFETIME_SCHEMA_PREFLIGHT, 0);
     int rc = open_preflight_database(path, fd, wal_mode, &sidecars, &db,
                                      &open_branch);
     int open_errno = errno;
@@ -453,6 +457,7 @@ struct node_db_schema_preflight node_db_schema_preflight_existing(
     }
     if (db)
         sqlite3_close(db);
+    db_lifetime_scope_leave(&scope);
     close(fd);
     return out;
 }
