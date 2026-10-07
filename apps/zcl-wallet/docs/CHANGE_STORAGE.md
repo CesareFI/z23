@@ -198,6 +198,32 @@ authentication receipt. The sending flow still needs exact review/authorization
 binding, cancellation/lifecycle checks and recovery/discovery acceptance. No
 signing/broadcast or hardware-policy relaxation is supplied here.
 
+## Android fresh creation
+
+Fresh Android creation now reaches paired persistence through
+`WalletStorage.createFreshWithChange`. JNI copies the bounded path, encrypted
+record and entropy into invocation-private arrays, calls the C creation owner
+only after all three reads succeed, and clears its entire 32-byte entropy
+scratch on every exit. Scalar status publication performs no VM allocation.
+Pending Java exceptions remain pending and prevent further array access.
+
+`WalletPlatformSession` chooses this route only for CREATE after its existing
+per-use GCM encryption and backup-confirmation flow. RESTORE retains wallet-only
+creation because a recovered seed can have historical consumed change indexes;
+it cannot initialize index0 without discovery. UNLOCK cannot enter either
+creation route. No existing wallet, pending record or orphan state is replaced.
+The platform worker still owns and clears managed entropy, and foreground/session
+closure still suppresses late UI delivery. An in-flight persistence operation
+may finish after closure; its preserved records require ordinary restart
+inspection rather than another creation/reset attempt.
+
+The JNI fault fixture observes live entropy clearing after every array-access
+failure, including a partial secret read, pending exception, invalid argument,
+core refusal and successful creation. JVM tests exercise both networks/all
+entropy widths and actual action-dependent files. The Android public-provider
+GCM fixture exercises paired creation and wallet-only restoration separately.
+These tests do not qualify positive hardware custody on the software emulator.
+
 ## Authenticated suffix recovery
 
 `zcl_wallet_change_recover` is an explicit synchronous operation with the same

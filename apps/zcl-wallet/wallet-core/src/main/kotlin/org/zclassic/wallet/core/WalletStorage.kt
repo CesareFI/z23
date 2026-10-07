@@ -40,8 +40,18 @@ class WalletStorage(directory: String) {
         return ReadResult(status, packet.copyOfRange(2, packet.size), packet[1].toInt() == 1)
     }
 
+    /** Wallet-only persistence, including restoration with unknown change
+     * history. This never initializes or repairs a change counter. */
     fun create(encryptedRecord: ByteArray): CoreStatus =
         CoreStatus.fromCode(NativeCore.createWalletStorage(path, encryptedRecord))
+
+    /** Fresh generated/confirmed entropy only, after per-use platform GCM has
+     * encrypted this exact record. Never use for a restored seed or migration.
+     * C durably creates authenticated state0 before committing the wallet.
+     * Inputs remain stable during this worker-thread call; caller clears entropy
+     * afterward. Failure preserves all artifacts and never resets existing state. */
+    fun createFreshWithChange(encryptedRecord: ByteArray, freshEntropy: ByteArray): CoreStatus =
+        CoreStatus.fromCode(NativeCore.createFreshWalletStorage(path, encryptedRecord, freshEntropy))
 
     /** Caller must authenticate GCM and verify the recovered address first. */
     fun promote(authenticatedRecord: ByteArray): CoreStatus =

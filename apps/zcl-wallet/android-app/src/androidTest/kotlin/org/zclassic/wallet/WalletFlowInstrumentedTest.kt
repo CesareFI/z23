@@ -85,7 +85,7 @@ class WalletFlowInstrumentedTest {
         }
         if (directory.exists()) {
             val files = checkNotNull(directory.listFiles())
-            val names = setOf("wallet.zcl", ".wallet.pending", ".lock")
+            val names = setOf("wallet.zcl", ".wallet.pending", ".change.index", ".lock")
             assertTrue("Unexpected file in isolated fixture", files.all { it.isFile && it.name in names })
             for (file in files) {
                 if (file.name != ".lock" || !existingLock)
@@ -217,6 +217,7 @@ class WalletFlowInstrumentedTest {
             enter(phrase)
             val expected = WalletKeys.receivingAddress(entropy, Network.TESTNET).encoded
             assertEquals(expected, address())
+            assertFalse(File(directory, ".change.index").exists())
             click(R.id.lock_wallet)
             click(R.id.unlock_wallet)
             authenticate()
@@ -247,6 +248,7 @@ class WalletFlowInstrumentedTest {
             assertEquals(CoreStatus.NOT_FOUND, WalletStorage(directory.absolutePath).read().status)
             enter(checkNotNull(backup))
             val saved = address()
+            assertEquals(80L, File(directory, ".change.index").length())
             click(R.id.lock_wallet)
             click(R.id.unlock_wallet)
             authenticate()
