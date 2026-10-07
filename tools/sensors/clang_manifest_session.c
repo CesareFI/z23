@@ -872,6 +872,7 @@ enum cm_line_state {
     CM_LINE_END,  /* an empty line, or end of input with nothing read */
     CM_LINE_LONG, /* past CM_SESSION_LINE_MAX: read to its end, dropped */
     CM_LINE_NUL,  /* a NUL byte before the line's end */
+    CM_LINE_ERROR, /* input failed; no partial request may be served */
 };
 
 /* One line of stdin into buf (CM_SESSION_LINE_MAX + 1 bytes), without its LF
@@ -893,6 +894,11 @@ static enum cm_line_state cm_read_line(char *buf, size_t *len)
         n--;
     buf[n] = '\0';
     *len = n;
+    if (ferror(stdin)) {
+        buf[0] = '\0';
+        *len = 0;
+        return CM_LINE_ERROR;
+    }
     if (over)
         return CM_LINE_LONG;
     if (nul)
@@ -914,6 +920,11 @@ static void cm_session_loop(struct cm_session *ss, char *buf)
         enum cm_line_state st = cm_read_line(buf, &len);
         if (st == CM_LINE_END)
             return;
+        if (st == CM_LINE_ERROR) {
+            fprintf(stderr, "clang-manifest: session: cannot read session input\n");
+            cm_session_refuse(ss, "cannot read session input");
+            return;
+        }
         if (st == CM_LINE_LONG)
             cm_session_refuse(ss, "request line too long");
         else if (st == CM_LINE_NUL)

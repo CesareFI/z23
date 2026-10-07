@@ -1247,6 +1247,94 @@ static int sss_t_bad_opts(struct sss_ctx *c)
     return failures;
 }
 
+/* Modes: closed fd, directory, prefix then EAGAIN, clean EOF, blank line.
+ * Keep the prefix pipe's writer open until the first reply proves refusal. */
+static bool sss_input_setup(struct sss_ctx *c, int mode, const char *line,
+                            size_t len, int in[2], int out[2])
+{
+    if (pipe(in) != 0 || pipe(out) != 0)
+        return false;
+    if (fcntl(in[0], F_SETFL, O_NONBLOCK) != 0 ||
+        fcntl(in[1], F_SETFL, O_NONBLOCK) != 0)
+        return false;
+    if (mode == 1) {
+        (void)close(in[0]);
+        in[0] = open(c->root, O_RDONLY | O_DIRECTORY);
+        if (in[0] < 0)
+            return false;
+    }
+    if (mode == 2 && write(in[1], line, len) != (ssize_t)len)
+        return false;
+    if (mode == 4 && write(in[1], "\n", 1) != 1)
+        return false;
+    if (mode >= 3) {
+        (void)close(in[1]);
+        in[1] = -1;
+    }
+    return true;
+}
+static int sss_input_run(struct sss_ctx *c, int mode, const char *line,
+                         size_t len, char *reply, char *summary)
+{
+    int in[2] = {-1, -1}, out[2] = {-1, -1}, result = -1;
+    struct sss_proc p = {0};
+    if (!sss_input_setup(c, mode, line, len, in, out))
+        goto done;
+    p.pid = fork();
+    if (p.pid < 0)
+        goto done;
+    if (p.pid == 0) {
+        if (dup2(in[0], 0) < 0 || dup2(out[1], 1) < 0)
+            _exit(126);
+        for (size_t k = 0; k < 2; k++) {
+            (void)close(in[k]);
+            (void)close(out[k]);
+        }
+        if (mode == 0 && close(0) != 0)
+            _exit(126);
+        execl(c->sensor, c->sensor, "session", (char *)NULL);
+        _exit(127);
+    }
+    (void)close(in[0]); in[0] = -1;
+    (void)close(out[1]); out[1] = -1;
+    p.to = in[1]; in[1] = -1;
+    p.from = out[0]; out[0] = -1;
+    bool got = sss_line(&p, reply, SSS_REPLY_MAX);
+    result = sss_finish(&p, summary, SSS_REPLY_MAX);
+    result = got ? result : -1;
+done:
+    for (size_t k = 0; k < 2; k++) {
+        if (in[k] >= 0) (void)close(in[k]);
+        if (out[k] >= 0) (void)close(out[k]);
+    }
+    return result;
+}
+static int sss_t_input_errors(struct sss_ctx *c)
+{
+    int failures = 0;
+    char reply[SSS_REPLY_MAX], summary[SSS_REPLY_MAX], line[8192], out[PATH_MAX];
+    struct sss_argv a;
+    TEST_CASE("semantic_sensor: input errors discard partial requests; EOF and blank end cleanly") {
+        ASSERT(sss_fresh(c, "input-errors"));
+        sss_argv(&a, false);
+        (void)snprintf(out, sizeof(out), "%s/partial.bin", c->root);
+        size_t n = sss_request_text(c->root, "src/main.c", out, &a, line, sizeof(line));
+        ASSERT(n > 0);
+        for (int mode = 0; mode < 5; mode++) {
+            printf("session input mode=%d\n", mode);
+            ASSERT_EQ(sss_input_run(c, mode, line, n, reply, summary), mode < 3 ? 3 : 0);
+            if (mode < 3) {
+                ASSERT(sss_refused(reply, "cannot read session input"));
+                ASSERT(strstr(summary, "\"refused\":1,") != NULL);
+            } else {
+                ASSERT(strstr(reply, "\"requests\":0,") != NULL);
+            }
+            ASSERT(access(out, F_OK) != 0);
+        }
+    } TEST_END
+    return failures;
+}
+
 static int sss_t_protocol(struct sss_ctx *c)
 {
     int failures = 0;
@@ -1671,6 +1759,7 @@ int semantic_sensor_session_cases(void)
     failures += sss_t_object_cc_wrapper(&c);
     failures += sss_t_object_cc_invalid(&c);
     failures += sss_t_bad_opts(&c);
+    failures += sss_t_input_errors(&c);
     failures += sss_t_protocol(&c);
     (void)test_rm_rf_recursive(c.dir);
     return failures;
