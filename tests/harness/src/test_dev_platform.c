@@ -5834,6 +5834,98 @@ out:
     return ok;
 }
 
+static const char dp_restart_plan_fields[] =
+    "COMPILER_ID="
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+    "BASE_GENERATION="
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
+    "DEV_CFLAGS=-DZCL_DEV_BUILD\nDEV_LDFLAGS=-pthread\nDEV_LIBS=-lm\n"
+    "DEV_OBJ_DIR=build/objects\nDEV_LINK_RSP=build/objects/a\n"
+    "DEV_BASE_RELOC=build/objects/a\nTEST_CFLAGS=-DZCL_TESTING\n"
+    "TEST_LDFLAGS=-pthread\nTEST_LIBS=-lm\nTEST_OBJ_DIR=build/objects\n"
+    "TEST_LINK_RSP=build/objects/a\nTEST_BASE_RELOC=build/objects/a";
+
+struct dp_restart_plan_record_case {
+    const char *name;
+    const char *prefix;
+    size_t prefix_size;
+    size_t comment_size;
+    bool malformed;
+};
+
+static bool dp_restart_plan_comment(FILE *f, size_t size)
+{
+    if (size == 0) return true;
+    if (fputc('#', f) == EOF) return false;
+    for (size_t i = 1; i < size; i++)
+        if (fputc('x', f) == EOF) return false;
+    return fputc('\n', f) != EOF;
+}
+
+static bool dp_restart_plan_write_bytes(
+    const char *path, const struct dp_restart_plan_record_case *item)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool written = dp_restart_plan_comment(f, item->comment_size) &&
+        fwrite(item->prefix, 1, item->prefix_size, f) == item->prefix_size &&
+        fwrite(dp_restart_plan_fields, 1, sizeof(dp_restart_plan_fields) - 1,
+               f) == sizeof(dp_restart_plan_fields) - 1;
+    int closed = fclose(f);
+    return written && closed == 0;
+}
+
+static bool dp_restart_plan_prepare(
+    const char *root, const struct dp_restart_plan_record_case *item)
+{
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/build/dev-loop/restart.env", root);
+    if (n < 0 || (size_t)n >= sizeof(path)) return false;
+    if (!dp_mk_write(root, "Makefile", "# fixture\n")) return false;
+    /* No object graph: accepted records stop before any compiler launch. */
+    return dp_mk_write(root, "build/dev-loop/restart.env", "") &&
+           dp_restart_plan_write_bytes(path, item);
+}
+
+static int test_restart_plan_hidden_suffix(void)
+{
+    int failures = 0;
+    const char *changed[] = {"tools/dev/restart_fixture.c"};
+    static const struct dp_restart_plan_record_case cases[] = {
+        {"restart plan: hidden NUL in field", "CC=cc\0ignored\n",
+         sizeof("CC=cc\0ignored\n") - 1, 0, true},
+        /* RR_TEXT_MAX + 32 includes the C string terminator. */
+        {"restart plan: overlong comment", "CC=cc\n", 6, 16416, true},
+        {"restart plan: embedded CR", "CC=cc\rignored\n",
+         sizeof("CC=cc\rignored\n") - 1, 0, true},
+        {"restart plan: bounded final record without newline",
+         "CC=cc\n", 6, 0, false},
+        {"restart plan: CRLF record", "CC=cc\r\n", 7, 0, false},
+        {"restart plan: maximum bounded comment", "CC=cc\n", 6, 16415, false},
+        {"restart plan: hidden NUL in comment", "# note\0hidden\nCC=cc\n",
+         sizeof("# note\0hidden\nCC=cc\n") - 1, 0, true},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char root[PATH_MAX] = {0};
+        TEST(cases[i].name) {
+            ASSERT(test_mkdtemp(root, sizeof(root), "restart_plan_bytes") != NULL);
+            ASSERT(dp_restart_plan_prepare(root, &cases[i]));
+            struct zcl_devloop_restart_build_receipt receipt = {0};
+            struct zcl_devloop_process_result process = {0};
+            char why[256] = {0};
+            ASSERT(!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
+                                            why, sizeof(why)));
+            ASSERT_STR_EQ(why, cases[i].malformed
+                ? "restart action plan has a malformed record"
+                : "restart action plan incomplete or its object graph is absent");
+            ASSERT(receipt.compiler_processes == 0);
+            PASS();
+        } _test_next:;
+        if (root[0] && test_rm_rf_recursive(root) != 0) failures++;
+    }
+    return failures;
+}
+
 static int test_resident_restart_builder(void)
 {
     int failures = 0;
@@ -9725,6 +9817,7 @@ static const struct dp_shard_case g_dp_cases[] = {
     DP_CASE(test_hotfork_shape_built_extent, 5),
     DP_CASE(test_hotfork_resident_model_closure, 5),
     DP_CASE(test_resident_restart_builder, 4),
+    DP_CASE(test_restart_plan_hidden_suffix, 3),
     DP_CASE(test_shell_compiled_epoch_scope, 5),
     DP_CASE(test_shell_compiled_epoch_scope_header_invalidation, 5),
 #if defined(__APPLE__)
@@ -9887,7 +9980,7 @@ static int test_dev_platform_platform_arm(void)
         owned += counts[i];
         nonempty &= counts[i] > 0;
     }
-    if (DP_CASE_COUNT != 69u + (unsigned)(
+    if (DP_CASE_COUNT != 70u + (unsigned)(
 #if defined(__APPLE__)
             1
 #else

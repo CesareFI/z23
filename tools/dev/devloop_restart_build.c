@@ -469,18 +469,43 @@ static bool rr_plan_load_locked_apply_field(struct rr_plan *next,
     return false;
 }
 
+/* Read one physical record, including bytes hidden after a NUL or '#'.
+ * The caller supplies a buffer with room for a record and its terminator. */
+static int rr_plan_record(FILE *f, char *line, size_t cap)
+{
+    size_t n = 0;
+    int c, previous = 0;
+    bool malformed = false;
+    while ((c = fgetc(f)) != EOF) {
+        if (c == 0) malformed = true;
+        if (c == '\n') break;
+        if (previous == '\r') malformed = true;
+        previous = c;
+        if (n < cap - 1) line[n++] = (char)c;
+        else malformed = true;
+    }
+    line[n] = 0;
+    if (ferror(f) || malformed) return -1;
+    if (n == 0 && c == EOF) return 0;
+    /* A CR is a terminator only at the end of the measured record. */
+    if (n && line[n - 1] == '\r') line[--n] = 0;
+    return 1;
+}
+
 static bool rr_plan_load_locked_parse(const char *path, struct rr_plan *next,
                                       bool *read_error, char *why,
                                       size_t why_len)
 {
-    FILE *f = fopen(path, "r");
+    *read_error = false;
+    FILE *f = fopen(path, "rb");
     if (!f) {
         rr_why(why, why_len, "restart action plan could not be opened");
         return false;
     }
     char line[RR_TEXT_MAX + 32];
-    while (fgets(line, sizeof(line), f)) {
-        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
+    int status;
+    while ((status = rr_plan_record(f, line, sizeof(line))) > 0) {
+        if (line[0] == '#' || line[0] == 0)
             continue;
         if (rr_plan_load_locked_apply_field(next, line))
             continue;
@@ -490,6 +515,10 @@ static bool rr_plan_load_locked_parse(const char *path, struct rr_plan *next,
     }
     *read_error = ferror(f) != 0;
     fclose(f);
+    if (status < 0) {
+        rr_why(why, why_len, "restart action plan has a malformed record");
+        return false;
+    }
     return true;
 }
 
