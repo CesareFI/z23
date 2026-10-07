@@ -5,8 +5,10 @@ validation. Android storage and lifecycle acceptance below are still pending.
 
 The first recovery profile uses BIP39 English and the BIP44 transparent path
 `m/44'/147'/0'/0/index` on Zclassic mainnet. Testnet uses coin type 1. Creation
-uses 256 bits from the device operating system CSPRNG and a 24-word recovery
-phrase. Restore validates the standard 12/15/18/21/24-word checksums. There is
+uses 128 bits from the device operating system CSPRNG and a 12-word recovery
+phrase. Existing 256-bit/24-word wallets remain recoverable; their keys and
+records are unchanged. Restore validates all standard 12/15/18/21/24-word
+checksums. There is
 no brainwallet, custom wordlist or new key derivation scheme.
 
 This is an explicit app recovery profile, not a promise that arbitrary legacy
@@ -15,6 +17,18 @@ through it. The UI must name the supported format before accepting a phrase.
 Initial UI creation/restore uses the empty BIP39 passphrase and must say so.
 Future nonempty-passphrase support requires explicit UI and recovery tests;
 unsupported normalization must fail instead of deriving a different wallet.
+
+The supported transparent account is account 0. External receiving keys use
+`m/44'/147'/0'/0/index`; internal change uses `m/44'/147'/0'/1/index`. Both use
+coin type 1 on testnet. The receiving UI currently exposes external index 0;
+the native API supports external indices below 2^31. Reserved internal change
+indices are bounded to 0..65534 by the authenticated change journal. Recovery
+must discover used receive/change outputs and establish a safe change frontier
+before spending; restoring entropy alone neither discovers balances nor grants
+permission to reset that journal. Other accounts, shielded spending keys and
+shielded balance recovery are not implemented by this profile. A complete
+network-backed send/restore/spend journey and physical-device custody remain
+release requirements, not claims established by the mnemonic round-trip tests.
 
 ## Ownership and interfaces
 
