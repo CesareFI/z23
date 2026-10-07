@@ -209,15 +209,21 @@ static bool at_write_queued_status(const char *status_file, const char *kind,
         snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", status_file);
         FILE *f = fopen(tmp_path, "w");
         if (f) {
-            fputs(buf, f);
-            fputc('\n', f);
-            fclose(f);
-            ok = (rename(tmp_path, status_file) == 0);
-            if (!ok)
+            bool written = (fputs(buf, f) != EOF);
+            if (fputc('\n', f) == EOF) written = false;
+            if (fclose(f) != 0) written = false;
+            if (written) ok = (rename(tmp_path, status_file) == 0);
+            if (!ok) {
                 // obs-ok:agent-test-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
-                fprintf(stderr, "[agent_test] %s:%d %s(): rename %s -> %s "
+                fprintf(stderr, "[agent_test] %s:%d %s(): write/rename %s -> %s "
                         "failed: %s\n", __FILE__, __LINE__, __func__,
                         tmp_path, status_file, strerror(errno));
+                if (unlink(tmp_path) != 0)
+                    // obs-ok:agent-test-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
+                    fprintf(stderr, "[agent_test] %s:%d %s(): unlink %s "
+                            "failed: %s\n", __FILE__, __LINE__, __func__,
+                            tmp_path, strerror(errno));
+            }
         } else {
             // obs-ok:agent-test-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
             fprintf(stderr, "[agent_test] %s:%d %s(): fopen %s failed: "

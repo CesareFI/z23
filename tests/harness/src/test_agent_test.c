@@ -24,11 +24,16 @@
 #include "test/test_core.h"
 #include "controllers/agent_test_controller.h"
 #include "json/json.h"
+#include "util/spawn.h"
 
+#include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -370,6 +375,98 @@ static int test_at_dumper_refusals(void)
     return failures;
 }
 
+static bool at_queued_write_fixture(const char *path, const char *text)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
+    bool ok = fputs(text, f) != EOF;
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
+static void at_queued_refusal_child(bool limit_write, const char *work, const char *script)
+{
+    if (setenv("ZCL_AGENT_TEST_STATUS_DIR", work, 1) != 0 ||
+        setenv("ZCL_AGENT_TEST_SCENARIOS_DIR", work, 1) != 0 ||
+        setenv("ZCL_AGENT_TEST_RUNNER_SCRIPT", script, 1) != 0) _exit(2);
+    if (limit_write) {
+        struct rlimit limit = { 0, 0 };
+        if (signal(SIGXFSZ, SIG_IGN) == SIG_ERR ||
+            setrlimit(RLIMIT_FSIZE, &limit) != 0) _exit(2);
+    }
+    struct json_value params, result;
+    at_build_params(&params, "scenario", "queued");
+    json_init(&result);
+    uint64_t launches = zcl_spawn_thread_launch_count();
+    bool rc = rpc_agent_test(&params, false, &result);
+    bool refused = rc &&
+        strcmp(json_get_str(json_get(&result, "status")), "error") == 0 &&
+        strcmp(json_get_str(json_get(&result, "error")),
+               "status_file_write_failed") == 0 &&
+        zcl_spawn_thread_launch_count() == launches;
+    json_free(&params);
+    json_free(&result);
+    _exit(refused ? 0 : 1);
+}
+
+static bool at_queued_run(bool limited, const char *work, const char *script)
+{
+    fflush(NULL);
+    pid_t child = fork();
+    if (child == 0) at_queued_refusal_child(limited, work, script);
+    if (child < 0) return false;
+    int status = 0;
+    pid_t waited;
+    do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    return waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static bool at_queued_old_intact(const char *path, const char *old)
+{
+    char bytes[128];
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    size_t n = fread(bytes, 1, sizeof(bytes), f);
+    bool ok = !ferror(f) && n == strlen(old) && memcmp(bytes, old, n) == 0;
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
+static int test_at_queued_write_refusals(void)
+{
+    int failures = 0;
+    char work[512], final[700], tmp[710], scenario[700], script[700];
+    test_make_tmpdir(work, sizeof(work), "at_write", "refusal");
+    snprintf(final, sizeof(final), "%s/scenario-queued.json", work);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", final);
+    snprintf(scenario, sizeof(scenario), "%s/queued.scenario", work);
+    snprintf(script, sizeof(script), "%s/runner.sh", work);
+    const char *old = "{\"state\":\"done\",\"verdict\":\"PASS\"}\n";
+    bool setup = at_queued_write_fixture(final, old) &&
+        at_queued_write_fixture(scenario, "# fixture\nexpect no_crash\n") &&
+        at_queued_write_fixture(script, "#!/bin/sh\nexit 0\n") &&
+        chmod(script, 0700) == 0;
+    AT_CHECK("queued refusal fixture setup", setup);
+    if (!setup) { test_rm_rf_recursive(work); return failures; }
+    for (int row = 0; row < 2; row++) {
+        AT_CHECK(row == 0 ? "close failure refuses without launch" :
+                 "rename failure refuses without launch",
+                 at_queued_run(row == 0, work, script));
+        AT_CHECK("failed queued write removes temporary file",
+                 access(tmp, F_OK) != 0 && errno == ENOENT);
+        if (row == 0) {
+            AT_CHECK("close failure preserves previous final bytes", at_queued_old_intact(final, old));
+            AT_CHECK("prepare final-as-directory rename refusal",
+                     unlink(final) == 0 && mkdir(final, 0700) == 0);
+        } else {
+            struct stat st;
+            AT_CHECK("rename refusal preserves final directory", stat(final, &st) == 0 && S_ISDIR(st.st_mode));
+        }
+    }
+    AT_CHECK("queued refusal fixture cleanup", test_rm_rf_recursive(work) == 0);
+    return failures;
+}
+
 int test_agent_test(void)
 {
     int failures = 0;
@@ -378,6 +475,7 @@ int test_agent_test(void)
     failures += test_at_rpc_launch_and_poll();
     failures += test_at_real_script_scenario_not_found();
     failures += test_at_dumper_refusals();
+    failures += test_at_queued_write_refusals();
     printf("[test_agent_test] %d failure(s)\n", failures);
     return failures;
 }
