@@ -25,6 +25,10 @@
 #include "framework/app_definition.h"
 #include "kernel/command_registry.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
+#if defined(ZCL_TESTING) && !defined(ZCL_DEV_BUILD)
+#include "devloop.h"
+#endif
 
 #ifdef ZCL_DEV_BUILD
 #include "hotswap/hotswap_module.h"
@@ -1969,12 +1973,13 @@ static bool nc_ops_rom_try_watch(const char *const *words, size_t count,
     return true;
 }
 
-#ifdef ZCL_DEV_BUILD
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 static void nc_print_error(const char *command, const char *code,
                            const char *phase, const char *message,
                            const char *evidence, const char *next_command,
                            const char *next_key, const char *next_value);
 
+#ifdef ZCL_DEV_BUILD
 static bool nc_parse_i64_exact(const char *value, int64_t min, int64_t max,
                                int64_t *out)
 {
@@ -2027,6 +2032,7 @@ static enum nc_dev_events_flags_result nc_dev_events_parse_flags(
     }
     return jsonl ? NC_DEV_EVENTS_JSONL : NC_DEV_EVENTS_NOT_JSONL;
 }
+#endif
 
 static bool nc_dev_events_is_interrupting(const char *phase,
                                           const char *status)
@@ -2095,6 +2101,10 @@ static bool nc_dev_events_emit_line(const struct json_value *line, int *rc,
     char encoded[20000];
     size_t encoded_len = ok ? json_write(line, encoded, sizeof(encoded) - 2)
                             : 0;
+    /* Refuse truncated or malformed UTF-8 before writing any event bytes. */
+    if (encoded_len >= sizeof(encoded) - 2 ||
+        (encoded_len && !zutf8_validate_n(encoded, encoded_len)))
+        encoded_len = 0;
     if (!encoded_len || fwrite(encoded, 1, encoded_len, stdout) !=
                             encoded_len ||
         fputc('\n', stdout) == EOF || fflush(stdout) != 0) {
@@ -2144,6 +2154,15 @@ static bool nc_dev_events_stream_step(const char *root, int64_t *after,
     return wrote;
 }
 
+#ifdef ZCL_TESTING
+bool zcl_native_dev_events_step_for_test(const char *root, int64_t *after,
+                                         int *rc)
+{
+    return nc_dev_events_stream_step(root, after, 100, rc);
+}
+#endif
+
+#ifdef ZCL_DEV_BUILD
 /* Persistent machine interface. The normal registry handler returns one
  * resumable event; --format=jsonl keeps this one local process attached and
  * advances the same cursor forever. It performs no build/proof/storage/network
@@ -2165,6 +2184,7 @@ static bool nc_dev_events_try_stream(const char *const *words, size_t count,
         ;
     return true;
 }
+#endif
 #endif
 
 /* ── core.node.bootstatus / core.node.bootwait native leaves ───────────────

@@ -6795,9 +6795,149 @@ static int test_cycle_proof_reuse_contract(void)
     return failures;
 }
 
+static int64_t dp_event_clock_zero(void *opaque)
+{
+    (void)opaque;
+    return 0;
+}
+
+static bool dp_event_capture(const char *root, int64_t *after, int *rc,
+                              bool *wrote, char *out, size_t capacity)
+{
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof(path), "event_stdout");
+    if (fd < 0) return false;
+    int saved = dup(STDOUT_FILENO);
+    bool ok = saved >= 0 && fflush(stdout) == 0;
+    if (ok) ok = dup2(fd, STDOUT_FILENO) >= 0;
+    if (ok) {
+        static const clock_iface_t clock = {
+            dp_event_clock_zero, dp_event_clock_zero, NULL
+        };
+        const clock_iface_t *previous = clock_default();
+        clock_set_default(&clock);
+        *wrote = zcl_native_dev_events_step_for_test(root, after, rc);
+        clock_set_default(previous);
+    }
+    if (saved >= 0) {
+        if (dup2(saved, STDOUT_FILENO) < 0) abort();
+        close(saved);
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size >= (off_t)capacity) ok = false;
+    ssize_t length = pread(fd, out, capacity - 1, 0);
+    if (length < 0) ok = false;
+    else out[length] = 0;
+    if (close(fd) != 0) ok = false;
+    if (unlink(path) != 0) ok = false;
+    return ok;
+}
+
+static bool dp_event_fixture(const char *root, const char *phase,
+                              const char *status, int64_t *epoch)
+{
+    struct json_value cycle;
+    json_init(&cycle);
+    json_set_object(&cycle);
+    bool ok = json_push_kv_str(&cycle, "schema", "zcl.dev_cycle.v1") &&
+        json_push_kv_str(&cycle, "phase", phase) &&
+        json_push_kv_str(&cycle, "status", status);
+    char body[8192], why[160] = {0};
+    size_t length = ok ? json_write(&cycle, body, sizeof(body)) : 0;
+    json_free(&cycle);
+    bool published = length > 0 && length < sizeof(body) &&
+        zcl_devloop_cycle_stream_publish(root, body, length, epoch,
+                                         why, sizeof(why));
+    if (!published)
+        fprintf(stderr, "dev events: publication refused: %s\n", why);
+    return published;
+}
+
+static bool dp_event_encoding_observe(const char *root, const char *phase,
+                                      const char *status,
+                                   const char *expected)
+{
+    char output[24000] = {0};
+    int64_t epoch = 0, after = 0;
+    int rc = ZCL_COMMAND_EXIT_OK;
+    bool wrote = false;
+    bool ok = dp_event_fixture(root, phase, status, &epoch);
+    if (ok) ok = dp_event_capture(root, &after, &rc, &wrote,
+                                   output, sizeof(output));
+    if (ok) ok = after == epoch && epoch == 1;
+    if (ok && expected)
+        ok = wrote && rc == ZCL_COMMAND_EXIT_OK &&
+            strcmp(output, expected) == 0;
+    else if (ok)
+        ok = !wrote && rc == ZCL_COMMAND_EXIT_INTERNAL && output[0] == 0;
+    return ok;
+}
+
+/* Publication needs an initialized ring. Reset creates its private workspace
+ * beneath the fixture home rather than the operator's home. */
+static bool dp_event_stream_prepare(const char *root)
+{
+    char why[160] = {0};
+    bool ok = zcl_devloop_cycle_stream_reset(root, 0, why, sizeof(why));
+    if (!ok) fprintf(stderr, "dev events: stream reset refused: %s\n", why);
+    return ok;
+}
+
+static bool dp_event_encoding_row(const char *phase, const char *status,
+                                   const char *expected)
+{
+#if defined(_WIN32)
+    const char *key = "LOCALAPPDATA";
+#else
+    const char *key = "HOME";
+#endif
+    char saved[PATH_MAX], root[PATH_MAX];
+    const char *value = getenv(key);
+    bool had_value = value != NULL;
+    if (had_value) {
+        size_t len = strlen(value);
+        if (len >= sizeof(saved)) return false;
+        memcpy(saved, value, len + 1);
+    }
+    if (!test_mkdtemp(root, sizeof(root), "event_encoding")) return false;
+    bool ok = platform_environment_set(key, root, 1) == 0 &&
+        dp_event_stream_prepare(root) &&
+        dp_event_encoding_observe(root, phase, status, expected);
+    int restored = had_value ? platform_environment_set(key, saved, 1)
+                             : dp_environment_unset(key);
+    if (restored != 0) abort();
+    if (test_rm_rf_recursive(root) != 0) ok = false;
+    return ok;
+}
+
+static int dp_event_encoding_regression(void)
+{
+    static const char expected[] =
+        "{\"schema\":\"zcl.dev_loop_event.v1\",\"cursor\":1,"
+        "\"kind\":\"caf\xc3\xa9\",\"interrupting\":false,\"event\":{"
+        "\"schema\":\"zcl.dev_cycle.v1\",\"phase\":\"caf\xc3\xa9\","
+        "\"status\":\"ok\"}}\n";
+    char oversized[7001];
+    memset(oversized, 'a', sizeof(oversized) - 1);
+    oversized[sizeof(oversized) - 1] = 0;
+    const char *phases[] = {"bad\xff", oversized};
+    const char *names[] = {"malformed UTF-8 writes no bytes",
+                           "truncated encoding writes no bytes"};
+    int failures = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        bool ok = dp_event_encoding_row("caf\xc3\xa9", "ok", expected) &&
+            dp_event_encoding_row(phases[i], i == 1 ? "rejected" : "ok",
+                                   NULL);
+        printf("  dev events: %s... %s\n", names[i], ok ? "OK" : "FAIL");
+        if (!ok) failures++;
+    }
+    return failures;
+}
+
 static int test_progressive_event_vocabulary(void)
 {
     int failures = 0;
+    failures += dp_event_encoding_regression();
     TEST("dev platform: progressive events have one stable scheduling vocabulary") {
         ASSERT(strcmp(zcl_devloop_progress_phase(
                           "edit_seen", "legacy"), "EDIT_SEEN") == 0);

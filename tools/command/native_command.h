@@ -18,6 +18,12 @@ extern "C" {
 bool zcl_native_command_is_root(const char *word);
 
 #ifdef ZCL_TESTING
+/* Exercise one production JSONL stream step with an already-published event.
+ * Writes accepted lines to stdout; refused encodings write no bytes and set
+ * INTERNAL. The cursor advances past a found event even on refusal. */
+bool zcl_native_dev_events_step_for_test(const char *root, int64_t *after,
+                                         int *rc);
+
 /* Exercise the next-action builder's parser without a separate CLI binary.
  * parsed must point to fresh storage without owned allocations. Initializes
  * it even for NULL/empty input; caller releases it with json_free(). */
