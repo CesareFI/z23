@@ -351,7 +351,7 @@ cmd_judge() {
             if (!isnum(t)) { malformed++; next }
             n++
             ts[n]   = t + 0
-            okv[n]  = ($0 ~ /"ok":true/) ? 1 : 0
+            okv[n]  = ($0 ~ /"ok":true(,|})/) ? 1 : (($0 ~ /"ok":false(,|})/) ? 0 : -1)
             secok[n] = ($0 ~ /"security_posture_ok":true/) ? 1 : 0
             secrev[n] = ($0 ~ /"security_review_required":true/) ? 1 : 0
             secknown[n] = ($0 ~ /"security_review_required":(true|false)/ && $0 ~ /"security_posture_ok":(true|false)/) ? 1 : 0
@@ -383,7 +383,7 @@ cmd_judge() {
             covered_sec = last - ts[i0]
             covered = covered_sec / 3600.0
 
-            hole_max = 0; op = 0; ambiguous = 0; ok_cnt = 0; gap0 = 0; gapgt0 = 0
+            hole_max = 0; op = 0; ambiguous = 0; ok_cnt = 0; ok_unknown = 0; gap0 = 0; gapgt0 = 0
             soak_null = 0; zd_null = 0
             security_review = 0; security_unknown = 0; security_gap = 0
             eligible_cnt = 0
@@ -411,6 +411,7 @@ cmd_judge() {
                     if (g > 0)  gapgt0++
                     if (max_gap == "" || g > max_gap + 0) max_gap = g
                 }
+                if (okv[i] < 0) ok_unknown++
                 if (isnum(nrv[i])) {
                     r = nrv[i] + 0
                     a = isnum(aetv[i]) ? aetv[i] + 0 : ""
@@ -458,7 +459,7 @@ cmd_judge() {
             printf "soak-evidence: window_covered_hours=%.3f window_covered_sec=%d first_ts=%d last_ts=%d last_sample_age_sec=%d allow_stale=%d\n", covered, covered_sec, ts[i0], last, now - last, allow_stale
             printf "soak-evidence: max_sampling_hole_sec=%d hole_threshold_sec=%d\n", hole_max, hole_thr
             printf "soak-evidence: restarts_in_window=%s ambiguous_restarts=%d operator_interventions=%d (NRestarts delta; in-binary watchdog self-recycles count as AUTONOMOUS recovery — count reported, the criterion text decides; ambiguous = restarts in AET-jump intervals where a manual reset-then-climb is indistinguishable at hourly sampling resolution; strict soak_harness math counts ANY observed downtime as FAIL_CRASH)\n", restarts, ambiguous, op
-            printf "soak-evidence: ok_samples=%d/%d soak_null_samples=%d zd_null_samples=%d samples_with_gap_gt0=%d max_gap=%s gap0_pct=%.2f\n", ok_cnt, cnt, soak_null, zd_null, gapgt0, (max_gap == "" ? "null" : max_gap ""), gap0_pct
+            printf "soak-evidence: ok_samples=%d/%d ok_unknown_samples=%d soak_null_samples=%d zd_null_samples=%d samples_with_gap_gt0=%d max_gap=%s gap0_pct=%.2f\n", ok_cnt, cnt, ok_unknown, soak_null, zd_null, gapgt0, (max_gap == "" ? "null" : max_gap ""), gap0_pct
             printf "soak-evidence: window_eligible_samples=%d/%d security_review_required_samples=%d security_posture_unknown_samples=%d security_posture_gap_samples=%d\n", eligible_cnt, cnt, security_review, security_unknown, security_gap
             printf "soak-evidence: rss_first_kb=%s rss_last_kb=%s rss_min_kb=%s rss_max_kb=%s rss_unknown_samples=%d rss_growth_max_kb=%d\n", (rss_first == "" ? "null" : rss_first ""), (rss_last == "" ? "null" : rss_last ""), (rss_min == "" ? "null" : rss_min ""), (rss_max == "" ? "null" : rss_max ""), rss_unknown, rss_growth_max
             printf "soak-evidence: binary_identity_samples=%d/%d distinct_beyond_first=%d identity=%s\n", bin_known, cnt, bin_ids, (bin_id1 == "" ? "null" : bin_id1)
@@ -493,6 +494,8 @@ cmd_judge() {
                 v = "INSUFFICIENT"; reason = sprintf("oracle_coverage_thin_ok_%d_of_%d", ok_cnt, cnt)
             } else if (gap0_pct < gap0_min) {
                 v = "NOT_MET"; reason = sprintf("gap_nonzero_in_%d_of_%d_ok_samples", ok_cnt - gap0, ok_cnt)
+            } else if (ok_unknown > 0) {
+                v = "INSUFFICIENT"; reason = sprintf("ok_unknown_in_%d_of_%d_samples", ok_unknown, cnt)
             } else if (security_unknown > 0) {
                 v = "INSUFFICIENT"; reason = sprintf("security_posture_unknown_in_%d_of_%d_samples", security_unknown, cnt)
             } else if (security_gap > 0) {
@@ -826,6 +829,12 @@ cmd_selftest() {
         st_judge "$f" 168 "$fresh" INSUFFICIENT \
             "rss_unknown_in_1_of_169_samples" 2 "rss-$kind-breaks-window"
     done
+
+    # A malformed boolean cannot be counted as a clean reachable sample.
+    f="$tmp/ok-malformed"; mkdir -p "$f"
+    sed '81s/"ok":true/"ok":truejunk/' "$tmp/green/evidence.jsonl" > "$f/evidence.jsonl"
+    st_judge "$f" 168 "$fresh" INSUFFICIENT \
+        "ok_unknown_in_1_of_169_samples" 2 ok-malformed-breaks-window
 
     # M) One explicit review-required sample breaks the clean window even
     #    though every height, gap, cadence, and restart fact is green.
