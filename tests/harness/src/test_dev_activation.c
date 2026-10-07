@@ -532,6 +532,57 @@ static int test_stage_rejects_hash_copy_race(void)
     return failures;
 }
 
+static int test_staged_locator_refusal(void)
+{
+    int failures = 0;
+    TEST("dev_activation: stage-only refuses a blocked locator then publishes") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "staged_locator_refusal");
+        char artifact[PATH_MAX], staged[PATH_MAX], target[80];
+        snprintf(artifact, sizeof(artifact), "%s/cand", sb.home);
+        ASSERT(write_fake_binary(artifact, 'A'));
+        mkpath(sb.gen_root);
+        snprintf(staged, sizeof(staged), "%s/staged", sb.gen_root);
+        ASSERT_EQ(mkdir(staged, 0700), 0);
+        struct stat before, after;
+        ASSERT_EQ(lstat(staged, &before), 0);
+        struct fake_ctx c = { .service_up = true };
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artifact);
+        req.mode = DEV_ACTIVATION_MODE_STAGE_ONLY;
+        struct dev_activation_result r;
+        ASSERT_EQ(dev_activation_run(&req, &ops, &r), DEV_ACTIVATION_E_STAGE);
+        ASSERT_EQ(r.status, DEV_ACTIVATION_E_STAGE);
+        ASSERT_STR_EQ(r.activation_status, "stage_failed");
+        ASSERT_STR_EQ(r.verify_status, "staged_link_failed");
+        ASSERT_STR_EQ(r.failure_capsule, "staged locator update failed");
+        ASSERT_EQ(c.preflight_calls, 1);
+        ASSERT_EQ(lstat(staged, &after), 0);
+        ASSERT(S_ISDIR(after.st_mode));
+        ASSERT_EQ(after.st_dev, before.st_dev);
+        ASSERT_EQ(after.st_ino, before.st_ino);
+        ASSERT_EQ(rmdir(staged), 0);
+        ASSERT_EQ(dev_activation_run(&req, &ops, &r), DEV_ACTIVATION_OK);
+        ASSERT_EQ(r.status, DEV_ACTIVATION_OK);
+        ASSERT_STR_EQ(r.activation_status, "staged");
+        ASSERT(read_link_str(staged, target, sizeof(target)));
+        ASSERT_STR_EQ(target, r.candidate_generation);
+        /* Replacing a regular staged locator also retains the success path. */
+        ASSERT_EQ(dev_activation_run(&req, &ops, &r), DEV_ACTIVATION_OK);
+        ASSERT(read_link_str(staged, target, sizeof(target)));
+        ASSERT_STR_EQ(target, r.candidate_generation);
+        ASSERT_EQ(c.stop_calls, 0);
+        ASSERT_EQ(c.start_calls, 0);
+        ASSERT(c.service_up);
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_source_id_required(void)
 {
     int failures = 0;
@@ -1610,6 +1661,7 @@ int test_dev_activation(void)
     failures += test_happy_activation();
     failures += test_unit_prepare_failure();
     failures += test_stage_rejects_hash_copy_race();
+    failures += test_staged_locator_refusal();
     failures += test_source_id_required();
     failures += test_source_epoch_cas_refuses_before_stop();
     failures += test_confinement_refusals();

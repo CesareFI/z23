@@ -1177,8 +1177,15 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
     }
 
     if (txn->req->mode == DEV_ACTIVATION_MODE_STAGE_ONLY) {
-        (void)dev_activation_link_generation(txn, "staged",
-                                             txn->candidate_generation);
+        if (!dev_activation_link_generation(txn, "staged",
+                                             txn->candidate_generation)) {
+            dev_set_status(r, "stage_failed", "staged_link_failed",
+                           "candidate preflight passed; staged locator update failed");
+            snprintf(r->failure_capsule, sizeof(r->failure_capsule),
+                     "staged locator update failed");
+            (void)dev_activation_write_deploy_state(txn);
+            return DEV_ACTIVATION_E_STAGE;
+        }
         dev_set_status(r, "staged", "staged",
                        "candidate preflight passed; no service stop/restart");
         (void)dev_activation_write_deploy_state(txn);
