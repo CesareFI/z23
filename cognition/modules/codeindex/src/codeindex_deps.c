@@ -324,6 +324,16 @@ static int dep_path_cmp(const void *left, const void *right)
     return strcmp(*(const char *const *)left, *(const char *const *)right);
 }
 
+/* Sort collected dep paths for a deterministic root hash. count 0 leaves
+ * items NULL and qsort's base is declared nonnull, so a zero-dep tree is
+ * UB without the guard even though the sort is a no-op at that size. */
+static void dep_paths_sort(struct dep_paths *paths)
+{
+    if (paths->count > 1)
+        qsort(paths->items, paths->count, sizeof(paths->items[0]),
+              dep_path_cmp);
+}
+
 /* A compile epoch's directory name is exactly 64 lowercase hex digits. Nothing
  * else is accepted, so a pointer can never name a parent, a sibling tree, or an
  * absolute path. */
@@ -965,7 +975,7 @@ static bool deps_scan_exact(const char *root, ci_dep_cb cb, void *user,
         dep_paths_free(&paths);
         LOG_FAIL("codeindex", "collect depfiles failed: %s", strerror(errno));
     }
-    qsort(paths.items, paths.count, sizeof(paths.items[0]), dep_path_cmp);
+    dep_paths_sort(&paths);
     bool ok = true;
     for (size_t i = 0; i < paths.count && ok; i++)
         ok = scan_one_depfile(root, paths.items[i], cb, user, &sha,
@@ -1086,7 +1096,7 @@ bool ci_deps_stat_root_sha3(const char *root, uint8_t out_root[32])
         LOG_FAIL("codeindex", "collect depfile metadata failed: %s",
                  strerror(errno));
     }
-    qsort(paths.items, paths.count, sizeof(paths.items[0]), dep_path_cmp);
+    dep_paths_sort(&paths);
     bool ok = true;
     for (size_t i = 0; i < paths.count; i++) {
         char full[CI_PATH_MAX];
