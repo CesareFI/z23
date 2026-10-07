@@ -28,6 +28,7 @@
 #include "platform/device_compat.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
@@ -162,9 +163,31 @@ static void hwp_plant_hdd_wholedisk(const char *root, unsigned maj,
     symlink("../../devices/fakehdd/block/sdfake", link);
 }
 
+static int hwp_drain_batch_int_bounds(void)
+{
+    int failures = 0;
+    const int64_t ram = 1024LL * 1024 * 1024 * 1024;
+    HWP_CHECK("drain_batch saturates an INT_MAX baseline",
+              hw_profile_drain_batch(ram, 64, INT_MAX) == INT_MAX);
+    HWP_CHECK("drain_batch preserves the last representable 8x batch",
+              hw_profile_drain_batch(ram, 64, INT_MAX / 8) ==
+                  (INT_MAX / 8) * 8);
+    HWP_CHECK("drain_batch saturates the first unrepresentable 8x batch",
+              hw_profile_drain_batch(ram, 64, INT_MAX / 8 + 1) == INT_MAX);
+    HWP_CHECK("drain_batch keeps an INT_MAX floor with unknown RAM",
+              hw_profile_drain_batch(0, 64, INT_MAX) == INT_MAX);
+    HWP_CHECK("drain_batch keeps an INT_MAX floor with few cores",
+              hw_profile_drain_batch(ram, 1, INT_MAX) == INT_MAX);
+    HWP_CHECK("drain_batch keeps a representable core-capped result",
+              hw_profile_drain_batch(ram, 4, INT_MAX) == INT_MAX);
+    return failures;
+}
+
 int test_hw_profile(void)
 {
     int failures = 0;
+
+    failures += hwp_drain_batch_int_bounds();
 
     /* ── real-host probe ─────────────────────────────────────────── */
     hw_profile_reset_for_testing();

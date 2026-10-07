@@ -522,6 +522,8 @@ int hw_profile_drain_batch(int64_t ram_bytes, int physical_cores, int baseline)
     if (batch < baseline) batch = baseline;
     if (batch > (int64_t)baseline * HW_PROFILE_DRAIN_BATCH_MAX_MULT)
         batch = (int64_t)baseline * HW_PROFILE_DRAIN_BATCH_MAX_MULT;
+    /* Saturate before narrowing so a large baseline retains its floor. */
+    if (batch > INT_MAX) batch = INT_MAX;
     return (int)batch;
 }
 
