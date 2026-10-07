@@ -337,12 +337,9 @@ void header_probe_tick_once(void)
 
 /* ── init ──────────────────────────────────────────────────────── */
 
-struct zcl_result header_probe_init(const struct header_probe_config *cfg,
-                                    struct main_state *ms,
-                                    const struct chain_params *params)
+/* Called with g_hp.lock held. */
+static void hp_apply_config(const struct header_probe_config *cfg)
 {
-    pthread_mutex_lock(&g_hp.lock);
-
     snprintf(g_hp.rpc_host, sizeof(g_hp.rpc_host), "%s",
              (cfg && cfg->rpc_host) ? cfg->rpc_host : HP_DEFAULT_HOST);
     g_hp.rpc_port = (cfg && cfg->rpc_port > 0)
@@ -352,9 +349,11 @@ struct zcl_result header_probe_init(const struct header_probe_config *cfg,
     if (g_hp.batch_size > HP_MAX_BATCH) g_hp.batch_size = HP_MAX_BATCH;
     g_hp.lag_threshold = (cfg && cfg->lag_threshold > 0)
                         ? cfg->lag_threshold : HP_DEFAULT_LAG;
-    g_hp.ms = ms;
-    g_hp.params = params;
+}
 
+/* Called with g_hp.lock held; only current-lifecycle credentials apply. */
+static void hp_apply_credentials(const struct header_probe_config *cfg)
+{
     if (cfg && cfg->rpc_user && cfg->rpc_user[0]) {
         snprintf(g_hp.rpc_user, sizeof(g_hp.rpc_user),
                  "%s", cfg->rpc_user);
@@ -363,7 +362,11 @@ struct zcl_result header_probe_init(const struct header_probe_config *cfg,
         snprintf(g_hp.rpc_password, sizeof(g_hp.rpc_password),
                  "%s", cfg->rpc_password);
     }
+}
 
+/* Called with g_hp.lock held. Preserve the shared conf reader's semantics. */
+static struct zcl_result hp_load_credentials(const struct header_probe_config *cfg)
+{
     bool need_user = (g_hp.rpc_user[0] == '\0');
     bool need_pass = (g_hp.rpc_password[0] == '\0');
     if (need_user || need_pass) {
@@ -378,16 +381,38 @@ struct zcl_result header_probe_init(const struct header_probe_config *cfg,
                          "%s", p);
             if (!cfg || cfg->rpc_port <= 0)
                 g_hp.rpc_port = port_from_conf;
-        } else if (need_user || need_pass) {
-            pthread_mutex_unlock(&g_hp.lock);
+        } else {
             return ZCL_ERR(-1,
                 "no RPC credentials: pass via config or ~/.zclassic/zclassic.conf");
         }
     }
 
-    g_hp.initialized = true;
-    pthread_mutex_unlock(&g_hp.lock);
     return ZCL_OK;
+}
+
+struct zcl_result header_probe_init(const struct header_probe_config *cfg,
+                                    struct main_state *ms,
+                                    const struct chain_params *params)
+{
+    pthread_mutex_lock(&g_hp.lock);
+
+    /* An init call describes the current process lifecycle, not a partial
+     * update to the prior one. Clear credential and readiness state before
+     * applying it so a failed in-process restart cannot keep operating with
+     * credentials inherited from the previous run. */
+    g_hp.initialized = false;
+    g_hp.rpc_user[0] = '\0';
+    g_hp.rpc_password[0] = '\0';
+
+    hp_apply_config(cfg);
+    g_hp.ms = ms;
+    g_hp.params = params;
+    hp_apply_credentials(cfg);
+    struct zcl_result result = hp_load_credentials(cfg);
+    if (result.ok)
+        g_hp.initialized = true;
+    pthread_mutex_unlock(&g_hp.lock);
+    return result;
 }
 
 void header_probe_reset_for_test(void)
