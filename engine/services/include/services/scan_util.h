@@ -168,6 +168,7 @@ static inline void scan_uset_free(struct scan_utxo_set *s)
 
 struct scan_mem_wtx {
     uint8_t txid[32];
+    uint8_t block_hash[32]; /* Owned copy of the containing decoded block hash. */
     uint8_t *raw;
     size_t raw_len;
     int height;

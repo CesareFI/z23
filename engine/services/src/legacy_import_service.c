@@ -131,6 +131,8 @@ static bool scan_block_txs(const struct block *blk, int height,
                             struct scan_wtx_list *wl)
 {
     bool any_found = false;
+    struct uint256 block_hash;
+    block_get_hash(blk, &block_hash);
 
     for (size_t ti = 0; ti < blk->num_vtx; ti++) {
         struct transaction *tx = &blk->vtx[ti];
@@ -182,6 +184,7 @@ static bool scan_block_txs(const struct block *blk, int height,
             struct scan_mem_wtx wt;
             memset(&wt, 0, sizeof(wt));
             memcpy(wt.txid, tx->hash.data, 32);
+            memcpy(wt.block_hash, block_hash.data, 32);
             wt.raw = ser_tx(tx, &wt.raw_len);
             wt.height = height;
             wt.time = blk->header.nTime;
@@ -422,6 +425,7 @@ int legacy_import_service_run(const char *legacy_datadir,
             struct db_wallet_tx dt;
             memset(&dt, 0, sizeof(dt));
             memcpy(dt.txid, t->txid, 32);
+            memcpy(dt.block_hash, t->block_hash, 32);
             dt.raw_tx = t->raw;
             dt.raw_tx_len = t->raw_len;
             dt.has_block = true;

@@ -4,6 +4,7 @@
 
 #include "test/test_core.h"
 #include "storage/coins_view_sqlite.h"
+#include "storage/disk_block_io.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/pow.h"
@@ -19,6 +20,8 @@
 #include "config/boot_cursor_state.h"
 #include "util/storage_pacing.h"
 #include "wallet/wallet.h"
+#include "script/standard.h"
+#include "platform/time_compat.h"
 #include <fcntl.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -380,6 +383,130 @@ static bool node_db_has_no_open_transaction(struct node_db *ndb)
     return !status.tx_open && sqlite3_get_autocommit(ndb->db) != 0;
 }
 
+/* Synthetic serialized payment, not a consensus-valid chain. The fixture
+ * owns all allocations; only the returned hashes and disk position escape. */
+static bool wallet_scan_payment_fixture(const char *dir,
+                                         struct disk_block_pos *pos,
+                                         struct uint256 *txid,
+                                         struct uint256 *block_hash)
+{
+    struct block blk;
+    block_init(&blk);
+    blk.header.nVersion = 4;
+    blk.header.nTime = 1700000000;
+    blk.vtx = calloc(1, sizeof(*blk.vtx));
+    if (!blk.vtx)
+        return false;
+    blk.num_vtx = 1;
+    struct transaction *tx = blk.vtx;
+    transaction_init(tx);
+    tx->vin = calloc(1, sizeof(*tx->vin));
+    tx->vout = calloc(1, sizeof(*tx->vout));
+    bool ok = tx->vin && tx->vout;
+    if (ok) {
+        tx->num_vin = 1;
+        tx->num_vout = 1;
+        tx->version = 1;
+        outpoint_set_null(&tx->vin[0].prevout);
+        tx->vin[0].sequence = UINT32_MAX;
+        ok = script_push_op(&tx->vin[0].script_sig, OP_0);
+        tx->vout[0].value = 9000;
+        struct key_id id = {0};
+        id.id.data[0] = 1;
+        script_for_p2pkh(&tx->vout[0].script_pub_key, &id);
+        ok = ok && tx->vout[0].script_pub_key.size == 25;
+        transaction_compute_hash(tx);
+        *txid = tx->hash;
+        blk.header.hashMerkleRoot = *txid;
+        block_get_hash(&blk, block_hash);
+        const unsigned char magic[] = {0x24, 0xe9, 0x27, 0x64};
+        ok = ok && write_block_to_disk(&blk, pos, dir, magic);
+    }
+    block_free(&blk);
+    return ok;
+}
+
+static int wallet_scan_payment_pass2(struct node_db *ndb, const char *dir,
+                                      const struct disk_block_pos *pos)
+{
+    struct block_index index;
+    block_index_init(&index);
+    index.nStatus = BLOCK_HAVE_DATA;
+    index.nFile = pos->nFile;
+    index.nDataPos = pos->nPos;
+    struct block_index *entries[] = {&index};
+    /* Borrowed stack entries remain live until the synchronous scan returns. */
+    struct active_chain chain = {.chain = entries, .height = 0, .capacity = 1};
+    struct scan_addr_ht addresses;
+    scan_aht_init(&addresses);
+    uint8_t address[20] = {1};
+    scan_aht_insert(&addresses, address);
+    const bool matches[] = {true};
+    struct timespec started;
+    platform_time_monotonic_timespec(&started);
+    int result = -1;
+    if (scan_aht_has(&addresses, address) && pos->nFile == 0)
+        result = wallet_scan_pass2_execute(ndb, &chain, dir, 0, 0,
+                                           &addresses, matches, 1,
+                                           &started, &started);
+    scan_aht_free(&addresses);
+    return result;
+}
+
+static int wallet_scan_payment_legacy(struct node_db *ndb, const char *dir)
+{
+    struct wallet *wallet = calloc(1, sizeof(*wallet));
+    if (!wallet)
+        return -1;
+    /* Public synthetic ownership identifier only; no private key or funds. */
+    wallet->keystore.num_keys = 1;
+    wallet->keystore.keys[0].used = true;
+    wallet->keystore.keys[0].keyid.id.data[0] = 1;
+    int result = legacy_import_service_run(dir, ndb, wallet, false);
+    free(wallet);
+    return result;
+}
+
+static bool wallet_scan_payment_stored(struct node_db *ndb,
+                                        const struct uint256 *txid,
+                                        const struct uint256 *block_hash)
+{
+    struct db_wallet_tx tx = {0};
+    if (!db_wallet_tx_find(ndb, txid->data, &tx))
+        return false;
+    bool ok = tx.has_block && tx.block_height == 0 && tx.raw_tx_len > 0 &&
+              tx.time_received == 1700000000 &&
+              memcmp(tx.block_hash, block_hash->data, 32) == 0 &&
+              db_wallet_utxo_balance(ndb) == 9000;
+    db_wallet_tx_free(&tx);
+    return ok;
+}
+
+static int test_wallet_scan_payment(bool legacy)
+{
+    struct node_db ndb = {0};
+    if (!node_db_open(&ndb, ":memory:"))
+        return 1;
+    char dir[512];
+    test_make_tmpdir(dir, sizeof(dir), "wallet_scan_payment", "identity");
+    struct disk_block_pos pos;
+    disk_block_pos_init(&pos);
+    struct uint256 txid = {0}, block_hash = {0};
+    bool fixture = wallet_scan_payment_fixture(dir, &pos, &txid, &block_hash);
+    int result = -1;
+    if (fixture)
+        result = legacy ? wallet_scan_payment_legacy(&ndb, dir)
+                        : wallet_scan_payment_pass2(&ndb, dir, &pos);
+    bool stored = wallet_scan_payment_stored(&ndb, &txid, &block_hash);
+    bool ok = fixture && result == 1 && stored &&
+              node_db_has_no_open_transaction(&ndb);
+    printf("wallet payment identity legacy=%d fixture=%d result=%d stored=%d %s\n",
+           legacy, fixture, result, stored, ok ? "PASS" : "FAIL");
+    node_db_close(&ndb);
+    test_rm_rf(dir);
+    return ok ? 0 : 1;
+}
+
 static int test_wallet_scan_empty_replacement(void)
 {
     printf("GIVEN stale wallet rows WHEN empty Pass2 replaces them "
@@ -561,6 +688,8 @@ int test_block_scan(void)
     failures += test_wallet_scan_cache_valid();
     failures += test_wallet_scan_cursor_start();
     failures += test_wallet_scan_empty_replacement();
+    failures += test_wallet_scan_payment(false);
+    failures += test_wallet_scan_payment(true);
     failures += test_legacy_import_clear_rollback();
 
     printf("block_scan: %d failure(s)\n\n", failures);
