@@ -1182,6 +1182,27 @@ typedef bool (*zcl_devloop_stop_predicate)(void *opaque);
 int zcl_devloop_watch_mode_until(const char *repo_root,
     enum zcl_devloop_publish_mode publish_mode,
     zcl_devloop_stop_predicate stop, void *opaque);
+#if !defined(_WIN32) && (defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING))
+#define ZCL_DEVLOOP_WATCH_PATH_EVENT 1
+/* Write and flush one changed or queued source-path record to a writable stream.
+ * NULL or invalid UTF-8 paths return false and write no event bytes.
+ * Output failure returns false and may leave a partial record.
+ * Watch callers must stop on false, drain ordered teardown, and exit nonzero. */
+bool zcl_devloop_watch_path_event(FILE *stream, const char *path, size_t count,
+    uint64_t sequence, bool rescan, bool queued);
+#if defined(ZCL_TESTING)
+/* Isolated watcher fixture: replace only foreground build/proof execution.
+ * The callback runs after the changed record; the real backend then collects
+ * edits it made before the queued caller and ordered teardown run.
+ * The stopped observer runs immediately before the stopped heartbeat.
+ * NULL restores execution. Install only in a private fixture child. */
+typedef void (*zcl_devloop_watch_test_foreground_fn)(void *opaque);
+void zcl_devloop_watch_test_foreground_set(
+    zcl_devloop_watch_test_foreground_fn fn, void *opaque);
+void zcl_devloop_watch_test_stopped_set(
+    zcl_devloop_watch_test_foreground_fn fn, void *opaque);
+#endif
+#endif
 int zcl_devloop_print_status(void);
 int zcl_devloop_run_sim(const char *repo_root);
 int zcl_devloop_app_describe(const char *repo_root, const char *app_id);

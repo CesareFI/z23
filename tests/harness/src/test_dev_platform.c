@@ -23,6 +23,7 @@
 #include "framework/app_platform.h"
 #include "hotswap/hotswap_module.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "keys/key.h"
 #include "platform/directory_compat.h"
 #include "platform/environment_compat.h"
@@ -6098,6 +6099,320 @@ static int test_resident_process_cancellation(void)
     return failures;
 }
 
+#if defined(ZCL_DEVLOOP_WATCH_PATH_EVENT)
+static bool watch_path_json_exact(const char *out, size_t n, bool queued)
+{
+    if (!zutf8_validate_n(out, n) || !json_valid(out, n)) return false;
+    struct json_value doc = {0};
+    if (!json_read(&doc, out, n)) return false;
+    const char *text = json_get_str(json_get(&doc,
+        queued ? "first_queued_path" : "first_path"));
+    bool exact = text && strcmp(text, "a\xc3\xa9\"\\\n.c") == 0;
+    json_free(&doc);
+    return exact;
+}
+
+static bool watch_path_stream_encoding(FILE *stream, bool queued)
+{
+    /* NULL, invalid lead, stray continuation, overlong encoding, surrogate,
+     * out-of-range scalar, and truncation must leave the stream untouched. */
+    const char *invalid[] = {
+        NULL, "a\xff.c", "a\x80.c", "a\xc0\xaf.c", "a\xed\xa0\x80.c",
+        "a\xf4\x90\x80\x80.c", "a\xe2\x82"
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        if (zcl_devloop_watch_path_event(stream, invalid[i], 1, 2, false, queued))
+            return false;
+        if (ftell(stream) != 0) return false;
+    }
+    if (!zcl_devloop_watch_path_event(stream, "a\xc3\xa9\"\\\n.c",
+                                    1, 2, false, queued)) return false;
+    if (fflush(stream) != 0 || fseek(stream, 0, SEEK_SET) != 0) return false;
+    char out[512] = {0};
+    size_t n = fread(out, 1, sizeof(out) - 1, stream);
+    if (ferror(stream) || !feof(stream)) return false;
+    return watch_path_json_exact(out, n, queued);
+}
+
+static bool watch_path_encoding_fixture(bool queued)
+{
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof(path), "watch_path_encoding");
+    if (fd < 0) return false;
+    FILE *stream = fdopen(fd, "w+");
+    if (!stream) {
+        (void)close(fd);
+        (void)unlink(path);
+        return false;
+    }
+    bool exact = watch_path_stream_encoding(stream, queued);
+    int closed = fclose(stream);
+    int removed = unlink(path);
+    return exact && closed == 0 && removed == 0;
+}
+
+#endif
+
+#if defined(__linux__)
+/* The serializer unit checks above are supplementary. These four runs enter
+ * the public watcher, ingest real inotify edits, and observe its completion. */
+struct dp_watch_path_fixture {
+    const char *root;
+    const char *path;
+    int output_fd;
+    bool queued;
+    bool injected;
+    bool failed;
+    unsigned foreground_calls;
+    bool stopped_drained;
+};
+
+static bool dp_watch_capture_read(int fd, char *out, size_t cap)
+{
+    ssize_t n = pread(fd, out, cap - 1, 0);
+    if (n < 0 || (size_t)n == cap - 1) return false;
+    out[n] = 0;
+    return true;
+}
+
+static bool dp_watch_path_stop(void *opaque)
+{
+    struct dp_watch_path_fixture *f = opaque;
+    char out[32768];
+    if (!dp_watch_capture_read(f->output_fd, out, sizeof(out))) {
+        f->failed = true;
+        return true;
+    }
+    /* Refusal must leave the reactor immediately, before any further poll. */
+    if (strstr(out, "source epoch path is not valid UTF-8")) f->failed = true;
+    if (!f->injected && strstr(out, "\"status\":\"watching\"")) {
+        f->injected = true;
+        f->failed = !dp_mk_write(f->root, f->queued ? "seed.c" : f->path,
+                                 "int seed(void){return 1;}\n");
+    }
+    return f->failed || strstr(out, f->queued
+        ? "\"first_queued_path\":" : "\"first_path\":") != NULL;
+}
+
+static void dp_watch_path_foreground(void *opaque)
+{
+    struct dp_watch_path_fixture *f = opaque;
+    f->foreground_calls++;
+    if (f->queued && !dp_mk_write(f->root, f->path,
+                                 "int queued(void){return 2;}\n"))
+        f->failed = true;
+}
+
+static bool dp_watch_journal_drained(const char *root)
+{
+    int64_t latest = 0, durable = 0;
+    int status = 0;
+    return zcl_devloop_cycle_stream_marks(root, &latest, &durable) &&
+        latest > 0 && latest == durable &&
+        waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD;
+}
+
+static bool dp_watch_lock_state(const char *root, bool released)
+{
+    char lock_path[PATH_MAX];
+    if (!zcl_devloop_watch_lock_path(root, lock_path, sizeof(lock_path)))
+        return false;
+    int fd = open(lock_path, O_RDWR | O_CLOEXEC);
+    if (fd < 0) return false;
+    int rc = flock(fd, LOCK_EX | LOCK_NB);
+    bool exact = released ? rc == 0 : rc < 0 && errno == EWOULDBLOCK;
+    if (close(fd) != 0) exact = false;
+    return exact;
+}
+
+static void dp_watch_path_stopped(void *opaque)
+{
+    struct dp_watch_path_fixture *f = opaque;
+    /* Before stopped is emitted the sealer is joined and the journal is
+     * durable, while the singleton still excludes another watcher. */
+    f->stopped_drained = dp_watch_journal_drained(f->root) &&
+        dp_watch_lock_state(f->root, false);
+}
+
+static void dp_watch_path_child(struct dp_watch_path_fixture *f)
+{
+    if (setsid() < 0 || dup2(f->output_fd, STDOUT_FILENO) < 0 ||
+        dup2(f->output_fd, STDERR_FILENO) < 0 ||
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "0", 1) != 0)
+        _exit(120);
+    /* The outer hard bound includes startup, the reactor and its teardown.
+     * A signal is a fixture failure, never an encoding-refusal pass. */
+    signal(SIGALRM, SIG_DFL);
+    alarm(15);
+    zcl_devloop_watch_test_foreground_set(dp_watch_path_foreground, f);
+    zcl_devloop_watch_test_stopped_set(dp_watch_path_stopped, f);
+    int rc = zcl_devloop_watch_mode_until(f->root,
+        ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY, dp_watch_path_stop, f);
+    if (fflush(stdout) != 0) f->failed = true;
+    zcl_devloop_watch_test_foreground_set(NULL, NULL);
+    zcl_devloop_watch_test_stopped_set(NULL, NULL);
+    bool drained = dp_watch_journal_drained(f->root) &&
+        dp_watch_lock_state(f->root, true);
+    fprintf(stderr, "watch fixture completion: public_rc=%d stopped_drained=%d "
+            "released_drained=%d foreground_calls=%u fixture_failed=%d\n",
+            rc, f->stopped_drained, drained, f->foreground_calls, f->failed);
+    alarm(0);
+    if (f->failed || !f->injected || !drained || !f->stopped_drained ||
+        f->foreground_calls != (unsigned)(f->queued || zutf8_validate(f->path)))
+        _exit(121);
+    _exit(rc);
+}
+
+static bool dp_watch_path_fields(const struct json_value *doc, bool queued)
+{
+    if (json_size(doc) != 5) return false;
+    if (!queued) {
+        const struct json_value *rescan = json_get(doc, "full_rescan");
+        return json_get_int(json_get(doc, "changed_paths")) == 1 &&
+            json_get_int(json_get(doc, "mutation_sequence")) > 0 &&
+            rescan && rescan->type == JSON_BOOL && !json_get_bool(rescan);
+    }
+    const char *status = json_get_str(json_get(doc, "status"));
+    const char *next = json_get_str(json_get(doc, "agent_next_action"));
+    return status && strcmp(status, "superseded") == 0 && next &&
+        strcmp(next, "wait for latest verdict") == 0 &&
+        json_get_int(json_get(doc, "queued_paths")) == 1;
+}
+
+static bool dp_watch_path_record(const char *line, size_t n,
+                                 const char *path, bool queued)
+{
+    if (!zutf8_validate_n(line, n) || !json_valid(line, n)) return false;
+    struct json_value doc = {0};
+    if (!json_read(&doc, line, n)) return false;
+    const char *decoded = json_get_str(json_get(&doc,
+        queued ? "first_queued_path" : "first_path"));
+    bool exact = decoded && strcmp(decoded, path) == 0 &&
+        dp_watch_path_fields(&doc, queued);
+    json_free(&doc);
+    return exact;
+}
+
+struct dp_watch_records {
+    const char *path;
+    const char *stopped;
+    unsigned changed_count;
+    unsigned queued_count;
+    bool queued;
+    bool valid;
+};
+
+static bool dp_watch_path_line(const char *line, const char *end,
+                               struct dp_watch_records *r)
+{
+    size_t n = (size_t)(end - line);
+    static const char prefix[] = "{\"schema\":\"zcl.dev_source_epoch.v1\",";
+    if (n < sizeof(prefix) - 1 || memcmp(line, prefix, sizeof(prefix) - 1) != 0)
+        return true;
+    const char *key = strstr(line, "\"first_queued_path\":");
+    bool queued = key && key < end;
+    if (queued) r->queued_count++; else r->changed_count++;
+    if (!r->valid && (!r->queued || queued)) return false;
+    const char *expected = r->queued && !queued ? "seed.c" : r->path;
+    return line < r->stopped && dp_watch_path_record(line, n, expected, queued);
+}
+
+static bool dp_watch_path_output(const char *out, const char *path,
+                                 bool queued, bool valid)
+{
+    struct dp_watch_records records = {
+        .path = path, .queued = queued, .valid = valid,
+        .stopped = strstr(out, "\"status\":\"stopped\""),
+    };
+    const char *watching = strstr(out, "\"status\":\"watching\"");
+    if (!records.stopped || !watching || records.stopped <= watching) return false;
+    for (const char *line = out; *line;) {
+        const char *end = strchr(line, '\n');
+        if (!end || !dp_watch_path_line(line, end, &records)) return false;
+        line = end + 1;
+    }
+    if (records.changed_count != (unsigned)(queued || valid) ||
+        records.queued_count != (unsigned)(queued && valid)) return false;
+    const char *refusal = strstr(out, "source epoch path is not valid UTF-8");
+    if (valid) return refusal == NULL;
+    return refusal && refusal < records.stopped;
+}
+
+static bool dp_watch_path_wait(pid_t child, bool valid)
+{
+    int status = 0;
+    if (child <= 0) return false;
+    pid_t got;
+    do { got = waitpid(child, &status, 0); } while (got < 0 && errno == EINTR);
+    if (got == child && WIFSIGNALED(status)) (void)kill(-child, SIGKILL);
+    bool ok = got == child && WIFEXITED(status) &&
+        WEXITSTATUS(status) == (valid ? 0 : 1);
+    if (!ok) fprintf(stderr, "watch path production: valid=%d status=%d\n",
+                     valid, status);
+    return ok;
+}
+
+static bool dp_watch_path_run(const char *root, const char *path,
+                              bool queued, bool valid)
+{
+    char capture_path[PATH_MAX], out[32768];
+    int fd = test_mkstemp(capture_path, sizeof(capture_path), "watch_production");
+    if (fd < 0) return false;
+    struct dp_watch_path_fixture fixture = {
+        .root = root, .path = path, .output_fd = fd, .queued = queued,
+    };
+    fflush(NULL);
+    pid_t child = fork();
+    if (child == 0) dp_watch_path_child(&fixture);
+    bool ok = dp_watch_path_wait(child, valid);
+    bool captured = dp_watch_capture_read(fd, out, sizeof(out));
+    bool exact = captured && dp_watch_path_output(out, path, queued, valid);
+    if (!exact) {
+        fprintf(stderr, "watch path production: queued=%d valid=%d wrong output\n",
+                queued, valid);
+        if (captured) (void)fputs(out, stderr);
+    }
+    ok = ok && exact;
+    if (close(fd) != 0) ok = false;
+    if (unlink(capture_path) != 0) ok = false;
+    return ok;
+}
+
+static bool dp_watch_path_production(bool queued, bool valid)
+{
+    char root[PATH_MAX];
+    if (!test_mkdtemp(root, sizeof(root), "watch_path_production")) return false;
+    /* Source bytes containing invalid UTF-8 are created only on Linux. */
+    const char *path = valid ? "a\xc3\xa9\"\\\n.c" : "a\xff.c";
+    bool ok = dp_mk_write(root, "Makefile", "all:\n\t@exit 99\n") &&
+        dp_watch_path_run(root, path, queued, valid);
+    if (test_rm_rf_recursive(root) != 0) ok = false;
+    return ok;
+}
+#endif
+
+static int test_watch_path_encoding(void)
+{
+    int failures = 0;
+    bool changed = true, queued = true;
+#if defined(ZCL_DEVLOOP_WATCH_PATH_EVENT)
+    changed = watch_path_encoding_fixture(false);
+    queued = watch_path_encoding_fixture(true);
+#endif
+    bool production[4] = {true, true, true, true};
+#if defined(__linux__)
+    for (unsigned i = 0; i < 4; i++)
+        production[i] = dp_watch_path_production((i & 1u) != 0, i >= 2u);
+#endif
+    TEST("dev platform: changed and queued paths refuse invalid UTF-8 before output") {
+        ASSERT(changed);
+        ASSERT(queued);
+        for (unsigned i = 0; i < 4; i++) ASSERT(production[i]);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_exact_commit_preempts_edit_proof(void)
 {
     int failures = 0;
@@ -9825,6 +10140,7 @@ static const struct dp_shard_case g_dp_cases[] = {
 #endif
     DP_CASE(test_resident_process_cancellation, 3),
     DP_CASE(test_exact_commit_preempts_edit_proof, 4),
+    DP_CASE(test_watch_path_encoding, 4),
     DP_CASE(test_foreground_cycle_yields_to_commit, 4),
     DP_CASE(test_watcher_stream_backpressure, 4),
     DP_CASE(test_watcher_journal_sealer, 4),
@@ -9958,10 +10274,8 @@ static int dp_run_shard(unsigned shard)
     return failures;
 }
 
-static int test_dev_platform_platform_arm(void)
+static bool dp_partition_counts(unsigned counts[DP_SHARD_COUNT])
 {
-    int failures = 0;
-    unsigned counts[DP_SHARD_COUNT] = {0};
     bool unique = true;
     for (size_t i = 0; i < DP_CASE_COUNT; i++) {
         if (g_dp_cases[i].shard >= DP_SHARD_COUNT) {
@@ -9974,6 +10288,14 @@ static int test_dev_platform_platform_arm(void)
                 strcmp(g_dp_cases[i].name, g_dp_cases[j].name) == 0)
                 unique = false;
     }
+    return unique;
+}
+
+static int test_dev_platform_platform_arm(void)
+{
+    int failures = 0;
+    unsigned counts[DP_SHARD_COUNT] = {0};
+    bool unique = dp_partition_counts(counts);
     size_t owned = 0;
     bool nonempty = true;
     for (unsigned i = 0; i < DP_SHARD_COUNT; i++) {
@@ -9986,7 +10308,7 @@ static int test_dev_platform_platform_arm(void)
 #else
             0
 #endif
-            ) || owned != DP_CASE_COUNT || !unique || !nonempty) {
+            ) + 1u || owned != DP_CASE_COUNT || !unique || !nonempty) {
         fprintf(stderr, "dev_platform: case partition invalid\n");
         failures++;
     }

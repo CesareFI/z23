@@ -14,6 +14,7 @@
 #include "crypto/sha3.h"
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "platform/file_watch_compat.h"
 #include "platform/directory_compat.h"
 #include "platform/directory_watcher.h"
@@ -1426,8 +1427,23 @@ static bool watch_stopped_heartbeat_line(char *buf, size_t len, bool idle_exit)
     return true;
 }
 
+#if defined(ZCL_TESTING)
+static zcl_devloop_watch_test_foreground_fn watch_test_stopped;
+static void *watch_test_stopped_opaque;
+
+void zcl_devloop_watch_test_stopped_set(
+    zcl_devloop_watch_test_foreground_fn fn, void *opaque)
+{
+    watch_test_stopped = fn;
+    watch_test_stopped_opaque = opaque;
+}
+#endif
+
 static void watch_emit_stopped_heartbeat(bool idle_exit)
 {
+#if defined(ZCL_TESTING)
+    if (watch_test_stopped) watch_test_stopped(watch_test_stopped_opaque);
+#endif
     char line[192];
 
     if (!watch_stopped_heartbeat_line(line, sizeof(line), idle_exit))
@@ -2253,6 +2269,31 @@ static void print_json_string(FILE *stream, const char *value)
             (void)fputc(*p, stream);
     }
     (void)fputc('"', stream);
+}
+
+bool zcl_devloop_watch_path_event(FILE *stream, const char *path, size_t count,
+                                 uint64_t sequence, bool rescan, bool queued)
+{
+    if (!path || !zutf8_validate(path)) {
+        fprintf(stderr, "[devloop] source epoch path is not valid UTF-8\n");
+        return false;
+    }
+    if (queued)
+        fprintf(stream, "{\"schema\":\"zcl.dev_source_epoch.v1\","
+                        "\"status\":\"superseded\",\"queued_paths\":%zu,"
+                        "\"first_queued_path\":", count);
+    else
+        fprintf(stream, "{\"schema\":\"zcl.dev_source_epoch.v1\","
+                        "\"mutation_sequence\":%llu,\"full_rescan\":%s,"
+                        "\"changed_paths\":%zu,\"first_path\":",
+                (unsigned long long)sequence, rescan ? "true" : "false", count);
+    print_json_string(stream, path);
+    fputs(queued ? ",\"agent_next_action\":\"wait for latest verdict\"}\n" : "}\n", stream);
+    if (fflush(stream) != 0 || ferror(stream)) {
+        fprintf(stderr, "[devloop] source epoch output failed\n");
+        return false;
+    }
+    return true;
 }
 
 static void watch_hash_cstr(struct sha3_256_ctx *sha, const char *value)
@@ -4621,6 +4662,385 @@ static int watch_prepare_root(struct watch_context *ctx,
     return 0;
 }
 
+/* Reactor helpers return -1 to stop, 0 to retry, and 1 to process an epoch. */
+static bool watch_backend_open(struct watch_context *ctx)
+{
+#if defined(__APPLE__)
+    if (!watch_macos_ensure_fd_budget()) {
+        fprintf(stderr,
+                "[devloop] watch: cannot raise bounded kqueue descriptor "
+                "budget: %s\n", strerror(errno));
+        return false;
+    }
+    if (!platform_directory_watcher_open_filtered(
+            &ctx->directory_watcher, ctx->root, watch_macos_descend,
+            watch_macos_include_file, ctx)) {
+        fprintf(stderr, "[devloop] watch: recursive kqueue setup failed: %s\n",
+                strerror(errno));
+        return false;
+    }
+#else
+    ctx->fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+    if (ctx->fd < 0 || !add_watch_recursive(ctx, "")) {
+        fprintf(stderr, "[devloop] watch: recursive inotify setup failed: %s\n",
+                strerror(errno));
+        return false;
+    }
+#endif
+    return true;
+}
+
+static bool watch_start_ready(struct watch_context *ctx,
+                              enum zcl_devloop_publish_mode publish_mode)
+{
+    if (!watch_backend_open(ctx)) return false;
+    if (!prime_source_snapshot(ctx)) {
+        fprintf(stderr, "[devloop] watch: source snapshot reconciliation failed\n");
+        return false;
+    }
+    if (!watch_start_event_stream(ctx)) {
+        fprintf(stderr, "[devloop] watch: bounded local event stream unavailable\n");
+        return false;
+    }
+    if (!mark_singleton_ready(ctx->singleton_lock_fd, publish_mode, ctx)) {
+        fprintf(stderr, "[devloop] watch: could not publish ready ownership\n");
+        return false;
+    }
+    return true;
+}
+
+static void watch_coalesce(struct watch_context *ctx,
+                            zcl_devloop_stop_predicate stop, void *stop_opaque)
+{
+    int64_t quiet_until =
+        platform_time_monotonic_us() + DEVLOOP_EDIT_QUIET_US;
+    while (!g_watch_stop && !(stop && stop(stop_opaque))) {
+        int64_t remain_us =
+            quiet_until - platform_time_monotonic_us();
+        if (remain_us <= 0)
+            break;
+        int wait_ms = (int)((remain_us + 999) / 1000);
+        if (stop && wait_ms > 100) wait_ms = 100;
+        int drc = watch_wait_for_events(ctx, wait_ms);
+        if (drc > 0)
+            quiet_until = platform_time_monotonic_us() +
+                DEVLOOP_EDIT_QUIET_US;
+        else if (drc < 0)
+            break;
+    }
+}
+
+static int watch_poll_ready(struct watch_context *ctx, int lock_fd,
+    zcl_devloop_stop_predicate stop, bool *idle_exit)
+{
+    if (watch_stop_request_poll(ctx)) return -1;
+    watch_commit_proof_prioritize(ctx);
+    if (!watch_proof_start(ctx, lock_fd)) {
+        fprintf(stderr, "[devloop] complete proof worker start failed\n");
+        return -1;
+    }
+    if (!watch_commit_proof_start(ctx, lock_fd)) {
+        fprintf(stderr, "[devloop] commit proof worker start failed\n");
+        return -1;
+    }
+    if (zcl_dev_proof_queue_has_pending(ctx->root) ||
+        ctx->proof_worker_pid > 1)
+        watch_idle_touch(ctx);
+    if (ctx->changed_count == 0 && !ctx->prepared_epoch_ready) {
+        watch_trace_idle(ctx);
+        int prc = watch_wait_for_events(ctx, stop ? 100 : 1000);
+        if (g_watch_stop) return -1;
+        if (prc < 0) {
+            fprintf(stderr, "[devloop] watch: event wait failed: %s\n",
+                    strerror(errno));
+            return -1;
+        }
+        if (prc == 0) {
+            if (watch_idle_poll_should_exit(ctx)) {
+                *idle_exit = true;
+                return -1;
+            }
+            return 0;
+        }
+        if (ctx->changed_count == 0)
+            return 0;
+    }
+    watch_idle_touch(ctx);
+    return 1;
+}
+
+static int watch_macos_cycle(struct watch_context *ctx, int lock_fd,
+    zcl_devloop_stop_predicate stop, void *stop_opaque)
+{
+#if !defined(__APPLE__)
+    (void)ctx; (void)lock_fd; (void)stop; (void)stop_opaque;
+#endif
+#if defined(__APPLE__)
+    /* EVFILT_VNODE identifies the directory that moved, not the final
+     * child pathname. Feeding a synthetic path into the path-qualified
+     * hot-reflex reactor would mint false blob evidence. Coalesce the
+     * vnode burst, then use the established conservative full-source
+     * cycle (the same safety posture as ReadDirectoryChangesW) until a
+     * filename-bearing Darwin backend exists. Proof-queue workers remain
+     * exact commit/base jobs and are started above this branch. */
+    if (ctx->changed_count > 0) {
+        if (!ctx->edit_seen_emitted &&
+            (!watch_emit_edit_seen(ctx) || !watch_stream_flush(ctx))) {
+            fprintf(stderr,
+                    "[devloop] watch: macOS edit acknowledgement failed\n");
+            return -1;
+        }
+        watch_coalesce(ctx, stop, stop_opaque);
+        if (g_watch_stop) return -1;
+        /* A commit can arrive while the Darwin vnode burst is being
+         * coalesced.  Do not enter the synchronous conservative EDIT
+         * cycle after that exact clean request becomes claimable: the
+         * top of the next loop iteration will start its stronger bound
+         * proof. */
+        if (watch_commit_proof_prioritize(ctx)) {
+            ctx->changed_count = 0;
+            ctx->first_mutation_us = 0;
+            ctx->force_full_source_rescan = false;
+            ctx->edit_seen_emitted = false;
+            return 0;
+        }
+        ctx->changed_count = 0;
+        ctx->first_mutation_us = 0;
+        ctx->force_full_source_rescan = false;
+        ctx->edit_seen_emitted = false;
+        const char *files[] = {"Makefile"};
+        if (!watch_proof_schedule(
+                ctx, files, 1, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY,
+                false, lock_fd)) {
+            fprintf(stderr,
+                    "[devloop] watch: conservative macOS cycle could not "
+                    "be scheduled\n");
+            return -1;
+        }
+        return 0;
+    }
+#endif
+    return 1;
+}
+
+struct watch_run_epoch {
+    char epoch_changed[ZCL_DEVLOOP_WATCH_MAX_FILES][ZCL_DEVLOOP_PATH_MAX];
+    const char *files[ZCL_DEVLOOP_WATCH_MAX_FILES];
+    struct watch_edit_epoch edit_epoch;
+    bool impact_already_emitted;
+    bool full_rescan;
+    size_t epoch_count;
+    bool edit_epoch_ready;
+};
+
+static bool watch_prepare_epoch(struct watch_context *ctx,
+    struct watch_run_epoch *epoch,
+    zcl_devloop_stop_predicate stop, void *stop_opaque)
+{
+    epoch->impact_already_emitted = ctx->prepared_epoch_ready;
+    epoch->full_rescan = false;
+    epoch->epoch_count = 0;
+    epoch->edit_epoch_ready = false;
+    if (ctx->prepared_epoch_ready) {
+        epoch->edit_epoch = ctx->prepared_epoch;
+        epoch->epoch_count = epoch->edit_epoch.blob_count;
+        epoch->full_rescan = ctx->prepared_full_rescan;
+        for (size_t i = 0; i < epoch->epoch_count; i++) {
+            snprintf(epoch->epoch_changed[i], sizeof(epoch->epoch_changed[i]), "%s",
+                     epoch->edit_epoch.blobs[i].path);
+            epoch->files[i] = epoch->epoch_changed[i];
+        }
+        ctx->prepared_epoch_ready = false;
+        ctx->prepared_full_rescan = false;
+        epoch->edit_epoch_ready = true;
+    } else {
+        if (!ctx->edit_seen_emitted && !watch_emit_edit_seen(ctx))
+            return false;
+
+        /* Coalesce one editor's temp-file events into one save epoch.
+         * Separate saves may remain separate; supersession makes that
+         * cheaper and more exact than delaying their first impact. */
+        watch_coalesce(ctx, stop, stop_opaque);
+        if (g_watch_stop) return false;
+
+        epoch->epoch_count = ctx->changed_count;
+        int64_t epoch_seen_us = ctx->first_mutation_us > 0
+            ? ctx->first_mutation_us : platform_time_monotonic_us();
+        for (size_t i = 0; i < epoch->epoch_count; i++) {
+            snprintf(epoch->epoch_changed[i], sizeof(epoch->epoch_changed[i]), "%s",
+                     ctx->changed[i]);
+            epoch->files[i] = epoch->epoch_changed[i];
+        }
+        ctx->changed_count = 0;
+        ctx->first_mutation_us = 0;
+        ctx->edit_seen_emitted = false;
+        epoch->full_rescan = ctx->force_full_source_rescan;
+        ctx->force_full_source_rescan = false;
+        epoch->edit_epoch_ready = watch_build_edit_epoch(
+            ctx, epoch->files, epoch->epoch_count, epoch_seen_us, &epoch->edit_epoch);
+    }
+    return true;
+}
+
+static bool watch_announce_epoch(struct watch_context *ctx,
+    const struct watch_run_epoch *epoch, bool *path_events_ok)
+{
+    if (epoch->edit_epoch_ready) {
+        if (!zcl_devloop_event_edit_epoch_set(epoch->edit_epoch.id))
+            return false;
+        if (!epoch->impact_already_emitted &&
+            !watch_emit_impact_ready(ctx, &epoch->edit_epoch))
+            return false;
+        watch_trace_mark(&ctx->trace.impact_ready_us);
+        zcl_devloop_early_note_edit(epoch->edit_epoch.seen_us);
+    } else {
+        (void)zcl_devloop_event_edit_epoch_set("");
+        zcl_devloop_early_note_edit(0);
+        fprintf(stderr,
+                "[devloop] immutable edit epoch deferred; conservative "
+                "source reconciliation required\n");
+    }
+    /* The volatile events are now sufficient to start the reflex. Their
+     * ordered sealed copies are flushed only after useful feedback is
+     * visible, so storage acknowledgement is not a candidate prerequisite. */
+    if (epoch->full_rescan) {
+        ctx->snapshot_exact = false;
+        (void)ci_merkle_forget(ctx->root);
+    }
+    if (!zcl_devloop_watch_path_event(stdout, epoch->epoch_changed[0],
+            epoch->epoch_count, ctx->mutation_sequence, epoch->full_rescan, false)) {
+        *path_events_ok = false;
+        return false;
+    }
+    return true;
+}
+
+#if defined(ZCL_TESTING)
+static zcl_devloop_watch_test_foreground_fn watch_test_foreground;
+static void *watch_test_foreground_opaque;
+
+void zcl_devloop_watch_test_foreground_set(
+    zcl_devloop_watch_test_foreground_fn fn, void *opaque)
+{
+    watch_test_foreground = fn;
+    watch_test_foreground_opaque = opaque;
+}
+#endif
+
+static void watch_run_reflex(struct watch_context *ctx,
+    const struct watch_run_epoch *epoch,
+    enum zcl_devloop_publish_mode publish_mode, int lock_fd)
+{
+#if defined(ZCL_TESTING)
+    if (watch_test_foreground) {
+        watch_test_foreground(watch_test_foreground_opaque);
+        (void)collect_events(ctx);
+        return;
+    }
+#endif
+    watch_request_hint_arm(ctx);
+    zcl_devloop_process_cancel_poll_set(watch_cancel_poll, ctx);
+    struct zcl_devloop_epoch_proof epoch_proof;
+    int fast = zcl_devloop_epoch_reflex(
+        ctx->root, epoch->files, epoch->epoch_count, publish_mode, &ctx->restart_sources,
+        &g_watch_epoch_lanes, &epoch_proof);
+    const char *const *proof_files = epoch_proof.files;
+    size_t proof_count = epoch_proof.count;
+    watch_trace_mark(&ctx->trace.reflex_return_us);
+    /* Candidate emitters seal through their already-visible terminal
+     * reflex event. Retire the watcher's matching queue entries now so a
+     * save during asynchronous proof has the full bounded queue. */
+    if (fast != 0 && !watch_stream_flush(ctx)) {
+        g_watch_stop = 1;
+        fast = ZCL_DEVLOOP_RESTART_EVENT_FINAL;
+    }
+    watch_trace_mark(&ctx->trace.stream_flushed_us);
+    /* A green HOT_SHADOW story is already useful foreground knowledge.
+     * Only after publishing it do we build/run the exact affected proof.
+     * The ordinary restart lane reaches this same state after its focused
+     * receipt, so both converge here without duplicating scheduling. */
+    bool story_proof = fast == ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING &&
+        epoch->epoch_count == 1 &&
+        strcmp(epoch->files[0],
+               "contexts/wallet/services/src/vault_intent_decision_service.c") == 0;
+    /* Keep the same warm owner moving through conservative complete proof
+     * after focused feedback. New filesystem activity cancels this work;
+     * stale epochs never anchor. */
+    if (fast == ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING ||
+        fast == ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING) {
+        if (!watch_emit_proof_pending(ctx, proof_files, proof_count)) {
+            fprintf(stderr,
+                    "[devloop] PROOF_PENDING event publication failed\n");
+            g_watch_stop = 1;
+        } else {
+            if (!watch_proof_schedule(
+                    ctx, proof_files, proof_count,
+                    ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY,
+                    story_proof, lock_fd)) {
+                fprintf(stderr,
+                        "[devloop] complete proof worker schedule failed\n");
+                g_watch_stop = 1;
+            }
+        }
+        fast = ZCL_DEVLOOP_RESTART_EVENT_FINAL;
+    }
+    watch_trace_mark(&ctx->trace.proof_scheduled_us);
+    if (fast == 0) {
+        /* APPLY authority is intentionally narrower than the generic
+         * cycle: only one compiled-allowlist island may publish live.
+         * Storage/reducers/network/consensus and ordinary reload edits
+         * remain on the verify-only contained path. */
+        (void)zcl_devloop_run_cycle_mode(
+            ctx->root, epoch->files, epoch->epoch_count,
+            ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
+    }
+    zcl_devloop_process_cancel_poll_clear();
+}
+
+static bool watch_finish_epoch(struct watch_context *ctx,
+    zcl_devloop_stop_predicate stop, void *stop_opaque, bool *path_events_ok)
+{
+    if (g_watch_stop || (stop && stop(stop_opaque)))
+        return false;
+    bool superseded = ctx->changed_count > 0;
+    zcl_devloop_process_cancel_clear();
+    watch_trace_end(ctx);
+    if (superseded) {
+        if (!watch_emit_superseded(ctx) || !watch_stream_flush(ctx)) {
+            fprintf(stderr,
+                    "[devloop] SUPERSEDED event publication failed\n");
+            return false;
+        }
+        if (!zcl_devloop_watch_path_event(stdout, ctx->changed[0],
+                ctx->changed_count, 0, false, true)) {
+            *path_events_ok = false;
+            return false;
+        }
+    }
+    return true;
+}
+
+static void watch_run_loop(struct watch_context *ctx,
+    enum zcl_devloop_publish_mode publish_mode, int lock_fd,
+    zcl_devloop_stop_predicate stop, void *stop_opaque,
+    bool *idle_exit, bool *path_events_ok)
+{
+    ctx->idle_since_us = platform_time_monotonic_us();
+    while (!g_watch_stop && !(stop && stop(stop_opaque))) {
+        int ready = watch_poll_ready(ctx, lock_fd, stop, idle_exit);
+        if (ready < 0) break;
+        if (ready == 0) continue;
+        ready = watch_macos_cycle(ctx, lock_fd, stop, stop_opaque);
+        if (ready < 0) break;
+        if (ready == 0) continue;
+        struct watch_run_epoch epoch;
+        if (!watch_prepare_epoch(ctx, &epoch, stop, stop_opaque)) break;
+        if (!watch_announce_epoch(ctx, &epoch, path_events_ok)) break;
+        watch_run_reflex(ctx, &epoch, publish_mode, lock_fd);
+        if (!watch_finish_epoch(ctx, stop, stop_opaque, path_events_ok)) break;
+    }
+}
+
 int zcl_devloop_watch_mode_until(const char *repo_root,
     enum zcl_devloop_publish_mode publish_mode,
     zcl_devloop_stop_predicate stop, void *stop_opaque)
@@ -4657,61 +5077,11 @@ int zcl_devloop_watch_mode_until(const char *repo_root,
         close(lock_fd);
         return 1;
     }
-#if defined(__APPLE__)
-    if (!watch_macos_ensure_fd_budget()) {
-        fprintf(stderr,
-                "[devloop] watch: cannot raise bounded kqueue descriptor "
-                "budget: %s\n", strerror(errno));
-        watch_stop_endpoint_close(&ctx, stop_path);
-        close(lock_fd);
-        return 1;
-    }
-    if (!platform_directory_watcher_open_filtered(
-            &ctx.directory_watcher, ctx.root, watch_macos_descend,
-            watch_macos_include_file, &ctx)) {
-        fprintf(stderr, "[devloop] watch: recursive kqueue setup failed: %s\n",
-                strerror(errno));
-        watch_stop_endpoint_close(&ctx, stop_path);
-        close(lock_fd);
-        return 1;
-    }
-#else
-    ctx.fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
-    if (ctx.fd < 0 || !add_watch_recursive(&ctx, "")) {
-        fprintf(stderr, "[devloop] watch: recursive inotify setup failed: %s\n",
-                strerror(errno));
+    if (!watch_start_ready(&ctx, publish_mode)) {
         watch_backend_close(&ctx);
         free(ctx.dirs);
         watch_stop_endpoint_close(&ctx, stop_path);
-        close(lock_fd);
-        return 1;
-    }
-#endif
-    if (!prime_source_snapshot(&ctx)) {
-        fprintf(stderr,
-                "[devloop] watch: source snapshot reconciliation failed\n");
-        watch_backend_close(&ctx);
-        free(ctx.dirs);
-        watch_stop_endpoint_close(&ctx, stop_path);
-        close(lock_fd);
-        return 1;
-    }
-    if (!watch_start_event_stream(&ctx)) {
-        fprintf(stderr,
-                "[devloop] watch: bounded local event stream unavailable\n");
         ci_merkle_free(ctx.verified_tree);
-        watch_backend_close(&ctx);
-        free(ctx.dirs);
-        watch_stop_endpoint_close(&ctx, stop_path);
-        close(lock_fd);
-        return 1;
-    }
-    if (!mark_singleton_ready(lock_fd, publish_mode, &ctx)) {
-        fprintf(stderr,
-                "[devloop] watch: could not publish ready ownership\n");
-        watch_backend_close(&ctx);
-        free(ctx.dirs);
-        watch_stop_endpoint_close(&ctx, stop_path);
         close(lock_fd);
         return 1;
     }
@@ -4733,281 +5103,18 @@ int zcl_devloop_watch_mode_until(const char *repo_root,
            zcl_devloop_publish_mode_applies(publish_mode) ? "true" : "false");
     fflush(stdout);
 
-    bool idle_exit = false;
-    ctx.idle_since_us = platform_time_monotonic_us();
-    while (!g_watch_stop && !(stop && stop(stop_opaque))) {
-        if (watch_stop_request_poll(&ctx)) break;
-        watch_commit_proof_prioritize(&ctx);
-        if (!watch_proof_start(&ctx, lock_fd)) {
-            fprintf(stderr, "[devloop] complete proof worker start failed\n");
-            break;
-        }
-        if (!watch_commit_proof_start(&ctx, lock_fd)) {
-            fprintf(stderr, "[devloop] commit proof worker start failed\n");
-            break;
-        }
-        if (zcl_dev_proof_queue_has_pending(ctx.root) ||
-            ctx.proof_worker_pid > 1)
-            watch_idle_touch(&ctx);
-        if (ctx.changed_count == 0 && !ctx.prepared_epoch_ready) {
-            watch_trace_idle(&ctx);
-            int prc = watch_wait_for_events(&ctx, stop ? 100 : 1000);
-            if (g_watch_stop) break;
-            if (prc < 0) {
-                fprintf(stderr, "[devloop] watch: event wait failed: %s\n",
-                        strerror(errno));
-                break;
-            }
-            if (prc == 0) {
-                if (watch_idle_poll_should_exit(&ctx)) {
-                    idle_exit = true;
-                    break;
-                }
-                continue;
-            }
-            if (ctx.changed_count == 0)
-                continue;
-        }
-        watch_idle_touch(&ctx);
-
-#if defined(__APPLE__)
-        /* EVFILT_VNODE identifies the directory that moved, not the final
-         * child pathname. Feeding a synthetic path into the path-qualified
-         * hot-reflex reactor would mint false blob evidence. Coalesce the
-         * vnode burst, then use the established conservative full-source
-         * cycle (the same safety posture as ReadDirectoryChangesW) until a
-         * filename-bearing Darwin backend exists. Proof-queue workers remain
-         * exact commit/base jobs and are started above this branch. */
-        if (ctx.changed_count > 0) {
-            if (!ctx.edit_seen_emitted &&
-                (!watch_emit_edit_seen(&ctx) || !watch_stream_flush(&ctx))) {
-                fprintf(stderr,
-                        "[devloop] watch: macOS edit acknowledgement failed\n");
-                break;
-            }
-            int64_t quiet_until =
-                platform_time_monotonic_us() + DEVLOOP_EDIT_QUIET_US;
-            while (!g_watch_stop && !(stop && stop(stop_opaque))) {
-                int64_t remain_us =
-                    quiet_until - platform_time_monotonic_us();
-                if (remain_us <= 0)
-                    break;
-                int wait_ms = (int)((remain_us + 999) / 1000);
-                if (stop && wait_ms > 100) wait_ms = 100;
-                int drc = watch_wait_for_events(&ctx, wait_ms);
-                if (drc > 0)
-                    quiet_until = platform_time_monotonic_us() +
-                        DEVLOOP_EDIT_QUIET_US;
-                else if (drc < 0)
-                    break;
-            }
-            if (g_watch_stop) break;
-            /* A commit can arrive while the Darwin vnode burst is being
-             * coalesced.  Do not enter the synchronous conservative EDIT
-             * cycle after that exact clean request becomes claimable: the
-             * top of the next loop iteration will start its stronger bound
-             * proof. */
-            if (watch_commit_proof_prioritize(&ctx)) {
-                ctx.changed_count = 0;
-                ctx.first_mutation_us = 0;
-                ctx.force_full_source_rescan = false;
-                ctx.edit_seen_emitted = false;
-                continue;
-            }
-            ctx.changed_count = 0;
-            ctx.first_mutation_us = 0;
-            ctx.force_full_source_rescan = false;
-            ctx.edit_seen_emitted = false;
-            const char *files[] = {"Makefile"};
-            if (!watch_proof_schedule(
-                    &ctx, files, 1, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY,
-                    false, lock_fd)) {
-                fprintf(stderr,
-                        "[devloop] watch: conservative macOS cycle could not "
-                        "be scheduled\n");
-                break;
-            }
-            continue;
-        }
-#endif
-
-        char epoch_changed[ZCL_DEVLOOP_WATCH_MAX_FILES][ZCL_DEVLOOP_PATH_MAX];
-        const char *files[ZCL_DEVLOOP_WATCH_MAX_FILES];
-        struct watch_edit_epoch edit_epoch;
-        bool impact_already_emitted = ctx.prepared_epoch_ready;
-        bool full_rescan = false;
-        size_t epoch_count = 0;
-        bool edit_epoch_ready = false;
-        if (ctx.prepared_epoch_ready) {
-            edit_epoch = ctx.prepared_epoch;
-            epoch_count = edit_epoch.blob_count;
-            full_rescan = ctx.prepared_full_rescan;
-            for (size_t i = 0; i < epoch_count; i++) {
-                snprintf(epoch_changed[i], sizeof(epoch_changed[i]), "%s",
-                         edit_epoch.blobs[i].path);
-                files[i] = epoch_changed[i];
-            }
-            ctx.prepared_epoch_ready = false;
-            ctx.prepared_full_rescan = false;
-            edit_epoch_ready = true;
-        } else {
-            if (!ctx.edit_seen_emitted && !watch_emit_edit_seen(&ctx))
-                break;
-
-            /* Coalesce one editor's temp-file events into one save epoch.
-             * Separate saves may remain separate; supersession makes that
-             * cheaper and more exact than delaying their first impact. */
-            int64_t quiet_until =
-                platform_time_monotonic_us() + DEVLOOP_EDIT_QUIET_US;
-            while (!g_watch_stop && !(stop && stop(stop_opaque))) {
-                int64_t remain_us =
-                    quiet_until - platform_time_monotonic_us();
-                if (remain_us <= 0)
-                    break;
-                int wait_ms = (int)((remain_us + 999) / 1000);
-                if (stop && wait_ms > 100) wait_ms = 100;
-                int drc = watch_wait_for_events(&ctx, wait_ms);
-                if (drc > 0)
-                    quiet_until = platform_time_monotonic_us() +
-                        DEVLOOP_EDIT_QUIET_US;
-                else if (drc < 0)
-                    break;
-            }
-            if (g_watch_stop) break;
-
-            epoch_count = ctx.changed_count;
-            int64_t epoch_seen_us = ctx.first_mutation_us > 0
-                ? ctx.first_mutation_us : platform_time_monotonic_us();
-            for (size_t i = 0; i < epoch_count; i++) {
-                snprintf(epoch_changed[i], sizeof(epoch_changed[i]), "%s",
-                         ctx.changed[i]);
-                files[i] = epoch_changed[i];
-            }
-            ctx.changed_count = 0;
-            ctx.first_mutation_us = 0;
-            ctx.edit_seen_emitted = false;
-            full_rescan = ctx.force_full_source_rescan;
-            ctx.force_full_source_rescan = false;
-            edit_epoch_ready = watch_build_edit_epoch(
-                &ctx, files, epoch_count, epoch_seen_us, &edit_epoch);
-        }
-        if (edit_epoch_ready) {
-            if (!zcl_devloop_event_edit_epoch_set(edit_epoch.id))
-                break;
-            if (!impact_already_emitted &&
-                !watch_emit_impact_ready(&ctx, &edit_epoch))
-                break;
-            watch_trace_mark(&ctx.trace.impact_ready_us);
-            zcl_devloop_early_note_edit(edit_epoch.seen_us);
-        } else {
-            (void)zcl_devloop_event_edit_epoch_set("");
-            zcl_devloop_early_note_edit(0);
-            fprintf(stderr,
-                    "[devloop] immutable edit epoch deferred; conservative "
-                    "source reconciliation required\n");
-        }
-        /* The volatile events are now sufficient to start the reflex. Their
-         * ordered sealed copies are flushed only after useful feedback is
-         * visible, so storage acknowledgement is not a candidate prerequisite. */
-        if (full_rescan) {
-            ctx.snapshot_exact = false;
-            (void)ci_merkle_forget(ctx.root);
-        }
-        printf("{\"schema\":\"zcl.dev_source_epoch.v1\","
-               "\"mutation_sequence\":%llu,\"full_rescan\":%s,"
-               "\"changed_paths\":%zu,\"first_path\":",
-               (unsigned long long)ctx.mutation_sequence,
-               full_rescan ? "true" : "false", epoch_count);
-        print_json_string(stdout, epoch_changed[0]);
-        printf("}\n");
-        fflush(stdout);
-        watch_request_hint_arm(&ctx);
-        zcl_devloop_process_cancel_poll_set(watch_cancel_poll, &ctx);
-        struct zcl_devloop_epoch_proof epoch_proof;
-        int fast = zcl_devloop_epoch_reflex(
-            ctx.root, files, epoch_count, publish_mode, &ctx.restart_sources,
-            &g_watch_epoch_lanes, &epoch_proof);
-        const char *const *proof_files = epoch_proof.files;
-        size_t proof_count = epoch_proof.count;
-        watch_trace_mark(&ctx.trace.reflex_return_us);
-        /* Candidate emitters seal through their already-visible terminal
-         * reflex event. Retire the watcher's matching queue entries now so a
-         * save during asynchronous proof has the full bounded queue. */
-        if (fast != 0 && !watch_stream_flush(&ctx)) {
-            g_watch_stop = 1;
-            fast = ZCL_DEVLOOP_RESTART_EVENT_FINAL;
-        }
-        watch_trace_mark(&ctx.trace.stream_flushed_us);
-        /* A green HOT_SHADOW story is already useful foreground knowledge.
-         * Only after publishing it do we build/run the exact affected proof.
-         * The ordinary restart lane reaches this same state after its focused
-         * receipt, so both converge here without duplicating scheduling. */
-        bool story_proof = fast == ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING &&
-            epoch_count == 1 &&
-            strcmp(files[0],
-                   "contexts/wallet/services/src/vault_intent_decision_service.c") == 0;
-        /* Keep the same warm owner moving through conservative complete proof
-         * after focused feedback. New filesystem activity cancels this work;
-         * stale epochs never anchor. */
-        if (fast == ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING ||
-            fast == ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING) {
-            if (!watch_emit_proof_pending(&ctx, proof_files, proof_count)) {
-                fprintf(stderr,
-                        "[devloop] PROOF_PENDING event publication failed\n");
-                g_watch_stop = 1;
-            } else {
-                if (!watch_proof_schedule(
-                        &ctx, proof_files, proof_count,
-                        ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY,
-                        story_proof, lock_fd)) {
-                    fprintf(stderr,
-                            "[devloop] complete proof worker schedule failed\n");
-                    g_watch_stop = 1;
-                }
-            }
-            fast = ZCL_DEVLOOP_RESTART_EVENT_FINAL;
-        }
-        watch_trace_mark(&ctx.trace.proof_scheduled_us);
-        if (fast == 0) {
-            /* APPLY authority is intentionally narrower than the generic
-             * cycle: only one compiled-allowlist island may publish live.
-             * Storage/reducers/network/consensus and ordinary reload edits
-             * remain on the verify-only contained path. */
-            (void)zcl_devloop_run_cycle_mode(
-                ctx.root, files, epoch_count,
-                ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
-        }
-        zcl_devloop_process_cancel_poll_clear();
-        if (g_watch_stop || (stop && stop(stop_opaque)))
-            break;
-        bool superseded = ctx.changed_count > 0;
-        zcl_devloop_process_cancel_clear();
-        watch_trace_end(&ctx);
-        if (superseded) {
-            if (!watch_emit_superseded(&ctx) || !watch_stream_flush(&ctx)) {
-                fprintf(stderr,
-                        "[devloop] SUPERSEDED event publication failed\n");
-                break;
-            }
-            printf("{\"schema\":\"zcl.dev_source_epoch.v1\","
-                   "\"status\":\"superseded\","
-                   "\"queued_paths\":%zu,\"first_queued_path\":",
-                   ctx.changed_count);
-            print_json_string(stdout, ctx.changed[0]);
-            printf(",\"agent_next_action\":\"wait for latest verdict\"}\n");
-            fflush(stdout);
-        }
-    }
+    bool idle_exit = false, path_events_ok = true;
+    watch_run_loop(&ctx, publish_mode, lock_fd, stop, stop_opaque,
+                   &idle_exit, &path_events_ok);
 
     /* Every loop exit reaches this one ordered teardown. A stop that could
      * not seal every published event exits nonzero. */
     bool sealed = watch_teardown(&ctx, lock_fd, idle_exit);
-    /* The stop endpoint outlives teardown so a stop request that arrives
-     * while this watcher drains is still delivered, not refused as stale. */
+    /* The endpoint outlives teardown so a stop arriving during drain is delivered. */
     watch_stop_endpoint_close(&ctx, stop_path);
     ci_merkle_free(ctx.verified_tree);
     free(ctx.dirs);
-    return (int)!sealed;
+    return (int)(!sealed || !path_events_ok);
 }
 
 int zcl_devloop_watch_mode(const char *repo_root,
