@@ -1559,6 +1559,59 @@ static int srt_table_regressions(const struct srt_fx *fx)
 
 #endif /* !_WIN32 */
 
+/* An epoch-only last.snap (no object rows) is what a drifted or
+ * partially-written snapshot looks like. sr_snap_load must not hand
+ * qsort a NULL base (the parameter is declared nonnull — UBSan: "null
+ * pointer passed as argument 1"), and the load must otherwise succeed.
+ * The probe compiles the real sem_replay_build.c with
+ * -fsanitize=undefined and loads the drifted snapshot in-process: the
+ * spawned z23-sem-replay tool is not sanitizer-built, so the UB is only
+ * observable where the harness instruments it. Red before the
+ * empty-snapshot guard: UBSan runtime error and a nonzero probe exit.
+ * Extracted from test_sem_replay so the group body stays under the
+ * complexity cap. */
+static int srt_drifted_snapshot_case(const struct srt_fx *fx)
+{
+    int failures = 0;
+    char probe[PATH_MAX + 32], source[PATH_MAX + 32], snap[PATH_MAX + 32];
+    TEST("an epoch-only snapshot loads with no qsort NULL-base UB") {
+        ASSERT(srt_write(fx->root, "epoch-only.snap", "epoch\t" SRT_EPOCH "\n"));
+        snprintf(snap, sizeof snap, "%s/epoch-only.snap", fx->root);
+        const char *code =
+            "#include \"tools/dev/sem_replay_build.c\"\n"
+            "int main(int n,char **v){(void)n;struct sr_snap s;\n"
+            "if(!sr_snap_load(&s,v[1]))return 2;\n"
+            "sr_snap_free(&s);return 0;}\n";
+        ASSERT(srt_write(fx->tools, "fx_snap_load.c", code));
+        snprintf(source, sizeof source, "%s/fx_snap_load.c", fx->tools);
+        snprintf(probe, sizeof probe, "%s/fx-snap-load", fx->tools);
+        const char *cc[] = {"cc", "-std=c23", "-O1", "-fsanitize=undefined",
+            "-fno-sanitize-recover=undefined",
+            "-D_POSIX_C_SOURCE=200809L", "-I.", "-Iplatform/modules/util/include",
+            "-Iplatform/modules/base/include", "-Iplatform/modules/platform/include",
+            "-Iplatform/modules/sha3/include",
+            "-Icontexts/commons/packages/zjsonp/include",
+            "-Icontexts/commons/packages/zutf8/include",
+            "-o", probe, source,
+            "tools/dev/sem_replay_util.c",
+            "contexts/commons/packages/zjsonp/src/zjsonp.c",
+            "contexts/commons/packages/zutf8/src/zutf8.c",
+            "platform/modules/base/src/safe_alloc.c",
+            "platform/modules/platform/src/clock.c",
+            "platform/modules/sha3/src/sha3.c", NULL};
+        int compiled = srt_run(cc); if (compiled) printf("%s", g_srt_out);
+        ASSERT_EQ(compiled, 0);
+        const char *argv[] = {probe, snap, NULL};
+        ASSERT_EQ(srt_run(argv), 0);
+        ASSERT(strstr(g_srt_out, "runtime error") == NULL);
+        PASS();
+    }
+    if (0) {
+    _test_next:;
+    }
+    return failures;
+}
+
 int test_sem_replay(void)
 {
 #if defined(_WIN32)
@@ -1632,6 +1685,8 @@ int test_sem_replay(void)
         ASSERT(strstr(g_srt_out, want) != NULL);
         PASS();
     }
+
+    failures += srt_drifted_snapshot_case(&fx);
 
     TEST("MISSES.tsv names src/a.c as the code false negative, exactly") {
         char text[4096];
