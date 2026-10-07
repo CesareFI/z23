@@ -12,6 +12,7 @@
 #include "net/tor_integration.h"
 #include "config/boot.h"
 #include "config/args.h"
+#include "util/util.h"
 #include <sys/stat.h>
 #include <unistd.h>
 #include <dirent.h>
@@ -286,6 +287,65 @@ static int test_onion_ephemeral_default(void)
     return failures;
 }
 
+/* The persisted worker setting reaches the node context; argv takes priority. */
+static int test_buildworker_config_args_parse(void)
+{
+    int failures = 0;
+    char dir[512], path[1024];
+    test_make_tmpdir(dir, sizeof(dir), "buildworker", "config");
+    snprintf(path, sizeof(path), "%s/z23.conf", dir);
+    const struct {
+        const char *body;
+        char *flag;
+        bool expected;
+        int applied;
+    } cases[] = {
+        { "buildworker=1\n", NULL, true, 1 },
+        { "buildworker=1\n", "-buildworker=0", false, 0 },
+        { "buildworker=0\n", NULL, false, 1 },
+        { "", NULL, false, 0 },
+        { "buildworker=0\n", "-buildworker", true, 0 },
+        { "buildworker=0\n", "-buildworker=1", true, 0 },
+        { "", "-nobuildworker=0", false, 0 },
+        { "", "--buildworker=1", false, 0 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        FILE *f = fopen(path, "w");
+        if (!f) {
+            printf("FAIL (buildworker row %zu: config open)\n", i);
+            failures++;
+            break;
+        }
+        bool written = fputs(cases[i].body, f) >= 0;
+        if (fclose(f) != 0) written = false;
+        if (!written) {
+            printf("FAIL (buildworker row %zu: config write)\n", i);
+            failures++;
+            break;
+        }
+        char *argv[] = { "z23", cases[i].flag };
+        int argc = cases[i].flag ? 2 : 1;
+        ParseParameters(argc, (const char *const *)argv);
+        int applied = ReadConfigFile(path);
+        struct app_context ctx;
+        app_context_defaults(&ctx);
+        ctx.operator_lane = ZCL_OPERATOR_LANE_TEST;
+        ctx.no_tor = true;
+        bool show_metrics = false;
+        int rc = args_parse_node_options(argc, argv, &ctx, &show_metrics);
+        if (applied != cases[i].applied || rc != -1 ||
+            ctx.build_worker != cases[i].expected) {
+            printf("FAIL (buildworker row %zu: applied=%d rc=%d worker=%d)\n",
+                   i, applied, rc, ctx.build_worker);
+            failures++;
+        }
+    }
+    const char *empty[] = { "z23" };
+    ParseParameters(1, empty);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 /* The args parser must recognize both flags (an unrecognized one warns
  * every boot) and leave them off by default. */
 static int test_onion_persist_args_parse(void)
@@ -511,6 +571,7 @@ int test_onion_persistence(void)
     failures += test_onion_identity_rotation();
     failures += test_onion_ephemeral_default();
     failures += test_onion_persist_args_parse();
+    failures += test_buildworker_config_args_parse();
     failures += test_onion_persist_fleet_default();
     failures += test_stability_control_args_parse();
     failures += test_full_fold_target_args_parse();

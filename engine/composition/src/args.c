@@ -1066,10 +1066,27 @@ static const args_arm_fn k_args_arms[] = {
 };
 #define ARGS_ARM_COUNT (sizeof(k_args_arms) / sizeof(k_args_arms[0]))
 
+static void args_apply_buildworker_config(int argc, char **argv,
+                                          struct app_context *ctx)
+{
+    for (int i = 1; i < argc; ++i) {
+        const char *arg = argv[i];
+        if (arg[0] == '-' && arg[1] == '-') ++arg;
+        size_t keylen = strcspn(arg, "=");
+        if ((keylen == 12 && strncmp(arg, "-buildworker", 12) == 0) ||
+            (keylen == 14 && strncmp(arg, "-nobuildworker", 14) == 0))
+            return;
+    }
+    const char *worker = GetArg("-buildworker", NULL);
+    if (worker && (strcmp(worker, "0") == 0 || strcmp(worker, "1") == 0))
+        ctx->build_worker = worker[0] == '1';
+}
+
 int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
                             bool *show_metrics)
 {
     struct args_arm_state st = { ctx, show_metrics, argv };
+    args_apply_buildworker_config(argc, argv, ctx);
     for (int i = 1; i < argc; i++) {
         int rc = ARGS_ARM_NOMATCH;
         for (size_t a = 0; a < ARGS_ARM_COUNT && rc == ARGS_ARM_NOMATCH; a++)
