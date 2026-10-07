@@ -492,6 +492,14 @@ static struct zcl_chainlog *ledger_chain_open(const struct zcl_fleet_ledger *l,
     return log;
 }
 
+static bool chain_frame_read(struct zcl_chainlog *log, uint64_t seq,
+    uint8_t *buf, size_t cap, size_t *len)
+{
+    uint32_t kind = 0;
+    return zcl_chainlog_read(log, seq, &kind, buf, cap, len) ==
+               ZCL_CHAINLOG_OK && kind == FLEET_CHAINLOG_KIND;
+}
+
 /* Read every frame of one box's chain, verify each row's signature and its
  * link to the row before it, and put it in the index. A refusal names the
  * sequence number and stops: a chain that was altered is evidence, and
@@ -511,6 +519,8 @@ static enum zcl_fleet_status chain_load(struct zcl_fleet_ledger *l,
         return ZCL_FLEET_OK;
     struct zcl_chainlog *log = ledger_chain_open(l, path, stream, &rep);
     if (!log) {
+        memcpy(report->bad_box, box->id, ZCL_FLEET_ID_BYTES);
+        report->first_bad_seq = rep.first_bad_seq;
         LOG_ERROR("fleet.ledger", "chain open refused: %s",
                   zcl_chainlog_status_label(rep.status));
         return chain_open_error(rep.status);
@@ -520,14 +530,12 @@ static enum zcl_fleet_status chain_load(struct zcl_fleet_ledger *l,
     uint64_t total = zcl_chainlog_count(log);
     uint8_t expect[ZCL_FLEET_HASH_BYTES] = { 0 };
     uint8_t buf[ZCL_FLEET_ROW_MAX_BYTES];
-    for (uint64_t seq = 1; seq <= total && status == ZCL_FLEET_OK; seq++) {
-        uint32_t kind = 0;
+    for (uint64_t seq = 1; seq <= total; seq++) {
         size_t len = 0;
-        if (zcl_chainlog_read(log, seq, &kind, buf, sizeof buf, &len) !=
-                ZCL_CHAINLOG_OK ||
-            kind != FLEET_CHAINLOG_KIND) {
+        if (!chain_frame_read(log, seq, buf, sizeof buf, &len)) {
             status = ZCL_FLEET_IO;
             report->first_bad_seq = seq;
+            memcpy(report->bad_box, box->id, ZCL_FLEET_ID_BYTES);
             break;
         }
         struct zcl_fleet_row row;

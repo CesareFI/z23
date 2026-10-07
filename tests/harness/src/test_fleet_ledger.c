@@ -26,6 +26,7 @@
 #include "util/fleet_role_check.h"
 #include "base/hex.h"
 #include "base/safe_alloc.h"
+#include "chainlog/chainlog.h"
 #include "chain/chainparams.h"
 #include "command/native_command.h"
 #include "crypto/ed25519.h"
@@ -41,6 +42,7 @@
 #include "net/protocol.h"
 #include "platform/private_file.h"
 #include "platform/time_compat.h"
+#include "sha3/sha3.h"
 #include "vcs/zcode_dht_identity.h"
 
 #include <stdio.h>
@@ -305,9 +307,86 @@ static void fl_sample(struct json_value *input, struct zcl_command_reply *reply)
 }
 
 #if !defined(_WIN32)
+static int fl_open_refusal_location(void)
+{
+    int failures = 0;
+    char root[256], peer[320], path[416], hex[65];
+    uint8_t id[32] = {0x42}, stream[32], zero[32] = {0};
+    struct zcl_fleet_report report;
+    struct zcl_chainlog_report lower;
+    struct zcl_fleet_ledger *ledger = NULL;
+    struct zcl_chainlog *log = NULL;
+    struct platform_private_file file;
+    platform_private_file_init(&file);
+    test_make_tmpdir(root, sizeof root, "fleet_ledger", "refusal_location");
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, (const unsigned char *)"zcl.fleet_ledger.chain.v1",
+                   sizeof("zcl.fleet_ledger.chain.v1"));
+    sha3_256_write(&ctx, id, sizeof id);
+    sha3_256_finalize(&ctx, stream);
+    zcl_hex_encode(id, sizeof id, hex);
+    TEST("fleet ledger: peer open refusals name the chain and sequence") {
+        ASSERT((size_t)snprintf(peer, sizeof peer, "%s/peer", root) < sizeof peer);
+        ASSERT((size_t)snprintf(path, sizeof path, "%s/%s.chainlog", peer, hex) < sizeof path);
+        ledger = zcl_fleet_ledger_open(root, NULL, NULL, &report);
+        ASSERT(ledger && report.status == ZCL_FLEET_OK);
+        zcl_fleet_ledger_close(ledger); ledger = NULL;
+        log = zcl_chainlog_open(path, stream, &lower);
+        ASSERT(log && lower.status == ZCL_CHAINLOG_OK);
+        ASSERT(zcl_chainlog_append(log, 2, "x", 1, NULL, NULL) == ZCL_CHAINLOG_OK);
+        zcl_chainlog_close(log); log = NULL;
+        ASSERT(zcl_chainlog_verify(path, stream, &lower) == ZCL_CHAINLOG_OK);
+        ASSERT(lower.records == 1);
+        ledger = zcl_fleet_ledger_open(root, NULL, NULL, &report);
+        ASSERT(!ledger && report.status == ZCL_FLEET_IO);
+        ASSERT(memcmp(report.bad_box, id, sizeof id) == 0);
+        ASSERT(report.first_bad_seq == 1);
+        ASSERT(platform_private_file_open_locked_wait(path, &file));
+        const uint8_t altered = 'y';
+        ASSERT(platform_private_file_write_at(&file, &altered, 1,
+            ZCL_CHAINLOG_HEADER_BYTES + ZCL_CHAINLOG_PREFIX_BYTES));
+        ASSERT(platform_private_file_flush(&file));
+        platform_private_file_close(&file);
+        ASSERT(zcl_chainlog_verify(path, stream, &lower) == ZCL_CHAINLOG_BROKEN_CHAIN);
+        ASSERT(lower.first_bad_seq == 1);
+        ledger = zcl_fleet_ledger_open_readonly(root, NULL, NULL, &report);
+        ASSERT(!ledger && report.status == ZCL_FLEET_CHAIN_BROKEN);
+        ASSERT(memcmp(report.bad_box, id, sizeof id) == 0);
+        ASSERT(report.first_bad_seq == lower.first_bad_seq);
+        ASSERT(unlink(path) == 0);
+        log = zcl_chainlog_open(path, zero, &lower);
+        ASSERT(log && lower.status == ZCL_CHAINLOG_OK);
+        zcl_chainlog_close(log); log = NULL;
+        ASSERT(zcl_chainlog_verify(path, stream, &lower) == ZCL_CHAINLOG_STREAM_MISMATCH);
+        ledger = zcl_fleet_ledger_open_readonly(root, NULL, NULL, &report);
+        ASSERT(!ledger && report.status == ZCL_FLEET_IO);
+        ASSERT(memcmp(report.bad_box, id, sizeof id) == 0);
+        ASSERT(report.first_bad_seq == lower.first_bad_seq && report.first_bad_seq == 0);
+        ASSERT(unlink(path) == 0);
+        ledger = zcl_fleet_ledger_open_readonly(root, id, stream, &report);
+        ASSERT(ledger && report.status == ZCL_FLEET_OK);
+        ASSERT(report.rows == 0 && report.first_bad_seq == 0);
+        ASSERT(memcmp(report.bad_box, zero, sizeof zero) == 0);
+        ASSERT(access(path, F_OK) != 0);
+        ASSERT((size_t)snprintf(path, sizeof path, "%s/self.chainlog", root) < sizeof path);
+        ASSERT(access(path, F_OK) != 0);
+        PASS();
+    } _test_next:;
+    platform_private_file_close(&file);
+    zcl_chainlog_close(log);
+    zcl_fleet_ledger_close(ledger);
+    if (test_rm_rf_recursive(root) != 0) {
+        printf("FAIL cleanup: %s\n", root);
+        failures++;
+    }
+    return failures;
+}
+
 static int test_fleet_ledger_observation(void)
 {
     int failures = 0;
+    failures += fl_open_refusal_location();
     char root[256], dir[320], peer[352], self[352];
     struct stat info;
     struct zcl_fleet_report report;
