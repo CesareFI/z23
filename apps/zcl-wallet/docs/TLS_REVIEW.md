@@ -1,9 +1,44 @@
 # TLS candidate: BLOCKED — REQUIRES FURTHER SECURITY REVIEW
 
-Status set on 2026-09-12 at the owner's direction. This is a parked security
-investigation, not the active development task. Do not rerun the reproducer,
-fuzzer or provider investigation as part of ordinary wallet work. No finding
-has been suppressed, repaired or accepted by this continuation.
+The owner authorized resuming host security review on 2026-09-30. Android/JNI
+TLS remains disabled; permission to review is not acceptance for wallet use.
+The original parked investigation and validated wallet candidate remain
+preserved separately. No sanitizer or analyzer gate has been weakened.
+
+## Resumed empty-name review
+
+The original saved input reproduces UBSan in the OID comparison. The previously
+parked OID-only patch then reproduces UBSan in the following value comparison.
+The candidate now uses one zero-length-safe byte comparison for both calls.
+Nonempty comparison, lengths, tags, text encodings and list structure retain
+their prior behavior. Both existing comparator complexities remain 10; the
+new helper is 2. No allocation, cryptography or consensus logic changes.
+
+The saved flight is still rejected. Host sanitizer regressions also cover
+empty/null-backed buffers, unequal bytes/lengths/tags, permitted text-case
+equivalence, merged sets and unequal lists. Mutations restoring either unsafe
+call, deleting the helper guard, or ignoring nonempty differences are caught.
+Existing authenticated TLS and failure/cleanup fixtures pass. Broader provider
+analysis remains a separate unresolved gate; these results do not enable TLS.
+Provider original/current hashes and the reversible local patch are recorded
+in `vendor/android-mbedtls/PATCHES.md`.
+
+The resumed TLS runtime matrix passes 133/133 Clang and 132/132 optimized GCC
+tests with ASan/LSan/UBSan. It first exposed a separate codec-fixture failure:
+provider hash self-tests allocate scratch but had no scoped TLS heap. The test
+now owns and retires that heap. An additional registered regression checks
+failed self-tests, leftover/denied scratch and successful subsequent execution;
+all six affected tests pass on both compilers after its addition. No allocator
+restriction or self-test assertion was removed.
+
+A bounded offline TLS fuzz campaign completed 130,042 executions in 301 seconds
+with three public certificate-flight seeds and a 20,000-byte input cap, with
+no sanitizer finding in that campaign. This is not exhaustive validation.
+Normal TLS-OFF safety passes 145/145 Clang and 144/144 optimized GCC tests.
+**Full TLS safety still fails**: the unchanged Clang provider analysis reports
+findings in seven translation units. No finding has been waived; further
+provider review is required before enabling transport. These are Linux host
+results, not Android, Windows, macOS, physical custody or real-network results.
 
 The original artifacts below remain intact. A second copy is preserved in
 `.cache/android-wallet/continuation-20260912/tls-evidence.tar`. The same directory
@@ -54,7 +89,7 @@ matched. Replaying the input with UBSan stack traces reproduced the finding.
 
 The ordinary empty-name certificate fixture currently passes through rejection
 without reproducing this exact path. It is not a regression proof for the saved
-input. The provider remains unpatched at this checkpoint. A permitted follow-up
+input. The provider was unpatched at the original checkpoint. A permitted follow-up
 must prove a focused before/after regression, retain certificate rejection and
 hostname checks, inspect adjacent empty-name/value cases and repeat defensive
 parser fuzzing. No sanitizer suppression is an acceptable resolution.

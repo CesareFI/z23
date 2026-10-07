@@ -1,0 +1,18 @@
+--- a/library/x509_crt.c
++++ b/library/x509_crt.c
+@@ -298,0 +299,9 @@
++/* Parsed empty Names have NULL data pointers in their sentinel OID and value.
++ * Do not pass these to memcmp even when the length is zero. Nonempty buffers
++ * retain the parser's existing readable-length precondition.
++ */
++static int x509_memcmp(const void *a, const void *b, size_t len)
++{
++    return len == 0 ? 0 : memcmp(a, b, len);
++}
++
+@@ -309 +318 @@
+-        memcmp(a->p, b->p, b->len) == 0) {
++        x509_memcmp(a->p, b->p, b->len) == 0) {
+@@ -344 +353 @@
+-            memcmp(a->oid.p, b->oid.p, b->oid.len) != 0) {
++            x509_memcmp(a->oid.p, b->oid.p, b->oid.len) != 0) {
