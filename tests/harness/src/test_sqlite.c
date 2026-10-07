@@ -313,6 +313,26 @@ static bool sqlite_state_key_bind_errors_ok(struct node_db *ndb)
     return ok;
 }
 
+static int sqlite_deny_utxo_count(void *ctx, int action, const char *target,
+                                  const char *detail, const char *db_name,
+                                  const char *trigger)
+{
+    (void)ctx; (void)detail; (void)db_name; (void)trigger;
+    return action == SQLITE_READ && target && strcmp(target, "utxos") == 0
+        ? SQLITE_DENY : SQLITE_OK;
+}
+
+static bool sqlite_utxo_count_errors_ok(struct node_db *ndb)
+{
+    int64_t count = 77;
+    bool ok = sqlite3_set_authorizer(ndb->db, sqlite_deny_utxo_count, NULL) ==
+              SQLITE_OK;
+    ok = ok && !node_db_utxo_count_checked(ndb, &count) && count == 77;
+    ok = ok && !node_db_wipe_utxos(ndb);
+    ok = sqlite3_set_authorizer(ndb->db, NULL, NULL) == SQLITE_OK && ok;
+    return ok && node_db_utxo_count_checked(ndb, &count) && count == 0;
+}
+
 static void check_sqlite_2_sqlite_state_set_get(int *failures)
 {
     printf("SQLite state set/get... ");
@@ -332,6 +352,7 @@ static void check_sqlite_2_sqlite_state_set_get(int *failures)
 
     ok = ok && sqlite_state_bounds_ok(&ndb, blob);
     ok = ok && sqlite_state_key_bind_errors_ok(&ndb);
+    ok = ok && sqlite_utxo_count_errors_ok(&ndb);
     node_db_close(&ndb);
     if (ok) printf("OK\n");
     else { printf("FAIL\n"); (*failures)++; }

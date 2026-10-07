@@ -267,6 +267,9 @@ bool node_db_state_delete(struct node_db *ndb, const char *key);
 bool node_db_wipe_utxos(struct node_db *ndb);
 
 /* Count UTXOs in the database. */
+bool node_db_utxo_count_checked(struct node_db *ndb, int64_t *out_count);
+/* Compatibility projection: returns zero on failure after logging it. New
+ * correctness decisions must use node_db_utxo_count_checked(). */
 int64_t node_db_utxo_count(struct node_db *ndb);
 
 /* ── Performance Modes ─────────────────────────────────────────── */

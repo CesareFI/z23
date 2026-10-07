@@ -26,8 +26,12 @@
 bool node_db_wipe_utxos(struct node_db *ndb)
 {
     if (!ndb || !ndb->open) return false;
-    int64_t existing = node_db_utxo_count(ndb);
+    int64_t existing = 0;
     const char *offline_repair = getenv("ZCL_OFFLINE_REPAIR");
+    if (!node_db_utxo_count_checked(ndb, &existing)) {
+        LOG_WARN("db", "db: refused to wipe UTXOs after count failure");
+        return false;
+    }
     if (existing > 1000 &&
         (!offline_repair || strcmp(offline_repair, "1") != 0)) {
         LOG_INFO("db", "db: refused to wipe %lld UTXOs without " "ZCL_OFFLINE_REPAIR=1", (long long)existing);
@@ -42,17 +46,36 @@ bool node_db_wipe_utxos(struct node_db *ndb)
     return ok;
 }
 
+bool node_db_utxo_count_checked(struct node_db *ndb, int64_t *out_count)
+{
+    if (!ndb || !ndb->open || !ndb->db || !out_count) {
+        LOG_WARN("db", "db: UTXO count refused invalid arguments");
+        return false;
+    }
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(ndb->db, "SELECT count(*) FROM utxos",
+                                -1, &stmt, NULL);
+    int64_t count = 0;
+    if (rc == SQLITE_OK)
+        rc = sqlite3_step(stmt);  // raw-sql-ok:read-only-introspection
+    if (rc == SQLITE_ROW) {
+        count = sqlite3_column_int64(stmt, 0);
+        rc = sqlite3_step(stmt);  // raw-sql-ok:read-only-introspection
+    }
+    int finalize_rc = sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE || finalize_rc != SQLITE_OK) {
+        LOG_WARN("db", "db: UTXO count failed rc=%d finalize_rc=%d: %s",
+                 rc, finalize_rc, sqlite3_errmsg(ndb->db));
+        return false;
+    }
+    *out_count = count;
+    return true;
+}
+
 int64_t node_db_utxo_count(struct node_db *ndb)
 {
-    if (!ndb || !ndb->open) return 0;
-    sqlite3_stmt *stmt = NULL;
     int64_t count = 0;
-    if (sqlite3_prepare_v2(ndb->db, "SELECT count(*) FROM utxos",
-                           -1, &stmt, NULL) == SQLITE_OK) {
-        if (sqlite3_step(stmt) == SQLITE_ROW)  // raw-sql-ok:read-only-introspection
-            count = sqlite3_column_int64(stmt, 0);
-        sqlite3_finalize(stmt);
-    }
+    (void)node_db_utxo_count_checked(ndb, &count);
     return count;
 }
 

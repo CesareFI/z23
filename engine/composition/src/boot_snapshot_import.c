@@ -223,10 +223,11 @@ static bool snapshot_pending_receipt_load(
     }
 
     int64_t snap_height = zcl_read_i64_le(receipt + 1);
-    int64_t utxo_count = node_db_utxo_count(ndb);
+    int64_t utxo_count = 0;
     uint8_t stored_hash[32] = {0};
     size_t stored_hash_len = 0;
-    if (snap_height < 1 || snap_height >= INT32_MAX || utxo_count < 1000 ||
+    if (!node_db_utxo_count_checked(ndb, &utxo_count) ||
+        snap_height < 1 || snap_height >= INT32_MAX || utxo_count < 1000 ||
         !node_db_state_get(ndb, "coins_best_block", stored_hash,
                            sizeof(stored_hash), &stored_hash_len) ||
         stored_hash_len != sizeof(stored_hash) ||

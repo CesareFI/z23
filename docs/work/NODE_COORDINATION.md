@@ -179,12 +179,13 @@ branch is:
 - `094e78880` report full node-state blob lengths; and
 - `ff66b1e8d` check node-state writer bounds and binds; and
 - `71a23fb92` preserve node-state read and delete errors; and
-- `1a155d843` resume incomplete snapshot authority imports.
+- `1a155d843` resume incomplete snapshot authority imports; and
+- `338419708` resume snapshot recovery without its source artifact.
 
 Integration-only commits `a9171ad03`, `7768bff78`, `e4df36146` and
 `a6ef6bb01` preserve current `origin/main` history and generated inventory.
 
-The latest committed engineering tip intended for publication is `1a155d843`.
+The latest committed engineering tip intended for publication is `338419708`.
 Each slice passed its focused regression, applicable sanitizer/static analysis,
 complexity, architecture, generated-inventory, consensus-parity, sealed-core
 and production-build gates as recorded above. Consensus impact for the entire
@@ -509,3 +510,32 @@ or cryptographic semantics. Hetzner's `f261d245d` block-swarm work remains
 non-overlapping. Remaining risk: receipt removal follows the cross-database
 epilogue and is not atomic with it; its safe failure mode is an idempotent
 epilogue replay on the next boot.
+
+## 2026-09-20: checked UTXO counts before destructive recovery
+
+`node_db_utxo_count()` returned zero for invalid handles and every SQLite
+prepare, step, or finalize failure. A deterministic authorizer denial of the
+`utxos` read reproduced the ambiguity: the legacy API reported the same value
+as an honestly empty table. More seriously, `node_db_wipe_utxos()` consumed
+that value and could proceed with destructive cleanup without ever establishing
+how many rows existed.
+
+The database model now provides `node_db_utxo_count_checked()`, which validates
+its arguments, requires the aggregate row and terminal `SQLITE_DONE`, checks
+finalization, logs the concrete SQLite failure, and publishes its output only
+on success. The compatibility projection retains its historical integer return
+for diagnostic callers but no longer fails silently. UTXO wipe now refuses to
+run after a count failure, and snapshot receipt recovery uses the checked count
+before trusting its installed-row floor.
+
+The focused SQLite fault regression proves an authorization failure is
+observable, leaves the caller's output untouched, and blocks the wipe; after
+the fault is removed, a real empty count succeeds. The broad SQLite selection
+and snapshot boot regression pass in normal and ASan/UBSan modes, as do the
+complexity and silent-error ratchets. Remaining repository gates are recorded before commit.
+Consensus impact: NONE. This changes local database error propagation only;
+validity, chain history, consensus/wire serialization, PoW, monetary policy,
+activation and cryptographic semantics are unchanged. Hetzner's `f261d245d`
+block-swarm work remains non-overlapping. Remaining risk: other recovery
+decisions still consume the compatibility projection and should migrate to the
+checked API in focused, fault-injected slices.
