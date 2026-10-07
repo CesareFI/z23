@@ -5575,6 +5575,116 @@ static int test_net_outbound_publish_deduplicates_parallel_dials(void)
     return failures;
 }
 
+struct outbound_capacity_race_fixture {
+    struct net_manager nm;
+    struct net_address dial_addr;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    bool candidate_created;
+    bool permit_publish;
+};
+
+static void outbound_capacity_race_node_created(void *ctx, node_id_t id,
+                                                struct p2p_node *node)
+{
+    (void)id;
+    (void)node;
+    struct outbound_capacity_race_fixture *fixture = ctx;
+    pthread_mutex_lock(&fixture->mutex);
+    fixture->candidate_created = true;
+    pthread_cond_broadcast(&fixture->cond);
+    while (!fixture->permit_publish)
+        pthread_cond_wait(&fixture->cond, &fixture->mutex);
+    pthread_mutex_unlock(&fixture->mutex);
+}
+
+struct outbound_capacity_race_arg {
+    struct outbound_capacity_race_fixture *fixture;
+    struct p2p_node *result;
+    bool created;
+};
+
+static void *outbound_capacity_race_worker(void *opaque)
+{
+    struct outbound_capacity_race_arg *arg = opaque;
+    arg->result = connect_node_from_socket(
+        &arg->fixture->nm, &arg->fixture->dial_addr, NULL,
+        ZCL_INVALID_SOCKET, &arg->created);
+    return NULL;
+}
+
+static int test_net_outbound_publish_honors_connection_capacity(void)
+{
+    int failures = 0;
+    printf("p2p_node: outbound publication honors connection capacity... ");
+
+    struct outbound_capacity_race_fixture fixture;
+    memset(&fixture, 0, sizeof(fixture));
+    net_manager_init(&fixture.nm);
+    fixture.nm.max_connections = 1;
+    net_address_init(&fixture.dial_addr);
+    unsigned char dial_ip[4] = {198, 51, 100, 24};
+    net_addr_set_ipv4(&fixture.dial_addr.svc.addr, dial_ip);
+    fixture.dial_addr.svc.port = 8233;
+    bool ok = pthread_mutex_init(&fixture.mutex, NULL) == 0;
+    ok = ok && pthread_cond_init(&fixture.cond, NULL) == 0;
+    fixture.nm.signals.ctx = &fixture;
+    fixture.nm.signals.initialize_node = outbound_capacity_race_node_created;
+
+    struct outbound_capacity_race_arg arg = {.fixture = &fixture};
+    pthread_t thread;
+    bool started = ok && pthread_create(
+        &thread, NULL, outbound_capacity_race_worker, &arg) == 0;
+    ok = ok && started;
+
+    if (started) {
+        pthread_mutex_lock(&fixture.mutex);
+        while (!fixture.candidate_created)
+            pthread_cond_wait(&fixture.cond, &fixture.mutex);
+        pthread_mutex_unlock(&fixture.mutex);
+
+        fixture.nm.signals.initialize_node = NULL;
+        struct net_address resident_addr;
+        net_address_init(&resident_addr);
+        unsigned char resident_ip[4] = {198, 51, 100, 25};
+        net_addr_set_ipv4(&resident_addr.svc.addr, resident_ip);
+        resident_addr.svc.port = 8233;
+        struct p2p_node *resident = p2p_node_create(
+            &fixture.nm, ZCL_INVALID_SOCKET, &resident_addr,
+            "resident", true);
+        ok = ok && resident != NULL;
+        if (resident) {
+            zcl_mutex_lock(&fixture.nm.cs_nodes);
+            p2p_node_add_ref(resident);
+            ok = nm_add_node(&fixture.nm, resident) && ok;
+            zcl_mutex_unlock(&fixture.nm.cs_nodes);
+        }
+
+        pthread_mutex_lock(&fixture.mutex);
+        fixture.permit_publish = true;
+        pthread_cond_broadcast(&fixture.cond);
+        pthread_mutex_unlock(&fixture.mutex);
+        ok = pthread_join(thread, NULL) == 0 && ok;
+    }
+
+    ok = ok && fixture.nm.num_nodes == 1;
+    ok = ok && arg.result == NULL;
+    ok = ok && !arg.created;
+    if (arg.result) {
+        zcl_mutex_lock(&fixture.nm.cs_nodes);
+        p2p_node_release(arg.result);
+        zcl_mutex_unlock(&fixture.nm.cs_nodes);
+    }
+
+    pthread_cond_destroy(&fixture.cond);
+    pthread_mutex_destroy(&fixture.mutex);
+    net_manager_free(&fixture.nm);
+
+    if (ok) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    return failures;
+}
+
 /* p2p_node: inventory tracking */
 struct p2p_inventory_fixture {
     struct net_manager nm;
@@ -7279,6 +7389,7 @@ int test_net(void)
     failures += test_net_accept_inbound_socket_is_set_non_blocking();
     failures += test_net_p2p_node_create_and_free();
     failures += test_net_outbound_publish_deduplicates_parallel_dials();
+    failures += test_net_outbound_publish_honors_connection_capacity();
     failures += test_net_p2p_node_receive_bytes_parses_message();
     failures += test_net_p2p_node_inventory_known();
     failures += test_net_p2p_node_inventory_relay_queue_is_bounded();
