@@ -95,12 +95,15 @@ bool domain_encoding_bech32_encode(char *out, size_t out_size,
                                    const char *hrp, const uint8_t *values, size_t values_len)
 {
     size_t hrp_len = strlen(hrp);
-    size_t needed = hrp_len + 1 + values_len + 6 + 1;
     /* Symmetric with the 1023-char cap in bech32_decode: a string our own
      * decoder would reject is not worth building, and the cap bounds the
-     * create_checksum stack VLA below (~2 KB worst case). */
-    if (needed > BECH32_MAX_STRING)
+     * checksum scratch. Bound each operand before adding: an overflowing
+     * sum must never admit an oversized memcpy into that scratch. */
+    if (hrp_len > BECH32_MAX_STRING - 8)
         return false;
+    if (values_len > BECH32_MAX_STRING - 8 - hrp_len)
+        return false;
+    size_t needed = hrp_len + 1 + values_len + 6 + 1;
     if (needed > out_size)
         return false;
 

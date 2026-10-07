@@ -85,9 +85,61 @@ static bool roundtrip_5bit(uint8_t seed, const char *hrp, size_t data_len)
     return true;
 }
 
-int test_domain_encoding_bech32(void)
+static bool encode_refuses_oversize(const char *hrp, size_t length)
+{
+    const uint8_t value = 0;
+    /* A generous destination must not mask the format's own length cap. */
+    char out[2048], guard[2048];
+    memset(out, 0x5a, sizeof out);
+    memcpy(guard, out, sizeof guard);
+    return !domain_encoding_bech32_encode(out, sizeof out, hrp, &value, length) &&
+           memcmp(out, guard, sizeof out) == 0;
+}
+
+static bool encode_size_boundary(size_t hrp_length, size_t value_length)
+{
+    char hrp[1017], out[1026];
+    uint8_t values[1016] = {0};
+    memset(hrp, 'z', hrp_length);
+    hrp[hrp_length] = '\0';
+    memset(out, 0x5a, sizeof out);
+    if (!domain_encoding_bech32_encode(out + 1, 1024, hrp, values, value_length))
+        return false;
+    if (strlen(out + 1) != 1023 || out[0] != 0x5a || out[1025] != 0x5a)
+        return false;
+    memset(out, 0x5a, sizeof out);
+    if (domain_encoding_bech32_encode(out + 1, 1023, hrp, values, value_length))
+        return false;
+    for (size_t i = 0; i < sizeof out; i++) {
+        if (out[i] != 0x5a)
+            return false;
+    }
+    return encode_refuses_oversize(hrp, value_length + 1);
+}
+
+static int test_encode_size_bounds(void)
 {
     int failures = 0;
+    const size_t sizes[] = {1024, SIZE_MAX / 2, SIZE_MAX - 16,
+                           SIZE_MAX - 8, SIZE_MAX - 1, SIZE_MAX};
+    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+        BCH_CHECK("oversized values refuse before reading or writing",
+                  encode_refuses_oversize("z", sizes[i]));
+    }
+    char hrp[1018];
+    memset(hrp, 'z', sizeof hrp - 1);
+    hrp[sizeof hrp - 1] = '\0';
+    BCH_CHECK("oversized HRP refuses without values", encode_refuses_oversize(hrp, 0));
+    BCH_CHECK("two oversized operands refuse", encode_refuses_oversize(hrp, SIZE_MAX));
+    BCH_CHECK("maximum data and legacy empty HRP", encode_size_boundary(0, 1016));
+    BCH_CHECK("maximum ordinary payload", encode_size_boundary(1, 1015));
+    BCH_CHECK("maximum HRP and empty payload", encode_size_boundary(1016, 0));
+    return failures;
+}
+
+int test_domain_encoding_bech32(void)
+{
+    int failures = test_encode_size_bounds();
 
     /* (1) Valid BIP-173 strings decode successfully. */
     for (size_t i = 0; i < sizeof k_valid_bech32 / sizeof k_valid_bech32[0]; i++) {
