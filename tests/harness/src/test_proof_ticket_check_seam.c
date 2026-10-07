@@ -281,10 +281,10 @@ static int seam_case_conflict(void)
     return failures;
 }
 
-static int seam_case_changed(void)
+static int seam_changed_input(size_t field)
 {
     int failures = 0;
-    TEST_CASE("check seam: changed closure executes") {
+    TEST_CASE("check seam: each changed sealed input executes") {
         struct ptf f;
         uint8_t raw[SEAM_RAW][32];
         struct zcl_dev_proof_check_inputs in;
@@ -296,14 +296,72 @@ static int seam_case_changed(void)
         seam_fill(raw, &in);
         ASSERT(seam_align(&f, &in, &key, &policy));
         ASSERT(seam_quorum(&f, &key));
-        raw[0][31] ^= 0x01;
+        if (field < SEAM_RAW) raw[field][31] ^= 0x01;
+        else in.unit = "other-check-group";
+        /* Current receiver policy follows the new obligation. The earlier
+         * signed observations must still not authorize this changed input. */
+        ASSERT(seam_align(&f, &in, &key, &policy));
         ASSERT(seam_dir(dir, sizeof(dir), binary, sizeof(binary), 1));
         ASSERT(seam_run(&in, dir, binary, 1, f.rx, &f.domain, &policy, &run));
         ASSERT(run.out.ok);
         ASSERT_EQ(run.out.test_children, 1u);
         ASSERT_EQ(run.out.reused, 0u);
-        printf("check_seam case=changed children=%u reused=%u ok=%d\n",
-               run.out.test_children, run.out.reused, run.out.ok ? 1 : 0);
+        ASSERT_EQ(run.out.ran, 1u);
+        ASSERT(run.out.log_present);
+        printf("check_seam case=changed input=%zu children=%u reused=%u ok=%d\n",
+               field, run.out.test_children, run.out.reused, run.out.ok ? 1 : 0);
+        ptf_free(&f);
+    } TEST_END
+    return failures;
+}
+
+static int seam_case_changed(void)
+{
+    int failures = 0;
+    for (size_t field = 0; field <= SEAM_RAW; field++)
+        failures += seam_changed_input(field);
+    return failures;
+}
+
+/* These pointers borrow fields of the live fixture, never its root bytes.
+ * Keep the field order independent of production's derivation table. */
+static bool seam_omit_input(struct zcl_dev_proof_check_inputs *in, size_t field)
+{
+    const uint8_t **fields[] = {
+        &in->source_cas, &in->dependency, &in->harness, &in->flags,
+        &in->environment, &in->build_graph, &in->toolchain, &in->policy,
+        &in->changed,
+    };
+    if (field >= sizeof(fields) / sizeof(fields[0])) return false;
+    *fields[field] = NULL;
+    return true;
+}
+
+static int seam_incomplete_input(size_t field)
+{
+    int failures = 0;
+    TEST_CASE("check seam: each missing sealed input executes") {
+        struct ptf f;
+        uint8_t raw[SEAM_RAW][32];
+        struct zcl_dev_proof_check_inputs in;
+        struct vcs_component_proof_key_v1 key;
+        struct vcs_proof_reuse_policy policy;
+        struct seam_meter run;
+        char dir[SEAM_PATH], binary[SEAM_PATH];
+        ASSERT(ptf_init(&f));
+        seam_fill(raw, &in);
+        ASSERT(seam_align(&f, &in, &key, &policy));
+        ASSERT(seam_quorum(&f, &key));
+        ASSERT(seam_omit_input(&in, field));
+        ASSERT(seam_dir(dir, sizeof(dir), binary, sizeof(binary), 1));
+        ASSERT(seam_run(&in, dir, binary, 1, f.rx, &f.domain, &policy, &run));
+        ASSERT(run.out.ok);
+        ASSERT_EQ(run.out.test_children, 1u);
+        ASSERT_EQ(run.out.reused, 0u);
+        ASSERT_EQ(run.out.ran, 1u);
+        ASSERT(run.out.log_present);
+        printf("check_seam case=incomplete input=%zu children=%u reused=%u ok=%d\n",
+               field, run.out.test_children, run.out.reused, run.out.ok ? 1 : 0);
         ptf_free(&f);
     } TEST_END
     return failures;
@@ -312,28 +370,8 @@ static int seam_case_changed(void)
 static int seam_case_incomplete(void)
 {
     int failures = 0;
-    TEST_CASE("check seam: incomplete closure executes") {
-        struct ptf f;
-        uint8_t raw[SEAM_RAW][32];
-        struct zcl_dev_proof_check_inputs in;
-        struct vcs_component_proof_key_v1 key;
-        struct vcs_proof_reuse_policy policy;
-        struct seam_meter run;
-        char dir[SEAM_PATH], binary[SEAM_PATH];
-        ASSERT(ptf_init(&f));
-        seam_fill(raw, &in);
-        ASSERT(seam_align(&f, &in, &key, &policy));
-        ASSERT(seam_quorum(&f, &key));
-        in.source_cas = NULL;
-        ASSERT(seam_dir(dir, sizeof(dir), binary, sizeof(binary), 1));
-        ASSERT(seam_run(&in, dir, binary, 1, f.rx, &f.domain, &policy, &run));
-        ASSERT(run.out.ok);
-        ASSERT_EQ(run.out.test_children, 1u);
-        ASSERT_EQ(run.out.reused, 0u);
-        printf("check_seam case=incomplete children=%u reused=%u ok=%d\n",
-               run.out.test_children, run.out.reused, run.out.ok ? 1 : 0);
-        ptf_free(&f);
-    } TEST_END
+    for (size_t field = 0; field < SEAM_RAW; field++)
+        failures += seam_incomplete_input(field);
     return failures;
 }
 
