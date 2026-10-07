@@ -262,6 +262,13 @@ void block_index_forward_pass(struct block_index **sorted, size_t count);
 void promote_best_header_after_load(struct main_state *ms,
                                     struct block_index **sorted, size_t count);
 
+/* Publish only the work-ranked header frontier, without seating or publishing
+ * an active tip. Peer-fetched header seeds cannot establish applied state;
+ * fresh boot must retain genesis until the verified bundle install succeeds.
+ * Entries must have completed the loader's verification and forward pass. */
+void publish_best_header_after_load(struct main_state *ms,
+                                    struct block_index **sorted, size_t count);
+
 /* ── Projection-backed boot rebuild (event_log -> projection -> map) ───── */
 
 /* Rebuild the in-memory block_index map purely from the

@@ -508,7 +508,9 @@ static int lint_run_owned(int owner)
 /* Build an inode-independent clone ("sandbox") of the worktree at sb_root.
  * Everything except build/.git/.cache/test-tmp/.claude is copied with
  * --reflink=auto: CoW on supporting filesystems, a safe regular copy
- * elsewhere. Hardlinks are forbidden because merely creating/removing one
+ * elsewhere. Copies belong to the caller: preserving foreign archive owners
+ * makes fixture teardown fail without filesystem-bypass capabilities.
+ * Hardlinks are forbidden because merely creating/removing one
  * changes the live inode ctime and falsely supersedes source proof epochs;
  * fixture chmod/write would be worse. test-tmp is created fresh. Returns 0.
  *
@@ -547,11 +549,11 @@ static int lint_sandbox_build(const char *real_root, const char *sb_root)
             "  [ -e \"$e\" ] || continue\n"
             "  b=${e##*/}\n"
             "  case \"$b\" in build|.git|.cache|test-tmp|.claude) continue;; esac\n"
-            "  cp -a --reflink=auto \"$e\" \"$2\"/\n"
+            "  cp -a --no-preserve=ownership --reflink=auto \"$e\" \"$2\"/\n"
             "done\n"
             "mkdir -p \"$2\"/test-tmp \"$2\"/build/bin\n"
-            "cp -a --reflink=auto \"$1\"/build/bin/file_size_policy \"$2\"/build/bin/ 2>/dev/null || :\n"
-            "cp -a --reflink=auto \"$1\"/build/bin/z23-lint \"$2\"/build/bin/ 2>/dev/null || :\n";
+            "cp -a --no-preserve=ownership --reflink=auto \"$1\"/build/bin/file_size_policy \"$2\"/build/bin/ 2>/dev/null || :\n"
+            "cp -a --no-preserve=ownership --reflink=auto \"$1\"/build/bin/z23-lint \"$2\"/build/bin/ 2>/dev/null || :\n";
         execl("/bin/sh", "sh", "-c", script, "sh",
               real_root, sb_root, (char *)NULL);
         _exit(127);
@@ -939,6 +941,72 @@ static int t_sandbox_preserves_live_source_metadata(void)
     return failures;
 }
 
+static int t_sandbox_copy_belongs_to_caller(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] sandbox copy is caller-owned without changing source") {
+        char fixture[PATH_MAX], source[PATH_MAX], sandbox[PATH_MAX];
+        char input[PATH_MAX], output[PATH_MAX], parent[PATH_MAX];
+        char copied_parent[PATH_MAX];
+        ASSERT(test_mkdtemp(fixture, sizeof(fixture), "lint_copy_owner"));
+        ASSERT(snprintf(source, sizeof(source), "%s/source", fixture) <
+               (int)sizeof(source));
+        ASSERT(snprintf(sandbox, sizeof(sandbox), "%s/sandbox", fixture) <
+               (int)sizeof(sandbox));
+        ASSERT(snprintf(parent, sizeof(parent), "%s/payload", source) <
+               (int)sizeof(parent));
+        ASSERT(snprintf(copied_parent, sizeof(copied_parent), "%s/payload",
+                        sandbox) < (int)sizeof(copied_parent));
+        ASSERT(snprintf(input, sizeof(input), "%s/owned.txt", parent) <
+               (int)sizeof(input));
+        ASSERT(snprintf(output, sizeof(output), "%s/owned.txt", copied_parent) <
+               (int)sizeof(output));
+        ASSERT(mkdir(source, 0755) == 0);
+        ASSERT(mkdir(parent, 0755) == 0);
+        ASSERT(write_file(input, "sandbox owner control\n") == 0);
+        ASSERT(chmod(input, 0644) == 0);
+        /* Root with CHOWN but without DAC_OVERRIDE can reproduce archive
+         * ownership preservation while still obeying directory permissions. */
+        if (geteuid() == 0) {
+            ASSERT(chown(input, (uid_t)65534, (gid_t)-1) == 0);
+            ASSERT(chown(parent, (uid_t)65534, (gid_t)-1) == 0);
+        }
+        struct stat before, copied, after;
+        struct stat copied_dir;
+        ASSERT(lstat(input, &before) == 0);
+        ASSERT(lint_sandbox_build(source, sandbox) == 0);
+        ASSERT(lstat(output, &copied) == 0);
+        ASSERT(lstat(copied_parent, &copied_dir) == 0);
+        ASSERT(lstat(input, &after) == 0);
+        bool caller_owned = copied.st_uid == geteuid() &&
+                            copied_dir.st_uid == geteuid();
+        bool independent = copied.st_dev != before.st_dev ||
+                           copied.st_ino != before.st_ino;
+        bool source_unchanged = before.st_uid == after.st_uid &&
+            before.st_mode == after.st_mode && before.st_ino == after.st_ino &&
+            before.st_ctim.tv_sec == after.st_ctim.tv_sec &&
+            before.st_ctim.tv_nsec == after.st_ctim.tv_nsec;
+        char *contents = NULL;
+        ASSERT(read_entire_file(output, &contents) == 0);
+        bool bytes_match = strcmp(contents, "sandbox owner control\n") == 0;
+        free(contents);
+        /* Restore only our synthetic directories for teardown, including
+         * when a mutation deliberately preserved their foreign owner. */
+        if (geteuid() == 0) {
+            ASSERT(chown(parent, geteuid(), (gid_t)-1) == 0);
+            ASSERT(chown(copied_parent, geteuid(), (gid_t)-1) == 0);
+        }
+        ASSERT(test_rm_rf_recursive(fixture) == 0);
+        ASSERT(caller_owned);
+        ASSERT(independent);
+        ASSERT(source_unchanged);
+        ASSERT((copied.st_mode & 0777) == 0644);
+        ASSERT(bytes_match);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_make_lint_gates_partition(void)
 {
     printf("\n=== make_lint_gates partition tests ===\n");
@@ -947,6 +1015,7 @@ int test_make_lint_gates_partition(void)
     failures += t_partition_shards_all_carry_work();
     failures += t_partition_only_base_group_is_exclusive();
     failures += t_sandbox_preserves_live_source_metadata();
+    failures += t_sandbox_copy_belongs_to_caller();
     return failures;
 }
 

@@ -34,6 +34,8 @@
 #include "net/file_service.h"
 #include "services/block_index_flat_anchor.h"
 #include "services/block_index_loader.h"
+#include "services/chain_state_service.h"
+#include "services/chain_tip.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
@@ -250,13 +252,24 @@ static int case_import_roundtrip(void)
         struct stat st;
         ASSERT(stat(landed, &st) == 0);
 
-        /* Import into a fresh client header index. */
+        /* Real fresh boot has already seated genesis and wired CSR. Header
+         * bytes must advance discovery without claiming an applied tip. */
         struct main_state cms;
         memset(&cms, 0, sizeof(cms));
         block_map_init(&cms.map_block_index);
         active_chain_init(&cms.chain_active);
-
-        ASSERT(boot_header_seed_import_maybe(cdir, &cms));
+        hsi_build_chain(&cms, 1, -1, false);
+        struct uint256 genesis_hash = hsi_make_hash(0);
+        struct block_index *genesis =
+            block_map_find(&cms.map_block_index, &genesis_hash);
+        ASSERT(genesis != NULL);
+        ASSERT(chain_set_active_tip(&cms, genesis, TIP_FROM_TEST,
+                                    "header_seed_genesis").ok);
+        csr_init(csr_instance(), &cms.map_block_index, &cms.chain_active,
+                 &cms.pindex_best_header, NULL, NULL, NULL);
+        bool imported = boot_header_seed_import_maybe(cdir, &cms);
+        csr_test_reset_singleton();
+        ASSERT(imported);
 
         /* Frontier climbed to the artifact tip; every row landed. */
         ASSERT(cms.map_block_index.size == 100);
@@ -264,6 +277,9 @@ static int case_import_roundtrip(void)
         ASSERT(cms.pindex_best_header->nHeight == 99);
         ASSERT(cms.pindex_best_header->nSolution != NULL);
         ASSERT(cms.pindex_best_header->nSolutionSize > 0);
+        bool retained_genesis =
+            active_chain_cached_tip(&cms.chain_active) == genesis &&
+            active_chain_tip(&cms.chain_active) == genesis;
 
         struct block_header restored;
         block_header_init(&restored);
@@ -311,6 +327,7 @@ static int case_import_roundtrip(void)
         unlink(p);
         rmdir(sdir);
         rom_seed_reset();
+        ASSERT(retained_genesis);
     } _test_next:;
     return failures;
 }
@@ -366,6 +383,7 @@ static int case_bad_row(void)
         ASSERT(cms.map_block_index.size == 99);
         ASSERT(cms.pindex_best_header != NULL);
         ASSERT(cms.pindex_best_header->nHeight == 98);
+        ASSERT(active_chain_cached_tip(&cms.chain_active) == NULL);
 
         /* Quarantine counter advanced + typed blocker raised — not a silent
          * accept. */
@@ -387,12 +405,50 @@ static int case_bad_row(void)
     return failures;
 }
 
+static int case_loader_window_control(void)
+{
+    int failures = 0;
+    TEST("boot_header_seed: ordinary index loads still seat their window") {
+        chain_params_select(CHAIN_REGTEST);
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        hsi_build_chain(&ms, 3, -1, false);
+        struct uint256 h0 = hsi_make_hash(0), h2 = hsi_make_hash(2);
+        struct block_index *genesis = block_map_find(&ms.map_block_index, &h0);
+        struct block_index *tip = block_map_find(&ms.map_block_index, &h2);
+        ASSERT(genesis != NULL);
+        ASSERT(tip != NULL);
+        ASSERT(chain_set_active_tip(&ms, genesis, TIP_FROM_TEST,
+                                    "header_seed_control").ok);
+        csr_init(csr_instance(), &ms.map_block_index, &ms.chain_active,
+                 &ms.pindex_best_header, NULL, NULL, NULL);
+        struct block_index *rows[] = { tip, NULL, genesis };
+        publish_best_header_after_load(&ms, rows, 3);
+        bool header_only = ms.pindex_best_header == tip &&
+            active_chain_cached_tip(&ms.chain_active) == genesis;
+        publish_best_header_after_load(&ms, &genesis, 1);
+        bool no_downgrade = ms.pindex_best_header == tip;
+        promote_best_header_after_load(&ms, rows, 3);
+        bool window_seated = active_chain_cached_tip(&ms.chain_active) == tip;
+        csr_test_reset_singleton();
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        ASSERT(header_only);
+        ASSERT(no_downgrade);
+        ASSERT(window_seated);
+    } _test_next:;
+    return failures;
+}
+
 int test_boot_header_seed_import(void)
 {
     printf("\n=== boot_header_seed_import ===\n");
     int failures = 0;
     failures += case_import_roundtrip();
     failures += case_bad_row();
+    failures += case_loader_window_control();
     printf("=== boot_header_seed_import: %d failure(s) ===\n", failures);
     return failures;
 }

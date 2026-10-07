@@ -1565,7 +1565,7 @@ engine/composition/src/boot_fast_restart.c:boot_bg_quick_check_entry:17
 engine/composition/src/boot_fleet_board_rpc.c:fb_compose:21
 engine/composition/src/boot_flight_recorder.c:boot_flight_recorder_dump_state_json:17
 engine/composition/src/boot_frontend_services.c:boot_https_explorer_start:27
-engine/composition/src/boot_header_seed_import.c:boot_header_seed_import_maybe:32
+engine/composition/src/boot_header_seed_import.c:boot_header_seed_import_maybe:8
 engine/composition/src/boot_index.c:boot_index_shielded_tx:25
 engine/composition/src/boot_index.c:boot_index_verify_coins_tip_consistency:52
 engine/composition/src/boot_index.c:propagate_nchaintx:29
@@ -2380,7 +2380,7 @@ engine/services/src/block_index_loader_topup.c:block_index_node_db_topup_with:42
 engine/services/src/block_index_loader_topup.c:block_index_projection_topup_with:33
 engine/services/src/block_index_loader_topup.c:topup_row_cb:23
 engine/services/src/block_index_loader_torn_gate.c:block_index_loader_torn_import_detect:20
-engine/services/src/block_index_post_load.c:promote_best_header_after_load:23
+engine/services/src/block_index_post_load.c:promote_best_header_after_load:8
 engine/services/src/block_index_sidecar_integrity.c:bii_verify:37
 engine/services/src/block_index_sqlite_cache.c:load_block_index_sqlite:33
 engine/services/src/block_index_sqlite_cache.c:save_block_index_recent:34

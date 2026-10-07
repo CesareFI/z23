@@ -61,6 +61,64 @@ void block_index_forward_pass(struct block_index **sorted,
     }
 }
 
+static bool loaded_header_better(const struct block_index *candidate,
+                                 const struct block_index *current)
+{
+    if (!current)
+        return true;
+    bool have_work = !arith_uint256_is_zero(&candidate->nChainWork) &&
+                     !arith_uint256_is_zero(&current->nChainWork);
+    return have_work
+        ? arith_uint256_compare(&candidate->nChainWork, &current->nChainWork) > 0
+        : candidate->nHeight > current->nHeight;
+}
+
+static struct block_index *best_loaded_header(struct block_index **sorted,
+                                               size_t count)
+{
+    struct block_index *best = NULL;
+    for (size_t i = 0; i < count; i++) {
+        struct block_index *pi = sorted[i];
+        if (!pi || !pi->phashBlock || (pi->nStatus & BLOCK_FAILED_MASK))
+            continue;
+        if (loaded_header_better(pi, best))
+            best = pi;
+    }
+    return best;
+}
+
+static void publish_loaded_header(struct main_state *ms,
+                                   struct block_index *best)
+{
+    bool promoted = false;
+    enum csr_result prc = csr_promote_header_tip(
+        csr_instance(), &ms->chain_active, &ms->pindex_best_header, best,
+        "loader_best_header", &promoted);
+    if (prc == CSR_OK)
+        return;
+#ifdef ZCL_TESTING
+    /* Fixtures without the process-wide CSR retain the existing fallback. */
+    if (prc == CSR_REJECTED_NOT_INITIALIZED) {
+        if (loaded_header_better(best, ms->pindex_best_header))
+            ms->pindex_best_header = best;
+        return;
+    }
+#endif
+    LOG_WARN("block_index",
+             "loader: best-header promotion rejected code=%s h=%d",
+             csr_result_name(prc), best->nHeight);
+}
+
+void publish_best_header_after_load(struct main_state *ms,
+                                    struct block_index **sorted, size_t count)
+{
+    if (!ms || !sorted || count == 0)
+        return;
+    struct block_index *best = best_loaded_header(sorted, count);
+    if (best)
+        publish_loaded_header(ms, best);
+}
+
 /* After the map is loaded and the forward pass has recomputed nChainWork,
  * make the header frontier REAL: publish the max-chainwork header into
  * pindex_best_header and seat it in the active_chain[] window.
@@ -89,60 +147,14 @@ void promote_best_header_after_load(struct main_state *ms,
     if (!ms || !sorted || count == 0)
         return;
 
-    struct block_index *best = NULL;
-    for (size_t i = 0; i < count; i++) {
-        struct block_index *pi = sorted[i];
-        if (!pi || !pi->phashBlock)
-            continue;
-        if (pi->nStatus & BLOCK_FAILED_MASK)
-            continue;
-        if (!best) {
-            best = pi;
-            continue;
-        }
-        bool have_work = !arith_uint256_is_zero(&pi->nChainWork) &&
-                         !arith_uint256_is_zero(&best->nChainWork);
-        bool better = have_work
-            ? arith_uint256_compare(&pi->nChainWork, &best->nChainWork) > 0
-            : pi->nHeight > best->nHeight;
-        if (better)
-            best = pi;
-    }
+    struct block_index *best = best_loaded_header(sorted, count);
     if (!best)
         return;
 
     /* (1) Publish the header frontier through the work-ranked CSR seam — the
      * same primitive header_admit_stage uses on the live path. Idempotent:
      * a strictly-better candidate wins, otherwise this is a no-op. */
-    bool promoted = false;
-    enum csr_result prc = csr_promote_header_tip(
-        csr_instance(), &ms->chain_active, &ms->pindex_best_header, best,
-        "loader_best_header", &promoted);
-    if (prc != CSR_OK) {
-#ifdef ZCL_TESTING
-        /* Isolated fixtures do not boot the process-wide CSR — mirror
-         * header_admit_stage's test-only fallback so the frontier is still
-         * published. */
-        if (prc == CSR_REJECTED_NOT_INITIALIZED) {
-            struct block_index *current = ms->pindex_best_header;
-            bool advance = current == NULL;
-            if (current && current != best) {
-                bool have_work =
-                    !arith_uint256_is_zero(&best->nChainWork) &&
-                    !arith_uint256_is_zero(&current->nChainWork);
-                advance = have_work
-                    ? arith_uint256_compare(&best->nChainWork,
-                                            &current->nChainWork) > 0
-                    : best->nHeight > current->nHeight;
-            }
-            if (advance)
-                ms->pindex_best_header = best;
-        } else
-#endif
-        LOG_WARN("block_index",
-                 "loader: best-header promotion rejected code=%s h=%d",
-                 csr_result_name(prc), best->nHeight);
-    }
+    publish_loaded_header(ms, best);
 
     /* (2) Seat the frontier in the active_chain[] window so active_chain_tip()
      * is non-NULL over a non-empty map. Only advance — never downgrade a

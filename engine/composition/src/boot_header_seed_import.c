@@ -42,13 +42,8 @@ static void hsi_name_blocker(const char *id, const char *reason)
         (void)blocker_set(&b);
 }
 
-bool boot_header_seed_import_maybe(const char *datadir, struct main_state *ms)
+static bool hsi_stage_artifact(const char *datadir, struct main_state *ms)
 {
-    if (!datadir || !datadir[0] || !ms)
-        return false;
-    if (getenv("ZCL_NO_BUNDLE_FETCH"))
-        return false;
-
     /* The downloaded, content-verified artifact. */
     char src[PATH_MAX];
     int sn = snprintf(src, sizeof(src), "%s/bundles/block_index.bin", datadir);
@@ -91,23 +86,11 @@ bool boot_header_seed_import_maybe(const char *datadir, struct main_state *ms)
                  src, dst, strerror(errno));
         return false;
     }
+    return true;
+}
 
-    /* Load via the shared verified flat loader: embedded SHA3 re-verify,
-     * per-row PoW-target admission (block_row_verify → CheckProofOfWork) with
-     * per-row quarantine, persisted-FAILED-bit reconcile against the baked ROM
-     * checkpoint, pprev link, and the canonical forward pass (nChainWork/skip).
-     * Genesis (already in the ladder-seeded map) is deduped; header entries
-     * link pprev to it by hash. */
-    struct zcl_result r = load_block_index_flat(datadir, ms);
-    if (!r.ok) {
-        hsi_name_blocker("header_seed.load_failed", r.message[0] ? r.message
-                         : "load_block_index_flat rejected the header seed");
-        LOG_WARN(HSI_SUBSYS,
-                 "header-seed import: flat load rejected the artifact (%s) — "
-                 "falling back to P2P header sync", r.message);
-        return false;
-    }
-
+static size_t hsi_clamp_headers(struct main_state *ms)
+{
     /* Header-only clamp for the UNTRUSTED artifact: strip HAVE_DATA/HAVE_UNDO,
      * clear stale file positions, and clamp VALID level to <= BLOCK_VALID_TREE
      * on every non-genesis row. The seeder's persisted body/script validity and
@@ -129,12 +112,16 @@ bool boot_header_seed_import_maybe(const char *datadir, struct main_state *ms)
             (void)block_index_status_set_valid_level(pi, BLOCK_VALID_TREE);
         clamped++;
     }
+    return clamped;
+}
 
+static void hsi_publish_headers(struct main_state *ms, size_t count)
+{
     /* Publish the header frontier so the checkpoint-bundle install gate and the
      * getheaders locator see the imported chain (the whole point: no serial
-     * header crawl before install). promote_best_header_after_load picks the
-     * max-chainwork non-FAILED header regardless of array order. */
-    size_t count = block_map_count(&ms->map_block_index);
+     * header crawl before install). Publish headers ONLY: seating a header as
+     * the active tip would invalidate the install's clean-genesis authority
+     * boundary before the verified checkpoint state has been installed. */
     struct block_index **sorted =
         zcl_malloc(count * sizeof(*sorted), "hdr_seed_promote");
     if (sorted) {
@@ -143,13 +130,17 @@ bool boot_header_seed_import_maybe(const char *datadir, struct main_state *ms)
         while (block_map_next(&ms->map_block_index, &it, NULL, &p))
             if (p && idx < count)
                 sorted[idx++] = p;
-        promote_best_header_after_load(ms, sorted, idx);
+        publish_best_header_after_load(ms, sorted, idx);
         free(sorted);
     } else {
         LOG_WARN(HSI_SUBSYS, "header-seed import: promote alloc failed (%zu "
                  "entries) — pindex_best_header publish may lag", count);
     }
+}
 
+static void hsi_report_checkpoint(struct main_state *ms, size_t count,
+                                   size_t clamped)
+{
     /* Checkpoint-ownership check: does the imported chain own the baked
      * checkpoint block hash? This is the exact precondition the bundle install
      * defers on (consensus_state_checkpoint_header_ready). If the artifact does
@@ -185,5 +176,32 @@ bool boot_header_seed_import_maybe(const char *datadir, struct main_state *ms)
                  "the locator; install defers to the P2P-supplied checkpoint",
                  count, frontier, cp ? cp->height : -1);
     }
+}
+
+bool boot_header_seed_import_maybe(const char *datadir, struct main_state *ms)
+{
+    if (!datadir || !datadir[0] || !ms)
+        return false;
+    if (getenv("ZCL_NO_BUNDLE_FETCH"))
+        return false;
+    if (!hsi_stage_artifact(datadir, ms))
+        return false;
+
+    /* The shared loader re-verifies SHA3, admits each row's PoW target,
+     * quarantines bad rows, restores the hash-bound anchor, reconciles FAILED
+     * bits and recomputes the linked chainwork. No verification is skipped. */
+    struct zcl_result r = load_block_index_flat(datadir, ms);
+    if (!r.ok) {
+        hsi_name_blocker("header_seed.load_failed", r.message[0] ? r.message
+                         : "load_block_index_flat rejected the header seed");
+        LOG_WARN(HSI_SUBSYS,
+                 "header-seed import: flat load rejected the artifact (%s) — "
+                 "falling back to P2P header sync", r.message);
+        return false;
+    }
+    size_t clamped = hsi_clamp_headers(ms);
+    size_t count = block_map_count(&ms->map_block_index);
+    hsi_publish_headers(ms, count);
+    hsi_report_checkpoint(ms, count, clamped);
     return true;
 }
