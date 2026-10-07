@@ -29,6 +29,15 @@
 #include <stdbool.h>
 #include <time.h>
 
+struct basic_keystore;
+
+/* Initialize an unused address table from all live keys and scripts.
+ * Duplicate hashes are accepted. On allocation failure, log and return false
+ * with an empty, freeable table; no scan may use a partial address set.
+ * The caller keeps the keystore stable for the duration of the call. */
+bool wallet_scan_collect_addresses(struct scan_addr_ht *table,
+                                    const struct basic_keystore *keystore);
+
 /* Run Pass 2 of the wallet block scan.
  *
  * ndb:            our SQLite database for storing results (must be open)

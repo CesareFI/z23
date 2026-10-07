@@ -31,6 +31,7 @@
 #include "platform/positioned_file.h"
 #include "platform/read_mapping.h"
 #include "services/legacy_import_service.h"
+#include "services/wallet_scan_service.h"
 #include "models/wallet_tx.h"
 #include "wallet/wallet.h"
 #include "wallet/sapling_keys.h"
@@ -235,13 +236,8 @@ int legacy_import_service_run(const char *legacy_datadir,
 
     /* Build address hash table from wallet keys. */
     struct scan_addr_ht aht;
-    scan_aht_init(&aht);
-    for (size_t i = 0; i < w->keystore.num_keys; i++)
-        if (w->keystore.keys[i].used)
-            scan_aht_insert(&aht, w->keystore.keys[i].keyid.id.data);
-    for (size_t i = 0; i < w->keystore.num_scripts; i++)
-        if (w->keystore.scripts[i].used)
-            scan_aht_insert(&aht, w->keystore.scripts[i].script_id.data);
+    if (!wallet_scan_collect_addresses(&aht, &w->keystore))
+        LOG_ERR("legacy_import", "import refused: wallet address set is incomplete");
 
     printf("legacy_import: %d address hashes, %zu sapling keys\n",
            aht.count, w->sapling_keys.num_keys);

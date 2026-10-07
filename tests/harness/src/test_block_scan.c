@@ -337,6 +337,103 @@ static bool node_db_has_no_open_transaction(struct node_db *ndb)
     return !status.tx_open && sqlite3_get_autocommit(ndb->db) != 0;
 }
 
+static struct wallet *wallet_scan_address_fixture(void)
+{
+    struct wallet *wallet = zcl_calloc(1, sizeof(*wallet),
+                                      "scan address failure wallet");
+    if (!wallet) return NULL;
+    wallet->keystore.num_keys = 3;
+    wallet->keystore.num_scripts = 3;
+    for (size_t i = 0; i < 2; i++) {
+        wallet->keystore.keys[i].used = true;
+        wallet->keystore.keys[i].keyid.id.data[0] = (uint8_t)(i + 1);
+        wallet->keystore.scripts[i].used = true;
+        wallet->keystore.scripts[i].script_id.data[0] = (uint8_t)(i + 3);
+    }
+    wallet->keystore.keys[2].keyid.id.data[0] = 9; /* unused */
+    wallet->keystore.scripts[2].used = true;
+    wallet->keystore.scripts[2].script_id.data[0] = 1; /* duplicate */
+    return wallet;
+}
+
+static bool wallet_scan_address_failure(bool legacy, unsigned nth)
+{
+    struct node_db ndb = {0};
+    struct active_chain chain;
+    active_chain_init(&chain);
+    struct wallet *wallet = wallet_scan_address_fixture();
+    bool ok = wallet && node_db_open(&ndb, ":memory:");
+    if (ok) ok = seed_wallet_projection(&ndb);
+    if (ok) {
+        zcl_alloc_fault_fail_nth("scan_addr_entry", nth);
+        int result = legacy
+            ? legacy_import_service_run("/nonexistent", &ndb, wallet, false)
+            : wallet_scan_blocks(&ndb, &chain, wallet, "/nonexistent", 0, 0);
+        bool injected = zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+        bool preserved = wallet_projection_seed_is_present(&ndb);
+        bool closed = node_db_has_no_open_transaction(&ndb);
+        ok = injected && result == -1 && preserved && closed;
+        if (!ok)
+            printf("FAIL (legacy=%d nth=%u injected=%d result=%d "
+                   "preserved=%d closed=%d)\n", legacy, nth, injected,
+                   result, preserved, closed);
+    }
+    free(wallet);
+    active_chain_free(&chain);
+    if (ndb.open) node_db_close(&ndb);
+    return ok;
+}
+
+static int test_wallet_scan_address_failure(void)
+{
+    printf("GIVEN populated wallet rows WHEN any address allocation fails "
+           "THEN the scan refuses without replacing the projection... ");
+    int failures = 0;
+    for (unsigned nth = 1; nth <= 4; nth++) {
+        if (!wallet_scan_address_failure(false, nth)) failures++;
+        if (!wallet_scan_address_failure(true, nth)) failures++;
+    }
+    if (!failures) {
+        printf("OK\n");
+        return 0;
+    }
+    printf("FAIL (%d)\n", failures);
+    return 1;
+}
+
+static int test_wallet_scan_address_control(void)
+{
+    printf("GIVEN live, unused and duplicate addresses WHEN collected "
+           "THEN all live hashes remain and duplicate insertion is inert... ");
+    struct wallet *wallet = wallet_scan_address_fixture();
+    struct scan_addr_ht table;
+    scan_aht_init(&table);
+    bool ok = wallet != NULL;
+    if (ok) ok = wallet_scan_collect_addresses(&table, &wallet->keystore);
+    if (table.count != 4) ok = false;
+    for (uint8_t i = 1; i <= 4; i++) {
+        uint8_t hash[20] = {i};
+        if (!scan_aht_has(&table, hash)) ok = false;
+    }
+    uint8_t unused[20] = {9};
+    if (scan_aht_has(&table, unused)) ok = false;
+    uint8_t duplicate[20] = {1};
+    zcl_alloc_fault_fail_next("scan_addr_entry");
+    bool duplicate_ok = scan_aht_insert(&table, duplicate);
+    bool still_armed = zcl_alloc_fault_armed_label() != NULL;
+    bool refused = !scan_aht_insert(&table, unused);
+    bool injected = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    ok = ok && duplicate_ok && still_armed && refused && injected;
+    if (table.count != 4 || scan_aht_has(&table, unused)) ok = false;
+    scan_aht_free(&table);
+    free(wallet);
+    if (ok) { printf("OK\n"); return 0; }
+    printf("FAIL\n");
+    return 1;
+}
+
 static int test_wallet_scan_empty_replacement(void)
 {
     printf("GIVEN stale wallet rows WHEN empty Pass2 replaces them "
@@ -372,13 +469,9 @@ static int test_wallet_scan_empty_replacement(void)
     int cleared = ok ? wallet_scan_pass2_execute(
         &ndb, &chain, "/nonexistent", 0, 1000000000,
         &ht, file_has_match, 0, &started, &pass1) : -1;
-    uint8_t txid[32];
-    struct db_wallet_tx tx;
-    memset(txid, 0x91, sizeof(txid));
-    memset(&tx, 0, sizeof(tx));
-    bool tx_found = ok && db_wallet_tx_find(&ndb, txid, &tx);
-    if (tx_found) db_wallet_tx_free(&tx);
-    ok = ok && cleared == 0 && !tx_found &&
+    /* A successful empty scan must clear every transaction, not just the
+     * fixture's original txid. The count also avoids a temporary row owner. */
+    ok = ok && cleared == 0 && db_wallet_tx_count(&ndb) == 0 &&
          db_wallet_utxo_balance(&ndb) == 0 &&
          db_sapling_note_balance_for_address(&ndb,
                                               "zs1scanrollback") == 5678 &&
@@ -517,6 +610,8 @@ int test_block_scan(void)
     failures += test_wallet_scan_cache_valid();
     failures += test_wallet_scan_cursor_start();
     failures += test_wallet_scan_empty_replacement();
+    failures += test_wallet_scan_address_failure();
+    failures += test_wallet_scan_address_control();
     failures += test_legacy_import_clear_rollback();
 
     printf("block_scan: %d failure(s)\n\n", failures);

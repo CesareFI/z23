@@ -44,17 +44,20 @@ static inline void scan_aht_init(struct scan_addr_ht *t)
     memset(t, 0, sizeof(*t));
 }
 
-static inline void scan_aht_insert(struct scan_addr_ht *t, const uint8_t hash[20])
+/* Duplicate insertion succeeds without allocating. Failure leaves the table
+ * unchanged; callers must refuse an incomplete address snapshot. */
+static inline bool scan_aht_insert(struct scan_addr_ht *t, const uint8_t hash[20])
 {
     unsigned b = scan_fnv20(hash);
     for (struct scan_addr_entry *e = t->buckets[b]; e; e = e->next)
-        if (memcmp(e->hash, hash, 20) == 0) return;
+        if (memcmp(e->hash, hash, 20) == 0) return true;
     struct scan_addr_entry *e = zcl_malloc(sizeof(*e), "scan_addr_entry");
-    if (!e) return;
+    if (!e) LOG_FAIL("scan_util", "address table allocation failed");
     memcpy(e->hash, hash, 20);
     e->next = t->buckets[b];
     t->buckets[b] = e;
     t->count++;
+    return true;
 }
 
 static inline bool scan_aht_has(const struct scan_addr_ht *t, const uint8_t hash[20])

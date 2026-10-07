@@ -29,6 +29,7 @@
 #include "validation/chainstate.h"
 #include "core/serialize.h"
 #include "services/scan_util.h"
+#include "wallet/keystore.h"
 #include "views/format_helpers.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -39,6 +40,28 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+
+bool wallet_scan_collect_addresses(struct scan_addr_ht *table,
+                                    const struct basic_keystore *keystore)
+{
+    scan_aht_init(table);
+    for (size_t i = 0; i < keystore->num_keys; i++) {
+        if (keystore->keys[i].used &&
+            !scan_aht_insert(table, keystore->keys[i].keyid.id.data))
+            goto failed;
+    }
+    for (size_t i = 0; i < keystore->num_scripts; i++) {
+        if (keystore->scripts[i].used &&
+            !scan_aht_insert(table, keystore->scripts[i].script_id.data))
+            goto failed;
+    }
+    return true;
+
+failed:
+    scan_aht_free(table);
+    scan_aht_init(table);
+    LOG_FAIL("wallet_scan", "could not collect the complete wallet address set");
+}
 
 static void wallet_scan_rollback_best_effort(struct node_db *ndb,
                                              const char *label)

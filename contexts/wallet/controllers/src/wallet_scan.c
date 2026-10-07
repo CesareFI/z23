@@ -224,13 +224,8 @@ int wallet_scan_blocks(struct node_db *ndb,
 
     /* Build address hash table */
     struct scan_addr_ht aht;
-    scan_aht_init(&aht);
-    for (size_t i = 0; i < w->keystore.num_keys; i++)
-        if (w->keystore.keys[i].used)
-            scan_aht_insert(&aht, w->keystore.keys[i].keyid.id.data);
-    for (size_t i = 0; i < w->keystore.num_scripts; i++)
-        if (w->keystore.scripts[i].used)
-            scan_aht_insert(&aht, w->keystore.scripts[i].script_id.data);
+    if (!wallet_scan_collect_addresses(&aht, &w->keystore))
+        LOG_ERR("wallet_scan", "scan refused: wallet address set is incomplete");
 
     printf("wallet_scan: %d address hashes loaded\n", aht.count);
     fflush(stdout);
