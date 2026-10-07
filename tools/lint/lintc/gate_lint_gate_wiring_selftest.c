@@ -9,6 +9,7 @@
  * three-file fixture (Makefile, run_lint.sh, DEFENSIVE_CODING.md doc
  * block) passes. Cases I and J cover the doc-block three-way parity by
  * name: a listed gate missing from the doc, and a doc-only phantom gate.
+ * Cases L/M retain exact Make target matching during single-pass scanning.
  * Case K wires the same case label twice — only the duplicate-label check
  * (gate check H) can see it, since every other check is set-based.
  * Sandbox lives under getenv("TMPDIR") else "test-tmp", never /tmp.
@@ -472,11 +473,71 @@ static const char *lgws_absolutize(char *d0, char *scratch, size_t cap, int *rc)
     return scratch;
 }
 
+static int lgws_target_fixture(const char *d)
+{
+    char root[4096];
+    if (cic_repo_root(root, sizeof root)) return 2;
+    if (lgws_make_fixture(root, d)) return 2;
+    const char *gates[] = {
+        "check-sentinel-a", "check-sentinel-ab", "check-sentinel-last"
+    };
+    if (lgws_write_doc(d, gates, 3)) return 2;
+    for (int i = 0; i < 3; i++)
+        if (lgws_wire(d, gates[i], "./tools/lint/sentinel_a.sh")) return 2;
+    return 0;
+}
+
+static int lgws_target_makefile(const char *d, const char *targets)
+{
+    char path[4096], text[4096];
+    if (ovf(snprintf(path, sizeof path, "%s/Makefile", d), sizeof path)) return 2;
+    if (ovf(snprintf(text, sizeof text,
+                    "LINT_GATES := \\\n"
+                    "    check-sentinel-a \\\n"
+                    "    check-sentinel-ab \\\n"
+                    "    check-sentinel-last\n"
+                    "LINT_FAST_GATES := \\\n"
+                    "    check-sentinel-a\n\n%s", targets), sizeof text))
+        return 2;
+    return csr_write(path, text);
+}
+
+static int lgws_case_l(const char *base, int *fails)
+{
+    char d[4096];
+    if (ovf(snprintf(d, sizeof d, "%s/l", base), sizeof d)) return 2;
+    if (lgws_target_fixture(d)) return 2;
+    if (lgws_target_makefile(d,
+                            "check-sentinel-ab:\r\n"
+                            "check-sentinel-a:\n"
+                            "check-sentinel-a:\n"
+                            "check-sentinel-last:")) return 2;
+    return lgws_expect_accept("L: exact targets, repeats, CRLF and final EOF pass", d, fails);
+}
+
+static int lgws_case_m(const char *base, int *fails)
+{
+    char d[4096];
+    if (ovf(snprintf(d, sizeof d, "%s/m", base), sizeof d)) return 2;
+    if (lgws_target_fixture(d)) return 2;
+    if (lgws_target_makefile(d,
+                            "# check-sentinel-a:\n"
+                            " check-sentinel-a:\n"
+                            "\tcheck-sentinel-a:\n"
+                            "check-sentinel-a-extra:\n"
+                            "check-sentinel-a :\n"
+                            "check-sentinel-a\n"
+                            "check-sentinel-ab:\n"
+                            " check-sentinel-last:")) return 2;
+    return lgws_expect_reject("M: lookalikes cannot hide either missing target",
+                              "    check-sentinel-a\n    check-sentinel-last\n", d, fails);
+}
+
 typedef int (*lgws_case_fn)(const char *, int *);
 static const lgws_case_fn k_lgws_cases[] = {
     lgws_case_a, lgws_case_b, lgws_case_c, lgws_case_d,
     lgws_case_e, lgws_case_f, lgws_case_g, lgws_case_h,
-    lgws_case_i, lgws_case_j, lgws_case_k,
+    lgws_case_i, lgws_case_j, lgws_case_k, lgws_case_l, lgws_case_m,
 };
 
 int check_lint_gate_wiring_selftest(void)
@@ -507,6 +568,7 @@ int check_lint_gate_wiring_selftest(void)
         printf("\xe2\x95\x90\xe2\x95\x90 selftest: FAIL \xe2\x95\x90\xe2\x95\x90\n");
         return 1;
     }
-    printf("\xe2\x95\x90\xe2\x95\x90 selftest: PASS (11/11) \xe2\x95\x90\xe2\x95\x90\n");
+    printf("\xe2\x95\x90\xe2\x95\x90 selftest: PASS (%zu/%zu) \xe2\x95\x90\xe2\x95\x90\n",
+           ncases, ncases);
     return 0;
 }

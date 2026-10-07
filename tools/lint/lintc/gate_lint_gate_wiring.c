@@ -306,7 +306,23 @@ static int lgw_check_g(const struct sr_set *listed, const struct sr_set *doc,
                       doc_path);
 }
 
-static int lgw_makefile_has_target(const char *makefile, const char *gate)
+/* Preserve the existing column-zero, exact-name, immediate-colon match.
+ * The line is borrowed only during this call; listed names are bounded by
+ * sr_set and only presence bits survive the next getline. */
+static void lgw_mark_target(const char *line, size_t length,
+                            const struct sr_set *listed, int present[SR_ALLOW])
+{
+    if (strncmp(line, "check-", 6) != 0)
+        return;
+    for (int i = 0; i < listed->count; i++) {
+        size_t n = strlen(listed->n[i]);
+        if (length > n && strncmp(line, listed->n[i], n) == 0 && line[n] == ':')
+            present[i] = 1;
+    }
+}
+
+static int lgw_makefile_targets(const char *makefile, const struct sr_set *listed,
+                                int present[SR_ALLOW])
 {
     FILE *f = fopen(makefile, "r");
     if (!f)
@@ -314,29 +330,22 @@ static int lgw_makefile_has_target(const char *makefile, const char *gate)
     char *line = NULL;
     size_t cap = 0;
     ssize_t n;
-    size_t glen = strlen(gate);
-    int found = 0;
-    while ((n = getline(&line, &cap, f)) >= 0) {
-        if ((size_t)n > glen && strncmp(line, gate, glen) == 0 && line[glen] == ':') {
-            found = 1;
-            break;
-        }
-    }
-    int rc = fin(f, line, makefile, 0);
-    return rc ? rc : found;
+    while ((n = getline(&line, &cap, f)) >= 0)
+        lgw_mark_target(line, (size_t)n, listed, present);
+    return fin(f, line, makefile, 0);
 }
 
 static int lgw_check_c(const char *makefile, const struct sr_set *listed,
                        char *out, size_t cap, size_t *used, int *fail)
 {
+    int present[SR_ALLOW] = {0};
+    int rc = lgw_makefile_targets(makefile, listed, present);
+    if (rc)
+        return rc;
     int any = 0;
-    for (int i = 0; i < listed->count; i++) {
-        int r = lgw_makefile_has_target(makefile, listed->n[i]);
-        if (r < 0)
-            return r;
-        if (!r)
+    for (int i = 0; i < listed->count; i++)
+        if (!present[i])
             any = 1;
-    }
     if (!any)
         return 0;
     *fail = 1;
@@ -344,10 +353,7 @@ static int lgw_check_c(const char *makefile, const struct sr_set *listed,
                     "FAIL: listed gate(s) with no 'check-...:' target in %s:\n", makefile))
         return 2;
     for (int i = 0; i < listed->count; i++) {
-        int r = lgw_makefile_has_target(makefile, listed->n[i]);
-        if (r < 0)
-            return r;
-        if (!r && lgw_appendf_pub(out, cap, used, "    %s\n", listed->n[i]))
+        if (!present[i] && lgw_appendf_pub(out, cap, used, "    %s\n", listed->n[i]))
             return 2;
     }
     return lgw_append(out, cap, used,
