@@ -1,0 +1,14 @@
+diff --git a/vendor/android-mbedtls/library/rsa.c b/vendor/android-mbedtls/library/rsa.c
+index e2b8fdd26..f5b619aef 100644
+--- a/vendor/android-mbedtls/library/rsa.c
++++ b/vendor/android-mbedtls/library/rsa.c
+@@ -255,2 +255,2 @@ int mbedtls_rsa_parse_pubkey(mbedtls_rsa_context *rsa, const unsigned char *key,
+-    if ((ret = mbedtls_rsa_import_raw(rsa, p, len, NULL, 0, NULL, 0,
+-                                      NULL, 0, NULL, 0)) != 0) {
++    if (mbedtls_rsa_import_raw(rsa, p, len, NULL, 0, NULL, 0,
++                               NULL, 0, NULL, 0) != 0) {
+@@ -267,2 +267,2 @@ int mbedtls_rsa_parse_pubkey(mbedtls_rsa_context *rsa, const unsigned char *key,
+-    if ((ret = mbedtls_rsa_import_raw(rsa, NULL, 0, NULL, 0, NULL, 0,
+-                                      NULL, 0, p, len)) != 0) {
++    if (mbedtls_rsa_import_raw(rsa, NULL, 0, NULL, 0, NULL, 0,
++                               NULL, 0, p, len) != 0) {

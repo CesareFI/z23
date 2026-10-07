@@ -3,6 +3,9 @@
 #include "mbedtls/sha256.h"
 #include "mbedtls/sha512.h"
 #include "mbedtls/ripemd160.h"
+#ifdef ZCL_TLS_REVIEW
+#include "transport_alloc.h"
+#endif
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -13,12 +16,28 @@
 } } while (0)
 #define TEXT(s) (const uint8_t *)(s), sizeof(s) - 1
 
-static bool provider_vectors(void)
+static bool provider_selftests(void)
 {
     CHECK(mbedtls_sha256_self_test(0) == 0);
     CHECK(mbedtls_sha512_self_test(0) == 0);
     CHECK(mbedtls_ripemd160_self_test(0) == 0);
     return true;
+}
+
+static bool provider_vectors(void)
+{
+#ifdef ZCL_TLS_REVIEW
+    /* The host TLS profile refuses unowned provider allocations. The selftest
+     * scratch belongs to this scope, including every failed selftest path. */
+    zcl_tls_heap heap = {0};
+    CHECK(zcl_tls_heap_enter(&heap));
+    const bool passed = provider_selftests();
+    const bool empty = zcl_tls_heap_clear(&heap);
+    zcl_tls_heap_leave();
+    return passed && empty && !heap.denied;
+#else
+    return provider_selftests();
+#endif
 }
 
 static bool public_reference_vectors(void)

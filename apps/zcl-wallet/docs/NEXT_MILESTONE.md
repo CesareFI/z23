@@ -58,8 +58,11 @@ failure, authentication failure notification survives cancellation errors, and
 a bounded public-fixture sync benchmark is available. The current unsigned
 release has been reproduced from a fresh source-only directory on the same
 host/toolchain. Exact evidence and the next concrete task are in `PROGRESS.md`.
-TLS quarantine remains untouched; do not resume its review as an implicit next
-step or substitute weaker platform policy for unavailable hardware evidence.
+The owner explicitly authorized resuming host TLS review on 2026-09-30;
+see `TLS_REVIEW.md` for current findings. Android/JNI transport stays disabled
+pending completed security review. Signing/publication and physical custody
+qualification block release, not independent local engineering. Never substitute
+weaker platform policy for unavailable hardware evidence.
 
 ## First acceptance gate
 

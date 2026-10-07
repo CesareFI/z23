@@ -1,0 +1,13 @@
+--- a/library/bignum_core.c
++++ b/library/bignum_core.c
+@@ -137 +137 @@
+-    mbedtls_ct_condition_t ret = MBEDTLS_CT_FALSE, cond = MBEDTLS_CT_FALSE, done = MBEDTLS_CT_FALSE;
++    mbedtls_ct_condition_t ret = MBEDTLS_CT_FALSE, done = MBEDTLS_CT_FALSE;
+@@ -147 +147 @@
+-        cond = mbedtls_ct_uint_lt(B[i - 1], A[i - 1]);
++        mbedtls_ct_condition_t cond = mbedtls_ct_uint_lt(B[i - 1], A[i - 1]);
+@@ -645 +645,3 @@
+-    mbedtls_ct_condition_t ge_lower = MBEDTLS_CT_TRUE, lt_upper = MBEDTLS_CT_FALSE;
++    /* Assigned on every path reaching the loop condition. Error paths return
++     * through cleanup without reading either temporary. */
++    mbedtls_ct_condition_t ge_lower, lt_upper;
