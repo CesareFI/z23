@@ -129,6 +129,72 @@ static enum market_moderation_profile mm_unreadable(
     return MARKET_MODERATION_PROFILE_DEFAULT;
 }
 
+static bool mm_policy_matches(const char *buf, size_t got,
+                              const char *expected)
+{
+    size_t len = strlen(expected);
+    return got == len && memcmp(buf, expected, len) == 0;
+}
+
+static void mm_policy_error(char *error, size_t capacity, const char *message)
+{
+    if (error && capacity)
+        snprintf(error, capacity, "%s", message);
+}
+
+static bool mm_policy_read_stable(struct platform_positioned_file *file,
+                                 char *buf, int64_t *got)
+{
+    struct platform_positioned_file_snapshot before, after;
+    if (platform_positioned_file_snapshot(file, &before) &&
+        platform_positioned_file_is_private(file) && before.size > 0 &&
+        before.size <= MM_POLICY_MAX_BYTES &&
+        platform_positioned_file_read(file, buf, (size_t)before.size, 0) ==
+            (int64_t)before.size &&
+        platform_positioned_file_snapshot(file, &after) &&
+        platform_positioned_file_snapshot_equal(&before, &after)) {
+        *got = (int64_t)before.size;
+        return true;
+    }
+    return false; // raw-return-ok:caller-logs-policy-read-refusal
+}
+
+static bool mm_policy_document(const char *buf, size_t got,
+                               int *profile, int *relay)
+{
+    char expected[160];
+    for (int i = 0; i < MARKET_MODERATION_PROFILE_COUNT; i++) {
+        const char *profile_name = market_moderation_profile_string(
+            (enum market_moderation_profile)i);
+        snprintf(expected, sizeof(expected), "%s\nprofile=%s\n",
+                 MM_POLICY_MAGIC, profile_name);
+        if (mm_policy_matches(buf, got, expected)) {
+            *profile = i;
+            *relay = MARKET_MODERATION_RELAY_ALL;
+            return true;
+        }
+        for (int r = 0; r < MARKET_MODERATION_RELAY_RULE_COUNT; r++) {
+            snprintf(expected, sizeof(expected), "%s\nprofile=%s\nrelay=%s\n",
+                     MM_POLICY_MAGIC, profile_name,
+                     market_moderation_relay_rule_string(
+                         (enum market_moderation_relay_rule)r));
+            if (mm_policy_matches(buf, got, expected)) {
+                *profile = i;
+                *relay = r;
+                return true;
+            }
+        }
+    }
+    return false; // raw-return-ok:caller-logs-unknown-policy-document
+}
+
+static void mm_policy_open_error(char *error, size_t capacity)
+{
+    if (error && capacity)
+        snprintf(error, capacity, "cannot open moderation policy: %s",
+                 strerror(errno));
+}
+
 enum market_moderation_profile market_moderation_profile_load(
     const char *datadir, enum market_moderation_relay_rule *relay_out,
     bool *ok_out, char *error, size_t error_capacity)
@@ -147,35 +213,18 @@ enum market_moderation_profile market_moderation_profile_load(
             if (ok_out) *ok_out = true;
             return MARKET_MODERATION_PROFILE_DEFAULT;
         }
-        if (error && error_capacity)
-            snprintf(error, error_capacity,
-                     "cannot open moderation policy: %s", strerror(errno));
+        mm_policy_open_error(error, error_capacity);
         LOG_ERROR(MM_TAG, "policy load: open %s failed: %s", path,
                   strerror(errno));
         return mm_unreadable(relay_out);
     }
-    struct platform_positioned_file_snapshot before, after;
     char buf[MM_POLICY_MAX_BYTES + 1];
     int64_t got = -1;
-    if (platform_positioned_file_snapshot(&file, &before) &&
-        platform_positioned_file_is_private(&file) && before.size > 0 &&
-        before.size <= MM_POLICY_MAX_BYTES &&
-        platform_positioned_file_read(&file, buf, (size_t)before.size, 0) ==
-            (int64_t)before.size &&
-        platform_positioned_file_snapshot(&file, &after) &&
-        before.size == after.size && before.volume == after.volume &&
-        before.file_low == after.file_low &&
-        before.file_high == after.file_high &&
-        before.modified_seconds == after.modified_seconds &&
-        before.modified_nanoseconds == after.modified_nanoseconds &&
-        before.changed_seconds == after.changed_seconds &&
-        before.changed_nanoseconds == after.changed_nanoseconds)
-        got = (int64_t)before.size;
+    (void)mm_policy_read_stable(&file, buf, &got);
     platform_positioned_file_close(&file);
     if (got < 0) {
-        if (error && error_capacity)
-            snprintf(error, error_capacity,
-                     "moderation policy size or mode is invalid");
+        mm_policy_error(error, error_capacity,
+                        "moderation policy size or mode is invalid");
         LOG_ERROR(MM_TAG, "policy load: %s size/mode/read invalid", path);
         return mm_unreadable(relay_out);
     }
@@ -187,35 +236,12 @@ enum market_moderation_profile market_moderation_profile_load(
      * still legal and means relay-all.v1: it was written before the relay
      * leg existed, so it never expressed strictness and must not be read
      * as having done so. */
-    char expected[160];
     int profile = -1;
     int relay = MARKET_MODERATION_RELAY_ALL;
-    for (int i = 0; profile < 0 && i < MARKET_MODERATION_PROFILE_COUNT; i++) {
-        const char *profile_name = market_moderation_profile_string(
-            (enum market_moderation_profile)i);
-        snprintf(expected, sizeof(expected), "%s\nprofile=%s\n",
-                 MM_POLICY_MAGIC, profile_name);
-        if (strcmp(buf, expected) == 0) {
-            profile = i;
-            relay = MARKET_MODERATION_RELAY_ALL;
-            break;
-        }
-        for (int r = 0; r < MARKET_MODERATION_RELAY_RULE_COUNT; r++) {
-            snprintf(expected, sizeof(expected), "%s\nprofile=%s\nrelay=%s\n",
-                     MM_POLICY_MAGIC, profile_name,
-                     market_moderation_relay_rule_string(
-                         (enum market_moderation_relay_rule)r));
-            if (strcmp(buf, expected) == 0) {
-                profile = i;
-                relay = r;
-                break;
-            }
-        }
-    }
+    (void)mm_policy_document(buf, (size_t)got, &profile, &relay);
     if (profile < 0) {
-        if (error && error_capacity)
-            snprintf(error, error_capacity,
-                     "moderation policy content is not a known profile");
+        mm_policy_error(error, error_capacity,
+                        "moderation policy content is not a known profile");
         LOG_ERROR(MM_TAG, "policy load: %s content rejected", path);
         return mm_unreadable(relay_out);
     }

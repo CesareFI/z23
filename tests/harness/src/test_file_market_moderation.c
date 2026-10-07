@@ -1118,12 +1118,69 @@ static int test_mmt_retrieve_names_unreviewed_unknown(void)
     return failures;
 }
 
+static int mmt_policy_exact_bytes(void)
+{
+    int failures = 0;
+    TEST("market moderation: policy documents require exact bytes") {
+        char datadir[] = "test-tmp/market_moderation_bytes_XXXXXX";
+        ASSERT(mkdtemp(datadir) != NULL);
+        char directory[640], path[768];
+        snprintf(directory, sizeof(directory), "%s/market", datadir);
+        snprintf(path, sizeof(path), "%s/market/moderation.v1", datadir);
+        ASSERT(mkdir(directory, 0700) == 0);
+        static const char legacy[] =
+            "zcl.market.moderation.v1\nprofile=open-view\n";
+        static const char pair[] =
+            "zcl.market.moderation.v1\nprofile=open-view\nrelay=relay-all.v1\n";
+        static const struct { const char *bytes; size_t len; } documents[] = {
+            {legacy, sizeof(legacy) - 1}, {pair, sizeof(pair) - 1}
+        };
+        static const struct { const char *bytes; size_t len; bool valid; } tails[] = {
+            {"", 0, true}, {"\0junk", 5, false}, {"\0", 1, false},
+            {"junk", 4, false}, {"", 0, false} /* Remove final LF. */
+        };
+        for (size_t d = 0; d < sizeof(documents) / sizeof(documents[0]); d++) {
+            for (size_t t = 0; t < sizeof(tails) / sizeof(tails[0]); t++) {
+                size_t len = documents[d].len - (t == 4 ? 1u : 0u);
+                int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+                ASSERT(fd >= 0);
+                ASSERT(fchmod(fd, 0600) == 0);
+                ASSERT(write(fd, documents[d].bytes, len) == (ssize_t)len);
+                ASSERT(write(fd, tails[t].bytes, tails[t].len) ==
+                       (ssize_t)tails[t].len);
+                ASSERT(close(fd) == 0);
+                bool ok = !tails[t].valid;
+                char error[192] = {0};
+                enum market_moderation_relay_rule relay =
+                    MARKET_MODERATION_RELAY_ALL;
+                enum market_moderation_profile profile =
+                    market_moderation_profile_load(datadir, &relay, &ok,
+                                                   error, sizeof(error));
+                ASSERT(ok == tails[t].valid);
+                ASSERT(profile == (tails[t].valid ? MARKET_MODERATION_PROFILE_OPEN :
+                                   MARKET_MODERATION_PROFILE_DEFAULT));
+                ASSERT(relay == (tails[t].valid ? MARKET_MODERATION_RELAY_ALL :
+                                 MARKET_MODERATION_RELAY_REVIEWED_ONLY));
+                if (!tails[t].valid)
+                    ASSERT(strcmp(error, "moderation policy content is not a known profile") == 0);
+            }
+        }
+        ASSERT(unlink(path) == 0);
+        ASSERT(rmdir(directory) == 0);
+        ASSERT(rmdir(datadir) == 0);
+        PASS();
+    }
+    _test_next:;
+    return failures;
+}
+
 int test_file_market_moderation(void)
 {
     int failures = 0;
     printf("\n=== File Market Moderation Tests ===\n");
     failures += test_mmt_profile_matrix();
     failures += test_mmt_profile_persistence();
+    failures += mmt_policy_exact_bytes();
     failures += test_mmt_view_filter();
     failures += test_mmt_serving_gate_fails_closed();
     failures += test_mmt_policy_file_fails_closed();
