@@ -277,6 +277,9 @@ enum db_sapling_note_reservation_state db_sapling_note_reservation_probe(
     } else if (rc == SQLITE_ROW) {
         if (sqlite3_column_type(s, 0) == SQLITE_NULL) {
             state = DB_NOTE_RESERVATION_AVAILABLE;
+        } else if (sqlite3_column_type(s, 0) != SQLITE_BLOB) {
+            LOG_ERROR("sapling_note", "reservation probe: non-BLOB spent identity");
+            state = DB_NOTE_RESERVATION_CONFLICT;
         } else {
             const uint8_t *spent = sqlite3_column_blob(s, 0);
             int spent_len = sqlite3_column_bytes(s, 0);
