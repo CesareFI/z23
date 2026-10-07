@@ -226,6 +226,16 @@ static bool tw_reap(struct mesh_terminal_worker *w)
     return false;
 }
 
+/* A signal interruption does not settle child ownership. */
+static pid_t tw_wait_settled(pid_t pid, int *status)
+{
+    pid_t got;
+    do {
+        got = waitpid(pid, status, 0);
+    } while (got < 0 && errno == EINTR);
+    return got;
+}
+
 /* The child half of spawn: never returns; stages failures by name. */
 static void tw_child(const struct mesh_terminal_worker_config *cfg,
                      const char *slave_path, int master, int stage_fd)
@@ -393,7 +403,7 @@ static struct zcl_result mesh_terminal_worker_spawn_platform_arm(
 
     if (stage != 0) {
         int status = 0;
-        (void)waitpid(pid, &status, 0);
+        (void)tw_wait_settled(pid, &status);
         close(master);
         enum mesh_terminal_worker_error code =
             MESH_TERMINAL_WORKER_ERR_SPAWN;
@@ -623,7 +633,7 @@ static void mesh_terminal_worker_kill_platform_arm(struct mesh_terminal_worker *
             break;
         usleep(2000);
     }
-    pid_t got = waitpid(w->pid, &status, 0);
+    pid_t got = tw_wait_settled(w->pid, &status);
     if (got == w->pid)
         tw_record_exit(w, status);
     else {

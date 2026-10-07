@@ -19,6 +19,19 @@
 
 #define _GNU_SOURCE /* pthread/posix bits, if any — must precede includes */
 
+#if defined(__linux__)
+#define geometry_in_bounds tw_fixture_geometry
+#define mesh_terminal_worker_error_string tw_fixture_error_string
+#define mesh_terminal_worker_budget_would_overrun tw_fixture_budget_overrun
+#define mesh_terminal_worker_spawn tw_fixture_spawn
+#define mesh_terminal_worker_input tw_fixture_input
+#define mesh_terminal_worker_output tw_fixture_output
+#define mesh_terminal_worker_resize tw_fixture_resize
+#define mesh_terminal_worker_budget_exceeded tw_fixture_budget_exceeded
+#define mesh_terminal_worker_alive tw_fixture_alive
+#define mesh_terminal_worker_kill tw_fixture_kill
+#endif
+
 #include "test/test_core.h"
 #include "platform/os_sandbox.h"
 #include "platform/time_compat.h"
@@ -30,6 +43,29 @@
 #include <unistd.h>
 
 #define FBSH_BIN "build/bin/fbsh"
+
+#if defined(__linux__)
+#include <errno.h>
+#include <sys/wait.h>
+static bool tw_interrupt_wait;
+static unsigned tw_blocking_calls;
+static pid_t tw_waited_pid;
+static struct mesh_terminal_worker *tw_waiting_worker;
+static bool tw_owned_on_retry;
+static pid_t tw_fixture_waitpid(pid_t pid, int *status, int options)
+{
+    if (!tw_interrupt_wait) return waitpid(pid, status, options);
+    if (options == WNOHANG) return 0;
+    tw_waited_pid = pid;
+    if (++tw_blocking_calls == 1) { errno = EINTR; return -1; }
+    tw_owned_on_retry = !tw_waiting_worker || tw_waiting_worker->running;
+    return waitpid(pid, status, options);
+}
+/* Compile the production callers with only their wait syscall substituted. */
+#define waitpid tw_fixture_waitpid
+#include "../../../cognition/modules/session/src/mesh_terminal_worker.c"
+#undef waitpid
+#endif
 
 static char g_dir[160];
 static char g_fbsh[600];
@@ -120,6 +156,57 @@ static int check(int failures, bool ok, const char *label)
     printf("mesh_terminal_worker: %s... %s\n", label, ok ? "OK" : "FAIL");
     return ok ? failures : failures + 1;
 }
+
+#if defined(__linux__)
+static int test_interrupted_reaping(void)
+{
+    int failures = 0, status = 0;
+    pid_t pid = fork();
+    if (pid == 0) _exit(0);
+    failures = check(failures, pid > 0, "reaping fixture fork");
+    if (pid < 0) return failures;
+    struct mesh_terminal_worker w = {
+        .pid = pid, .pgid = pid, .master_fd = -1, .running = true
+    };
+    tw_interrupt_wait = true;
+    tw_blocking_calls = 0;
+    tw_waiting_worker = &w;
+    tw_owned_on_retry = false;
+    mesh_terminal_worker_kill(&w);
+    tw_interrupt_wait = false;
+    failures = check(failures, tw_blocking_calls >= 2 && tw_owned_on_retry &&
+                     !w.running, "kill retries EINTR before releasing ownership");
+    pid_t got = waitpid(pid, &status, WNOHANG);
+    failures = check(failures, got == -1 && errno == ECHILD,
+                     "kill actually reaped the child");
+    if (got == 0) { (void)kill(pid, SIGKILL); (void)tw_wait_settled(pid, &status); }
+    return failures;
+}
+static int test_interrupted_startup_reaping(void)
+{
+    int failures = 0, status = 0;
+    struct mesh_terminal_worker w;
+    struct mesh_terminal_worker_config cfg = {
+        .shell_path = "/dev/null", .workdir = "/dev/null", .cols = 80,
+        .rows = 24, .max_bytes_in = 8, .max_bytes_out = 8, .lifetime_seconds = 1
+    };
+    tw_waiting_worker = NULL;
+    tw_blocking_calls = 0;
+    tw_waited_pid = 0;
+    tw_interrupt_wait = true;
+    struct zcl_result r = mesh_terminal_worker_spawn(&cfg, 0, &w);
+    tw_interrupt_wait = false;
+    failures = check(failures, !r.ok && r.code == MESH_TERMINAL_WORKER_ERR_CONFIG &&
+                     !w.running && w.master_fd == -1 && tw_blocking_calls >= 2,
+                     "failed startup retries interrupted reap");
+    pid_t got = tw_waited_pid > 0 ? waitpid(tw_waited_pid, &status, WNOHANG) : 0;
+    failures = check(failures, got == -1 && errno == ECHILD,
+                     "failed startup leaves no waitable child");
+    if (got == 0 && tw_waited_pid > 0)
+        (void)tw_wait_settled(tw_waited_pid, &status);
+    return failures;
+}
+#endif
 
 /* Platform-neutral bookkeeping: geometry_in_bounds and
  * mesh_terminal_worker_budget_would_overrun are pure functions shared by every
@@ -530,6 +617,10 @@ static int test_mesh_terminal_worker_platform_arm(void)
 int test_mesh_terminal_worker(void)
 {
     int failures = test_mesh_terminal_worker_bookkeeping();
+#if defined(__linux__)
+    failures += test_interrupted_reaping();
+    failures += test_interrupted_startup_reaping();
+#endif
     failures += test_mesh_terminal_worker_platform_arm();
     return failures;
 }
