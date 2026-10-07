@@ -1004,6 +1004,38 @@ static int test_snapshot_sync_service_db_service_runtime(void)
     return failures;
 }
 
+static int test_snapshot_turbo_cleanup_retries_after_db_reopens(void)
+{
+    int failures = 0;
+
+    TEST("snapshot reset retains failed turbo cleanup for retry") {
+        struct snapshot_sync_service svc;
+        struct node_db ndb = {0};
+        struct node_db_status st;
+
+        snapsync_init(&svc, &ndb);
+        svc.state = SNAPSYNC_RECEIVING;
+        svc.turbo_active = true;
+
+        snapsync_reset(&svc);
+        ASSERT(svc.state == SNAPSYNC_FAILED);
+        ASSERT(svc.turbo_active);
+
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        ndb.turbo_mode = true;
+        snapsync_reset(&svc);
+        ASSERT(svc.state == SNAPSYNC_IDLE);
+        ASSERT(!svc.turbo_active);
+        node_db_get_status(&ndb, &st);
+        ASSERT(!st.turbo_mode);
+
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_snapshot_sync_service_runtime_accessor(void)
 {
     int failures = 0;
@@ -2086,6 +2118,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_verify_flyclient_begin_failure();
     failures += test_snapshot_sync_service_offer_churn();
     failures += test_snapshot_sync_service_db_service_runtime();
+    failures += test_snapshot_turbo_cleanup_retries_after_db_reopens();
     failures += test_snapshot_sync_service_runtime_accessor();
     failures += test_snapshot_sync_service_db_service_chunk_contained();
     failures += test_snapshot_sync_service_containment_preserves_canonical_state();
