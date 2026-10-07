@@ -8398,6 +8398,10 @@ $(P2_INVARIANT_CHECK_BIN): tools/p2_invariant_check.c vendor/include/sqlite3.h v
 SQLQ_BIN = $(BIN_DIR)/sqlq
 .PHONY: sqlq
 sqlq: $(SQLQ_BIN)
+.PHONY: sqlq-selftest
+sqlq-selftest: $(SQLQ_BIN)
+	@bash tools/scripts/sqlq_selftest.sh "$(abspath $(SQLQ_BIN))"
+
 $(SQLQ_BIN): tools/sqlq.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \

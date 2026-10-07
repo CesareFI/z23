@@ -14,13 +14,23 @@
  *
  * Opens SQLITE_OPEN_READONLY (never creates, never writes, WAL-reader
  * safe against a live node). Prints rows tab-separated, NULL as "NULL",
- * BLOBs as lowercase hex. Exit 0 on success, 1 on usage/open/SQL error.
+ * BLOBs as lowercase hex. Exit 0 on success, 1 on usage/open/SQL/output error.
  */
 
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
+
+/* The database is already closed; stdout remains owned by the C runtime. */
+static int finish_output(int query_ok)
+{
+    if (fflush(stdout) == EOF || ferror(stdout)) {
+        fputs("sqlq: output write failed\n", stderr);
+        return 1;
+    }
+    return query_ok ? 0 : 1;
+}
 
 int main(int argc, char **argv)
 {
@@ -78,5 +88,5 @@ int main(int argc, char **argv)
         fprintf(stderr, "sqlq: step failed: %s\n", sqlite3_errmsg(db));
     sqlite3_finalize(st);
     sqlite3_close(db);
-    return ok ? 0 : 1;
+    return finish_output(ok);
 }
