@@ -472,13 +472,34 @@ int asy_analyze_file(const char *path, asy_emit_fn emit, void *ctx)
     int rc = 0;
     while (rc == 0 && (n = getline(&line, &cap, f)) >= 0) {
         fnr++;
+        if (memchr(line, 0, (size_t)n)) {
+            fprintf(stderr,
+                    "check_arm_symbol_single: UNPROVEN — NUL at %s:%d\n",
+                    path, fnr);
+            rc = 2;
+            break;
+        }
         if (n > 0 && line[n - 1] == '\n')
             line[--n] = '\0';
         char buf[ASA_LINE];
+        if ((size_t)n >= sizeof buf) {
+            fprintf(stderr,
+                    "check_arm_symbol_single: UNPROVEN — line overflow at %s:%d\n",
+                    path, fnr);
+            rc = 2;
+            break;
+        }
         snprintf(buf, sizeof buf, "%s", line);
         rc = asa_process_line(path, &c, fnr, buf, emit, ctx);
     }
+    if (ferror(f) || (rc == 0 && !feof(f))) {
+        fprintf(stderr, "check_arm_symbol_single: UNPROVEN — read failed at %s\n", path);
+        rc = 2;
+    }
     free(line);
-    fclose(f);
+    if (fclose(f) != 0) {
+        fprintf(stderr, "check_arm_symbol_single: UNPROVEN — close failed at %s\n", path);
+        rc = 2;
+    }
     return rc;
 }

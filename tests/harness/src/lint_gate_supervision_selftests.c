@@ -728,6 +728,165 @@ int t_blocker_escape_registered_gate(void)
     return failures;
 }
 
+/* Full native gate, private non-Git cwd, explicit environment and no shell. */
+static int arm_line_run(const char *exe, const char *dir)
+{
+    pid_t pid = fork_with_retry();
+    if (pid == 0) {
+        if (chdir(dir) != 0) _exit(125);
+        int fd = open("output", O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        if (fd < 0) _exit(125);
+        if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0)
+            _exit(125);
+        close(fd);
+        char *const args[] = {(char *)exe, "check-arm-symbol-single", NULL};
+        char *const env[] = {"ZCL_ARM_SYMBOL_SCAN_ROOTS=src",
+            "ZCL_ARM_SYMBOL_FILE_FLOOR=1", "ZCL_ARM_SYMBOL_COVERAGE=0",
+            "ZCL_ARM_SYMBOL_BASELINE=baseline", "ZCL_LINT_MODE=FAIL", NULL};
+        execve(exe, args, env);
+        _exit(127);
+    }
+    int status = 0;
+    pid_t waited;
+    if (pid < 0) return -1;
+    do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
+    return waited == pid && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+static int arm_line_path(char *out, size_t cap, const char *dir, const char *leaf)
+{
+    int n = snprintf(out, cap, "%s/%s", dir, leaf);
+    return n < 0 || (size_t)n >= cap;
+}
+
+static int arm_line_expect(const char *exe, const char *dir, int expected,
+                           const char *diagnostic)
+{
+    char output[PATH_MAX], row[8300];
+    if (arm_line_path(output, sizeof output, dir, "output")) return 1;
+    int rc = arm_line_run(exe, dir);
+    FILE *f = fopen(output, "r");
+    if (!f) return 1;
+    size_t n = fread(row, 1, sizeof row - 1, f);
+    row[n] = '\0';
+    int ok = !ferror(f) && strstr(row, diagnostic) != NULL;
+    if (fclose(f) != 0) ok = 0;
+    return rc != expected || !ok;
+}
+
+static int arm_line_case(const char *exe, const char *dir, size_t length,
+                         int duplicate, int expected, const char *diagnostic)
+{
+    char source[PATH_MAX], row[8300];
+    if (arm_line_path(source, sizeof source, dir, "src/probe.c"))
+        return 1;
+    const char *definition = "int probe(void){return 0;}";
+    if (length < strlen(definition) || length > sizeof row - 2) return 1;
+    size_t padding = length - strlen(definition);
+    memset(row, ' ', padding);
+    memcpy(row + padding, definition, strlen(definition));
+    row[length] = '\n';
+    row[length + 1] = '\0';
+    FILE *f = fopen(source, "w");
+    if (!f) return 1;
+    int ok = fputs("#if FLAG\n", f) >= 0 && fputs(row, f) >= 0;
+    if (duplicate) ok = ok && fputs("#else\n", f) >= 0 && fputs(row, f) >= 0;
+    ok = ok && fputs("#endif\n", f) >= 0;
+    if (fclose(f) != 0) ok = 0;
+    if (!ok) return 1;
+    return arm_line_expect(exe, dir, expected, diagnostic);
+}
+
+static int arm_line_bytes(const char *exe, const char *dir, const char *body,
+                          size_t size, int expected, const char *diagnostic)
+{
+    char source[PATH_MAX];
+    if (arm_line_path(source, sizeof source, dir, "src/probe.c")) return 1;
+    FILE *f = fopen(source, "wb");
+    if (!f) return 1;
+    int ok = fwrite(body, 1, size, f) == size;
+    if (fclose(f) != 0) ok = 0;
+    if (!ok) return 1;
+    return arm_line_expect(exe, dir, expected, diagnostic);
+}
+
+static int arm_line_read_failure(const char *exe, const char *dir)
+{
+#if defined(__linux__)
+    /* The child opens its own memory as a regular file. Reading from offset
+     * zero fails with EIO; no source bytes or live-process state are read. */
+    char source[PATH_MAX];
+    if (arm_line_path(source, sizeof source, dir, "src/probe.c")) return 1;
+    if (unlink(source) != 0) return 1;
+    if (symlink("/proc/self/mem", source) != 0) return 1;
+    int rc = arm_line_expect(exe, dir, 2,
+        "UNPROVEN — read failed at src/probe.c");
+    if (unlink(source) != 0) rc++;
+    return rc;
+#else
+    (void)exe;
+    (void)dir;
+    fprintf(stderr, "[lint-gate] arm-symbol read-error fixture requires Linux procfs\n");
+    return 0;
+#endif
+}
+
+static int arm_line_cleanup(const char *dir, const char *src)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    const char *leaves[] = {"src/probe.c", "output", "baseline"};
+    for (size_t i = 0; i < sizeof leaves / sizeof leaves[0]; i++) {
+        int n = snprintf(path, sizeof path, "%s/%s", dir, leaves[i]);
+        if (n < 0 || n >= (int)sizeof path) { failures++; continue; }
+        if (unlink(path) != 0 && errno != ENOENT) failures++;
+    }
+    if (rmdir(src) != 0) failures++;
+    return failures;
+}
+
+static int arm_line_boundaries(void)
+{
+    char exe[PATH_MAX], dir[PATH_MAX], src[PATH_MAX], base[PATH_MAX];
+    if (repo_path(exe, sizeof exe, "build/bin/z23-lint") != 0)
+        return 1;
+    test_make_tmpdir(dir, sizeof dir, "arm_line", "boundaries");
+    int failures = 1;
+    if (arm_line_path(src, sizeof src, dir, "src") ||
+        arm_line_path(base, sizeof base, dir, "baseline"))
+        goto done;
+    if (mkdir(src, 0700) != 0) goto done;
+    if (write_file(base,
+        "# z23-generated-artifact: zcl.generated_artifact.v1\n"
+        "# artifact-id: zcl.arm_symbol_single_baseline.v1\n"
+        "# asserts: multi_arm_definition(path,symbol)\n"
+        "# generated-by: tools/lint/check_arm_symbol_single.sh\n"
+        "# regenerate: ZCL_LINT_MODE=UPDATE tools/lint/check_arm_symbol_single.sh\n") != 0)
+        goto cleanup;
+    /* 8191 spaces put both definitions beyond the defective copied prefix. */
+    failures = arm_line_case(exe, dir, 8191 + strlen("int probe(void){return 0;}"),
+                             1, 2, "UNPROVEN — line overflow at src/probe.c:2");
+    failures += arm_line_case(exe, dir, 8190, 0, 0, "PASS");
+    failures += arm_line_case(exe, dir, 8190, 1, 1, "src/probe.c  ->  probe");
+    failures += arm_line_case(exe, dir, 8191, 0, 0, "PASS");
+    failures += arm_line_case(exe, dir, 8191, 1, 1, "src/probe.c  ->  probe");
+    static const char nul_arms[] =
+        "#if FLAG\n \0int probe(void){return 0;}\n"
+        "#else\n \0int probe(void){return 0;}\n#endif\n";
+    failures += arm_line_bytes(exe, dir, nul_arms, sizeof nul_arms - 1,
+        2, "UNPROVEN — NUL at src/probe.c:2");
+    static const char final_line[] = "int probe(void){return 0;}";
+    failures += arm_line_bytes(exe, dir, final_line, sizeof final_line - 1,
+        0, "PASS");
+    failures += arm_line_read_failure(exe, dir);
+cleanup:
+    failures += arm_line_cleanup(dir, src);
+done:
+    if (rmdir(dir) != 0) failures++;
+    if (failures) fprintf(stderr, "[lint-gate] arm-symbol line boundary fixture failed\n");
+    return failures;
+}
+
 int t_lint_gates_fail_loud_on_empty_scan(void)
 {
     int failures = 0;
@@ -741,6 +900,8 @@ int t_lint_gates_fail_loud_on_empty_scan(void)
         return 1;
     }
     (void)mkdir(empty_dir, 0700);
+
+    failures += arm_line_boundaries();
 
     failures += meta_gate_empty_scan_trips(
         "tools/scripts/check_one_write_path.sh", "ZCL_OWP_SCAN_ROOTS", empty_dir);
