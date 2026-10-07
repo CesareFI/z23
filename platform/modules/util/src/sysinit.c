@@ -42,7 +42,7 @@ static int sysinit_cmp(const void *a, const void *b)
     if (ra->stage != rb->stage)
         return (int)ra->stage - (int)rb->stage;
     if (ra->order != rb->order)
-        return ra->order - rb->order;
+        return (ra->order > rb->order) - (ra->order < rb->order);
     return strcmp(ra->name, rb->name);
 }
 

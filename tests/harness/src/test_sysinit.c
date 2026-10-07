@@ -17,6 +17,7 @@
 #include "util/sysinit.h"
 #include "util/boot_phase.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -121,6 +122,30 @@ int test_sysinit(void)
     SI_CHECK("stage stopped at the failing record", strcmp(g_trace, "a;F;") == 0);
     SI_CHECK("stage did NOT advance past predecessor",
         boot_stage_current() == BOOT_STAGE_BLOCK_INDEX_LOADED);
+
+    /* Extreme orders must sort without signed subtraction overflow.
+     * Names deliberately sort opposite to the numeric order. */
+    sysinit_reset_for_testing();
+    boot_stage_reset_for_testing();
+    struct sysinit_record extremes[] = {
+        { .subsystem = "t", .stage = BOOT_STAGE_NETWORK_READY,
+          .order = INT_MAX, .init = init_b, .name = "alpha_max" },
+        { .subsystem = "t", .stage = BOOT_STAGE_NETWORK_READY,
+          .order = INT_MIN, .init = init_a, .name = "zeta_min" },
+    };
+    SI_CHECK("register maximum order", sysinit_register(&extremes[0]));
+    SI_CHECK("register minimum order", sysinit_register(&extremes[1]));
+    n = sysinit_ordering_snapshot(snap, sizeof(snap));
+    char expected[256];
+    snprintf(expected, sizeof(expected),
+        "network_ready %d zeta_min\nnetwork_ready %d alpha_max\n",
+        INT_MIN, INT_MAX);
+    SI_CHECK("extreme snapshot counts both records", n == 2);
+    SI_CHECK("extreme snapshot sorts by numeric order", strcmp(snap, expected) == 0);
+    g_trace[0] = '\0';
+    r = sysinit_run_stage(BOOT_STAGE_NETWORK_READY, NULL);
+    SI_CHECK("extreme stage succeeds", r.ok);
+    SI_CHECK("extreme callbacks run minimum before maximum", strcmp(g_trace, "a;b;") == 0);
 
     /* ── malformed / over-capacity registration is refused ──────────── */
     struct sysinit_record bad = { .subsystem = "t", .stage = BOOT_STAGE_READY,
