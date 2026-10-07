@@ -4291,6 +4291,19 @@ check-package-capabilities: $(BIN_DIR)/z23-lint
 check-package-anatomy: $(BIN_DIR)/z23_bounded_run
 	@./tools/lint/check_package_anatomy.sh --selftest
 	@./tools/lint/check_package_anatomy.sh
+
+ZDIFF_CLI_TEST_BIN = $(BIN_DIR)/zdiff-cli-test
+ZDIFF_PACKAGE_DIR = contexts/commons/packages/zdiff
+$(ZDIFF_CLI_TEST_BIN): $(ZDIFF_PACKAGE_DIR)/src/zdiff.c \
+    $(ZDIFF_PACKAGE_DIR)/app/main.c $(ZDIFF_PACKAGE_DIR)/include/zdiff/zdiff.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -I$(ZDIFF_PACKAGE_DIR)/include -o $@ \
+	    $(ZDIFF_PACKAGE_DIR)/src/zdiff.c $(ZDIFF_PACKAGE_DIR)/app/main.c
+.PHONY: zdiff-cli-selftest
+zdiff-cli-selftest: $(ZDIFF_CLI_TEST_BIN)
+	@bash tools/scripts/zdiff_cli_selftest.sh "$(abspath $(ZDIFF_CLI_TEST_BIN))"
+
 ifeq ($(ZCL_HOST_WINDOWS),1)
 Z23_BOUNDED_RUN_PLATFORM_FLAGS = -D_WIN32_WINNT=0x0A00 \
 	-DWIN32_LEAN_AND_MEAN -municode

@@ -22,7 +22,11 @@ static bool read_file(const char *path, char *buf, size_t cap,
   if (!f)
     return false;
   size_t n = fread(buf, 1, cap, f);
-  bool ok = !ferror(f) && feof(f); /* !feof: longer than cap */
+  /* A full read needs a probe: EOF is not set just by reaching the limit. */
+  int extra = EOF;
+  if (n == cap && !ferror(f))
+    extra = fgetc(f);
+  bool ok = !ferror(f) && feof(f) && extra == EOF;
   fclose(f);
   if (ok)
     *len_out = n;
