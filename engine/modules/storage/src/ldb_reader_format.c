@@ -461,20 +461,90 @@ void ldb_log_reader_free(struct ldb_log_reader *r)
     r->err = NULL;
 }
 
+static bool log_span_end(size_t size, size_t offset, size_t length,
+                         size_t *out_end)
+{
+    *out_end = 0;
+    if (offset > size || length > size - offset)
+        return false;
+    *out_end = offset + length;
+    return true;
+}
+
+static bool log_skip_trailer(struct ldb_log_reader *r, size_t length)
+{
+    size_t next = 0;
+    if (!log_span_end(r->size, r->pos, length, &next))
+        return false;
+    r->pos = next;
+    return true;
+}
+
+static bool log_record_type_valid(uint8_t type)
+{
+    return type == LDB_REC_FULL || type == LDB_REC_FIRST ||
+           type == LDB_REC_MIDDLE || type == LDB_REC_LAST;
+}
+
+static bool scratch_plan(size_t current_len, size_t append_len,
+                         size_t current_cap, size_t *out_len, size_t *out_cap)
+{
+    *out_len = 0;
+    *out_cap = 0;
+    if (current_len > current_cap || append_len > SIZE_MAX - current_len)
+        return false;
+    size_t want = current_len + append_len;
+    size_t cap = current_cap;
+    if (want > cap) {
+        cap = cap ? cap : 4096;
+        while (cap < want) {
+            if (cap > SIZE_MAX / 2) {
+                cap = want;
+                break;
+            }
+            cap *= 2;
+        }
+    }
+    *out_len = want;
+    *out_cap = cap;
+    return true;
+}
+
+#ifdef ZCL_TESTING
+bool ldbr_test_log_span_end(size_t size, size_t offset, size_t length,
+                            size_t *out_end)
+{
+    return out_end && log_span_end(size, offset, length, out_end);
+}
+
+bool ldbr_test_log_scratch_plan(size_t current_len, size_t append_len,
+                                size_t current_cap, size_t *out_len,
+                                size_t *out_cap)
+{
+    if (out_len)
+        *out_len = 0;
+    if (out_cap)
+        *out_cap = 0;
+    return out_len && out_cap &&
+           scratch_plan(current_len, append_len, current_cap, out_len, out_cap);
+}
+#endif
+
 static bool scratch_append(struct ldb_log_reader *r, const uint8_t *p, size_t n)
 {
-    size_t want = r->scratch_len + n;
-    if (want > r->scratch_cap) {
-        size_t cap = r->scratch_cap ? r->scratch_cap : 4096;
-        while (cap < want)
-            cap *= 2;
+    size_t want = 0;
+    size_t cap = 0;
+    if (!scratch_plan(r->scratch_len, n, r->scratch_cap, &want, &cap))
+        return false;
+    if (cap > r->scratch_cap) {
         uint8_t *ns = zcl_realloc(r->scratch, cap, "ldb_log_scratch");
         if (!ns)
             return false;
         r->scratch = ns;
         r->scratch_cap = cap;
     }
-    memcpy(r->scratch + r->scratch_len, p, n);
+    if (n != 0)
+        memcpy(r->scratch + r->scratch_len, p, n);
     r->scratch_len = want;
     return true;
 }
@@ -489,10 +559,12 @@ static int read_physical(struct ldb_log_reader *r, struct ldb_slice *out,
         size_t in_block = r->pos % LDB_LOG_BLOCK_SIZE;
         size_t left_in_block = LDB_LOG_BLOCK_SIZE - in_block;
         if (left_in_block < LDB_LOG_HEADER_SIZE) {
-            r->pos += left_in_block;      /* block trailer padding */
+            if (!log_skip_trailer(r, left_in_block))
+                return 1;
             continue;
         }
-        if (r->pos + LDB_LOG_HEADER_SIZE > r->size)
+        size_t payload_off = 0;
+        if (!log_span_end(r->size, r->pos, LDB_LOG_HEADER_SIZE, &payload_off))
             return 1;                     /* torn tail */
 
         const uint8_t *hdr = r->base + r->pos;
@@ -503,12 +575,14 @@ static int read_physical(struct ldb_log_reader *r, struct ldb_slice *out,
         if (t == LDB_REC_ZERO && length == 0) {
             /* Preallocated-but-unwritten region: skip the rest of the
              * block the way LevelDB's reader does. */
-            r->pos += left_in_block;
+            if (!log_skip_trailer(r, left_in_block))
+                return 1;
             if (r->pos >= r->size)
                 return 1;
             continue;
         }
-        if (r->pos + LDB_LOG_HEADER_SIZE + length > r->size)
+        size_t next = 0;
+        if (!log_span_end(r->size, payload_off, length, &next))
             return 1;                     /* writer died mid-record */
         if (length > left_in_block - LDB_LOG_HEADER_SIZE) {
             r->err = ldb_errf("ldb log: record length %u overruns block at "
@@ -526,13 +600,12 @@ static int read_physical(struct ldb_log_reader *r, struct ldb_slice *out,
                 return -1;
             }
         }
-        if (t != LDB_REC_FULL && t != LDB_REC_FIRST && t != LDB_REC_MIDDLE &&
-            t != LDB_REC_LAST) {
+        if (!log_record_type_valid(t)) {
             r->err = ldb_errf("ldb log: unknown record type %u at offset %zu",
                               (unsigned)t, r->pos);
             return -1;
         }
-        r->pos += LDB_LOG_HEADER_SIZE + length;
+        r->pos = next;
         out->p = payload;
         out->n = length;
         *type = t;
@@ -598,6 +671,65 @@ bool ldb_log_reader_next(struct ldb_log_reader *r, struct ldb_slice *rec)
         }
     }
 }
+
+#ifdef ZCL_TESTING
+static bool log_test_scratch_init(struct ldb_log_reader *r, size_t length)
+{
+    const uint8_t byte = 42;
+    ldb_log_reader_init(r, NULL, 0, false);
+    if (length <= 1)
+        return scratch_append(r, &byte, length);
+    /* Synthetic lengths admit only arithmetic refusal, never a byte access. */
+    r->scratch_len = length;
+    r->scratch_cap = length;
+    return true;
+}
+
+bool ldbr_test_log_scratch_append(size_t current_len, size_t append_len,
+                                  size_t *out_len, size_t *out_cap)
+{
+    if (out_len)
+        *out_len = 0;
+    if (out_cap)
+        *out_cap = 0;
+    if (!out_len || !out_cap)
+        return false;
+    struct ldb_log_reader r;
+    const uint8_t byte = 42;
+    if (!log_test_scratch_init(&r, current_len))
+        return false;
+    *out_len = r.scratch_len;
+    *out_cap = r.scratch_cap;
+    /* Oversized synthetic input must overflow before allocation or copying. */
+    bool fixture_refused = (current_len > 1 || append_len > 1) &&
+                           append_len <= SIZE_MAX - current_len;
+    bool ok = false;
+    if (!fixture_refused)
+        ok = scratch_append(&r, &byte, append_len);
+    *out_len = r.scratch_len;
+    *out_cap = r.scratch_cap;
+    ldb_log_reader_free(&r);
+    return ok;
+}
+
+bool ldbr_test_log_tail(size_t size, size_t pos, size_t *out_pos)
+{
+    if (!out_pos)
+        return false;
+    *out_pos = 0;
+    struct ldb_log_reader r;
+    struct ldb_slice rec = {0};
+    ldb_log_reader_init(&r, NULL, size, false);
+    r.pos = pos;
+    /* No bytes are provided: admit only a header/trailer refusal fixture. */
+    if (pos < size && size - pos >= LDB_LOG_HEADER_SIZE)
+        return false;
+    bool ok = !ldb_log_reader_next(&r, &rec) && r.err == NULL;
+    *out_pos = r.pos;
+    ldb_log_reader_free(&r);
+    return ok;
+}
+#endif
 
 /* Does this directory hold anything that says "a LevelDB lived here"? Used
  * only to tell a fresh empty datadir apart from one that lost its CURRENT.

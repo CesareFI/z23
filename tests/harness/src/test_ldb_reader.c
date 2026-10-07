@@ -367,6 +367,106 @@ static bool lr_copy(const char *src, const char *dst)
     return r.ok;
 }
 
+static bool lr_test_log_span_bounds(void)
+{
+    size_t end = SIZE_MAX;
+    bool ok = ldbr_test_log_span_end(0, 0, 0, &end) && end == 0;
+    ok = ok && ldbr_test_log_span_end(SIZE_MAX, SIZE_MAX - 7, 7, &end) &&
+         end == SIZE_MAX;
+    end = SIZE_MAX;
+    ok = ok && !ldbr_test_log_span_end(SIZE_MAX, SIZE_MAX, 1, &end) && end == 0;
+    end = SIZE_MAX;
+    ok = ok && !ldbr_test_log_span_end(SIZE_MAX - 1, SIZE_MAX, 0, &end) && end == 0;
+    return ok && !ldbr_test_log_span_end(0, 0, 0, NULL);
+}
+
+static bool lr_test_log_scratch_growth_bounds(void)
+{
+    size_t len = SIZE_MAX, cap = SIZE_MAX;
+    if (!ldbr_test_log_scratch_plan(0, 0, 0, &len, &cap) || len != 0 || cap != 0)
+        return false;
+    if (!ldbr_test_log_scratch_plan(0, 1, 0, &len, &cap) || len != 1 || cap != 4096)
+        return false;
+    return ldbr_test_log_scratch_plan(4096, 1, 4096, &len, &cap) &&
+           len == 4097 && cap == 8192;
+}
+
+static bool lr_test_log_scratch_refusal_bounds(void)
+{
+    size_t len = 0, cap = 0;
+    if (!ldbr_test_log_scratch_plan(SIZE_MAX - 1, 1, SIZE_MAX - 1, &len, &cap) ||
+        len != SIZE_MAX || cap != SIZE_MAX)
+        return false;
+    len = cap = SIZE_MAX;
+    if (ldbr_test_log_scratch_plan(SIZE_MAX, 1, SIZE_MAX, &len, &cap) || len != 0 || cap != 0)
+        return false;
+    if (ldbr_test_log_scratch_plan(2, 0, 1, &len, &cap) || len != 0 || cap != 0)
+        return false;
+    cap = SIZE_MAX;
+    if (ldbr_test_log_scratch_plan(0, 0, 0, NULL, &cap) || cap != 0)
+        return false;
+    len = SIZE_MAX;
+    return !ldbr_test_log_scratch_plan(0, 0, 0, &len, NULL) && len == 0;
+}
+
+static bool lr_test_log_production_appends(void)
+{
+    size_t len = 0, cap = 0;
+    if (!ldbr_test_log_scratch_append(0, 0, &len, &cap) ||
+        len != 0 || cap != 0)
+        return false;
+    if (!ldbr_test_log_scratch_append(0, 1, &len, &cap) ||
+        len != 1 || cap != 4096)
+        return false;
+    if (!ldbr_test_log_scratch_append(1, 1, &len, &cap) ||
+        len != 2 || cap != 4096)
+        return false;
+    return true;
+}
+
+static bool lr_test_log_production_bounds(void)
+{
+    size_t len = 0, cap = 0;
+    if (!lr_test_log_production_appends())
+        return false;
+    if (ldbr_test_log_scratch_append(SIZE_MAX, 1, &len, &cap) ||
+        len != SIZE_MAX || cap != SIZE_MAX)
+        return false;
+    if (ldbr_test_log_scratch_append(1, 2, &len, &cap) ||
+        len != 1 || cap != 4096)
+        return false;
+    return true;
+}
+
+static bool lr_test_log_tail_case(size_t size, size_t start, size_t expected)
+{
+    size_t pos = 0;
+    if (ldbr_test_log_tail(size, start, &pos) && pos == expected)
+        return true;
+    printf("FAIL (tail size=%zu start=%zu: retained position %zu, expected %zu)\n",
+           size, start, pos, expected);
+    return false;
+}
+
+static bool lr_test_log_production_tails(void)
+{
+    return lr_test_log_tail_case(6, 0, 0) &&
+           lr_test_log_tail_case(32766, 32766, 32766) &&
+           lr_test_log_tail_case(32767, 32766, 32766) &&
+           lr_test_log_tail_case(32768, 32766, 32768) &&
+           lr_test_log_tail_case(SIZE_MAX, SIZE_MAX, SIZE_MAX);
+}
+
+static int lr_test_log_arithmetic_bounds(void)
+{
+    printf("ldb_reader: log arithmetic bounds... ");
+    bool ok = lr_test_log_span_bounds() && lr_test_log_scratch_growth_bounds() &&
+              lr_test_log_scratch_refusal_bounds() && lr_test_log_production_bounds() &&
+              lr_test_log_production_tails();
+    printf(ok ? "OK\n" : "FAIL\n");
+    return ok ? 0 : 1;
+}
+
 static int lr_test_internal_key_size_bounds(void)
 {
     printf("ldb_reader: internal-key size bounds... ");
@@ -649,6 +749,7 @@ static int lr_test_damaged_input(const char *src, const char *dmg)
 int test_ldb_reader(void)
 {
     int failures = lr_test_internal_key_size_bounds();
+    failures += lr_test_log_arithmetic_bounds();
     char src[512], cxx[512], c23[512], dmg[512];
 
     if (!test_ensure_tmproot()) {

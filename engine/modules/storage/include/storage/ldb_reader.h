@@ -178,6 +178,21 @@ size_t ldbr_stat_table_count(const ldbr_t *db);
 size_t ldbr_stat_memtable_entries(const ldbr_t *db);
 
 #ifdef ZCL_TESTING
+/* Arithmetic probes zero each supplied output before refusal, including when
+ * its companion output is NULL. Scratch append reports the retained reader
+ * length/capacity after the call; refused appends leave that state unchanged.
+ * Append fixtures seed lengths 0/1 through the production append path; larger
+ * lengths use synthetic equal length/capacity and admit only size overflow.
+ * Larger nonoverflowing appends are fixture refusals. Tail fixtures have no
+ * backing bytes and admit only header/trailer refusal before any byte access. */
+bool ldbr_test_log_span_end(size_t size, size_t offset, size_t length,
+                            size_t *out_end);
+bool ldbr_test_log_scratch_plan(size_t current_len, size_t append_len,
+                                size_t current_cap, size_t *out_len,
+                                size_t *out_cap);
+bool ldbr_test_log_scratch_append(size_t current_len, size_t append_len,
+                                  size_t *out_len, size_t *out_cap);
+bool ldbr_test_log_tail(size_t size, size_t pos, size_t *out_pos);
 bool ldbr_test_internal_key_size(size_t key_len, size_t *out_size);
 #endif
 
