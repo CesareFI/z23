@@ -25,6 +25,7 @@
 #include "services/wallet_backup_service.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,35 +37,40 @@
 
 struct wbs_file {
     char    name[256];
-    int64_t sort_key; /* microseconds: parsed <ts>_<usec>, else mtime*1e6 */
+    int64_t seconds;
+    long microseconds; /* Parsed timestamp pair, else (mtime, 0). */
 };
 
 static int wbs_cmp_key_desc(const void *a, const void *b)
 {
     const struct wbs_file *fa = a;
     const struct wbs_file *fb = b;
-    if (fa->sort_key > fb->sort_key) return -1; // raw-return-ok:qsort-comparator
-    if (fa->sort_key < fb->sort_key) return 1;
+    if (fa->seconds > fb->seconds) return -1; // raw-return-ok:qsort-comparator
+    if (fa->seconds < fb->seconds) return 1;
+    if (fa->microseconds > fb->microseconds) return -1;
+    if (fa->microseconds < fb->microseconds) return 1;
     return 0;
 }
 
-/* Parse "wallet_backup_<unix_ts>_<usec>{.sqlite,.sqlite.enc}" into a single
- * microsecond key. Returns false (leaving *out_us untouched) if the name
- * doesn't have the expected "<digits>_<digits>" body — the caller falls
+/* Keep seconds and microseconds separate: scaling a filename's timestamp
+ * into a single integer can overflow. Returns false (leaving out untouched)
+ * if the name doesn't have the expected "<digits>_<digits>" body — the caller falls
  * back to mtime so an unrecognized-but-prefix-matching name still sorts. */
-static bool wbs_parse_filename_us(const char *name, int64_t *out_us)
+static bool wbs_parse_filename_time(const char *name, struct wbs_file *out)
 {
     const char *body = name + strlen(WALLET_BACKUP_FILENAME_PREFIX);
     char *after_ts = NULL;
+    errno = 0;
     long long ts = strtoll(body, &after_ts, 10);
-    if (after_ts == body || *after_ts != '_') return false;
+    if (errno == ERANGE || after_ts == body || *after_ts != '_') return false;
     const char *usec_start = after_ts + 1;
     char *after_usec = NULL;
     long usec = strtol(usec_start, &after_usec, 10);
     if (after_usec == usec_start || usec < 0 || usec > 999999) return false;
     /* Whatever follows (".sqlite" or ".sqlite.enc") is already validated
      * by the caller's suffix check; no need to re-check it here. */
-    *out_us = ts * 1000000LL + usec;
+    out->seconds = ts;
+    out->microseconds = usec;
     return true;
 }
 
@@ -98,9 +104,10 @@ static int wbs_scan_backup_dir(const char *dir,
         struct stat st;
         if (stat(full, &st) != 0) continue;
         snprintf(out[n].name, sizeof(out[n].name), "%s", e->d_name);
-        int64_t parsed_us = 0;
-        out[n].sort_key = wbs_parse_filename_us(e->d_name, &parsed_us)
-            ? parsed_us : (int64_t)st.st_mtime * 1000000LL;
+        if (!wbs_parse_filename_time(e->d_name, &out[n])) {
+            out[n].seconds = (int64_t)st.st_mtime;
+            out[n].microseconds = 0;
+        }
         n++;
     }
     closedir(d);
