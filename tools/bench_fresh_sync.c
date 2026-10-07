@@ -50,6 +50,63 @@ static double now_sec(void)
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+static size_t startup_log_tail_read(const char *path, char *line,
+                                    size_t line_size)
+{
+    if (!path) return 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    /* This stream reads one small tail and closes. Disable stdio read-ahead:
+     * seeking within a buffered stream can read a whole preceding block. */
+    if (setvbuf(f, NULL, _IONBF, 0) != 0) {
+        fprintf(stderr, "bench-sync: unbuffered startup log unavailable\n");
+        fclose(f);
+        return 0;
+    }
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0) {
+        perror("bench-sync: locate startup progress log end");
+        fclose(f);
+        return 0;
+    }
+    off_t end = st.st_size;
+    size_t want = end > (off_t)line_size ? line_size : (size_t)end;
+    if (fseeko(f, end - (off_t)want, SEEK_SET) != 0) {
+        perror("bench-sync: seek startup progress log tail");
+        fclose(f);
+        return 0;
+    }
+    size_t n = fread(line, 1, want, f);
+    bool failed = ferror(f) != 0 || n != want;
+    fclose(f);
+    if (failed) {
+        fprintf(stderr, "bench-sync: incomplete startup progress log read\n");
+        return 0;
+    }
+    return n;
+}
+
+/* Startup progress needs only the last line, not a shell and tail process.
+ * Read at most line_size bytes from a snapshot of the log's end. An
+ * unterminated line is still displayable; a line that does not fit is not. */
+static void startup_log_tail(const char *path, char *line, size_t line_size)
+{
+    if (!line || line_size == 0) return;
+    line[0] = '\0';
+    size_t n = startup_log_tail_read(path, line, line_size);
+    if (n == 0) return;
+    size_t start = n;
+    if (start > 0 && line[start - 1] == '\n') start--;
+    while (start > 0 && line[start - 1] != '\n') start--;
+    size_t len = n - start;
+    if (len >= line_size) {
+        line[0] = '\0';
+        return;
+    }
+    memmove(line, line + start, len);
+    line[len] = '\0';
+}
+
 /* Run a command and capture stdout into buf. Returns bytes read. */
 static int run_cmd(const char *cmd, char *buf, int bufsz)
 {
@@ -235,10 +292,7 @@ int main(void)
         if (i > 0 && i % 20 == 0) {
             double e = now_sec() - t0;
             char line[256] = "";
-            char cmd[512];
-            snprintf(cmd, sizeof(cmd),
-                "tail -1 '%s' 2>/dev/null", logfile);
-            run_cmd(cmd, line, sizeof(line));
+            startup_log_tail(logfile, line, sizeof(line));
             char *nl = strchr(line, '\n'); if (nl) *nl = '\0';
             printf("  [%.0fs] %s\n", e, line);
         }
