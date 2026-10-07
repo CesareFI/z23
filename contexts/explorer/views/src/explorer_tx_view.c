@@ -9,6 +9,7 @@
 #include "controllers/explorer_internal.h"
 #include "chain/subsidy.h"      /* ZATOSHI_PER_ZCL */
 #include "util/template.h"
+#include "zutf8/zutf8.h"
 #include "views/format_helpers.h"
 #include "views/wallet_templates_gen.h"
 
@@ -29,10 +30,64 @@ size_t explorer_view_tx_not_found_rpc(const char *param,
 
 /* ── RPC-proxy: Transaction Detail ─────────────────────────── */
 
+static size_t explorer_rpc_block_row(const struct explorer_tx_rpc_view_data *d,
+                                    uint8_t *r, size_t max, size_t off)
+{
+    char shortened[17], label[97];
+    size_t len = strlen(d->blockhash); /* validated before page output */
+    size_t take = len < 16 ? len : 16;
+    while (take < len &&
+           ((unsigned char)d->blockhash[take] & 0xc0u) == 0x80u)
+        --take;
+    memcpy(shortened, d->blockhash, take);
+    shortened[take] = '\0';
+    html_escape(label, sizeof(label), shortened);
+    APPEND(off, r, max,
+        "<div class='label'>Block</div><div class='val hash'>");
+    if (zcl_is_hex_string(d->blockhash, 64))
+        APPEND(off, r, max, "<a href='/explorer/block/%s'>%s...</a>",
+            d->blockhash, label);
+    else
+        APPEND(off, r, max, "%s...", label);
+    APPEND(off, r, max, " (height %" PRId64 ")</div>", d->block_height);
+    return off;
+}
+
+static size_t explorer_rpc_shielded_rows(const struct explorer_tx_rpc_view_data *d,
+                                        uint8_t *r, size_t max, size_t off)
+{
+    if (d->shielded_spend > 0 || d->shielded_output > 0 || d->joinsplit > 0) {
+        APPEND(off, r, max, "<h2>Shielded Data</h2><div class='card'><div class='grid'>");
+        if (d->shielded_spend > 0)
+            APPEND(off, r, max,
+                "<div class='label'>Sapling Spends</div><div class='val'>%" PRId64 "</div>",
+                d->shielded_spend);
+        if (d->shielded_output > 0)
+            APPEND(off, r, max,
+                "<div class='label'>Sapling Outputs</div><div class='val'>%" PRId64 "</div>",
+                d->shielded_output);
+        if (d->joinsplit > 0)
+            APPEND(off, r, max,
+                "<div class='label'>JoinSplits</div><div class='val'>%" PRId64 "</div>",
+                d->joinsplit);
+        APPEND(off, r, max, "</div></div>");
+    }
+    return off;
+}
+
+static bool explorer_rpc_block_valid(const struct explorer_tx_rpc_view_data *d)
+{
+    if (!d->has_block) return true;
+    const char *end = memchr(d->blockhash, '\0', sizeof(d->blockhash));
+    return end && zutf8_validate_n(d->blockhash,
+                                  (size_t)(end - d->blockhash));
+}
+
 size_t explorer_view_tx_rpc(const struct explorer_tx_rpc_view_data *d,
                             uint8_t *r, size_t max)
 {
     if (!d) return 0;
+    if (!explorer_rpc_block_valid(d)) return 0;
     size_t off = 0;
 
     APPEND(off, r, max, EXPLORER_HEADER("Transaction"));
@@ -49,10 +104,7 @@ size_t explorer_view_tx_rpc(const struct explorer_tx_rpc_view_data *d,
         d->txid, d->confirmations, d->size, d->version, d->locktime);
 
     if (d->has_block)
-        APPEND(off, r, max,
-            "<div class='label'>Block</div><div class='val hash'>"
-            "<a href='/explorer/block/%s'>%.16s...</a> (height %" PRId64 ")</div>",
-            d->blockhash, d->blockhash, d->block_height);
+        off = explorer_rpc_block_row(d, r, max, off);
     if (d->has_expiry)
         APPEND(off, r, max,
             "<div class='label'>Expiry Height</div><div class='val'>%" PRId64 "</div>", d->expiry);
@@ -90,22 +142,7 @@ size_t explorer_view_tx_rpc(const struct explorer_tx_rpc_view_data *d,
         APPEND(off, r, max, "</div>");
     }
 
-    if (d->shielded_spend > 0 || d->shielded_output > 0 || d->joinsplit > 0) {
-        APPEND(off, r, max, "<h2>Shielded Data</h2><div class='card'><div class='grid'>");
-        if (d->shielded_spend > 0)
-            APPEND(off, r, max,
-                "<div class='label'>Sapling Spends</div><div class='val'>%" PRId64 "</div>",
-                d->shielded_spend);
-        if (d->shielded_output > 0)
-            APPEND(off, r, max,
-                "<div class='label'>Sapling Outputs</div><div class='val'>%" PRId64 "</div>",
-                d->shielded_output);
-        if (d->joinsplit > 0)
-            APPEND(off, r, max,
-                "<div class='label'>JoinSplits</div><div class='val'>%" PRId64 "</div>",
-                d->joinsplit);
-        APPEND(off, r, max, "</div></div>");
-    }
+    off = explorer_rpc_shielded_rows(d, r, max, off);
 
     APPEND(off, r, max, EXPLORER_FOOTER);
     return off;

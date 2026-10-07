@@ -57,7 +57,9 @@ struct explorer_tx_rpc_view_data {
     int64_t joinsplit;
 };
 
-/* Render the RPC-proxy tx detail page. Returns bytes written. */
+/* Render the RPC-proxy tx detail page. Returns bytes written.
+ * If has_block, blockhash must be NUL-terminated within its array and valid
+ * UTF-8; otherwise returns 0 without modifying the output buffer. */
 size_t explorer_view_tx_rpc(const struct explorer_tx_rpc_view_data *d,
                             uint8_t *r, size_t max);
 
