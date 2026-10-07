@@ -123,7 +123,7 @@ void zcl_native_handle_fleet_triggers_check(
         json_free(&fired_ids);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                               ZCL_COMMAND_EXIT_INTERNAL, "CHECK_FAILED",
-                              "execute", true, false,
+                              "execute", true, fired > 0,
                               why[0] ? why : "trigger check did not complete",
                               "fleet.triggers.check");
         return;

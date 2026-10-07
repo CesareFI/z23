@@ -1656,6 +1656,41 @@ static int test_ic_sqlq_proof_mapping(void)
     return failures;
 }
 
+static int test_ic_fleet_triggers_proof_mapping(void)
+{
+    int failures = 0;
+    TEST("impact composition: trigger paths select their regression without a graph") {
+        static const char *const paths[] = {
+            "tools/command/native_fleet_triggers_eval.c",
+            "tools/command/native_fleet_triggers_command.c",
+            "tools/command/native_fleet_triggers_catalog.c",
+            "tools/command/native_fleet_triggers.h",
+            "tests/harness/src/test_fleet_triggers.c",
+            "engine/composition/triggers.def",
+            "docs/FLEET_TRIGGERS.md",
+        };
+        for (size_t i = 0; i < sizeof paths / sizeof paths[0]; i++) {
+            struct agent_impact_acc impact = {0};
+            ASSERT(agent_impact_apply_shared_rules(paths[i], &impact));
+            ASSERT(ic_acc_has_group(&impact, "fleet_triggers"));
+            ASSERT(ic_acc_has_group(&impact, "make_lint_gates"));
+            /* Each changed set has exactly one path. No closure is asked
+             * for, so production-file selection cannot depend on a graph. */
+            struct zcl_devloop_plan plan;
+            ASSERT(zcl_devloop_plan_files(&paths[i], 1, &plan));
+            ASSERT(ic_group_in(plan.path_groups, plan.path_groups_len,
+                               "fleet_triggers"));
+            ASSERT(plan.closure_groups_len == 0);
+            ASSERT(plan.dims[ZCL_DEVLOOP_DIM_SEMANTIC].status ==
+                   ZCL_DEVLOOP_DIM_UNAVAILABLE);
+            ASSERT(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].status ==
+                   ZCL_DEVLOOP_DIM_UNAVAILABLE);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static bool ic_pr72_rpc_maps(const char *path, const char *group)
 {
     struct agent_impact_acc acc = {0};
@@ -11552,6 +11587,7 @@ int test_impact_composition(void)
     failures += test_ic_snapshot_overlays_current_symbols();
     failures += test_ic_pr72_rpc_routes();
     failures += test_ic_sqlq_proof_mapping();
+    failures += test_ic_fleet_triggers_proof_mapping();
     failures += test_ic_code_capsule_stays_with_code_owner();
     failures += test_ic_generated_inventory_stays_focused();
     failures += test_ic_fleet_task_projection_keeps_proof_owner();

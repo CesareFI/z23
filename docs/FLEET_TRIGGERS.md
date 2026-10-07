@@ -114,11 +114,29 @@ A matched trigger whose action returns false (no disk, no node answering a
 the cursor before that row**, so the next `check` retries the exact same
 row instead of skipping it, and every later row from the same source waits
 behind it until it clears. `check` reports `checked N rows, fired F,
-failed M` and exits non-zero with a refusal naming the trigger and the
-action's own reason whenever `M` is greater than zero.
+failed M` and exits non-zero whenever `M` is greater than zero. The refusal
+names the trigger and action's own reason unless a local source error
+supersedes it.
 
 All three leaves are bound in `engine/composition/commands/fleet.def` under
 `fleet.triggers`, alongside the owner's private fleet ledger.
+
+JSONL records are checked over their physical byte extent for UTF-8 and
+complete JSON before evaluation. Malformed JSON, embedded NULs, oversized
+records, and JSON source path, stat (except ENOENT), open, seek, or read errors
+refuse the check with an explanatory reason;
+the saved byte cursor and row count retain the accepted prefix. A complete
+final JSON record is consumed even without a trailing LF. Empty LF records
+are skipped. See `trg_read_record` at
+`tools/command/native_fleet_triggers_eval.c:742`, `trg_scan_lines` at line 763,
+and `trg_process_source` at line 834 in the same file. JSON sources missing
+with ENOENT contribute zero rows. TSV path/stat/open/seek handling retains its
+existing skip behavior. A local JSON refusal replaces an earlier action-failure
+reason, while action-only failures retain their reason and pending cursor.
+The `CHECK_FAILED` reply sets `error.mutated` from `fired > 0`, matching
+`ACTION_FAILED`; this reports the successful ledger prefix before a local
+refusal (`tools/command/native_fleet_triggers_command.c:125`). This accounting
+does not claim to track cursor-only writes.
 
 ## The GitHub comment source, and why it is fed, not fetched
 

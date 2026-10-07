@@ -8,6 +8,7 @@
 
 #include "command/native_command.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "platform/directory_compat.h"
 #include "platform/state_root.h"
 #include "platform/time_compat.h"
@@ -716,13 +717,50 @@ static void trg_cursor_rebase(struct trg_cursor *cursor, const struct stat *st)
     }
 }
 
-/* Reads and scores every complete line from the current file position
+/* Measure one physical record; drain malformed records without splitting them.
+ * 1 = record, 0 = EOF, -1 = malformed, -2 = read error. */
+static int trg_record_read(FILE *f, char *line, size_t cap, size_t *len)
+{
+    *len = 0;
+    bool bad = false;
+    int ch;
+    while ((ch = fgetc(f)) != EOF) {
+        if (*len < cap - 1)
+            line[(*len)++] = (char)ch;
+        else
+            bad = true;
+        if (ch == 0)
+            bad = true;
+        if (ch == '\n')
+            break;
+    }
+    line[*len] = 0;
+    return ferror(f) ? -2 : bad ? -1 : *len ? 1 : 0;
+}
+
+/* JSON validation uses the physical byte extent, including embedded NULs. */
+static int trg_read_record(FILE *f, const struct trg_source_spec *spec,
+                           char *line, size_t cap, size_t *raw_len)
+{
+    if (spec->has_header)
+        return trg_read_tsv(f, line, cap, raw_len);
+    int status = trg_record_read(f, line, cap, raw_len);
+    if (status <= 0)
+        return status;
+    if (*raw_len > (size_t)(line[*raw_len - 1] == '\n') &&
+        (!zutf8_validate_n(line, *raw_len) ||
+         !json_valid(line, *raw_len)))
+        return -3;
+    return status;
+}
+
+/* Reads and scores every complete record from the current file position
  * onward, stopping early — without consuming that line's bytes or row
  * number — the instant one row's action fails, so a failed row's cursor
  * position is never crossed and later rows in the same file wait behind
  * it. *offset and *row_count start at the scan's origin and are advanced
  * in place past every row that did not fail. */
-static void trg_scan_lines(FILE *f, const struct trg_scan_ctx *ctx,
+static bool trg_scan_lines(FILE *f, const struct trg_scan_ctx *ctx,
                            uint64_t *offset, uint64_t *row_count,
                            uint64_t *checked, uint64_t *fired,
                            uint64_t *failed, char *why, size_t why_cap)
@@ -730,27 +768,30 @@ static void trg_scan_lines(FILE *f, const struct trg_scan_ctx *ctx,
     char line[TRG_LINE_MAX];
     size_t raw_len = 0;
     int status;
-    while ((status = ctx->spec->has_header
-                         ? trg_read_tsv(f, line, sizeof line, &raw_len)
-                         : (fgets(line, sizeof line, f) != NULL)) > 0) {
-        if (!ctx->spec->has_header)
-            raw_len = strlen(line);
+    while ((status = trg_read_record(f, ctx->spec, line, sizeof line,
+                                     &raw_len)) > 0) {
         bool newline = raw_len && line[raw_len - 1] == '\n';
-        if (!ctx->spec->has_header && !newline)
-            break; /* partial trailing line: leave it for next time */
         size_t len = raw_len - newline;
         line[len] = 0; /* drop the newline for parsing */
         bool row_failed = false;
         trg_process_line(ctx, line, len, row_count, checked, fired,
                          failed, why, why_cap, &row_failed);
         if (row_failed)
-            return; /* hold the cursor before this row; later rows wait */
+            return true; /* hold the cursor before this row; later rows wait */
         *offset += (uint64_t)raw_len;
     }
     if (status < 0) {
+        if (!ctx->spec->has_header) {
+            (void)snprintf(why, why_cap, "%s", status == -2
+                           ? "trigger source read error"
+                           : status == -3 ? "trigger source malformed JSON record"
+                           : "trigger source malformed or oversized record");
+            return false;
+        }
         (*failed)++;
         (void)snprintf(why, why_cap, "experiment_rows invalid TSV record");
     }
+    return true;
 }
 
 /* Locates a source's cursor start: max(saved offset, header length), so a
@@ -765,7 +806,32 @@ static bool trg_seek_to_cursor(FILE *f, uint64_t saved_offset,
     return fseek(f, (long)*start_offset, SEEK_SET) == 0;
 }
 
-static void trg_process_source(const struct trg_source_spec *spec,
+static void trg_source_reason(char *out, size_t cap, const char *reason)
+{
+    if (out && cap && !out[0])
+        (void)snprintf(out, cap, "%s", reason);
+}
+
+static bool trg_source_read_error(const struct trg_source_spec *spec,
+                                   char *out, size_t cap)
+{
+    if (spec->has_header)
+        return true;
+    if (out && cap)
+        (void)snprintf(out, cap, "%s", "trigger source read error");
+    return false;
+}
+
+static void trg_scan_reason(char *out, size_t cap, const char *reason,
+                            bool complete)
+{
+    if (!complete && out && cap)
+        (void)snprintf(out, cap, "%s", reason);
+    else
+        trg_source_reason(out, cap, reason);
+}
+
+static bool trg_process_source(const struct trg_source_spec *spec,
                                bool dry_run, int64_t since_s,
                                uint64_t *checked, uint64_t *fired,
                                uint64_t *failed, struct json_value *fired_ids,
@@ -773,8 +839,11 @@ static void trg_process_source(const struct trg_source_spec *spec,
 {
     char path[PATH_MAX];
     struct stat st;
-    if (!spec->path_fn(path, sizeof path) || stat(path, &st) != 0)
-        return; /* absent source contributes nothing; not an error */
+    if (!spec->path_fn(path, sizeof path))
+        return trg_source_read_error(spec, out_why, out_why_cap);
+    if (stat(path, &st) != 0)
+        return errno == ENOENT ? true
+            : trg_source_read_error(spec, out_why, out_why_cap);
 
     struct trg_cursor cursor;
     (void)trg_cursor_read(spec->name, &cursor);
@@ -782,7 +851,7 @@ static void trg_process_source(const struct trg_source_spec *spec,
 
     FILE *f = fopen(path, "rb");
     if (!f)
-        return;
+        return trg_source_read_error(spec, out_why, out_why_cap);
 
     char header_storage[TRG_LINE_MAX];
     char *header[TRG_TSV_MAX_COLS];
@@ -795,13 +864,13 @@ static void trg_process_source(const struct trg_source_spec *spec,
         if (out_why && out_why_cap && !out_why[0])
             (void)snprintf(out_why, out_why_cap, "experiment_rows invalid TSV header");
         fclose(f);
-        return;
+        return true;
     }
 
     uint64_t new_offset;
     if (!trg_seek_to_cursor(f, cursor.offset, header_bytes, &new_offset)) {
         fclose(f);
-        return;
+        return trg_source_read_error(spec, out_why, out_why_cap);
     }
 
     struct trg_scan_ctx ctx = {
@@ -815,11 +884,12 @@ static void trg_process_source(const struct trg_source_spec *spec,
     };
     uint64_t new_row_count = cursor.row_count;
     char fail_why[256] = "";
-    trg_scan_lines(f, &ctx, &new_offset, &new_row_count, checked, fired,
-                  failed, fail_why, sizeof fail_why);
+    bool complete = trg_scan_lines(f, &ctx, &new_offset, &new_row_count,
+                                   checked, fired, failed, fail_why,
+                                   sizeof fail_why);
     fclose(f);
-    if (fail_why[0] && out_why && out_why_cap && !out_why[0])
-        (void)snprintf(out_why, out_why_cap, "%s", fail_why);
+    if (fail_why[0])
+        trg_scan_reason(out_why, out_why_cap, fail_why, complete);
 
     if (!dry_run) {
         cursor.size = (uint64_t)st.st_size;
@@ -827,6 +897,7 @@ static void trg_process_source(const struct trg_source_spec *spec,
         cursor.row_count = new_row_count;
         (void)trg_cursor_write(spec->name, &cursor);
     }
+    return complete;
 }
 
 bool zcl_trigger_check_run(bool dry_run, int64_t since_s, uint64_t *out_checked,
@@ -844,12 +915,14 @@ bool zcl_trigger_check_run(bool dry_run, int64_t since_s, uint64_t *out_checked,
     *out_failed = 0;
     if (out_why && out_why_cap)
         out_why[0] = 0;
+    bool complete = true;
     for (size_t i = 0; i < sizeof k_source_specs / sizeof k_source_specs[0];
         i++)
-        trg_process_source(&k_source_specs[i], dry_run, since_s, out_checked,
-                          out_fired, out_failed, out_fired_ids, out_why,
-                          out_why_cap);
-    return true;
+        if (!trg_process_source(&k_source_specs[i], dry_run, since_s, out_checked,
+                                out_fired, out_failed, out_fired_ids, out_why,
+                                out_why_cap))
+            complete = false;
+    return complete;
 }
 
 /* ── github comment ingest ────────────────────────────────────────────

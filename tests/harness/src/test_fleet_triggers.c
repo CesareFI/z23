@@ -25,6 +25,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#endif
 
 #define FTX_PATH "fleet.triggers.check"
 
@@ -1026,10 +1031,440 @@ _test_next:;
     return failures;
 }
 
+static int ftx_record_cursor(size_t expected_offset, unsigned expected_rows)
+{
+    int failures = 0;
+    char cursor[PATH_MAX];
+    unsigned long long ino, size, offset, rows;
+    ASSERT(zcl_trigger_cursor_path("landing_outcomes", cursor, sizeof cursor));
+    FILE *f = fopen(cursor, "rb");
+    ASSERT(f != NULL);
+    int fields = fscanf(f, "%llu %llu %llu %llu", &ino, &size, &offset, &rows);
+    int closed = fclose(f);
+    ASSERT_EQ(fields, 4);
+    ASSERT_EQ(closed, 0);
+    ASSERT_EQ(offset, expected_offset);
+    ASSERT_EQ(rows, expected_rows);
+_test_next:;
+    return failures;
+}
+
+/* Byte-counted tails also exercise embedded NULs through the real evaluator. */
+static int ftx_case_json_record(const char *tag, const char *tail,
+                                 size_t tail_len, const char *reason)
+{
+    int failures = 0;
+    char path[PATH_MAX], why[256];
+    uint64_t checked, fired, failed;
+    const char *prefix = "{\"state\":\"landed\"}\n";
+    bool valid = reason == NULL;
+    ftx_isolate(tag);
+    ftx_install_clock();
+    ASSERT(zcl_trigger_landing_path(path, sizeof path));
+    ftx_write_file(path, "");
+    FILE *f = fopen(path, "wb");
+    ASSERT(f != NULL);
+    int prefix_written = fputs(prefix, f);
+    size_t tail_written = fwrite(tail, 1, tail_len, f);
+    int closed = fclose(f);
+    ASSERT(prefix_written >= 0);
+    ASSERT_EQ(tail_written, tail_len);
+    ASSERT_EQ(closed, 0);
+    printf("fleet_triggers: %s... ", tag);
+    ASSERT_EQ(zcl_trigger_check_run(false, 0, &checked, &fired, &failed,
+                                    NULL, why, sizeof why), valid);
+    ASSERT_EQ(checked, valid ? 2 : 1);
+    ASSERT_EQ(fired, valid ? 2 : 1);
+    ASSERT_EQ(failed, 0);
+    if (!valid)
+        ASSERT(strstr(why, reason) != NULL);
+    failures += ftx_record_cursor(strlen(prefix) + (valid ? tail_len : 0),
+                                  valid ? 2 : 1);
+    /* A second check must neither replay the prefix nor cross a refused tail. */
+    ASSERT_EQ(zcl_trigger_check_run(false, 0, &checked, &fired, &failed,
+                                    NULL, why, sizeof why), valid);
+    ASSERT_EQ(checked, 0);
+    ASSERT_EQ(fired, 0);
+    ASSERT_EQ(failed, 0);
+    PASS();
+_test_next:;
+    clock_reset_default();
+    return failures;
+}
+
+static int ftx_case_scan_framing(void)
+{
+    int failures = 0;
+    const char suffix[] = "\n{\"state\":\"landed\"}\n";
+    char oversized[8192 + sizeof suffix - 1];
+    memset(oversized, 'x', 8192);
+    memcpy(oversized + 8192, suffix, sizeof suffix - 1);
+    failures += ftx_case_json_record("oversized", oversized, sizeof oversized,
+                                     "oversized");
+    return failures;
+}
+
+/* A local refusal can follow a successful ledger append. The command must
+ * report that prefix's mutation even though no success data is returned. */
+static int ftx_case_command_prefix_refusal(void)
+{
+    int failures = 0;
+    char path[PATH_MAX], ledger[PATH_MAX];
+    const char *prefix = "{\"state\":\"landed\"}\n";
+    struct ftx_call c;
+    ftx_isolate("command_prefix_refusal");
+    ftx_install_clock();
+    ftx_begin(&c, false, 0);
+    ASSERT(c.request.spec != NULL);
+    ASSERT(zcl_trigger_landing_path(path, sizeof path));
+    ASSERT(zcl_trigger_fired_ledger_path(ledger, sizeof ledger));
+    ftx_write_file(path, "{\"state\":\"landed\"}\n{\"state\":\n");
+    printf("fleet_triggers: source refusal reports ledger prefix mutation... ");
+    ASSERT(ftx_run(&c));
+    ASSERT_EQ(c.reply.status, ZCL_COMMAND_STATUS_FAILED);
+    ASSERT_EQ(c.reply.exit_code, ZCL_COMMAND_EXIT_INTERNAL);
+    ASSERT_STR_EQ(c.reply.error.code, "CHECK_FAILED");
+    ASSERT(c.reply.error.mutated);
+    ASSERT(strstr(c.reply.error.message, "malformed JSON") != NULL);
+    ASSERT_EQ(ftx_count_lines(ledger), 1);
+    ASSERT_EQ(ftx_record_cursor(strlen(prefix), 1), 0);
+    PASS();
+_test_next:;
+    ftx_end(&c);
+    clock_reset_default();
+    return failures;
+}
+
+static int ftx_case_scan_read_error(void)
+{
+    int failures = 0;
+    char path[PATH_MAX], why[256];
+    uint64_t checked, fired, failed;
+    printf("fleet_triggers: unreadable source refuses... ");
+    ftx_isolate("scan_read_error");
+    ftx_install_clock();
+    ASSERT(zcl_trigger_landing_path(path, sizeof path));
+    ftx_write_file(path, "");
+    ASSERT_EQ(unlink(path), 0);
+    ASSERT_EQ(mkdir(path, 0700), 0);
+    ASSERT(!zcl_trigger_check_run(false, 0, &checked, &fired, &failed,
+                                  NULL, why, sizeof why));
+    ASSERT(strstr(why, "read error") != NULL);
+    ASSERT_EQ(checked, 0);
+    ASSERT_EQ(fired, 0);
+    ASSERT_EQ(failed, 0);
+    PASS();
+_test_next:;
+    clock_reset_default();
+    return failures;
+}
+
+static int ftx_case_json_records(void)
+{
+    int failures = 0;
+    const struct { const char *tag, *tail; size_t len; const char *reason; } cases[] = {
+        { "incomplete_lf", "{\"state\":\n", sizeof "{\"state\":\n" - 1,
+          "malformed JSON" },
+        { "trailing_bytes", "{\"state\":\"landed\"}x\n",
+          sizeof "{\"state\":\"landed\"}x\n" - 1, "malformed JSON" },
+        { "incomplete_eof", "{\"state\":", sizeof "{\"state\":" - 1,
+          "malformed JSON" },
+        { "complete_eof", "{\"state\":\"landed\"}",
+          sizeof "{\"state\":\"landed\"}" - 1, NULL },
+        { "invalid_utf8", "{\"state\":\"landed\",\"note\":\"\xff\"}\n",
+          sizeof "{\"state\":\"landed\",\"note\":\"\xff\"}\n" - 1, "malformed JSON" },
+        { "embedded_nul", "{\"state\":\"landed\"}\0junk\n",
+          sizeof "{\"state\":\"landed\"}\0junk\n" - 1, "malformed or oversized" }
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++)
+        failures += ftx_case_json_record(cases[i].tag, cases[i].tail,
+                                         cases[i].len, cases[i].reason);
+    return failures;
+}
+
+#if !defined(_WIN32)
+/* Read the complete saved cursor, so an early refusal cannot rewrite even
+ * its inode/size fields while leaving offset and row count unchanged. */
+static int ftx_source_cursor(const char *source, char *raw, size_t cap)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    ASSERT(zcl_trigger_cursor_path(source, path, sizeof path));
+    FILE *f = fopen(path, "rb");
+    ASSERT(f != NULL);
+    size_t n = fread(raw, 1, cap - 1, f);
+    bool complete = !ferror(f) && feof(f);
+    int closed = fclose(f);
+    ASSERT(complete);
+    ASSERT_EQ(closed, 0);
+    raw[n] = 0;
+_test_next:;
+    return failures;
+}
+
+static int ftx_saved_cursor(char *raw, size_t cap)
+{
+    return ftx_source_cursor("landing_outcomes", raw, cap);
+}
+
+/* A bound Unix socket has a stat-able pathname that cannot be opened as a
+ * FILE, even by a privileged process. Bind relative to its isolated parent
+ * so the fixture does not depend on the absolute sun_path length limit. */
+static int ftx_open_failure_call(const char *path, bool expected)
+{
+    int failures = 0, fd = -1;
+    char cwd[PATH_MAX], parent[PATH_MAX];
+    struct sockaddr_un address = { .sun_family = AF_UNIX };
+    char why[256];
+    uint64_t checked = 99, fired = 99, failed = 99;
+    ASSERT(getcwd(cwd, sizeof cwd) != NULL);
+    ASSERT(strlen(path) < sizeof parent);
+    memcpy(parent, path, strlen(path) + 1);
+    char *name = strrchr(parent, '/');
+    ASSERT(name != NULL);
+    *name++ = 0;
+    ASSERT(strlen(name) < sizeof address.sun_path);
+    memcpy(address.sun_path, name, strlen(name) + 1);
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    ASSERT(fd >= 0);
+    ASSERT_EQ(unlink(path), 0);
+    ASSERT_EQ(chdir(parent), 0);
+    int bound = bind(fd, (const struct sockaddr *)&address, sizeof address);
+    int restored = chdir(cwd);
+    ASSERT_EQ(restored, 0);
+    ASSERT_EQ(bound, 0);
+    struct stat st;
+    ASSERT_EQ(stat(path, &st), 0);
+    FILE *probe = fopen(path, "rb");
+    bool opened = probe != NULL;
+    if (probe)
+        fclose(probe);
+    ASSERT(!opened);
+    bool result = zcl_trigger_check_run(false, 0, &checked, &fired, &failed,
+                                        NULL, why, sizeof why);
+    ASSERT_EQ(result, expected);
+    ASSERT_EQ(checked, 0);
+    ASSERT_EQ(fired, 0);
+    ASSERT_EQ(failed, 0);
+    ASSERT_STR_EQ(why, expected ? "" : "trigger source read error");
+_test_next:;
+    if (fd >= 0 && close(fd) != 0)
+        failures++;
+    return failures;
+}
+
+static int ftx_case_source_open_error(bool tsv)
+{
+    int failures = 0;
+    char path[PATH_MAX], cursor[PATH_MAX], before[128], after[128];
+    const char *source = tsv ? "experiment_rows" : "landing_outcomes";
+    struct stat st;
+    ftx_isolate(tsv ? "tsv_open_skip" : "json_open_refusal");
+    ASSERT(tsv ? zcl_trigger_experiment_path(path, sizeof path)
+               : zcl_trigger_landing_path(path, sizeof path));
+    ftx_write_file(path, tsv
+        ? "ts\tkind\tbox\ttask_id\ttask_class\tstory\texecutor\tharness\t"
+          "model\teffort\ttokens_in\ttokens_out\ttokens_cache\t"
+          "tokens_reasoning\ttool_uses\tturns\twall_s\toutcome\t"
+          "lines_added\tlines_removed\tdefects\tnote\n"
+          "2026-09-06T10:00:00Z\tresult\tnode1\tt1\tread\ts\te\th\tm\tlow\t"
+          "1\t1\t0\t0\t0\t1\t1\ttimeout\t0\t0\t0\tn\n"
+        : "{\"state\":\"landed\"}\n");
+    ASSERT_EQ(stat(path, &st), 0);
+    ASSERT(zcl_trigger_cursor_path(source, cursor, sizeof cursor));
+    ftx_write_file(cursor, "0 0 0 0\n");
+    ASSERT_EQ(ftx_source_cursor(source, before, sizeof before), 0);
+    failures += ftx_open_failure_call(path, tsv);
+    ASSERT_EQ(ftx_source_cursor(source, after, sizeof after), 0);
+    ASSERT_STR_EQ(before, after);
+    PASS();
+_test_next:;
+    return failures;
+}
+
+/* mode 0 is action-only; mode 1 adds malformed board JSON; mode 2 adds
+ * a board setup error. Both sources must keep their pending row at zero. */
+static int ftx_case_action_then_refusal(int mode)
+{
+    int failures = 0;
+    char landing[PATH_MAX], board[PATH_MAX], ledger[PATH_MAX], why[256];
+    char cursor[PATH_MAX], before[128], after[128];
+    uint64_t checked, fired, failed;
+    ftx_isolate(mode == 0 ? "action_only" : mode == 1 ? "action_then_json"
+                                                    : "action_then_setup");
+    ftx_install_clock();
+    ASSERT(zcl_trigger_landing_path(landing, sizeof landing));
+    ASSERT(zcl_trigger_board_path(board, sizeof board));
+    ASSERT(zcl_trigger_fired_ledger_path(ledger, sizeof ledger));
+    ftx_write_file(landing, "{\"state\":\"landed\"}\n");
+    ftx_write_file(ledger, "");
+    ASSERT_EQ(unlink(ledger), 0);
+    ASSERT_EQ(mkdir(ledger, 0700), 0);
+    if (mode != 0) {
+        ftx_write_file(board, "{\"broken\":\n");
+        ASSERT(zcl_trigger_cursor_path("board_rows", cursor, sizeof cursor));
+        ftx_write_file(cursor, "0 0 0 0\n");
+        ASSERT_EQ(ftx_source_cursor("board_rows", before, sizeof before), 0);
+    }
+    if (mode == 2) {
+        ASSERT_EQ(unlink(board), 0);
+        ASSERT_EQ(symlink(board, board), 0);
+    }
+    ASSERT_EQ(zcl_trigger_check_run(false, 0, &checked, &fired, &failed,
+                                    NULL, why, sizeof why), mode == 0);
+    ASSERT_EQ(checked, 1);
+    ASSERT_EQ(fired, 0);
+    ASSERT_EQ(failed, 1);
+    const char *reason = mode == 0 ? "ledger append failed"
+                         : mode == 1 ? "malformed JSON" : "read error";
+    ASSERT(strstr(why, reason) != NULL);
+    ASSERT_EQ(ftx_record_cursor(0, 0), 0);
+    if (mode != 0) {
+        ASSERT_EQ(ftx_source_cursor("board_rows", after, sizeof after), 0);
+        /* Scanning malformed JSON saves identity but must not consume it. */
+        if (mode == 2)
+            ASSERT_STR_EQ(before, after);
+        else {
+            unsigned long long ino, size, offset, rows;
+            ASSERT_EQ(sscanf(after, "%llu %llu %llu %llu", &ino, &size,
+                              &offset, &rows), 4);
+            ASSERT_EQ(offset, 0);
+            ASSERT_EQ(rows, 0);
+        }
+    }
+    PASS();
+_test_next:;
+    clock_reset_default();
+    return failures;
+}
+
+static int ftx_setup_refusal(void)
+{
+    int failures = 0;
+    char why[256];
+    uint64_t checked = 99, fired = 99, failed = 99;
+    ASSERT(!zcl_trigger_check_run(false, 0, &checked, &fired, &failed,
+                                  NULL, why, sizeof why));
+    ASSERT(strstr(why, "read error") != NULL);
+    ASSERT_EQ(checked, 0);
+    ASSERT_EQ(fired, 0);
+    ASSERT_EQ(failed, 0);
+_test_next:;
+    return failures;
+}
+
+/* A source file used as the state base makes path resolution fail without
+ * permissions, process privileges, or an injected production-only seam. */
+static int ftx_case_source_path_error(void)
+{
+    int failures = 0;
+    char path[PATH_MAX], probe[PATH_MAX], before[128], after[128], why[256];
+    uint64_t checked, fired, failed;
+    ftx_isolate("source_path_error");
+    ftx_install_clock();
+    ASSERT(zcl_trigger_landing_path(path, sizeof path));
+    ftx_write_file(path, "{\"state\":\"landed\"}\n");
+    ASSERT(zcl_trigger_check_run(false, 0, &checked, &fired, &failed,
+                                 NULL, why, sizeof why));
+    ASSERT_EQ(ftx_saved_cursor(before, sizeof before), 0);
+    ASSERT_EQ(setenv("XDG_STATE_HOME", path, 1), 0);
+    ASSERT(!zcl_trigger_landing_path(probe, sizeof probe));
+    failures += ftx_setup_refusal();
+    ASSERT_EQ(setenv("XDG_STATE_HOME", g_ftx_state, 1), 0);
+    ASSERT_EQ(ftx_saved_cursor(after, sizeof after), 0);
+    ASSERT_STR_EQ(before, after);
+    PASS();
+_test_next:;
+    if (setenv("XDG_STATE_HOME", g_ftx_state, 1) != 0)
+        failures++;
+    clock_reset_default();
+    return failures;
+}
+
+/* A self-referencing source symlink gives stat ELOOP even as root. */
+static int ftx_case_source_stat_error(void)
+{
+    int failures = 0;
+    char path[PATH_MAX], before[128], after[128], why[256];
+    uint64_t checked, fired, failed;
+    struct stat st;
+    ftx_isolate("source_stat_error");
+    ftx_install_clock();
+    ASSERT(zcl_trigger_landing_path(path, sizeof path));
+    /* ENOENT is still a successful empty source. */
+    ASSERT(zcl_trigger_check_run(false, 0, &checked, &fired, &failed,
+                                 NULL, why, sizeof why));
+    ASSERT_EQ(checked, 0);
+    ftx_write_file(path, "{\"state\":\"landed\"}\n");
+    ASSERT(zcl_trigger_check_run(false, 0, &checked, &fired, &failed,
+                                 NULL, why, sizeof why));
+    ASSERT_EQ(ftx_saved_cursor(before, sizeof before), 0);
+    ASSERT_EQ(unlink(path), 0);
+    ASSERT_EQ(symlink(path, path), 0);
+    ASSERT_EQ(stat(path, &st), -1);
+    ASSERT_EQ(errno, ELOOP);
+    failures += ftx_setup_refusal();
+    ASSERT_EQ(ftx_saved_cursor(after, sizeof after), 0);
+    ASSERT_STR_EQ(before, after);
+    ASSERT_EQ(unlink(path), 0);
+    PASS();
+_test_next:;
+    clock_reset_default();
+    return failures;
+}
+
+/* Holding both FIFO ends open avoids a blocking source open; fseek then
+ * refuses with ESPIPE before any byte can be scored or cursor saved. */
+static int ftx_case_source_seek_error(void)
+{
+    int failures = 0;
+    char path[PATH_MAX], before[128], after[128], why[256];
+    uint64_t checked, fired, failed;
+    int anchor = -1;
+    ftx_isolate("source_seek_error");
+    ftx_install_clock();
+    ASSERT(zcl_trigger_landing_path(path, sizeof path));
+    ftx_write_file(path, "{\"state\":\"landed\"}\n");
+    ASSERT(zcl_trigger_check_run(false, 0, &checked, &fired, &failed,
+                                 NULL, why, sizeof why));
+    ASSERT_EQ(ftx_saved_cursor(before, sizeof before), 0);
+    ASSERT_EQ(unlink(path), 0);
+    ASSERT_EQ(mkfifo(path, 0600), 0);
+    anchor = open(path, O_RDWR | O_NONBLOCK);
+    ASSERT(anchor >= 0);
+    ASSERT_EQ(lseek(anchor, 0, SEEK_SET), -1);
+    ASSERT_EQ(errno, ESPIPE);
+    failures += ftx_setup_refusal();
+    ASSERT_EQ(ftx_saved_cursor(after, sizeof after), 0);
+    ASSERT_STR_EQ(before, after);
+    ASSERT_EQ(unlink(path), 0);
+    PASS();
+_test_next:;
+    if (anchor >= 0 && close(anchor) != 0)
+        failures++;
+    clock_reset_default();
+    return failures;
+}
+#endif
+
 int test_fleet_triggers(void);
 int test_fleet_triggers(void)
 {
     int failures = 0;
+    failures += ftx_case_command_prefix_refusal();
+#if !defined(_WIN32)
+    failures += ftx_case_source_open_error(true);
+    failures += ftx_case_source_open_error(false);
+    failures += ftx_case_action_then_refusal(0);
+    failures += ftx_case_action_then_refusal(1);
+    failures += ftx_case_action_then_refusal(2);
+    failures += ftx_case_source_path_error();
+    failures += ftx_case_source_stat_error();
+    failures += ftx_case_source_seek_error();
+#endif
+    failures += ftx_case_scan_framing();
+    failures += ftx_case_scan_read_error();
+    failures += ftx_case_json_records();
     failures += ftx_case_cursor_extent();
     failures += ftx_case_cursor_capacity();
     failures += ftx_case_cursor_scalar_range();

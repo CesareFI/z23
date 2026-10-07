@@ -83,7 +83,12 @@ int zcl_trigger_ingest_github_comments(const char *jsonl_path, char *out_why,
  * of the same source wait behind it. out_why then names the trigger and
  * the action's own reason. Returns false only on an unrecoverable local
  * error (out_why names it); a source that is simply absent is not an
- * error and contributes zero rows. */
+ * error and contributes zero rows. Malformed, oversized, or unreadable JSONL
+ * records return false with out_why set; JSON source path/stat/open/seek/read
+ * errors also refuse, except ENOENT absence. The cursor and row count retain
+ * the accepted prefix. A complete final JSON record is consumed without LF.
+ * Local JSON refusals replace any earlier action-failure reason.
+ * TSV path/stat/open/seek failures retain their existing skip behavior. */
 bool zcl_trigger_check_run(bool dry_run, int64_t since_s,
                           uint64_t *out_checked, uint64_t *out_fired,
                           uint64_t *out_failed,
