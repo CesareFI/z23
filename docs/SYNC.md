@@ -139,7 +139,17 @@ serving, and normal block relay; snapshot offer construction and payload serving
 remain contained until the `coins_kv` payload-binding gate exists. It does not start explorer
 cache prewarming, store/market services, onion hosting (which a full build starts
 unless `-no-tor` is passed), or
-file-service snapshot export and chunk/block-piece manifests.
+file-service snapshot export and chunk/block-piece manifests. Package-store
+registration, package/mesh transport wiring, and build requester/worker
+registration are also absent in this profile, including when `-packagehost`
+or `-buildworker` is supplied. Core frontend registration and Tor admission
+policy are unchanged.
+
+This is a runtime profile, not a separate money-only build. The binary still
+links optional application code; optional RPC registrations and sealed P2P
+marketplace dispatch remain coupled to the node. Do not treat this profile as
+proof that all marketplace application participation is disabled. It does not
+filter consensus-valid transactions or change blockchain validation.
 
 Full, onion-node, and legacy-compat profiles keep the broader app surfaces. The
 explorer profile keeps explorer APIs and cache prewarming but still avoids store

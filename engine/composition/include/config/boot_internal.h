@@ -306,6 +306,10 @@ struct node_db *boot_node_db(struct boot_svc_ctx *svc);
 struct db_service *boot_db_service(struct boot_svc_ctx *svc);
 bool boot_running(const struct boot_svc_ctx *svc);
 bool boot_profile_has_file_service(const struct app_context *ctx);
+/* Register optional build supervision without starting the core supervisor.
+ * The context is borrowed for this call; build workers retain their existing
+ * explicit admission and lifetime rules. */
+void boot_register_build_runtime(struct boot_svc_ctx *svc);
 
 /* ── boot_frontend_services.c ───────────────────────────────────
  * Clearnet frontend service lifecycle (file server, JSON-RPC HTTP, explorer

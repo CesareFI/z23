@@ -638,17 +638,34 @@ static void boot_zcode_store_stop(void *ctx)
         vcs_package_store_close_global();
 }
 
+/* Optional package transports borrow svc until zcode_store stops. Keep the
+ * entire registration absent in the money-only runtime, even if a caller
+ * supplied -packagehost. No package callback or timer is needed for ZCL. */
+static bool boot_register_package_frontends(struct boot_svc_ctx *svc)
+{
+    if (svc->app_ctx->runtime_profile == ZCL_RUNTIME_ZCLASSIC_ONLY)
+        return true;
+    const struct zcl_service_spec package = {
+        .name = "zcode_store",
+        .start = boot_zcode_store_start,
+        .stop = boot_zcode_store_stop,
+        .ctx = svc,
+        .flags = ZCL_SERVICE_OPTIONAL,
+    };
+    if (!zcl_service_kernel_register(&svc->frontend_kernel, &package))
+        return false;
+    boot_zcode_swarm_wire(svc);
+    boot_mesh_pairing_wire(svc);
+    return true;
+}
+
 /* Register every clearnet frontend service into svc->frontend_kernel.
  * Called once from app_init_services in boot_services.c before the kernel
  * is started. Returns false on the first registration failure. */
 bool boot_register_frontend_services(struct boot_svc_ctx *svc)
 {
-    /* ZCODE package swarm (slice 12): net↔vcs engine hooks. The engine
-     * itself is created lazily on first use when -packagehost=1 and the
-     * store is open; wiring the hooks is always safe. */
-    boot_zcode_swarm_wire(svc);
-    boot_mesh_pairing_wire(svc);
-
+    if (!svc || !svc->app_ctx)
+        LOG_FAIL("boot", "frontend registration: missing service/application context");
     const struct zcl_service_spec specs[] = {
         {
             .name = "file_service",
@@ -693,20 +710,13 @@ bool boot_register_frontend_services(struct boot_svc_ctx *svc)
             .ctx = svc,
             .flags = ZCL_SERVICE_OPTIONAL,
         },
-        {
-            .name = "zcode_store",
-            .start = boot_zcode_store_start,
-            .stop = boot_zcode_store_stop,
-            .ctx = svc,
-            .flags = ZCL_SERVICE_OPTIONAL,
-        },
     };
 
     for (size_t i = 0; i < sizeof(specs) / sizeof(specs[0]); i++) {
         if (!zcl_service_kernel_register(&svc->frontend_kernel, &specs[i]))
             return false;
     }
-    return true;
+    return boot_register_package_frontends(svc);
 }
 
 extern size_t onion_service_handle_request(const char *, const char *,

@@ -3,8 +3,14 @@
 #include "test/test_core.h"
 
 #include "config/boot.h"
+#include "config/boot_internal.h"
+#include "config/boot_mesh_pairing.h"
+#include "config/boot_zcode_swarm.h"
+#include "services/build_fabric_runtime.h"
+#include "util/supervisor.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define APPCTX_CHECK(name, expr) do {                                  \
@@ -209,6 +215,77 @@ static int test_app_context_tor_policy(void)
 
     return failures;
 }
+/* Inspect the real registration path without starting services, connecting
+ * peers, opening stores, or executing package work. The service context is
+ * borrowed only until the registered transport adapters are shut down. */
+static int test_app_context_frontends(enum zcl_runtime_profile profile,
+                                     bool expect_packages)
+{
+    int failures = 0;
+    struct app_context ctx;
+    app_context_defaults(&ctx);
+    ctx.runtime_profile = profile;
+    struct msg_processor *mp = calloc(1, sizeof(*mp));
+    if (!mp) {
+        printf("app_context: frontend fixture allocation... FAIL\n");
+        return 1;
+    }
+    struct boot_svc_ctx svc = {.app_ctx = &ctx, .msg_processor = mp};
+    APPCTX_CHECK("frontend registration succeeds",
+                 boot_register_frontend_services(&svc));
+    APPCTX_CHECK("package registration follows the runtime profile",
+                 (zcl_service_kernel_find(&svc.frontend_kernel,
+                                          "zcode_store") != NULL) ==
+                 expect_packages);
+    APPCTX_CHECK("package frame admission follows the runtime profile",
+                 (mp->zcode_swarm_frame != NULL) == expect_packages);
+    APPCTX_CHECK("package periodic work follows the runtime profile",
+                 (mp->zcode_swarm_tick != NULL) == expect_packages);
+    const char *core_services[] = {"rpc_http", "miner", "file_service",
+                                   "rom_seed", "onion_tor"};
+    for (size_t i = 0; i < sizeof(core_services) / sizeof(core_services[0]); i++) {
+        APPCTX_CHECK(core_services[i],
+                     zcl_service_kernel_find(&svc.frontend_kernel,
+                                             core_services[i]) != NULL);
+    }
+    boot_zcode_swarm_shutdown();
+    boot_mesh_pairing_shutdown();
+    free(mp);
+    return failures;
+}
+
+static int test_app_context_build_runtime(void)
+{
+    int failures = 0;
+    struct app_context ctx;
+    app_context_defaults(&ctx);
+    ctx.runtime_profile = ZCL_RUNTIME_ZCLASSIC_ONLY;
+    struct boot_svc_ctx svc = {.app_ctx = &ctx};
+    int before = supervisor_child_count_total();
+    boot_register_build_runtime(&svc);
+    APPCTX_CHECK("money-only does not register build polling",
+                 supervisor_child_count_total() == before);
+    /* No datadir is supplied: the money-only gate must precede worker
+     * identity access even when a conflicting application flag is set. */
+    ctx.build_worker = true;
+    boot_register_build_runtime(&svc);
+    APPCTX_CHECK("money-only does not register explicitly requested build work",
+                 supervisor_child_count_total() == before);
+    struct json_value state;
+    json_init(&state);
+    APPCTX_CHECK("money-only refuses build activation before identity access",
+                 build_fabric_dump_state_json(&state, NULL) &&
+                 !json_get_bool(json_get(&state, "worker_enabled")) &&
+                 !json_get_bool(json_get(&state, "worker_thread_started")));
+    json_free(&state);
+    ctx.runtime_profile = ZCL_RUNTIME_FULL;
+    ctx.build_worker = false;
+    boot_register_build_runtime(&svc);
+    APPCTX_CHECK("full profile retains requester and idle-worker supervision",
+                 supervisor_child_count_total() == before + 2);
+    return failures;
+}
+
 int test_app_context(void)
 {
     int failures = 0;
@@ -356,6 +433,9 @@ int test_app_context(void)
                  app_runtime_profile_has_file_service(ZCL_RUNTIME_LEGACY_COMPAT));
 
     failures += test_app_context_tor_policy();
+    failures += test_app_context_frontends(ZCL_RUNTIME_ZCLASSIC_ONLY, false);
+    failures += test_app_context_frontends(ZCL_RUNTIME_FULL, true);
+    failures += test_app_context_build_runtime();
 
     return failures;
 }
