@@ -41,7 +41,7 @@ static long ts_rss_kb(void)
 #endif
 }
 
-int test_script(void)
+static int ts_script_opcodes(void)
 {
     int failures = 0;
 
@@ -56,6 +56,13 @@ int test_script(void)
             failures++;
         }
     }
+
+    return failures;
+}
+
+static int ts_script_p2pkh(void)
+{
+    int failures = 0;
 
     printf("script P2PKH... ");
     {
@@ -76,6 +83,13 @@ int test_script(void)
         }
     }
 
+    return failures;
+}
+
+static int ts_compress_amount_roundtrip(void)
+{
+    int failures = 0;
+
     printf("compress_amount roundtrip... ");
     {
         uint64_t values[] = {0, 1, 100000000, 50000000, 2100000000000000ULL};
@@ -88,6 +102,13 @@ int test_script(void)
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_script_compress_p2pkh(void)
+{
+    int failures = 0;
 
     printf("script_compress P2PKH... ");
     {
@@ -113,6 +134,13 @@ int test_script(void)
         } else { printf("FAIL (compress)\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_block_index_get_ancestor(void)
+{
+    int failures = 0;
+
     printf("block_index_get_ancestor... ");
     {
         struct block_index blocks[5];
@@ -133,6 +161,13 @@ int test_script(void)
         }
     }
 
+    return failures;
+}
+
+static int ts_script_solver_p2pkh(void)
+{
+    int failures = 0;
+
     printf("script_solver P2PKH... ");
     {
         struct key_id kid;
@@ -152,6 +187,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_solver_p2sh(void)
+{
+    int failures = 0;
+
     printf("script_solver P2SH... ");
     {
         struct script_id sid;
@@ -169,6 +211,13 @@ int test_script(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_utxo_classify_script(void)
+{
+    int failures = 0;
 
     printf("utxo_classify_script... ");
     {
@@ -208,6 +257,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_extract_destination_p2pkh(void)
+{
+    int failures = 0;
+
     printf("script_extract_destination P2PKH... ");
     {
         struct key_id kid;
@@ -221,6 +277,13 @@ int test_script(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_script_for_destination_roundtrip(void)
+{
+    int failures = 0;
 
     printf("script_for_destination roundtrip... ");
     {
@@ -238,6 +301,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_get_txn_output_type(void)
+{
+    int failures = 0;
+
     printf("get_txn_output_type... ");
     {
         if (strcmp(get_txn_output_type(TX_PUBKEYHASH), "pubkeyhash") == 0 &&
@@ -246,6 +316,13 @@ int test_script(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_script_id_from_script(void)
+{
+    int failures = 0;
 
     printf("script_id_from_script... ");
     {
@@ -263,6 +340,13 @@ int test_script(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_coins_init_alloc_spend(void)
+{
+    int failures = 0;
 
     printf("coins init/alloc/spend... ");
     {
@@ -288,6 +372,13 @@ int test_script(void)
         coins_free(&c);
     }
 
+    return failures;
+}
+
+static int ts_coins_from_transaction(void)
+{
+    int failures = 0;
+
     printf("coins_from_transaction... ");
     {
         struct transaction tx;
@@ -309,6 +400,13 @@ int test_script(void)
         transaction_free(&tx);
     }
 
+    return failures;
+}
+
+static int ts_script_num_roundtrip(void)
+{
+    int failures = 0;
+
     printf("script_num roundtrip... ");
     {
         int64_t values[] = {0, 1, -1, 127, -128, 255, -255, 32767, -32768,
@@ -329,71 +427,71 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* script_num_serialize rejects short buffers instead of
-     * silently truncating. Max output for any valid int64 magnitude is
-     * SCRIPT_NUM_MAX_SIZE (8 bytes). */
-    printf("script_num_serialize outsize bounds... ");
-    {
-        bool ok = true;
+    return failures;
+}
 
-        /* Guard sentinels around a 1-byte buffer. INT64_MAX needs 8
-         * bytes, so the call must return 0 and leave both sentinels
-         * untouched. The previous implementation silently wrote byte 0
-         * and reported len=1, producing malformed script. */
-        unsigned char guard[3] = { 0xAA, 0xAA, 0xAA };
-        unsigned char *buf = &guard[1];
-        struct script_num huge = script_num_from_int(INT64_MAX);
-        if (script_num_serialize(&huge, buf, 1) != 0) ok = false;
-        if (guard[0] != 0xAA || guard[1] != 0xAA || guard[2] != 0xAA)
-            ok = false;
+static bool ts_script_num_short_buffers(void)
+{
+    unsigned char guard[3] = {0xAA, 0xAA, 0xAA};
+    struct script_num huge = script_num_from_int(INT64_MAX);
+    bool ok = script_num_serialize(&huge, &guard[1], 1) == 0;
+    ok = ok && guard[0] == 0xAA && guard[1] == 0xAA && guard[2] == 0xAA;
+    struct script_num value = script_num_from_int(128);
+    unsigned char one[1] = {0xDD};
+    if (script_num_serialize(&value, one, sizeof(one)) != 0) ok = false;
+    if (one[0] != 0xDD) ok = false;
+    unsigned char two[2];
+    size_t len = script_num_serialize(&value, two, sizeof(two));
+    if (len != 2 || two[0] != 0x80 || two[1] != 0x00) ok = false;
+    return ok;
+}
 
-        /* Value 128 needs 2 bytes (0x80 magnitude + 0x00 sign byte).
-         * A 1-byte buffer must reject the request; a 2-byte buffer
-         * must accept it with both bytes written. */
-        struct script_num oneTwentyEight = script_num_from_int(128);
-        unsigned char one[1] = { 0xDD };
-        if (script_num_serialize(&oneTwentyEight, one, sizeof(one)) != 0) ok = false;
-        if (one[0] != 0xDD) ok = false;
-
-        unsigned char two[2];
-        size_t len = script_num_serialize(&oneTwentyEight, two, sizeof(two));
-        if (len != 2 || two[0] != 0x80 || two[1] != 0x00) ok = false;
-
-        /* Eight bytes is sufficient for INT64_MAX — round-trip. */
-        unsigned char eight[8];
-        len = script_num_serialize(&huge, eight, sizeof(eight));
+static bool ts_script_num_extreme_roundtrips(void)
+{
+    bool ok = true;
+    const int64_t values[] = {INT64_MAX, INT64_MIN + 1};
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        struct script_num value = script_num_from_int(values[i]);
+        unsigned char bytes[8];
+        size_t len = script_num_serialize(&value, bytes, sizeof(bytes));
         if (len != 8) ok = false;
         struct script_num back;
-        if (!script_num_from_bytes(&back, eight, len, true, sizeof(eight)) ||
-            back.value != INT64_MAX)
+        if (!script_num_from_bytes(&back, bytes, len, true, sizeof(bytes)) ||
+            back.value != values[i])
             ok = false;
-
-        /* INT64_MIN + 1 is the most negative representable magnitude
-         * (INT64_MIN's absolute value overflows int64 negation). Eight
-         * bytes still suffices because the top magnitude byte (0x7f)
-         * leaves the sign bit free. */
-        struct script_num deep = script_num_from_int(INT64_MIN + 1);
-        unsigned char neg[8];
-        len = script_num_serialize(&deep, neg, sizeof(neg));
-        if (len != 8) ok = false;
-        if (!script_num_from_bytes(&back, neg, len, true, sizeof(neg)) ||
-            back.value != INT64_MIN + 1)
-            ok = false;
-
-        /* Value == 0 returns 0 without touching the buffer — the
-         * "short buffer" case is distinguishable by inspecting
-         * sn->value. */
-        unsigned char zbuf[8];
-        memset(zbuf, 0xCC, sizeof(zbuf));
-        struct script_num zero = script_num_from_int(0);
-        if (script_num_serialize(&zero, zbuf, sizeof(zbuf)) != 0) ok = false;
-        for (size_t i = 0; i < sizeof(zbuf); i++)
-            if (zbuf[i] != 0xCC) { ok = false; break; }
-
-        if (ok)
-            printf("OK\n");
-        else { printf("FAIL\n"); failures++; }
     }
+    return ok;
+}
+
+static bool ts_script_num_zero_buffer(void)
+{
+    unsigned char bytes[8];
+    memset(bytes, 0xCC, sizeof(bytes));
+    struct script_num zero = script_num_from_int(0);
+    bool ok = script_num_serialize(&zero, bytes, sizeof(bytes)) == 0;
+    for (size_t i = 0; i < sizeof(bytes); i++) {
+        if (bytes[i] != 0xCC) { ok = false; break; }
+    }
+    return ok;
+}
+
+static int ts_script_num_serialize_outsize_bounds(void)
+{
+    printf("script_num_serialize outsize bounds... ");
+    bool short_ok = ts_script_num_short_buffers();
+    bool extreme_ok = ts_script_num_extreme_roundtrips();
+    bool zero_ok = ts_script_num_zero_buffer();
+    if (short_ok && extreme_ok && zero_ok) {
+        printf("OK\n");
+        return 0;
+    }
+    printf("FAIL\n");
+    return 1;
+}
+
+static int ts_script_get_op(void)
+{
+    int failures = 0;
 
     printf("script_get_op... ");
     {
@@ -421,6 +519,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_is_push_only(void)
+{
+    int failures = 0;
+
     printf("script_is_push_only... ");
     {
         struct script s;
@@ -434,6 +539,13 @@ int test_script(void)
             else { printf("FAIL (non-push passed)\n"); failures++; }
         } else { printf("FAIL (push-only failed)\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_script_is_push_only_pushdata4_verdicts_across_the_wrap(void)
+{
+    int failures = 0;
 
     /* The OP_PUSHDATA4 advance is computed at 32 bits and wraps. That wrap
      * is load-bearing: it is what gives the last four lengths below their
@@ -481,6 +593,13 @@ int test_script(void)
         else { printf("\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_sigencoding_valid_der(void)
+{
+    int failures = 0;
+
     printf("sigencoding valid DER... ");
     {
         unsigned char sig[70];
@@ -496,6 +615,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_sigencoding_invalid_der(void)
+{
+    int failures = 0;
+
     printf("sigencoding invalid DER... ");
     {
         unsigned char sig[] = {0x30, 0x01, 0x00};
@@ -506,6 +632,13 @@ int test_script(void)
         else { printf("FAIL (ok=%d, err=%d)\n", ok, err); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_sigencoding_empty_sig(void)
+{
+    int failures = 0;
+
     printf("sigencoding empty sig... ");
     {
         ScriptError err = SCRIPT_ERR_OK;
@@ -514,6 +647,13 @@ int test_script(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_sigencoding_strict_der_parity_vectors(void)
+{
+    int failures = 0;
 
     /* strict-DER parity with canonical Zcash Bitcoin encoding.
      *
@@ -641,6 +781,13 @@ int test_script(void)
         else { printf("\nFAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_check_pubkey_encoding(void)
+{
+    int failures = 0;
+
     printf("check_pubkey_encoding... ");
     {
         unsigned char compressed[33] = {0x02};
@@ -653,6 +800,13 @@ int test_script(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_eval_script_op_true(void)
+{
+    int failures = 0;
 
     printf("eval_script OP_TRUE... ");
     {
@@ -667,6 +821,13 @@ int test_script(void)
             printf("OK\n");
         else { printf("FAIL (ok=%d, count=%zu)\n", ok, stk.count); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_eval_script_op_add(void)
+{
+    int failures = 0;
 
     printf("eval_script OP_ADD... ");
     {
@@ -689,6 +850,13 @@ int test_script(void)
         } else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_eval_script_op_equal(void)
+{
+    int failures = 0;
+
     printf("eval_script OP_EQUAL... ");
     {
         struct script s;
@@ -704,6 +872,13 @@ int test_script(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_eval_script_op_dup_op_hash160(void)
+{
+    int failures = 0;
 
     printf("eval_script OP_DUP OP_HASH160... ");
     {
@@ -722,6 +897,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_verify_script_p2pkh_no_checker(void)
+{
+    int failures = 0;
+
     printf("verify_script P2PKH (no checker)... ");
     {
         struct key_id kid;
@@ -736,6 +918,13 @@ int test_script(void)
             printf("OK (correctly fails without sig)\n");
         else { printf("FAIL (should have failed)\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_eval_script_op_if_op_else_op_endif(void)
+{
+    int failures = 0;
 
     printf("eval_script OP_IF/OP_ELSE/OP_ENDIF... ");
     {
@@ -761,6 +950,13 @@ int test_script(void)
         } else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_validation_state(void)
+{
+    int failures = 0;
+
     printf("validation_state... ");
     {
         struct validation_state vs;
@@ -776,6 +972,13 @@ int test_script(void)
             else { printf("FAIL\n"); failures++; }
         } else { printf("FAIL (init)\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_sigcache_set_get_erase(void)
+{
+    int failures = 0;
 
     printf("sigcache set/get/erase... ");
     {
@@ -799,6 +1002,13 @@ int test_script(void)
         sig_cache_destroy(&cache);
     }
 
+    return failures;
+}
+
+static int ts_pagelocker_lock_unlock(void)
+{
+    int failures = 0;
+
     printf("pagelocker lock/unlock... ");
     {
         struct locked_page_manager m;
@@ -813,6 +1023,90 @@ int test_script(void)
         else { printf("FAIL (locked=%d, unlocked=%d)\n", count, count2); failures++; }
         locked_page_manager_destroy(&m);
     }
+
+    return failures;
+}
+
+static int ts_pagelocker_atomic_unlock_ranges(void)
+{
+    int failures = 0;
+
+    printf("pagelocker atomic unlock ranges...\n");
+    {
+        static const char *const names[] = {
+            "empty", "absent last", "absent first", "matched"
+        };
+        for (size_t scenario = 0; scenario < 4; scenario++) {
+            struct locked_page_manager m;
+            locked_page_manager_init(&m);
+            size_t page = m.page_size;
+            size_t address = (size_t)0x10000 & m.page_mask;
+            m.num_entries = scenario == 0 ? 0 : 1;
+            m.entries[0] = (struct page_lock_entry){
+                .page = address + (scenario == 2 ? page : 0),
+                .count = scenario == 1 ? 2 : 1
+            };
+            struct page_lock_entry before = m.entries[0];
+            size_t before_count = m.num_entries;
+            printf("pagelocker atomic unlock %s... ", names[scenario]);
+            locked_page_manager_unlock_range(&m, (void *)address,
+                                             scenario == 1 || scenario == 2
+                                                 ? page + 1 : 1);
+            bool unchanged = m.num_entries == before_count &&
+                             m.entries[0].page == before.page &&
+                             m.entries[0].count == before.count;
+            if (scenario == 3 ? m.num_entries == 0 : unchanged)
+                printf("OK\n");
+            else { printf("FAIL (unlock state)\n"); failures++; }
+            locked_page_manager_destroy(&m);
+        }
+    }
+
+    return failures;
+}
+
+static bool ts_pagelocker_tracked_boundaries(void)
+{
+    struct locked_page_manager m;
+    locked_page_manager_init(&m);
+    size_t address = m.page_size;
+    /* Reverse storage order to check lookup independently of range order.
+     * Counts stay positive: these synthetic pages never reach the OS. */
+    m.num_entries = 2;
+    m.entries[0] = (struct page_lock_entry){address + m.page_size, 3};
+    m.entries[1] = (struct page_lock_entry){address, 2};
+    locked_page_manager_unlock_range(&m, (void *)address, m.page_size + 1);
+    bool ok = m.num_entries == 2;
+    ok = ok && m.entries[0].count == 2 && m.entries[1].count == 1;
+    size_t last = SIZE_MAX & m.page_mask;
+    m.num_entries = 1;
+    m.entries[0] = (struct page_lock_entry){last, 2};
+    locked_page_manager_unlock_range(&m, (void *)last, m.page_size);
+    ok = ok && m.num_entries == 1 && m.entries[0].count == 1;
+    struct page_lock_entry before = m.entries[0];
+    locked_page_manager_unlock_range(&m, (void *)last, 0);
+    locked_page_manager_unlock_range(&m, (void *)SIZE_MAX, 2);
+    ok = ok && m.num_entries == 1;
+    ok = ok && m.entries[0].page == before.page;
+    ok = ok && m.entries[0].count == before.count;
+    locked_page_manager_destroy(&m);
+    return ok;
+}
+
+static int ts_pagelocker_range_boundaries(void)
+{
+    printf("pagelocker tracked range boundaries... ");
+    if (ts_pagelocker_tracked_boundaries()) {
+        printf("OK\n");
+        return 0;
+    }
+    printf("FAIL (unlock state)\n");
+    return 1;
+}
+
+static int ts_lock_object_unlock_object(void)
+{
+    int failures = 0;
 
     printf("lock_object/unlock_object... ");
     {
@@ -829,6 +1123,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_get_sig_op_count(void)
+{
+    int failures = 0;
+
     printf("script_get_sig_op_count... ");
     {
         struct script s;
@@ -842,6 +1143,13 @@ int test_script(void)
         else { printf("FAIL (%u)\n", n); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_get_sig_op_count_accurate(void)
+{
+    int failures = 0;
+
     printf("script_get_sig_op_count accurate... ");
     {
         struct script s;
@@ -853,6 +1161,13 @@ int test_script(void)
             printf("OK\n");
         else { printf("FAIL (%u)\n", n); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_get_legacy_sig_op_count(void)
+{
+    int failures = 0;
 
     printf("get_legacy_sig_op_count... ");
     {
@@ -873,6 +1188,13 @@ int test_script(void)
         transaction_free(&tx);
     }
 
+    return failures;
+}
+
+static int ts_script_is_pay_to_script_hash(void)
+{
+    int failures = 0;
+
     printf("script_is_pay_to_script_hash... ");
     {
         struct script s;
@@ -885,6 +1207,13 @@ int test_script(void)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_script_solver_p2sh_case(void)
+{
+    int failures = 0;
 
     /* ================================================================
      * script_solver: P2SH detection
@@ -909,6 +1238,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_solver_op_return_null_data(void)
+{
+    int failures = 0;
+
     printf("script_solver: OP_RETURN null data... ");
     {
         struct script s;
@@ -930,6 +1266,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_solver_p2pk_compressed(void)
+{
+    int failures = 0;
+
     printf("script_solver: P2PK compressed... ");
     {
         struct script s;
@@ -949,6 +1292,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_solver_nonstandard(void)
+{
+    int failures = 0;
+
     printf("script_solver: nonstandard... ");
     {
         struct script s;
@@ -966,6 +1316,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_get_txn_output_type_all_types(void)
+{
+    int failures = 0;
+
     /* ================================================================
      * get_txn_output_type: name strings
      * ================================================================ */
@@ -980,6 +1337,13 @@ int test_script(void)
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_script_for_p2sh_builds_valid_p2sh(void)
+{
+    int failures = 0;
 
     /* ================================================================
      * script_for_p2sh: build + roundtrip via solver
@@ -1004,6 +1368,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_for_p2pkh_builds_valid_p2pkh(void)
+{
+    int failures = 0;
+
     /* ================================================================
      * script_for_p2pkh: build + roundtrip via solver
      * ================================================================ */
@@ -1027,6 +1398,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_extract_destination_p2pkh_case(void)
+{
+    int failures = 0;
+
     /* ================================================================
      * script_extract_destination: P2PKH
      * ================================================================ */
@@ -1046,6 +1424,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_extract_destination_p2sh(void)
+{
+    int failures = 0;
+
     printf("script_extract_destination: P2SH... ");
     {
         struct script_id sid;
@@ -1062,6 +1447,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_extract_destination_nonstandard_fails(void)
+{
+    int failures = 0;
+
     printf("script_extract_destination: nonstandard fails... ");
     {
         struct script s;
@@ -1074,6 +1466,13 @@ int test_script(void)
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_script_for_destination_p2pkh_roundtrip(void)
+{
+    int failures = 0;
 
     /* ================================================================
      * script_for_destination: roundtrip via extract
@@ -1095,6 +1494,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_for_destination_p2sh_roundtrip(void)
+{
+    int failures = 0;
+
     printf("script_for_destination: P2SH roundtrip... ");
     {
         struct tx_destination dest;
@@ -1112,6 +1518,13 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_script_for_destination_dest_none_produces_empty(void)
+{
+    int failures = 0;
+
     printf("script_for_destination: DEST_NONE produces empty... ");
     {
         struct tx_destination dest;
@@ -1122,6 +1535,13 @@ int test_script(void)
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_tx_destination_is_valid(void)
+{
+    int failures = 0;
 
     /* ================================================================
      * tx_destination_is_valid
@@ -1135,6 +1555,13 @@ int test_script(void)
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_script_sig_args_expected(void)
+{
+    int failures = 0;
 
     /* ================================================================
      * script_sig_args_expected
@@ -1156,6 +1583,13 @@ int test_script(void)
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_deep_nested_op_if_100_frames_succeed(void)
+{
+    int failures = 0;
 
     /* ================================================================
      * script_stack on the heap, push failures propagate.
@@ -1197,6 +1631,13 @@ int test_script(void)
                       ok, stk.count, (int)err, ru_delta_kb); failures++; }
     }
 
+    return failures;
+}
+
+static int ts_stack_push_overflow_returns_stack_size(void)
+{
+    int failures = 0;
+
     printf("stack_push overflow returns STACK_SIZE ... ");
     {
         /* Fill the stack to MAX_STACK_ITEMS via OP_1 pushes, then OP_DUP
@@ -1216,6 +1657,13 @@ int test_script(void)
             printf("OK\n");
         else { printf("FAIL (ok=%d, err=%d)\n", ok, (int)err); failures++; }
     }
+
+    return failures;
+}
+
+static int ts_script_id_from_script_deterministic(void)
+{
+    int failures = 0;
 
     /* ================================================================
      * script_id_from_script
@@ -1238,5 +1686,74 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    return failures;
+}
+
+static int (*const ts_script_cases[])(void) = {
+    ts_script_opcodes,
+    ts_script_p2pkh,
+    ts_compress_amount_roundtrip,
+    ts_script_compress_p2pkh,
+    ts_block_index_get_ancestor,
+    ts_script_solver_p2pkh,
+    ts_script_solver_p2sh,
+    ts_utxo_classify_script,
+    ts_script_extract_destination_p2pkh,
+    ts_script_for_destination_roundtrip,
+    ts_get_txn_output_type,
+    ts_script_id_from_script,
+    ts_coins_init_alloc_spend,
+    ts_coins_from_transaction,
+    ts_script_num_roundtrip,
+    ts_script_num_serialize_outsize_bounds,
+    ts_script_get_op,
+    ts_script_is_push_only,
+    ts_script_is_push_only_pushdata4_verdicts_across_the_wrap,
+    ts_sigencoding_valid_der,
+    ts_sigencoding_invalid_der,
+    ts_sigencoding_empty_sig,
+    ts_sigencoding_strict_der_parity_vectors,
+    ts_check_pubkey_encoding,
+    ts_eval_script_op_true,
+    ts_eval_script_op_add,
+    ts_eval_script_op_equal,
+    ts_eval_script_op_dup_op_hash160,
+    ts_verify_script_p2pkh_no_checker,
+    ts_eval_script_op_if_op_else_op_endif,
+    ts_validation_state,
+    ts_sigcache_set_get_erase,
+    ts_pagelocker_lock_unlock,
+    ts_pagelocker_atomic_unlock_ranges,
+    ts_pagelocker_range_boundaries,
+    ts_lock_object_unlock_object,
+    ts_script_get_sig_op_count,
+    ts_script_get_sig_op_count_accurate,
+    ts_get_legacy_sig_op_count,
+    ts_script_is_pay_to_script_hash,
+    ts_script_solver_p2sh_case,
+    ts_script_solver_op_return_null_data,
+    ts_script_solver_p2pk_compressed,
+    ts_script_solver_nonstandard,
+    ts_get_txn_output_type_all_types,
+    ts_script_for_p2sh_builds_valid_p2sh,
+    ts_script_for_p2pkh_builds_valid_p2pkh,
+    ts_script_extract_destination_p2pkh_case,
+    ts_script_extract_destination_p2sh,
+    ts_script_extract_destination_nonstandard_fails,
+    ts_script_for_destination_p2pkh_roundtrip,
+    ts_script_for_destination_p2sh_roundtrip,
+    ts_script_for_destination_dest_none_produces_empty,
+    ts_tx_destination_is_valid,
+    ts_script_sig_args_expected,
+    ts_deep_nested_op_if_100_frames_succeed,
+    ts_stack_push_overflow_returns_stack_size,
+    ts_script_id_from_script_deterministic,
+};
+
+int test_script(void)
+{
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(ts_script_cases) / sizeof(ts_script_cases[0]); i++)
+        failures += ts_script_cases[i]();
     return failures;
 }

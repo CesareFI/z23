@@ -2968,6 +2968,7 @@ AGENT_IMPACT_RULE("engine/composition/lib_module_order.def", "make_lint_gates co
  * with the lint-gate selftests for the shared harness it touches. */
 AGENT_IMPACT_RULE("tests/harness/src/test_script.c", "script make_lint_gates")
 AGENT_IMPACT_RULE("platform/modules/util/src/workpool.c|platform/modules/util/include/util/workpool.h|tests/harness/src/test_workpool.c", "workpool make_lint_gates")
+AGENT_IMPACT_RULE("platform/modules/support/src/pagelocker.c|platform/modules/support/include/support/pagelocker.h|tests/harness/src/test_script.c", "script make_lint_gates")
 
 /* ACME / TLS-ALPN-01. The node keeps only the responder, the base64url
  * codec, the node/worker handoff file and the renewal decision; the TLS

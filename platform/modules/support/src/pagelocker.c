@@ -115,7 +115,15 @@ void locked_page_manager_unlock_range(struct locked_page_manager *m,
     }
     size_t start_page = base & m->page_mask;
     size_t end_page = (base + size - 1) & m->page_mask;
-    for (size_t page = start_page; page <= end_page; page += m->page_size) {
+    for (size_t page = start_page;; page += m->page_size) {
+        if (find_page(m, page) < 0) {
+            zcl_mutex_unlock(&m->mutex);
+            return;
+        }
+        if (page == end_page)
+            break;
+    }
+    for (size_t page = start_page;; page += m->page_size) {
         int idx = find_page(m, page);
         assert(idx >= 0);
         m->entries[idx].count--;
@@ -124,6 +132,8 @@ void locked_page_manager_unlock_range(struct locked_page_manager *m,
             m->entries[idx] = m->entries[m->num_entries - 1];
             m->num_entries--;
         }
+        if (page == end_page)
+            break;
     }
     zcl_mutex_unlock(&m->mutex);
 }

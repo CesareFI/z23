@@ -35,6 +35,8 @@ void locked_page_manager_init(struct locked_page_manager *m);
 void locked_page_manager_destroy(struct locked_page_manager *m);
 void locked_page_manager_lock_range(struct locked_page_manager *m,
                                     void *p, size_t size);
+/* Empty, overflowing, or partly untracked ranges leave the manager unchanged.
+ * A fully tracked range decrements each page's count once. */
 void locked_page_manager_unlock_range(struct locked_page_manager *m,
                                       void *p, size_t size);
 int locked_page_manager_get_count(struct locked_page_manager *m);

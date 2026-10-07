@@ -3061,7 +3061,6 @@ tests/harness/src/test_science.c:case_sample_floor_first:18
 tests/harness/src/test_science.c:case_seeds:38
 tests/harness/src/test_science.c:case_surface:17
 tests/harness/src/test_science.c:case_three_verdicts:19
-tests/harness/src/test_script.c:test_script:210
 tests/harness/src/test_script_tail_poison.c:test_script_tail_poison:18
 tests/harness/src/test_script_validate_contextual_gate.c:test_script_validate_contextual_gate:16
 tests/harness/src/test_script_validate_stage.c:test_script_validate_stage:29
