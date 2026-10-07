@@ -1762,6 +1762,13 @@ if(NOT ANDROID)
         add_test(NAME wallet_change_recovery_corrupt COMMAND change_recovery_tests corrupt)
         set_tests_properties(wallet_change_recovery wallet_change_recovery_partial
             wallet_change_recovery_corrupt PROPERTIES TIMEOUT 30)
+        add_executable(change_recovery_fuzz_tests tests/test_change_recovery_fuzz.c
+            tests/fuzz_change_recovery.c tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(change_recovery_fuzz_tests PRIVATE zcl_wallet_core)
+        target_compile_options(change_recovery_fuzz_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_change_recovery_fuzz_contract COMMAND change_recovery_fuzz_tests)
+        set_tests_properties(wallet_change_recovery_fuzz_contract PROPERTIES TIMEOUT 30)
         add_executable(change_recovery_failure_tests tests/test_change_recovery_failures.c
             src/change_recovery.c src/change_custody.c tests/change_custody_retirement.c
             tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)

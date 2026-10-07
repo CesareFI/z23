@@ -376,6 +376,13 @@ complete-successor consumption and refusal of ambiguous partial replacement.
 These fixtures use public entropy and inert ciphertext, and do not simulate
 power loss, establish GCM/hardware custody or qualify seed discovery.
 
+The recovery fuzzer also requires its unmodified, known recoverable fixture to
+succeed before checking the exact repaired bytes and successor index. Refusing
+every input cannot satisfy that control. The registered
+`wallet_change_recovery_fuzz_contract` replays six control lengths and eight
+mutation selectors under the normal host suite, with unchanged input bytes.
+This is a fuzz-oracle liveness check, not an additional recovery permission.
+
 ## Threat and evidence limits
 
 The lock coordinates cooperating processes. A same-UID attacker who replaces,
