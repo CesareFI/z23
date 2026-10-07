@@ -4,6 +4,80 @@
  */
 
 #include "test/api_test_fixtures.h"
+#include "base/safe_alloc.h"
+#include "controllers/status_native_helpers.h"
+
+static unsigned directory_copy_blocks(const struct json_value *v)
+{
+    unsigned count = v && v->num_children > 0;
+    for (size_t i = 0; v && i < v->num_children; i++)
+        count += directory_copy_blocks(&v->children[i]);
+    return count;
+}
+
+static int directory_copy_arm(unsigned event, void *ctx, void *stmt, void *time)
+{
+    (void)event;
+    (void)time;
+    const char *sql = sqlite3_sql(stmt);
+    if (sql && strstr(sql, "SELECT name,coin_type,address FROM znam_addr_records")) {
+        zcl_alloc_fault_fail_nth("json_copy_children", *(unsigned *)ctx);
+        *(unsigned *)ctx = 0;
+    }
+    return 0;
+}
+
+static bool directory_copy_refuses(struct node_db *ndb, unsigned target)
+{
+    struct json_value result = {0};
+    char err[192] = {0};
+    size_t before = json_test_live_blocks();
+    json_set_int(&result, 73);
+    bool ok = sqlite3_trace_v2(ndb->db, SQLITE_TRACE_PROFILE,
+                              directory_copy_arm, &target) == SQLITE_OK;
+    bool accepted = ok && api_name_service_directory_path(
+        "alice", "/api/v1/names/alice/services", &result, err, sizeof(err));
+    bool consumed = target == 0 && zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    ok = sqlite3_trace_v2(ndb->db, 0, NULL, NULL) == SQLITE_OK && ok;
+    ok = ok && consumed && !accepted &&
+         strcmp(err, "Name service directory copy failed") == 0 &&
+         result.type == JSON_INT && result.val.i == 73;
+    json_free(&result);
+    return ok && json_test_live_blocks() == before;
+}
+
+/* Run before address seeding: the final address scan has no rows. Count only
+ * the nonempty containers copied after that scan, then target the inactive
+ * copy's root and its first nested container independently. */
+static bool directory_inactive_copy_cases(struct node_db *ndb)
+{
+    struct json_value show = {0}, base = {0}, result = {0};
+    char err[192] = {0};
+    rpc_name_set_state(ndb);
+    bool ok = ndb->db && rpc_name_resolve_api("alice", &show) &&
+              api_name_service_directory("alice", &base);
+    ok = ok && json_size(json_get(&base, "records")) == 5 &&
+         json_size(json_get(&base, "endpoints")) == 4;
+    unsigned tail = directory_copy_blocks(json_get(&show, "text_records")) +
+                    2 * directory_copy_blocks(json_get(&show, "service_records")) +
+                    directory_copy_blocks(json_get(&base, "endpoints")) +
+                    1 + 2 * directory_copy_blocks(&base);
+    for (unsigned nested = 0; ok && nested < 2; nested++)
+        ok = directory_copy_refuses(ndb, tail + 1 + nested);
+    ok = ok && api_name_service_directory_path(
+        "alice", "/api/v1/names/alice/services", &result, err, sizeof(err));
+    for (size_t i = 0; ok && i < base.num_children; i++)
+        ok = status_json_equal(&base.children[i], json_get(&result, base.keys[i]));
+    ok = ok && json_get(&result, "filter_contract") && !err[0];
+    json_free(&result);
+    json_free(&base);
+    json_free(&show);
+    rpc_name_set_state(NULL);
+    printf("api: inactive directory copy refuses incomplete trees... %s\n",
+           ok ? "OK" : "FAIL");
+    return ok;
+}
 
 int api_znam_routes_focused_tests(void)
 {
@@ -194,6 +268,7 @@ int api_znam_routes_focused_tests(void)
                                      "198.51.100.20:8033");
         ok = ok && db_znam_text_save(&ndb, "alice", "service.unknown",
                                      "unknown-service-metadata");
+        failures += !directory_inactive_copy_cases(&ndb);
         ok = ok && db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_LTC,
                                      "LaliceAddress");
         ok = ok && db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_BTC,

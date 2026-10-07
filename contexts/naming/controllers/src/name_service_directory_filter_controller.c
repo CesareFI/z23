@@ -6,10 +6,12 @@
  * owns read-only, server-side filtering for the UX/API subcollection route. */
 
 #include "controllers/name_controller.h"
+#include "controllers/status_native_helpers.h"
 #include "api_controller_internal.h"
 #include "json/json.h"
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "util/log_macros.h"
@@ -281,7 +283,18 @@ bool api_name_service_directory_path(const char *name, const char *path,
 
     if (!filter.active) {
         struct json_value filter_contract = {0};
-        json_copy(result, &base);
+        struct json_value copy = {0};
+        json_copy(&copy, &base);
+        if (!status_json_equal(&copy, &base)) {
+            json_free(&copy);
+            json_free(&base);
+            if (err && err_len)
+                snprintf(err, err_len, "Name service directory copy failed");
+            LOG_FAIL("name", "inactive service directory copy failed for '%s'",
+                     name);
+        }
+        json_free(result);
+        *result = copy;
         api_query_filter_contract_json(
             API_QUERY_FILTER_NAME_SERVICE_DIRECTORY, &filter_contract);
         json_push_kv(result, "filter_contract", &filter_contract);
