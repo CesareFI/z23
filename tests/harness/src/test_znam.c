@@ -99,6 +99,36 @@ static int znam_count_step_interrupted(void *stmt)
     return SQLITE_INTERRUPT;
 }
 
+static bool znam_list_payload_matches(const struct znam_entry *rows, int count,
+                                      const struct znam_entry *expected)
+{
+    return count == 1 &&
+        memcmp(rows[0].name, expected->name, sizeof(expected->name)) == 0 &&
+        memcmp(rows[0].owner_address, expected->owner_address,
+               sizeof(expected->owner_address)) == 0 &&
+        rows[0].target_type == expected->target_type &&
+        memcmp(rows[0].target_value, expected->target_value,
+               sizeof(expected->target_value)) == 0 &&
+        memcmp(rows[0].reg_txid, expected->reg_txid,
+               sizeof(expected->reg_txid)) == 0 &&
+        rows[0].reg_height == expected->reg_height &&
+        memcmp(rows[0].last_update_txid, expected->last_update_txid,
+               sizeof(expected->last_update_txid)) == 0 &&
+        rows[0].expiry_height == expected->expiry_height;
+}
+
+static bool znam_text_list_payload_matches(const struct znam_text_record *rows,
+                                           int count)
+{
+    return count == 2 &&
+        strncmp(rows[0].name, "alice", sizeof(rows[0].name)) == 0 &&
+        strncmp(rows[0].key, "email", sizeof(rows[0].key)) == 0 &&
+        strncmp(rows[0].value, "a@b.com", sizeof(rows[0].value)) == 0 &&
+        strncmp(rows[1].name, "alice", sizeof(rows[1].name)) == 0 &&
+        strncmp(rows[1].key, "url", sizeof(rows[1].key)) == 0 &&
+        strncmp(rows[1].value, "https://x.com", sizeof(rows[1].value)) == 0;
+}
+
 /* ── Test helpers for the RPC write surface ────────────────────────
  *
  * Mirrors the fixture test_api.c already uses for name_list/name_register
@@ -908,6 +938,7 @@ int test_znam(void)
             bool find_ok = db_znam_find(&ndb, "alice", &found);
 
             struct znam_entry list[10];
+            memset(list, 0xA5, sizeof(list));
             int count = db_znam_list(&ndb, list, 10);
 
             if (save_ok && find_ok &&
@@ -917,7 +948,7 @@ int test_znam(void)
                 strcmp(found.target_value, "t1target") == 0 &&
                 found.reg_height == 12345 &&
                 found.expiry_height == 12345 + ZNAM_REGISTRATION_TERM_BLOCKS &&
-                count == 1) {
+                znam_list_payload_matches(list, count, &entry)) {
                 printf("OK\n");
             } else {
                 printf("FAIL (save=%d find=%d count=%d)\n",
@@ -932,6 +963,7 @@ int test_znam(void)
             char val[256] = {0};
             bool t_get = db_znam_text_get(&ndb, "alice", "email", val, sizeof(val));
             struct znam_text_record texts[10];
+            memset(texts, 0xA5, sizeof(texts));
             int t_count = db_znam_text_list(&ndb, "alice", texts, 10);
             /* The uncapped total behind the window — equal here because
              * nothing was truncated, and zero for a name that has none. */
@@ -940,7 +972,8 @@ int test_znam(void)
                 db_znam_text_count(&ndb, "nobody-here");
 
             if (t_save && t_save2 && t_get &&
-                strcmp(val, "a@b.com") == 0 && t_count == 2 &&
+                strcmp(val, "a@b.com") == 0 &&
+                znam_text_list_payload_matches(texts, t_count) &&
                 t_total == 2 && t_total_missing == 0) {
                 printf("OK\n");
             } else {
