@@ -273,7 +273,8 @@ static size_t emit_conv_len(const char *s, size_t i)
  * that does not — which is exactly what a reason truncated at
  * BLOCKER_REASON_MAX looks like. Reports the literal characters accounted for
  * and the longest single segment matched; returns true when EVERY segment
- * matched (a full format match) and false when it stopped early. */
+ * matched (a full format match) and false when it stopped early, including
+ * when a segment exceeds the comparison buffer. */
 static bool emit_format_walk(const char *run, const char *query,
                              int *chars_out, int *longest_out)
 {
@@ -286,14 +287,16 @@ static bool emit_format_walk(const char *run, const char *query,
     for (;;) {
         char ch = run[i];
         if (ch != '\0' && ch != '%') {
-            if (sl + 1 < sizeof(seg)) seg[sl++] = ch;
+            if (sl + 1 >= sizeof(seg)) { complete = false; break; }
+            seg[sl++] = ch;
             i++;
             continue;
         }
         if (ch == '%') {
             size_t conv = emit_conv_len(run, i);
             if (conv == 0) {
-                if (sl + 1 < sizeof(seg)) seg[sl++] = '%';
+                if (sl + 1 >= sizeof(seg)) { complete = false; break; }
+                seg[sl++] = '%';
                 i += (run[i + 1] == '%') ? 2 : 1;
                 continue;
             }

@@ -3,9 +3,9 @@
  * code.emitter contract — resolving text the node EMITTED back to the code
  * that formatted it.
  *
- * Every assertion reads the SERIALIZED reply (json_write into a budget-sized
- * buffer), not the in-memory struct: a field dropped by the writer must be
- * caught.
+ * Command assertions read the SERIALIZED reply (json_write into a budget-sized
+ * buffer): a field dropped by the writer must be caught. Isolated source
+ * fixtures exercise segment evidence through the public emitter scan.
  *
  * Coverage:
  *   1. glob rule            — the `blocker-id:` marker matcher, direct.
@@ -28,6 +28,7 @@
  *                             ZCL_COMMAND_RESULT_BUDGET. */
 
 #include "test/test_core.h"
+#include "codeindex/codeindex.h"
 #include "codeindex/codeindex_emitter.h"
 #include "command/native_command.h"
 #include "kernel/command_registry.h"
@@ -263,12 +264,102 @@ static int test_code_emitter_budget(void)
     return failures;
 }
 
+struct emitter_segment_case {
+    size_t repeated;
+    const char *tail, *query_tail;
+    int sites, chars, longest;
+};
+
+static bool emitter_segment_source(const char *path,
+                                    const struct emitter_segment_case *c,
+                                    char query[1024])
+{
+    char source[1024];
+    const char *head = "void f(void){puts(\"";
+    size_t h = strlen(head), n = c->repeated;
+    if (n > 511) return false;
+    memcpy(source, head, h);
+    memset(source + h, 'a', n);
+    int end = snprintf(source + h + n, sizeof(source) - h - n,
+                       "%s\");}\n", c->tail);
+    if (end < 0 || (size_t)end >= sizeof(source) - h - n) return false;
+    memset(query, 'a', n);
+    end = snprintf(query + n, 1024 - n, "%s", c->query_tail);
+    if (end < 0 || (size_t)end >= 1024 - n) return false;
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    size_t len = strlen(source), wrote = fwrite(source, 1, len, f);
+    int closed = fclose(f);
+    return wrote == len && closed == 0;
+}
+
+static int emitter_segment_check(struct codeindex *ci, const char *query,
+                                 const struct emitter_segment_case *c)
+{
+    int failures = 0;
+    TEST("code_emitter: segment bounds preserve exact matching evidence") {
+        struct ci_emit_site site[2];
+        struct ci_emit_scan_report report;
+        int found = codeindex_emitter_sites(ci, query, NULL, site, 2, &report);
+        ASSERT(found == c->sites);
+        ASSERT(report.files_scanned == 1 && report.files_unreadable == 0);
+        ASSERT(!report.enumeration_incomplete && report.literal_runs == 1);
+        if (found > 0) {
+            ASSERT(site[0].kind == CI_EMIT_FORMAT_MATCH);
+            ASSERT(site[0].literal_chars == c->chars);
+            ASSERT(site[0].longest_segment == c->longest);
+            ASSERT_STR_EQ(site[0].path, "cognition/segment.c");
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_code_emitter_segment_bounds(void)
+{
+    int failures = 0;
+    char root[512] = "", dir[640], path[768], query[1024];
+    struct codeindex *ci = NULL;
+    TEST("code_emitter: overflowing segments cannot supply shortened evidence") {
+        ASSERT(test_mkdtemp(root, sizeof(root), "emitter_segment") != NULL);
+        (void)snprintf(dir, sizeof(dir), "%s/cognition", root);
+        ASSERT(mkdir(dir, 0700) == 0);
+        (void)snprintf(path, sizeof(path), "%s/segment.c", dir);
+        static const struct emitter_segment_case cases[] = {
+            {511, "Z%d", "Y7", 0, 0, 0}, /* exact reported mismatch */
+            {511, "%%%d", "Y7", 0, 0, 0}, /* escaped percent overflows */
+            {511, "%d", "7", 1, 511, 511}, /* largest fitting segment */
+            {511, "%d later-segment", "7 later-segment", 1, 525, 511},
+            {511, "%d later-segment", "7 wrong-segment", 1, 511, 511},
+            /* 24 a's + literal "% value=" = 32, then " done" = 5. */
+            {24, "%% value=%d done", "% value=7 done", 1, 37, 32},
+        };
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            ASSERT(emitter_segment_source(path, &cases[i], query));
+            if (!ci) ci = codeindex_open_source_view(root);
+            ASSERT(ci != NULL);
+            failures += emitter_segment_check(ci, query, &cases[i]);
+        }
+        PASS();
+    } _test_next:;
+    if (ci) codeindex_close(ci);
+    if (root[0]) {
+        (void)snprintf(dir, sizeof(dir), "%s/cognition", root);
+        test_cleanup_tmpdir(dir);
+        (void)snprintf(dir, sizeof(dir), "%s/.codeindex", root);
+        test_cleanup_tmpdir(dir);
+        test_cleanup_tmpdir(root);
+    }
+    return failures;
+}
+
 int test_code_emitter(void)
 {
     int failures = 0;
     failures += test_code_emitter_glob();
     failures += test_code_emitter_dynamic_blocker_id();
     failures += test_code_emitter_format_discrimination();
+    failures += test_code_emitter_segment_bounds();
     failures += test_code_emitter_registry_pin();
     failures += test_code_emitter_honest_miss();
     failures += test_code_emitter_empty_input();
