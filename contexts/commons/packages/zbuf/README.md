@@ -24,7 +24,8 @@ zbuf_free(&b);
 
 `tests/test_zbuf.c` covers growth and embedded NULs, printf formats,
 the exact bound (a full buffer rejects one more byte without losing
-data), sticky-error behavior and clear-reset, NULL tolerance, and a
+data), sticky-error behavior and clear-reset, NULL tolerance, zero and
+SIZE_MAX limits, overflow rejection without changing existing contents, and a
 1500-trial fuzz against a reference array model with random writes and
 clears. Built and run under `-fsanitize=address,undefined -Werror
 -pedantic`.
