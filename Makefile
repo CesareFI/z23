@@ -187,9 +187,9 @@ ZCL_TEST_STACK_SETUP = ulimit -s unlimited
 endif
 ZCL_USE_CCACHE ?= 1
 # These read-only front doors need no compiler. In a fresh worktree, cache
-# bootstrap would compile zcc before either recipe can answer. Mixed goals
+# bootstrap would compile zcc before any report can answer. Mixed goals
 # retain the normal compiler cache and full build preparation.
-ZCL_READ_ONLY_ENTRY_GOALS := help t-list print-node-c23-srcs
+ZCL_READ_ONLY_ENTRY_GOALS := help t-list print-node-c23-srcs doctor doctor-build timings
 ZCL_READ_ONLY_ENTRY_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(filter-out $(ZCL_READ_ONLY_ENTRY_GOALS),$(MAKECMDGOALS)),,1),)
 # The compile cache ships in-tree (tools/zcc.c). Prefer it over any installed
 # sccache/ccache so every developer gets the same fast rebuilds with nothing
@@ -255,8 +255,8 @@ ZCL_GUI_APP_GOALS := $(foreach a,$(GUI_APPS),$(a) $(a)-selftest $(a)-clean \
 # Its standalone compile must not recurse into the readiness check it serves.
 ZCL_TOR_PROVENANCE_GOALS := build/bin/z23-tor-provenance \
 	tools/tor-provenance z23-tor-provenance
-# These entries read only the Makefile and tracked source/test catalogs;
-# none needs node inputs or a source identity.
+# These entries only report source catalogs, host prerequisites, or recorded
+# timings; none needs node inputs or a source identity.
 ZCL_HOTSWAP_LOOP_GOALS := $(ZCL_READ_ONLY_ENTRY_GOALS) hotswap-try hotswap-apply hotswap c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
 	$(ZCL_TOR_PROVENANCE_GOALS) \
 	presentation-lib presentation-demo presentation-relaunch \
@@ -370,7 +370,7 @@ VENDOR_REPAIR_REQUESTED := $(filter $(VENDOR_REPAIR_GOALS),$(MAKECMDGOALS))
 ZCL_WINDOWS_LAUNCHER_GOALS := windows-headless-run windows-headless-run-selftest \
 	build/bin/z23-headless-run.exe
 # Build queries and game-only goals need no node vendor configure.
-ZCL_BUILD_QUERY_GOALS := $(ZCL_READ_ONLY_ENTRY_GOALS) doctor doctor-build timings agent-dev-status print-CFLAGS print-DEV-CFLAGS print-LDFLAGS print-DEV-LDFLAGS print-build-flags
+ZCL_BUILD_QUERY_GOALS := $(ZCL_READ_ONLY_ENTRY_GOALS) agent-dev-status print-CFLAGS print-DEV-CFLAGS print-LDFLAGS print-DEV-LDFLAGS print-build-flags
 ZCL_BOOTSTRAP_HELPER_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out $(ZCL_WINDOWS_LAUNCHER_GOALS) $(ZCL_TOR_PROVENANCE_GOALS) $(ZCL_BUILD_QUERY_GOALS) check-capability-inventory-generated docs-proof-tools game game-check game-platform-probe,$(MAKECMDGOALS))),,1),)
 ifneq ($(ZCL_STANDALONE_CLEAN),1)
 ifneq ($(ZCL_WORKTREE_PRIME_ONLY),1)
