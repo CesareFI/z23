@@ -685,23 +685,32 @@ static bool fe_bridge_fixture(const char *path, const char *bytes, size_t n,
 static int test_fe_bridge_nul(void)
 {
     int failures = 0;
-    TEST("fleet enrol: a NUL cannot hide an existing bridge grant") {
+    TEST("fleet enrol: a NUL before or after a bridge grant refuses unchanged") {
         const char record[] = "\0\nrestrict,port-forwarding,permitlisten=\"127.0.0.1:22207\" "
                               "ssh-ed25519 AAAAC3NzaC1 owner@box z23-fleet-studio\n";
+        const struct { const char *bytes; size_t size; bool accepted; } cases[] = {
+            /* Include the terminating NUL as a measured byte after the tag. */
+            {record + 2, sizeof(record) - 2u, false},
+            {record, sizeof(record) - 1u, false},
+            {record + 2, sizeof(record) - 3u, true},
+            /* A complete duplicate grant at EOF needs no final newline. */
+            {record + 2, sizeof(record) - 4u, true},
+        };
         char path[PATH_MAX], dir[PATH_MAX];
         const char *why = NULL; bool added;
         fe_isolate("bridge-nul");
         (void)snprintf(dir, sizeof(dir), "%s/.ssh", g_fe_home);
         (void)mkdir(g_fe_home, 0700); ASSERT(mkdir(dir, 0700) == 0);
         (void)snprintf(path, sizeof(path), "%s/authorized_keys", dir);
-        for (size_t i = 0; i < 3; ++i) {
-            const char *bytes = i == 0 ? record : record + 2;
-            size_t n = sizeof(record) - 1u - (i == 0 ? 0u : 2u) - (i == 2 ? 1u : 0u);
-            ASSERT(fe_bridge_fixture(path, bytes, n, true)); added = true;
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+            ASSERT(fe_bridge_fixture(path, cases[i].bytes, cases[i].size, true));
+            added = true;
             bool ok = fleet_bridge_authorize(record + 2, "studio", &added, &why);
-            ASSERT_EQ(ok, i != 0); ASSERT(!added);
-            ASSERT_STR_EQ(why ? why : "", i == 0 ? FLEET_ENROL_WHY_BRIDGE_UNWRITABLE : "");
-            ASSERT(fe_bridge_fixture(path, bytes, n, false));
+            ASSERT_EQ(ok, cases[i].accepted);
+            ASSERT(!added);
+            ASSERT_STR_EQ(why ? why : "",
+                          cases[i].accepted ? "" : FLEET_ENROL_WHY_BRIDGE_UNWRITABLE);
+            ASSERT(fe_bridge_fixture(path, cases[i].bytes, cases[i].size, false));
         }
         PASS();
     } _test_next:;
