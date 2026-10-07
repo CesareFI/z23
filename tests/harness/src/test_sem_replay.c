@@ -963,6 +963,49 @@ _test_next:;
     return failures;
 }
 
+/* Keep flushed evidence, but refuse the malformed row and every later row. */
+static int srt_plan_nul_case(const struct srt_fx *fx, size_t field, int length,
+                            bool key)
+{
+    int failures = 0;
+    char suffix[1025], value[1040], reply[2000];
+    char probe[PATH_MAX + 32], planner[PATH_MAX + 32];
+    const char *names[] = {"path", "affected", "broadened", "reason"};
+    const char *keys[] = {"path", "affected", "broadened", "reason"};
+    const char *values[] = {"src/next.c", "true", "false", "changed"};
+    memset(suffix, 'a', (size_t)length);
+    suffix[length] = '\0';
+    snprintf(value, sizeof value, "%s\\u0000%s", key ? names[field] : "ok", suffix);
+    if (key)
+        keys[field] = value;
+    else
+        values[field] = value;
+    snprintf(probe, sizeof probe, "%s/plan-fields", fx->tools);
+    snprintf(planner, sizeof planner, "%s/fx-fields", fx->tools);
+    snprintf(reply, sizeof reply, SRT_ENVELOPE
+        "\"facts\":{\"tus\":[{\"path\":\"src/keep.c\",\"affected\":true,"
+        "\"broadened\":false,\"reason\":\"keep\"},"
+        "{\"%s\":\"%s\",\"%s\":\"%s\",\"%s\":\"%s\",\"%s\":\"%s\"},"
+        "{\"path\":\"src/later.c\",\"affected\":true,\"broadened\":false,"
+        "\"reason\":\"later\"}]}}}", keys[0], values[0], keys[1], values[1],
+        keys[2], values[2], keys[3], values[3]);
+    TEST("replay plan reader refuses decoded NUL in TU fields and keys") {
+        printf("(field=%zu suffix=%d key=%d) ", field, length, key);
+        ASSERT(srt_write(fx->tools, "fx-fields.facts.json", reply));
+        const char *argv[] = {probe, planner, NULL};
+        ASSERT_EQ(srt_run(argv), 0);
+        const char *expected = field == 0 ? "0 0 0 0 planner exit 0 at offset 0\n" :
+            "0 0 1 1 planner exit 0 at offset 0\n"
+            "src/keep.c\ttrue\tfalse\tkeep\nsrc/keep.c\n";
+        const char *result = strstr(g_srt_out, expected);
+        ASSERT(result != NULL);
+        ASSERT_STR_EQ(result, expected);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
 static int srt_plan_fields(const struct srt_fx *fx)
 {
     static const int caps[] = {1024, 8, 8, 128};
@@ -976,6 +1019,9 @@ static int srt_plan_fields(const struct srt_fx *fx)
         memset(value + 8, 'a', (size_t)caps[i]);
         value[8 + caps[i]] = '\0';
         failures += srt_plan_decode_case(fx, "path", i, value);
+        failures += srt_plan_nul_case(fx, i, caps[i], false);
+        failures += srt_plan_nul_case(fx, i, 1, false);
+        failures += srt_plan_nul_case(fx, i, 1, true);
     }
     failures += srt_plan_decode_case(fx, "path\\u0000suffix", 0, "src/next.c");
     failures += srt_plan_decode_case(fx, "path", 3, "ok\xff");
