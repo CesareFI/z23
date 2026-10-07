@@ -3627,12 +3627,12 @@ static bool boot_seq_start_services(struct app_context *ctx, struct boot_seq *s)
     }
     return svc_ok;
 }
-
 /* Bring the node up: eleven ordered phases, stopping at the first failure.
  * The one-shot verbs (-backfill-nullifiers, -backfill-zslp) finish the boot
  * before services and set boot_seq::done. */
 bool app_init(struct app_context *ctx)
 {
+    chain_restore_boot_snapshot_begin_boot();
     g_boot_app_ctx = ctx;
     struct boot_seq seq = {
         .t_boot_start = boot_clock_ms(),

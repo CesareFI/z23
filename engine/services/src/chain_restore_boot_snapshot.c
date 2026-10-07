@@ -25,6 +25,12 @@
 
 static struct chain_restore_boot_snapshot g_chain_restore_boot_snapshot;
 
+void chain_restore_boot_snapshot_begin_boot(void)
+{
+    memset(&g_chain_restore_boot_snapshot, 0,
+           sizeof(g_chain_restore_boot_snapshot));
+}
+
 static const char *chain_restore_state_name(int s)
 {
     switch ((enum chain_restore_state)s) {
@@ -188,8 +194,7 @@ void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out)
 #ifdef ZCL_TESTING
 void chain_restore_boot_snapshot_reset_for_testing(void)
 {
-    memset(&g_chain_restore_boot_snapshot, 0,
-           sizeof(g_chain_restore_boot_snapshot));
+    chain_restore_boot_snapshot_begin_boot();
 }
 #endif
 
