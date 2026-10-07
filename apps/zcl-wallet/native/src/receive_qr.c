@@ -44,9 +44,9 @@ zcl_status zcl_receive_qr(const uint8_t *text, size_t text_len, zcl_network netw
     const size_t count = width * width; /* width <= 41; no caller-sized arithmetic. */
     if (capacity < count)
         return ZCL_BUFFER_TOO_SMALL;
-    uint8_t result[ZCL_RECEIVE_QR_MODULES_MAX] = {0};
-    expand_modules(encoded, symbol_side, result, width);
-    memcpy(modules, result, count);
+    /* All fallible operations are complete; write only the validated span. */
+    memset(modules, 0, count);
+    expand_modules(encoded, symbol_side, modules, width);
     *side = width;
     return ZCL_OK;
 }

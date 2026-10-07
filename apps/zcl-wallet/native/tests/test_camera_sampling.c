@@ -66,6 +66,29 @@ static void refusal_boundaries(const uint8_t *image, uint8_t *guarded)
         compare(image, ZCL_SCAN_INPUT_MAX, &invalid[i], guarded, ZCL_CAMERA_PACKET_MAX);
 }
 
+static void exact_source_spans(uint8_t *guarded)
+{
+    const zcl_qr_image layouts[] = {
+        {21, 21, 21, 1}, {23, 27, 27, 1}, {320, 240, 320, 1},
+        {384, 384, 391, 1}, {640, 480, 640, 1}, {640, 480, 1291, 2},
+        {769, 385, 8192, 4}, {1024, 1024, 8192, 4}
+    };
+    for (size_t i = 0; i < sizeof(layouts) / sizeof(layouts[0]); ++i) {
+        const zcl_qr_image *layout = &layouts[i];
+        /* Fixed public layouts bound every product below 8 MiB. Unlike the
+         * large shared fixture, these allocations end at the last pixel so
+         * sanitizers also observe reads beyond the final valid pixel. */
+        const size_t length = (layout->height - 1) * layout->row_stride +
+            (layout->width - 1) * layout->pixel_stride + 1;
+        uint8_t *image = malloc(length);
+        CHECK(image != NULL);
+        for (size_t n = 0; n < length; ++n)
+            image[n] = (uint8_t)((n ^ (n >> 8) ^ (n >> 16)) & 255);
+        compare(image, length, layout, guarded, ZCL_CAMERA_PACKET_MAX);
+        free(image);
+    }
+}
+
 static void reference_refuses_corruption(const uint8_t *image, uint8_t *guarded)
 {
     const zcl_qr_image layout = {21, 21, 21, 1};
@@ -112,9 +135,10 @@ int main(void)
         image[i] = (uint8_t)((i ^ (i >> 8) ^ (i >> 16)) & 255);
     dimensions(image, guarded);
     refusal_boundaries(image, guarded);
+    exact_source_spans(guarded);
     reference_refuses_corruption(image, guarded);
     free(guarded);
     free(image);
-    puts("Independent camera sampling: 1200 layouts, exact pixels and full output guards passed");
+    puts("Independent camera sampling: 1200 layouts, 8 exact spans, exact pixels and full output guards passed");
     return 0;
 }
