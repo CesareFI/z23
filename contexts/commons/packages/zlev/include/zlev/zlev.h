@@ -15,7 +15,7 @@
  *                                      limit (still exact below it).
  *
  * O(min(na,nb)) memory, O(na*nb) time worst case. With `limit`, runs
- * in O((na+nb)*limit) time via banded DP.
+ * in O((na+nb)*(limit+1)) time via banded DP, including workspace updates.
  */
 #ifndef ZLEV_H
 #define ZLEV_H

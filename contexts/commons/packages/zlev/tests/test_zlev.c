@@ -1,5 +1,5 @@
 /* Tests for zlev — bounded Levenshtein distance.
- * Groups: kat, bound, sim, null, fuzz. */
+ * Groups: kat, bound, sim, null, moving_band, fuzz. */
 #include "zlev/zlev.h"
 
 #include <stdio.h>
@@ -84,12 +84,45 @@ static void test_null(void) {
   CHECK(zlev_distance("x", 1, NULL, 1) == SIZE_MAX);
   CHECK(zlev_distance(NULL, 0, NULL, 0) == 0);
   CHECK(zlev_distance_bounded(NULL, 2, "x", 1, 5) == SIZE_MAX);
+  CHECK(zlev_distance_bounded("x", 1, NULL, 1, 5) == SIZE_MAX);
+  CHECK(zlev_distance_bounded(NULL, 0, NULL, 0, SIZE_MAX) == 0);
   {
     static char big[ZLEV_MAX + 2];
     memset(big, 'a', ZLEV_MAX + 1);
     big[ZLEV_MAX + 1] = '\0';
     CHECK(zlev_distance(big, ZLEV_MAX + 1, "x", 1) == SIZE_MAX);
     CHECK(zlev_distance_bounded("x", 1, big, ZLEV_MAX + 1, 3) == SIZE_MAX);
+  }
+}
+
+static void check_band_pair(const unsigned char *a, size_t na,
+                            const unsigned char *b, size_t nb, size_t distance) {
+  static const size_t limits[] = {ZLEV_MAX, 0, 2, 1, 7, SIZE_MAX};
+  CHECK(zlev_distance(a, na, b, nb) == distance);
+  for (size_t i = 0; i < sizeof limits / sizeof limits[0]; i++) {
+    size_t want = distance <= limits[i] ? distance : limits[i] + 1;
+    CHECK(zlev_distance_bounded(a, na, b, nb, limits[i]) == want);
+    CHECK(zlev_distance_bounded(b, nb, a, na, limits[i]) == want);
+  }
+}
+
+/* Wide calls leave old scratch values; narrow calls must observe only the
+ * moving band and its walls, including when the shorter side is empty. */
+static void test_moving_band(void) {
+  static unsigned char a[ZLEV_MAX], b[ZLEV_MAX];
+  static const size_t lengths[] = {1, 2, 31, 255, ZLEV_MAX};
+  for (size_t k = 0; k < sizeof lengths / sizeof lengths[0]; k++) {
+    size_t n = lengths[k];
+    if (n == 0 || n > ZLEV_MAX) continue;
+    for (size_t i = 0; i < n; i++) a[i] = b[i] = (unsigned char)i;
+    check_band_pair(a, n, b, n, 0);
+    b[n - 1] ^= 0x80;
+    check_band_pair(a, n, b, n, 1);
+    if (n > 1) {
+      b[0] ^= 0x40;
+      check_band_pair(a, n, b, n, 2);
+    }
+    check_band_pair(a + 1, n - 1, a, n, 1);
   }
 }
 
@@ -151,11 +184,12 @@ int main(void) {
   test_bound();
   test_sim();
   test_null();
+  test_moving_band();
   test_fuzz();
   if (g_fail) {
     fprintf(stderr, "test_zlev: FAILURES\n");
     return 1;
   }
-  printf("test_zlev: all groups passed (kat bound sim null fuzz)\n");
+  printf("test_zlev: all groups passed (kat bound sim null moving_band fuzz)\n");
   return 0;
 }

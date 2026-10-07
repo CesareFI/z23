@@ -760,7 +760,6 @@ contexts/commons/packages/zjsonp/src/zjsonp.c:scan_string:23
 contexts/commons/packages/zjsonp/src/zjsonp.c:zjsonp_next:40
 contexts/commons/packages/zjsonp/src/zjsonp.c:zjsonp_str_decode:45
 contexts/commons/packages/zjsonp/tests/test_zjsonp.c:gen_value:18
-contexts/commons/packages/zlev/src/zlev.c:zlev_distance_bounded:28
 contexts/commons/packages/zlog/src/zlog.c:zlog_write:16
 contexts/commons/packages/zlru/app/main.c:main:17
 contexts/commons/packages/zmap/app/main.c:main:24
