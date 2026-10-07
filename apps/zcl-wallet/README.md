@@ -180,6 +180,13 @@ probes verify that the extra checks stop faults ordinary UBSan permits, and the
 fuzz-profile gate verifies the actual authored compile commands. These checks
 do not replace explicit bounds/conversion review or instrument Android releases.
 
+The payment-URI fuzzer's generated percent-encoded labels use an independent
+UTF-8 oracle to require both valid acceptance and invalid refusal. Accepted
+labels must match the input bytes exactly, without invented amount/message
+fields. The registered `wallet_payment_fuzz_contract` replays empty labels,
+every byte value, UTF-8 truncations and field-length boundaries in normal host
+safety runs. This qualifies the fuzz oracle; it grants no payment authority.
+
 LeakSanitizer needs a host that permits its process inspection. Do not disable
 it to call a restricted sandbox run successful. The manual pre-commit review is
 [C_SAFETY_REVIEW.md](docs/C_SAFETY_REVIEW.md).
