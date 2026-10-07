@@ -41,7 +41,7 @@
 #include "base/safe_alloc.h"
 #include "crypto/sha256.h"
 #include "platform/clock.h"
-#include "tls_client.h"
+#include "../acme/tls_client.h"
 
 #if defined(_WIN32)
 
@@ -185,6 +185,21 @@ static void sha256_hex(const unsigned char *data, size_t len,
  * The cap is enforced on what is ever hashed, parsed or run. tls_client does
  * not follow redirects: a redirecting origin therefore reads as fetch-failed,
  * which is UNREACHABLE — the fail-safe direction — never as a disagreement. */
+static int fetch_finish(FILE *f, const char *path)
+{
+    const bool read_failed = ferror(f) != 0;
+    const int read_error = errno;
+    errno = 0;
+    const int closed = fclose(f);
+    if (!read_failed && closed == 0)
+        return 0;
+    int error = read_failed ? read_error : errno;
+    if (!error) error = EIO;
+    say("file fetch %s failed for %s: %s (errno=%d)",
+        read_failed ? "read" : "close", path, strerror(error), error);
+    return error;
+}
+
 static bool fetch_bounded(const char *url, size_t max_bytes, int timeout_ms,
                           char **body, size_t *body_len)
 {
@@ -203,10 +218,12 @@ static bool fetch_bounded(const char *url, size_t max_bytes, int timeout_ms,
             (void)fclose(f);
             return false;
         }
+        errno = 0;
         const size_t n = fread(buf, 1, max_bytes + 1, f);
-        (void)fclose(f);
-        if (n > max_bytes) {
+        const int error = fetch_finish(f, path);
+        if (error || n > max_bytes) {
             free(buf);
+            errno = error;
             return false;
         }
         buf[n] = '\0';
@@ -437,7 +454,8 @@ static void repo_attestation(const char *url, struct fd_attestation *att)
     /* An HTML error page, and the unset sentinel a repository carries before
      * the first release is cut, are both "nothing is pinned here" — not a
      * dissenting pin. */
-    const bool ok = fd_pin_from_lines(body, &pin);
+    const bool ok = memchr(body, '\0', body_len) == NULL &&
+                    fd_pin_from_lines(body, &pin);
     free(body);
     if (ok)
         fd_attestation_answered(att, "repo", &pin);

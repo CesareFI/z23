@@ -25,13 +25,46 @@
  * DNS wire cases a shell harness cannot construct.
  */
 
+#define _POSIX_C_SOURCE 200809L
 #include "test/test_core.h"
 
 #include "install/front_door.h"
 
 #include <stdio.h>
 #include <string.h>
-
+#if !defined(_WIN32) && defined(ZCL_TESTING)
+#include <stdarg.h>
+#include "base/safe_alloc.h"
+#include "../../../tools/acme/tls_client.h"
+/* Real caller; local-only faults, fixed storage, no network or execution. */
+static int fetch_fault;
+static char fetch_storage[513], fetch_message[256];
+static int fetch_diagnostic(FILE *f, const char *fmt, va_list ap)
+{ (void)f; return vsnprintf(fetch_message, sizeof fetch_message, fmt, ap); }
+static int fetch_error(FILE *f)
+{ return fetch_fault == 1 ? (errno = EIO, 1) : ferror(f); }
+static int fetch_close(FILE *f)
+{ const int rc = fclose(f); return fetch_fault == 2 ? (errno = EIO, EOF) : rc; }
+static int fetch_fixture_main(int argc, char **argv);
+#define main fetch_fixture_main
+#define ferror fetch_error
+#define fclose fetch_close
+#define vfprintf fetch_diagnostic
+#define tls_client_fetch(req, resp) ((void)(req), memset((resp), 0, sizeof *(resp)), false)
+#define tls_client_response_free(resp) ((void)(resp))
+#undef zcl_malloc
+#define zcl_malloc(size, label) ((size) <= sizeof fetch_storage ? fetch_storage : NULL)
+#define free(ptr) ((void)(ptr))
+#include "../../../tools/install/z23_bootstrap.c"
+#undef main
+#undef ferror
+#undef fclose
+#undef vfprintf
+#undef tls_client_fetch
+#undef tls_client_response_free
+#undef zcl_malloc
+#undef free
+#endif
 #define FD_CHECK(name, expr) do {                     \
     printf("z23_front_door: %s... ", (name));         \
     if (expr) { printf("OK\n"); }                     \
@@ -652,6 +685,96 @@ static int case_shim_pin(void)
     return failures;
 }
 
+#if !defined(_WIN32) && defined(ZCL_TESTING)
+static bool fetch_seed(const void *bytes, size_t len, char path[512])
+{
+    const int fd = test_mkstemp(path, 512, "front_door_fetch");
+    if (fd < 0) {
+        fprintf(stderr, "front door fetch fixture: create failed: %s\n", strerror(errno));
+        return false;
+    }
+    FILE *f = fdopen(fd, "wb");
+    if (!f) {
+        fprintf(stderr, "front door fetch fixture: fdopen failed: %s\n", strerror(errno));
+        (void)close(fd);
+        (void)unlink(path);
+        return false;
+    }
+    const bool written = fwrite(bytes, 1, len, f) == len;
+    const int closed = fclose(f);
+    if (!written || closed != 0) {
+        fprintf(stderr, "front door fetch fixture: write/close failed\n");
+        (void)unlink(path);
+        return false;
+    }
+    return true;
+}
+
+static int case_fetch_error(int fault, const char *url)
+{
+    int failures = 0;
+    char *body = (char *)"unchanged";
+    size_t len = 99;
+    fetch_fault = fault;
+    fetch_message[0] = '\0';
+    const bool ok = fetch_bounded(url, 64, 0, &body, &len);
+    FD_CHECK(fault == 1 ? "prefix plus read EIO refuses" : "close EIO refuses",
+             !ok && body == NULL && len == 0 && errno == EIO &&
+             strstr(fetch_message, fault == 2 ? "close" : "read") &&
+             !memcmp(fetch_storage, "pin", 3));
+    return failures;
+}
+
+static int case_repo_bytes(bool embedded_nul)
+{
+    int failures = 0;
+    char bytes[sizeof k_pin_a + 6];
+    memcpy(bytes, k_pin_a, sizeof k_pin_a);
+    memcpy(bytes + sizeof k_pin_a, "broken", 6);
+    const size_t len = embedded_nul ? sizeof bytes : sizeof k_pin_a - 1;
+    char path[512], url[520];
+    const bool seeded = fetch_seed(bytes, len, path);
+    FD_CHECK("repository byte fixture created", seeded);
+    if (!seeded) return failures;
+    (void)snprintf(url, sizeof url, "file://%s", path);
+    struct fd_attestation att;
+    memset(&att, 0xa5, sizeof att);
+    repo_attestation(url, &att);
+    if (embedded_nul) {
+        FD_CHECK("repository valid pin/NUL/suffix refuses the complete body",
+                 !att.answered && strcmp(att.origin, "repo") == 0 &&
+                 strcmp(att.reason, "malformed-answer") == 0 && att.pin.text[0] == '\0');
+    } else {
+        FD_CHECK("repository final pin without newline is answered",
+                 att.answered && strcmp(att.origin, "repo") == 0 &&
+                 strcmp(att.pin.text, k_pin_a) == 0 && att.reason[0] == '\0');
+    }
+    FD_CHECK("repository byte fixture removed", unlink(path) == 0);
+    return failures;
+}
+#endif
+
+static int case_fetch_errors(void)
+{
+    int failures = 0;
+#if !defined(_WIN32) && defined(ZCL_TESTING)
+    (void)fetch_fixture_main;
+    char path[512], url[520];
+    const bool seeded = fetch_seed("pin", 3, path);
+    FD_CHECK("local read/close fixture created", seeded);
+    if (!seeded) return failures;
+    (void)snprintf(url, sizeof url, "file://%s", path);
+    g_test_urls = true;
+    failures += case_fetch_error(1, url);
+    failures += case_fetch_error(2, url);
+    fetch_fault = 0;
+    failures += case_repo_bytes(true);
+    failures += case_repo_bytes(false);
+    g_test_urls = false;
+    FD_CHECK("local read/close fixture removed", unlink(path) == 0);
+#endif
+    return failures;
+}
 int test_z23_front_door(void)
 {
     int failures = 0;
@@ -667,6 +790,7 @@ int test_z23_front_door(void)
     failures += case_dns_query();
     failures += case_dns_parse();
     failures += case_shim_pin();
+    failures += case_fetch_errors();
     printf("z23_front_door: %d failure(s)\n", failures);
     return failures;
 }
