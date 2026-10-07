@@ -13,6 +13,15 @@ import org.zclassic.wallet.core.WalletStorage
 
 internal enum class WalletProblem { STORAGE, PROTECTION, OPERATION }
 
+/** Platform action routing only. Restored entropy may have consumed historical
+ * change indexes, so restoration must not initialize a fresh counter. */
+internal fun commitPreparedWallet(storage: WalletStorage, action: WalletAction,
+                                  encoded: ByteArray, entropy: ByteArray): CoreStatus = when (action) {
+    WalletAction.CREATE -> storage.createFreshWithChange(encoded, entropy)
+    WalletAction.RESTORE -> storage.create(encoded)
+    WalletAction.UNLOCK -> CoreStatus.INVALID_ARGUMENT
+}
+
 /** One foreground UI session's platform work. C owns wallet validation, key
  * derivation, confirmation and persistence. Entropy is held here only while
  * preparing the platform GCM input; the worker is its sole managed owner.
@@ -173,7 +182,9 @@ internal class WalletPlatformSession(
             check(parameters.tLen == 128 && parameters.iv.size == 12)
             cipher.updateAAD(header)
             val encoded = WalletRecord.pack(header, parameters.iv, cipher.doFinal(entropy))
-            check(storage.create(encoded) == CoreStatus.OK) { "Wallet commit requires recovery" }
+            check(commitPreparedWallet(storage, current.prepared.action, encoded, entropy) == CoreStatus.OK) {
+                "Wallet commit requires recovery"
+            }
             val stored = storage.read()
             check(stored.status == CoreStatus.OK && !stored.pending && encoded.contentEquals(stored.record)) {
                 "Stored wallet requires verification"

@@ -129,3 +129,11 @@ tests observe process/filesystem behavior; they do not simulate physical power
 loss or qualify every device filesystem. The Android instrumentation test uses
 a public test AES key to check GCM/AAD and native storage on an emulator. It does
 not qualify hardware Keystore custody; that platform adapter is the next step.
+
+Fresh Android creation additionally persists authenticated change state before
+the wallet commit through the existing paired C storage owner. Restoration
+deliberately creates no initial change counter: historical index consumption
+requires independent discovery. JNI uses bounded private copies and clears its
+native entropy buffer on every exit; the platform worker retains its existing
+managed cleanup and per-use hardware requirements. See
+[change storage](CHANGE_STORAGE.md) for ordering, interruption and refusal rules.

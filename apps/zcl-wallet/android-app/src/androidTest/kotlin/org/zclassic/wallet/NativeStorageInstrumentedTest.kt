@@ -24,7 +24,11 @@ import org.zclassic.wallet.core.WalletStorage
 
 @RunWith(AndroidJUnit4::class)
 class NativeStorageInstrumentedTest {
-    @Test fun nativeStorageAndProviderGcmRoundTripOnAndroid() {
+    @Test fun nativeStorageAndProviderGcmRoundTripOnAndroid() = roundTrip(false)
+
+    @Test fun freshPairedStorageAndProviderGcmRoundTripOnAndroid() = roundTrip(true)
+
+    private fun roundTrip(fresh: Boolean) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val directory = File(context.noBackupFilesDir, "instrumentation-" + UUID.randomUUID().toString())
         assertFalse(directory.exists())
@@ -38,8 +42,16 @@ class NativeStorageInstrumentedTest {
             encrypt.init(Cipher.ENCRYPT_MODE, key)
             encrypt.updateAAD(header)
             val bytes = WalletRecord.pack(header, encrypt.iv, encrypt.doFinal(entropy))
-            assertEquals(CoreStatus.OK, storage.create(bytes))
+            val action = if (fresh) WalletAction.CREATE else WalletAction.RESTORE
+            assertEquals(CoreStatus.OK, commitPreparedWallet(storage, action, bytes, entropy))
             assertEquals(CoreStatus.ALREADY_EXISTS, storage.create(bytes))
+            val state = File(directory, ".change.index")
+            if (fresh) {
+                assertEquals(80L, state.length())
+                assertArrayEquals(byteArrayOf(90, 67, 76, 73, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                    state.readBytes().copyOfRange(0, 16))
+                assertEquals(CoreStatus.ALREADY_EXISTS, storage.createFreshWithChange(bytes, entropy))
+            } else assertFalse(state.exists())
             val stored = storage.read()
             assertEquals(CoreStatus.OK, stored.status)
             assertFalse(stored.pending)
@@ -71,7 +83,7 @@ class NativeStorageInstrumentedTest {
         } finally {
             entropy.fill(0)
             // This test created this directory; never touch the real wallet name.
-            listOf("wallet.zcl", ".wallet.pending", ".lock").forEach { name ->
+            listOf("wallet.zcl", ".wallet.pending", ".change.index", ".lock").forEach { name ->
                 val file = File(directory, name)
                 if (file.exists()) assertTrue(file.delete())
             }

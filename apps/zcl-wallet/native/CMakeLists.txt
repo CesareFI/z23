@@ -347,6 +347,25 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_compile_options(jni_sync_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         enable_testing()
+        add_executable(jni_storage_tests tests/test_jni_storage.c tests/change_storage_fixture.c
+            tests/storage_fixture.c src/jni_storage.c src/jni_support.c)
+        target_include_directories(jni_storage_tests PRIVATE src ${JNI_INCLUDE_DIRS})
+        target_link_libraries(jni_storage_tests PRIVATE zcl_wallet_core)
+        target_compile_definitions(jni_storage_tests PRIVATE
+            zcl_secure_zero=zcl_jni_storage_test_zero zcl_wallet_change_create=zcl_jni_storage_test_create)
+        target_compile_options(jni_storage_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_jni_storage COMMAND jni_storage_tests)
+        set_tests_properties(wallet_jni_storage PROPERTIES TIMEOUT 15)
+        if(ZCL_FUZZ)
+            add_executable(fuzz_jni_storage tests/fuzz_jni_storage.c tests/change_storage_fixture.c
+                tests/storage_fixture.c src/jni_storage.c src/jni_support.c)
+            target_include_directories(fuzz_jni_storage PRIVATE src ${JNI_INCLUDE_DIRS})
+            target_link_libraries(fuzz_jni_storage PRIVATE zcl_wallet_core)
+            target_compile_options(fuzz_jni_storage PRIVATE -fsanitize=fuzzer,address,undefined
+                -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+            target_link_options(fuzz_jni_storage PRIVATE -fsanitize=fuzzer,address,undefined)
+        endif()
         add_executable(jni_key_tests tests/test_jni_keys.c src/jni_keys.c src/jni_support.c)
         target_include_directories(jni_key_tests PRIVATE src ${JNI_INCLUDE_DIRS})
         target_link_libraries(jni_key_tests PRIVATE zcl_wallet_core)
