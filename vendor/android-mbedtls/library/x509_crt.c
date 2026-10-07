@@ -341,7 +341,7 @@ static int x509_name_cmp(const mbedtls_x509_name *a, const mbedtls_x509_name *b)
         /* type */
         if (a->oid.tag != b->oid.tag ||
             a->oid.len != b->oid.len ||
-            memcmp(a->oid.p, b->oid.p, b->oid.len) != 0) {
+            (b->oid.len != 0 && memcmp(a->oid.p, b->oid.p, b->oid.len) != 0)) {
             return -1;
         }
 
