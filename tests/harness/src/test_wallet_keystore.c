@@ -470,6 +470,10 @@ static int test_wallet_lock_register(void)
         ASSERT(wallet_lock_effective_passphrase() == NULL);
         ASSERT(!wallet_lock_is_unlocked());
 
+        /* RED: a persistence operation that retained the exported pointer
+         * across auto-lock observes its passphrase changed underneath it. */
+        ASSERT(strcmp(eff, k_passphrase) == 0);
+
         ASSERT(wallet_lock_unlock(NULL, NULL, k_passphrase).ok);
         ASSERT(!wallet_lock_arm_timeout(NULL, 0).ok);
         ASSERT(!wallet_lock_arm_timeout(NULL, 3601).ok);
