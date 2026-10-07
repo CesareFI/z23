@@ -543,6 +543,15 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         add_test(NAME wallet_jni_review COMMAND jni_review_tests)
         set_tests_properties(wallet_jni_review PROPERTIES TIMEOUT 15)
+        add_executable(jni_review_race_tests tests/test_jni_review_races.c tests/assessment_fixture.c
+            src/jni_review.c src/jni_review_packet.c src/jni_full_review.c src/jni_full_prepare.c
+            src/jni_draft.c src/jni_draft_fields.c src/jni_draft_wire.c src/jni_support.c)
+        target_include_directories(jni_review_race_tests PRIVATE src ${JNI_INCLUDE_DIRS})
+        target_link_libraries(jni_review_race_tests PRIVATE zcl_wallet_core zcl_hash_provider Threads::Threads)
+        target_compile_options(jni_review_race_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_jni_review_races COMMAND jni_review_race_tests)
+        set_tests_properties(wallet_jni_review_races PROPERTIES TIMEOUT 15)
         add_executable(jni_address_tests tests/test_jni_address.c src/jni_codecs.c src/jni_support.c)
         target_include_directories(jni_address_tests PRIVATE src ${JNI_INCLUDE_DIRS})
         target_link_libraries(jni_address_tests PRIVATE zcl_wallet_core)
