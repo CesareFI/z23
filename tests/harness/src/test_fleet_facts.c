@@ -19,6 +19,7 @@
 #include "config/command_catalog.h"
 #include "fleetfacts/fleet_facts.h"
 #include "base/hex.h"
+#include "base/safe_alloc.h"
 #include "sha3/sha3.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
@@ -48,6 +49,8 @@ static bool fft_root_matches(const struct zcl_fleet_fact_v1 *row)
 /* ── one in-process invocation of the leaf ─────────────────────────────── */
 
 struct fft_call {
+    const char *setup_error;
+    unsigned invocations;
     struct json_value input;
     struct zcl_command_request request;
     struct zcl_command_reply reply;
@@ -55,6 +58,8 @@ struct fft_call {
 
 static void fft_begin(struct fft_call *c)
 {
+    c->setup_error = NULL;
+    c->invocations = 0;
     json_init(&c->input);
     json_set_object(&c->input);
     memset(&c->request, 0, sizeof(c->request));
@@ -64,9 +69,36 @@ static void fft_begin(struct fft_call *c)
     zcl_command_reply_init(&c->reply, "zcl.dev_know.v1");
 }
 
+static void fft_end(struct fft_call *c);
+
+static void fft_input_str(struct fft_call *c, const char *key, const char *value)
+{
+    if (c->setup_error) return;
+    bool ok = json_push_kv_str(&c->input, key, value);
+    const struct json_value *v = json_get(&c->input, key);
+    if (!ok || !v || v->type != JSON_STR ||
+        strcmp(json_get_str(v), value) != 0)
+        c->setup_error = key;
+}
+
+static void fft_input_int(struct fft_call *c, const char *key, int64_t value)
+{
+    if (c->setup_error) return;
+    bool ok = json_push_kv_int(&c->input, key, value);
+    const struct json_value *v = json_get(&c->input, key);
+    if (!ok || !v || v->type != JSON_INT || json_get_int(v) != value)
+        c->setup_error = key;
+}
+
 static bool fft_run(struct fft_call *c)
 {
     char why[192];
+
+    if (c->setup_error) {
+        printf("[input setup failed: %s] ", c->setup_error);
+        fft_end(c);
+        return false;
+    }
 
     if (c->request.spec &&
         !zcl_command_registry_input_validate(c->request.spec, &c->input, why,
@@ -74,6 +106,7 @@ static bool fft_run(struct fft_call *c)
         printf("[input rejected: %s] ", why);
         return false;
     }
+    c->invocations++;
     zcl_native_handle_dev_know(&c->request, &c->reply);
     return true;
 }
@@ -394,7 +427,7 @@ static int test_fleet_facts_leaf(void)
         bool saw_handles_well = false;
 
         fft_begin(&c);
-        (void)json_push_kv_str(&c.input, "subject", "sonnet");
+        fft_input_str(&c, "subject", "sonnet");
         ASSERT(fft_run(&c));
         ASSERT_EQ((int)c.reply.status, (int)ZCL_COMMAND_STATUS_PASSED);
         ASSERT(!fft_bool(&c, "unknown"));
@@ -417,8 +450,8 @@ static int test_fleet_facts_leaf(void)
         struct fft_call c;
 
         fft_begin(&c);
-        (void)json_push_kv_str(&c.input, "subject", "test_boot_phase");
-        (void)json_push_kv_str(&c.input, "relation", "trap_signature");
+        fft_input_str(&c, "subject", "test_boot_phase");
+        fft_input_str(&c, "relation", "trap_signature");
         ASSERT(fft_run(&c));
         ASSERT_EQ((int)c.reply.status, (int)ZCL_COMMAND_STATUS_PASSED);
         ASSERT(!fft_bool(&c, "unknown"));
@@ -432,7 +465,7 @@ static int test_fleet_facts_leaf(void)
         struct fft_call c;
 
         fft_begin(&c);
-        (void)json_push_kv_str(&c.input, "subject", "no-such-subject");
+        fft_input_str(&c, "subject", "no-such-subject");
         ASSERT(fft_run(&c));
         ASSERT_EQ((int)c.reply.status, (int)ZCL_COMMAND_STATUS_PASSED);
         ASSERT(fft_bool(&c, "unknown"));
@@ -454,8 +487,8 @@ static int test_fleet_facts_leaf(void)
         fft_end(&c);
 
         fft_begin(&c);
-        (void)json_push_kv_str(&c.input, "subject", "sonnet");
-        (void)json_push_kv_str(&c.input, "relation", "handles_wel");
+        fft_input_str(&c, "subject", "sonnet");
+        fft_input_str(&c, "relation", "handles_wel");
         ASSERT(fft_run(&c));
         ASSERT(c.reply.status != ZCL_COMMAND_STATUS_PASSED);
         ASSERT_STR_EQ(c.reply.error.code, "UNKNOWN_VOCABULARY");
@@ -469,8 +502,8 @@ static int test_fleet_facts_leaf(void)
         struct fft_call c;
 
         fft_begin(&c);
-        (void)json_push_kv_str(&c.input, "subject", "sonnet");
-        (void)json_push_kv_int(&c.input, "budget_bytes", 256);
+        fft_input_str(&c, "subject", "sonnet");
+        fft_input_int(&c, "budget_bytes", 256);
         ASSERT(fft_run(&c));
         ASSERT_EQ((int)c.reply.status, (int)ZCL_COMMAND_STATUS_PASSED);
         ASSERT(fft_bool(&c, "truncated"));
@@ -478,6 +511,52 @@ static int test_fleet_facts_leaf(void)
         ASSERT(fft_int(&c, "total") > fft_int(&c, "row_count"));
         ASSERT_EQ(fft_int(&c, "budget_bytes"), (int64_t)256);
         fft_end(&c);
+        PASS();
+    }
+
+_test_next:;
+    return failures;
+}
+
+/* json_copy packs this one-field object to capacity one. The next append
+ * must therefore enter the checked json_children allocation path. */
+static bool fft_compact_input(struct fft_call *c)
+{
+    struct json_value packed;
+    json_init(&packed);
+    json_copy(&packed, &c->input);
+    json_free(&c->input);
+    c->input = packed;
+    return c->input.num_children == 1 && c->input.children_cap == 1 &&
+        strcmp(json_get_str(json_get(&c->input, "subject")),
+               "test_boot_phase") == 0;
+}
+
+static int fft_setup_failure_test(void)
+{
+    int failures = 0;
+
+    TEST("dev.know: failed relation setup never invokes the leaf") {
+        struct fft_call c;
+        size_t baseline = json_test_live_blocks();
+        fft_begin(&c);
+        fft_input_str(&c, "subject", "test_boot_phase");
+        bool prepared = fft_compact_input(&c);
+        zcl_alloc_fault_fail_next("json_children");
+        fft_input_str(&c, "relation", "trap_signature");
+        bool consumed = zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+        bool ran = fft_run(&c);
+        size_t after_run = json_test_live_blocks();
+        fft_end(&c);
+        ASSERT(prepared);
+        ASSERT(consumed);
+        ASSERT(!ran);
+        ASSERT(c.setup_error != NULL);
+        ASSERT_STR_EQ(c.setup_error, "relation");
+        ASSERT_EQ(c.invocations, 0u);
+        ASSERT_EQ(after_run, baseline);
+        ASSERT_EQ(json_test_live_blocks(), baseline);
         PASS();
     }
 
@@ -533,6 +612,7 @@ int test_fleet_facts(void)
     failures += test_fleet_facts_table();
     failures += test_fleet_facts_traps();
     failures += test_fleet_facts_leaf();
+    failures += fft_setup_failure_test();
     failures += test_fleet_historical_limits();
     return failures;
 }
