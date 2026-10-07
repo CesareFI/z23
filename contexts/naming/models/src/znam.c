@@ -552,6 +552,12 @@ bool db_znam_text_save(struct node_db *ndb, const char *name,
 {
     if (!ndb || !ndb->open) LOG_FAIL("znam", "db_znam_text_save: db not open");
     if (!name || !key) LOG_FAIL("znam", "db_znam_text_save: name/key NULL");
+    if (strnlen(name, ZNAM_NAME_MAX + 1) > ZNAM_NAME_MAX)
+        LOG_FAIL("znam", "db_znam_text_save: name exceeds ZNAM_NAME_MAX");
+    if (strnlen(key, ZNAM_TEXT_KEY_MAX + 1) > ZNAM_TEXT_KEY_MAX)
+        LOG_FAIL("znam", "db_znam_text_save: key exceeds ZNAM_TEXT_KEY_MAX");
+    if (value && strnlen(value, ZNAM_TEXT_VAL_MAX + 1) > ZNAM_TEXT_VAL_MAX)
+        LOG_FAIL("znam", "db_znam_text_save: value exceeds ZNAM_TEXT_VAL_MAX");
 
     struct znam_text_record rec;
     memset(&rec, 0, sizeof(rec));

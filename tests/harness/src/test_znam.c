@@ -19,6 +19,79 @@
 #include "coins/coins_view.h"
 #include <inttypes.h>
 #include <string.h>
+#include <unistd.h>
+
+static bool znam_text_refusal(struct node_db *ndb, const char *name,
+                              const char *key, const char *value,
+                              const char *diagnostic)
+{
+    FILE *capture = tmpfile();
+    if (!capture) return false;
+    int saved = dup(STDERR_FILENO);
+    if (saved < 0) { fclose(capture); return false; }
+    bool ok = false;
+    if (fflush(stderr) == 0 && dup2(fileno(capture), STDERR_FILENO) >= 0) {
+        bool refused = !db_znam_text_save(ndb, name, key, value);
+        int flushed = fflush(stderr);
+        int restored = dup2(saved, STDERR_FILENO);
+        char log[512] = {0};
+        if (fseek(capture, 0, SEEK_SET) == 0) {
+            size_t n = fread(log, 1, sizeof(log) - 1, capture);
+            log[n] = '\0';
+            ok = refused && flushed == 0 && restored >= 0 &&
+                 !ferror(capture) && strstr(log, diagnostic) != NULL;
+        }
+    }
+    if (close(saved) != 0) ok = false;
+    if (fclose(capture) != 0) ok = false;
+    return ok;
+}
+
+static bool znam_text_input_bounds(struct node_db *ndb)
+{
+    char name[ZNAM_NAME_MAX + 2], key[ZNAM_TEXT_KEY_MAX + 2];
+    char value[ZNAM_TEXT_VAL_MAX + 2], out[ZNAM_TEXT_VAL_MAX + 1];
+    memset(name, 'a', sizeof(name) - 1); name[sizeof(name) - 1] = '\0';
+    memset(key, 'k', sizeof(key) - 1); key[sizeof(key) - 1] = '\0';
+    memset(value, 'v', sizeof(value) - 1); value[sizeof(value) - 1] = '\0';
+    const char *diagnostics[] = {
+        "db_znam_text_save: name exceeds ZNAM_NAME_MAX",
+        "db_znam_text_save: key exceeds ZNAM_TEXT_KEY_MAX",
+        "db_znam_text_save: value exceeds ZNAM_TEXT_VAL_MAX"
+    };
+    for (size_t i = 0; i < 3; ++i) {
+        name[ZNAM_NAME_MAX] = '\0';
+        key[ZNAM_TEXT_KEY_MAX] = '\0';
+        value[ZNAM_TEXT_VAL_MAX] = '\0';
+        if (!db_znam_text_save(ndb, name, key, "old")) return false;
+        if (i == 0) name[ZNAM_NAME_MAX] = 'a';
+        if (i == 1) key[ZNAM_TEXT_KEY_MAX] = 'k';
+        if (i == 2) value[ZNAM_TEXT_VAL_MAX] = 'v';
+        bool refused = znam_text_refusal(ndb, name, key, value, diagnostics[i]);
+        name[ZNAM_NAME_MAX] = '\0';
+        key[ZNAM_TEXT_KEY_MAX] = '\0';
+        if (!refused) return false;
+        if (!db_znam_text_get(ndb, name, key, out, sizeof(out))) return false;
+        if (strcmp(out, "old") != 0) return false;
+    }
+    value[ZNAM_TEXT_VAL_MAX] = '\0';
+    const char *accepted[] = { value, NULL, "" };
+    const char *expected[] = { value, "", "" };
+    for (size_t i = 0; i < 3; ++i) {
+        if (!db_znam_text_save(ndb, name, key, accepted[i])) return false;
+        if (!db_znam_text_get(ndb, name, key, out, sizeof(out))) return false;
+        if (strcmp(out, expected[i]) != 0) return false;
+    }
+    return true;
+}
+
+static int znam_text_input_bounds_report(struct node_db *ndb)
+{
+    bool ok = znam_text_input_bounds(ndb);
+    printf("znam DB text input bounds and unchanged prefix row... %s\n",
+           ok ? "OK" : "FAIL");
+    return !ok;
+}
 
 static int znam_count_step_interrupted(void *stmt)
 {
@@ -871,6 +944,8 @@ int test_znam(void)
                        t_interrupted, a_interrupted);
                 failures++;
             }
+
+            failures += znam_text_input_bounds_report(&ndb);
 
             /* List by owner */
             printf("znam DB list_by_owner... ");
