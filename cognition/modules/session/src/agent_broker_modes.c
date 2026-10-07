@@ -72,6 +72,16 @@ static bool ensure_dir(const char *path)
     LOG_FAIL(MODES_TAG, "mkdir %s failed: %s", path, strerror(errno));
 }
 
+static bool prepare_broker_dir(const char *dir, char *scratch, size_t cap)
+{
+    int n = snprintf(scratch, cap, "%s/agent-scratch", dir);
+    if (n < 0 || (size_t)n >= cap) {
+        (void)fputs("broker: scratch pathname too long\n", stderr); // obs-ok:argv-mode-cli
+        return false;
+    }
+    return ensure_dir(dir);
+}
+
 /* The child writes its ACHIEVED posture into its own scratch directory; the
  * broker reads it back. A hostile child could of course lie here — which is
  * why the fields that matter to the operator (Landlock ABI, whether the domain
@@ -151,6 +161,244 @@ resolve_provider(int argc, char **argv, const char **why)
 }
 #endif
 
+#if !defined(_WIN32)
+static int broker_listen(struct agent_broker_session *s, const char *dir,
+                         const char *euid_s, char *sockpath, size_t sockcap,
+                         int *served)
+{
+    /* The listening surface: any local process can reach it, which is
+     * exactly why the credential check is the first thing that runs. */
+    snprintf(sockpath, sockcap, "%s/agent.sock", dir);
+    s->expect.require_uid = true;
+    s->expect.uid = euid_s ? (uid_t)strtoul(euid_s, NULL, 10) : getuid();
+
+    int lfd = agent_broker_listen(sockpath);
+    if (lfd < 0) {
+        (void)fprintf(stderr, "broker: cannot listen on %s\n", sockpath);  // obs-ok:argv-mode-cli
+        return 6;
+    }
+    printf("broker: listening on %s expecting uid=%u\n", sockpath,
+           (unsigned)s->expect.uid);
+    (void)fflush(stdout);
+    int r = agent_broker_accept_once(s, lfd, 15000);
+    *served = r > 0 ? 1 : 0;
+    (void)close(lfd);
+    (void)unlink(sockpath);
+    return 0;
+}
+
+static int broker_pair(struct agent_broker_session *s,
+                       const struct agent_spawn_result *spawned,
+                       const char *auid_s, const char *reqs
+#ifdef ZCL_TESTING
+                       , const char *revoke_s
+#endif
+                       , int *served)
+{
+    /* The socketpair surface: the peer must be the EXACT process we
+     * spawned. pid plus uid, not uid alone — on a host where no uid switch
+     * was possible, uid alone would admit any process of the operator. */
+    s->expect.require_pid = true;
+    s->expect.pid = spawned->pid;
+    s->expect.require_uid = true;
+    s->expect.uid = auid_s ? (uid_t)strtoul(auid_s, NULL, 10) : getuid();
+
+    uint64_t max = reqs ? strtoull(reqs, NULL, 10) : 0;
+#ifdef ZCL_TESTING
+    uint64_t revoke_after = revoke_s ? strtoull(revoke_s, NULL, 10) : 0;
+    bool revoked_once = false;
+#endif
+
+    if (!agent_broker_identify_peer(spawned->sock, &s->peer)) {
+        (void)fprintf(stderr, "broker: no peer credentials on the pair\n");  // obs-ok:argv-mode-cli
+        return 7;
+    }
+    char why[160];
+    if (!agent_broker_peer_authorized(&s->peer, &s->expect, why,
+                                      sizeof(why))) {
+        (void)fprintf(stderr, "broker: refusing my own child: %s\n", why);  // obs-ok:argv-mode-cli
+        return 8;
+    }
+    printf("broker: peer verified pid=%d uid=%u gid=%u\n", (int)s->peer.pid,
+           (unsigned)s->peer.uid, (unsigned)s->peer.gid);
+    (void)fflush(stdout);
+
+    for (;;) {
+#ifdef ZCL_TESTING
+        /* The revocation half of the vertical slice: after N served
+         * requests the LIVE authority is revoked, and every later action
+         * the agent attempts is refused with DENIED_REVOKED. It is revoked
+         * where it lives — the broker cannot revoke a grant it does not
+         * hold, which is the point. */
+        if (revoke_after && (uint64_t)*served == revoke_after &&
+            !revoked_once) {
+            agent_broker_fixture_revoke();
+            revoked_once = true;
+            printf("broker: grant %s REVOKED after %d request(s)\n",
+                   s->authority->canonical_grant_id, *served);
+            (void)fflush(stdout);
+        }
+#endif
+        int r = agent_broker_serve_once(s, spawned->sock);
+        if (r <= 0)
+            break;
+        (*served)++;
+        if (max && (uint64_t)*served >= max)
+            break;
+    }
+    (void)close(spawned->sock);
+    return 0;
+}
+
+static void broker_bind(int argc, char **argv,
+                        struct agent_broker_session *s,
+                        struct agent_authority_ref *authority)
+{
+    const char *no_provider_why = NULL;
+    const struct agent_broker_provider *provider =
+        resolve_provider(argc, argv, &no_provider_why);
+    if (!provider) {
+        (void)fprintf(stderr, "broker: %s\n",  // obs-ok:argv-mode-cli
+                      no_provider_why ? no_provider_why : "no provider");
+    } else {
+        char why[192];
+        if (!agent_broker_session_bind(s, authority, why, sizeof(why)))
+            (void)fprintf(stderr,  // obs-ok:argv-mode-cli
+                "broker: provider '%s' bound no authority (%s); every request "
+                "will be refused\n",
+                provider->name ? provider->name : "(unnamed)",
+                why[0] ? why : "no reason given");
+        else
+            printf("broker: authority %s via provider '%s'\n",
+                   authority->canonical_grant_id,
+                   provider->name ? provider->name : "(unnamed)");
+        printf("broker: property provider '%s'\n",
+               provider->name ? provider->name : "(unnamed)");
+    }
+}
+
+static void broker_finish(const char *dir, const char *scratch,
+                          struct agent_broker_session *s,
+                          const struct agent_spawn_result *spawned,
+                          const char *sockpath, int served, int landlock_abi)
+{
+    if (spawned->pid > 0) {
+        read_child_report(scratch, &s->child);
+        s->child.landlock_abi = landlock_abi;
+        int st = 0;
+        if (waitpid(spawned->pid, &st, 0) == spawned->pid) {
+            if (WIFSIGNALED(st))
+                printf("broker: agent pid=%d killed by signal %d\n",
+                       (int)spawned->pid, WTERMSIG(st));
+            else
+                printf("broker: agent pid=%d exited %d\n", (int)spawned->pid,
+                       WEXITSTATUS(st));
+        }
+    }
+
+    agent_broker_write_status(dir, s, spawned->pid,
+                              sockpath[0] ? sockpath : NULL);
+
+    struct agent_audit_verdict v;
+    if (agent_audit_verify_dir(dir, &v))
+        printf("broker: served=%d denied=%llu receipts=%llu "
+               "audit_rows=%llu chain_breaks=%llu bad_sigs=%llu ok=%s\n",
+               served, (unsigned long long)s->requests_denied,
+               (unsigned long long)s->receipts_written,
+               (unsigned long long)v.rows,
+               (unsigned long long)v.chain_breaks,
+               (unsigned long long)v.bad_signatures, v.ok ? "yes" : "no");
+    else
+        printf("broker: served=%d denied=%llu receipts=%llu (no audit rows)\n",
+               served, (unsigned long long)s->requests_denied,
+               (unsigned long long)s->receipts_written);
+    (void)fflush(stdout);
+}
+
+static int broker_run(int argc, char **argv, const char *dir,
+                      const char *script, const char *canary,
+                      const char *reqs, const char *euid_s, const char *auid_s,
+                      bool listen_mode
+#ifdef ZCL_TESTING
+                      , const char *revoke_s
+#endif
+                      )
+{
+    char scratch[448];
+    if (!prepare_broker_dir(dir, scratch, sizeof(scratch)) || !ensure_dir(scratch))
+        return 3;
+
+    /* The broker must exec ITSELF; os_proc_exe_path() is the platform shim for
+     * naming this exact binary. */
+    char self[PATH_MAX];
+    if (!os_proc_exe_path(self, sizeof(self))) {
+        (void)fprintf(stderr, "broker: cannot resolve my own executable\n");  // obs-ok:argv-mode-cli
+        return 3;
+    }
+
+    /* The Landlock ABI is recorded HERE, in the broker, because the confined
+     * child cannot probe it without being killed by its own filter. */
+    int landlock_abi = os_sandbox_landlock_abi();
+
+    /* ── 1. spawn FIRST (nothing secret exists yet) ─────────────────────── */
+    struct agent_spawn_request sreq = {
+        .self_exe     = self,
+        .scratch_dir  = scratch,
+        .script       = script,
+        .canary       = canary,
+        .confined_uid = auid_s ? (uid_t)strtoul(auid_s, NULL, 10) : 0,
+        .confined_gid = auid_s ? (gid_t)strtoul(auid_s, NULL, 10) : 0,
+    };
+    struct agent_spawn_result spawned;
+    if (listen_mode) {
+        memset(&spawned, 0, sizeof(spawned));
+        spawned.sock = -1;
+    } else if (!agent_broker_spawn_confined(&sreq, &spawned)) {
+        (void)fprintf(stderr, "broker: could not spawn the confined agent\n");  // obs-ok:argv-mode-cli
+        return 4;
+    }
+
+    /* ── 2. audit log, then 3. the grant — both AFTER the fork ──────────── */
+    struct agent_audit_log audit;
+    if (!agent_audit_open(&audit, dir)) {
+        (void)fprintf(stderr, "broker: could not open the audit log in %s\n",  // obs-ok:argv-mode-cli
+                      dir);
+        return 5;
+    }
+    /* The authority, from the provider — never minted here, and never COPIED
+     * into the session. `authority` lives for the whole function and the
+     * session points at it; the session holds no grant of its own, so nothing
+     * it carries can survive a revoke. A broker whose provider refuses to bind
+     * keeps `authority.bound` false and therefore refuses every request with a
+     * named reason. The socket still comes up, so an operator gets that
+     * refusal per request instead of a process that vanished. */
+    struct agent_authority_ref authority;
+    memset(&authority, 0, sizeof(authority));
+    struct agent_broker_session s;
+    memset(&s, 0, sizeof(s));
+    s.authority = &authority;
+    broker_bind(argc, argv, &s, &authority);
+    s.audit = &audit;
+    s.child.landlock_abi = landlock_abi;
+
+    int served = 0;
+    char sockpath[512] = { 0 };
+
+    int rc = listen_mode
+        ? broker_listen(&s, dir, euid_s, sockpath, sizeof(sockpath), &served)
+        : broker_pair(&s, &spawned, auid_s, reqs
+#ifdef ZCL_TESTING
+                      , revoke_s
+#endif
+                      , &served);
+    if (rc)
+        return rc;
+
+    broker_finish(dir, scratch, &s, &spawned, sockpath, served, landlock_abi);
+    return 0;
+}
+#endif
+
 int agent_broker_mode_main(int argc, char **argv)
 {
     const char *dir     = arg_value(argc, argv, "--broker-dir=");
@@ -221,192 +469,11 @@ int agent_broker_mode_main(int argc, char **argv)
         "sandbox qualification passes\n"); // obs-ok:argv-mode-cli
     return 78;
 #else
-    char scratch[448];
-    snprintf(scratch, sizeof(scratch), "%s/agent-scratch", dir);
-    if (!ensure_dir(dir) || !ensure_dir(scratch))
-        return 3;
-
-    /* The broker must exec ITSELF; os_proc_exe_path() is the platform shim for
-     * naming this exact binary. */
-    char self[PATH_MAX];
-    if (!os_proc_exe_path(self, sizeof(self))) {
-        (void)fprintf(stderr, "broker: cannot resolve my own executable\n");  // obs-ok:argv-mode-cli
-        return 3;
-    }
-
-    /* The Landlock ABI is recorded HERE, in the broker, because the confined
-     * child cannot probe it without being killed by its own filter. */
-    int landlock_abi = os_sandbox_landlock_abi();
-
-    /* ── 1. spawn FIRST (nothing secret exists yet) ─────────────────────── */
-    struct agent_spawn_request sreq = {
-        .self_exe     = self,
-        .scratch_dir  = scratch,
-        .script       = script,
-        .canary       = canary,
-        .confined_uid = auid_s ? (uid_t)strtoul(auid_s, NULL, 10) : 0,
-        .confined_gid = auid_s ? (gid_t)strtoul(auid_s, NULL, 10) : 0,
-    };
-    struct agent_spawn_result spawned;
-    if (listen_mode) {
-        memset(&spawned, 0, sizeof(spawned));
-        spawned.sock = -1;
-    } else if (!agent_broker_spawn_confined(&sreq, &spawned)) {
-        (void)fprintf(stderr, "broker: could not spawn the confined agent\n");  // obs-ok:argv-mode-cli
-        return 4;
-    }
-
-    /* ── 2. audit log, then 3. the grant — both AFTER the fork ──────────── */
-    struct agent_audit_log audit;
-    if (!agent_audit_open(&audit, dir)) {
-        (void)fprintf(stderr, "broker: could not open the audit log in %s\n",  // obs-ok:argv-mode-cli
-                      dir);
-        return 5;
-    }
-    /* The authority, from the provider — never minted here, and never COPIED
-     * into the session. `authority` lives for the whole function and the
-     * session points at it; the session holds no grant of its own, so nothing
-     * it carries can survive a revoke. A broker whose provider refuses to bind
-     * keeps `authority.bound` false and therefore refuses every request with a
-     * named reason. The socket still comes up, so an operator gets that
-     * refusal per request instead of a process that vanished. */
-    struct agent_authority_ref authority;
-    memset(&authority, 0, sizeof(authority));
-    struct agent_broker_session s;
-    memset(&s, 0, sizeof(s));
-    s.authority = &authority;
-    const char *no_provider_why = NULL;
-    const struct agent_broker_provider *provider =
-        resolve_provider(argc, argv, &no_provider_why);
-    if (!provider) {
-        (void)fprintf(stderr, "broker: %s\n",  // obs-ok:argv-mode-cli
-                      no_provider_why ? no_provider_why : "no provider");
-    } else {
-        char why[192];
-        if (!agent_broker_session_bind(&s, &authority, why, sizeof(why)))
-            (void)fprintf(stderr,  // obs-ok:argv-mode-cli
-                "broker: provider '%s' bound no authority (%s); every request "
-                "will be refused\n",
-                provider->name ? provider->name : "(unnamed)",
-                why[0] ? why : "no reason given");
-        else
-            printf("broker: authority %s via provider '%s'\n",
-                   authority.canonical_grant_id,
-                   provider->name ? provider->name : "(unnamed)");
-        printf("broker: property provider '%s'\n",
-               provider->name ? provider->name : "(unnamed)");
-    }
-    s.audit = &audit;
-    s.child.landlock_abi = landlock_abi;
-
-    int served = 0;
-    char sockpath[512] = { 0 };
-
-    if (listen_mode) {
-        /* The listening surface: any local process can reach it, which is
-         * exactly why the credential check is the first thing that runs. */
-        snprintf(sockpath, sizeof(sockpath), "%s/agent.sock", dir);
-        s.expect.require_uid = true;
-        s.expect.uid = euid_s ? (uid_t)strtoul(euid_s, NULL, 10) : getuid();
-
-        int lfd = agent_broker_listen(sockpath);
-        if (lfd < 0) {
-            (void)fprintf(stderr, "broker: cannot listen on %s\n", sockpath);  // obs-ok:argv-mode-cli
-            return 6;
-        }
-        printf("broker: listening on %s expecting uid=%u\n", sockpath,
-               (unsigned)s.expect.uid);
-        (void)fflush(stdout);
-        int r = agent_broker_accept_once(&s, lfd, 15000);
-        served = r > 0 ? 1 : 0;
-        (void)close(lfd);
-        (void)unlink(sockpath);
-    } else {
-        /* The socketpair surface: the peer must be the EXACT process we
-         * spawned. pid plus uid, not uid alone — on a host where no uid switch
-         * was possible, uid alone would admit any process of the operator. */
-        s.expect.require_pid = true;
-        s.expect.pid = spawned.pid;
-        s.expect.require_uid = true;
-        s.expect.uid = auid_s ? (uid_t)strtoul(auid_s, NULL, 10) : getuid();
-
-        uint64_t max = reqs ? strtoull(reqs, NULL, 10) : 0;
+    return broker_run(argc, argv, dir, script, canary, reqs, euid_s, auid_s,
+                      listen_mode
 #ifdef ZCL_TESTING
-        uint64_t revoke_after = revoke_s ? strtoull(revoke_s, NULL, 10) : 0;
-        bool revoked_once = false;
+                      , revoke_s
 #endif
-
-        if (!agent_broker_identify_peer(spawned.sock, &s.peer)) {
-            (void)fprintf(stderr, "broker: no peer credentials on the pair\n");  // obs-ok:argv-mode-cli
-            return 7;
-        }
-        char why[160];
-        if (!agent_broker_peer_authorized(&s.peer, &s.expect, why,
-                                          sizeof(why))) {
-            (void)fprintf(stderr, "broker: refusing my own child: %s\n", why);  // obs-ok:argv-mode-cli
-            return 8;
-        }
-        printf("broker: peer verified pid=%d uid=%u gid=%u\n", (int)s.peer.pid,
-               (unsigned)s.peer.uid, (unsigned)s.peer.gid);
-        (void)fflush(stdout);
-
-        for (;;) {
-#ifdef ZCL_TESTING
-            /* The revocation half of the vertical slice: after N served
-             * requests the LIVE authority is revoked, and every later action
-             * the agent attempts is refused with DENIED_REVOKED. It is revoked
-             * where it lives — the broker cannot revoke a grant it does not
-             * hold, which is the point. */
-            if (revoke_after && (uint64_t)served == revoke_after &&
-                !revoked_once) {
-                agent_broker_fixture_revoke();
-                revoked_once = true;
-                printf("broker: grant %s REVOKED after %d request(s)\n",
-                       authority.canonical_grant_id, served);
-                (void)fflush(stdout);
-            }
-#endif
-            int r = agent_broker_serve_once(&s, spawned.sock);
-            if (r <= 0)
-                break;
-            served++;
-            if (max && (uint64_t)served >= max)
-                break;
-        }
-        (void)close(spawned.sock);
-    }
-
-    if (spawned.pid > 0) {
-        read_child_report(scratch, &s.child);
-        s.child.landlock_abi = landlock_abi;
-        int st = 0;
-        if (waitpid(spawned.pid, &st, 0) == spawned.pid) {
-            if (WIFSIGNALED(st))
-                printf("broker: agent pid=%d killed by signal %d\n",
-                       (int)spawned.pid, WTERMSIG(st));
-            else
-                printf("broker: agent pid=%d exited %d\n", (int)spawned.pid,
-                       WEXITSTATUS(st));
-        }
-    }
-
-    agent_broker_write_status(dir, &s, spawned.pid,
-                              sockpath[0] ? sockpath : NULL);
-
-    struct agent_audit_verdict v;
-    if (agent_audit_verify_dir(dir, &v))
-        printf("broker: served=%d denied=%llu receipts=%llu "
-               "audit_rows=%llu chain_breaks=%llu bad_sigs=%llu ok=%s\n",
-               served, (unsigned long long)s.requests_denied,
-               (unsigned long long)s.receipts_written,
-               (unsigned long long)v.rows,
-               (unsigned long long)v.chain_breaks,
-               (unsigned long long)v.bad_signatures, v.ok ? "yes" : "no");
-    else
-        printf("broker: served=%d denied=%llu receipts=%llu (no audit rows)\n",
-               served, (unsigned long long)s.requests_denied,
-               (unsigned long long)s.receipts_written);
-    (void)fflush(stdout);
-    return 0;
+                      );
 #endif
 }

@@ -1492,6 +1492,8 @@ AGENT_IMPACT_RULE("tools/command/native_zendp_command.c|contexts/commons/modules
  * re-run the adversarial group together with the catalog. */
 AGENT_IMPACT_RULE("cognition/modules/session/src/agent_broker*.c|cognition/modules/session/src/agent_audit.c|cognition/modules/session/src/agent_confined.c|cognition/modules/session/include/session/agent_broker*.h|cognition/services/src/metaverse_agent_service.c|cognition/services/include/services/metaverse_agent_service.h|contexts/commons/controllers/src/metaverse_controller.c|cognition/controllers/src/agent_session_controller.c|engine/composition/commands/metaverse.def|tests/harness/src/test_metaverse_agent_broker.c", "metaverse_agent_broker confine command_registry_catalog coin_selection make_lint_gates")
 
+AGENT_IMPACT_RULE("cognition/modules/session/src/agent_broker_modes.c", "metaverse_broker_authority")
+
 /* Sovereign space objects reuse the signed DHT's generic pointer/provider
  * transport.  The wire codecs, local CAS admission, chain-delegation adapter,
  * policy checkpoints, command surface and catalog are one fail-closed slice. */

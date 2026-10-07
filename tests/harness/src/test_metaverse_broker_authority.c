@@ -592,7 +592,12 @@ static int t10_fork_order(void)
     if (n > 0) {
         const char *spawn = strstr(buf, "agent_broker_spawn_confined(");
         const char *audit = strstr(buf, "agent_audit_open(");
-        const char *bind  = strstr(buf, "agent_broker_session_bind(");
+        const char *bind  = strstr(buf, "broker_bind(argc, argv, &s, &authority)");
+        const char *bind_helper = strstr(buf, "static void broker_bind(");
+        const char *session_bind = bind_helper
+            ? strstr(bind_helper, "agent_broker_session_bind(") : NULL;
+        BA_CHECK("T10: the binding helper binds the live authority",
+                 bind_helper && session_bind && bind && session_bind < bind);
         BA_CHECK("T10: the mode spawns, then audits, then binds",
                  spawn && audit && bind && spawn < audit && audit < bind);
     }

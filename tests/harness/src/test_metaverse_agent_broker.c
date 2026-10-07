@@ -44,6 +44,7 @@
 
 #include "controllers/rpc_client.h"
 #include "platform/os_proc.h"
+#include "platform/clock.h"
 #include "platform/os_sandbox.h"
 #include "platform/time_compat.h"
 #include "services/metaverse_agent_service.h"
@@ -1323,12 +1324,147 @@ static int mb_socket_identity(void)
 
 #endif /* !_WIN32 */
 
+#if !defined(_WIN32)
+static int64_t mb_scratch_clock(void *self)
+{
+    (void)self;
+    return mb_now_ms();
+}
+
+static const clock_iface_t mb_scratch_clock_iface = {
+    .now_monotonic_ns = mb_scratch_clock,
+    .now_wall_ms = mb_scratch_clock,
+};
+
+static int mb_scratch_mode(char **args, char *error, size_t cap)
+{
+    char capture_path[PATH_MAX];
+    int fd = test_mkstemp(capture_path, sizeof(capture_path), "mbscratch");
+    if (fd < 0)
+        return -1;
+    FILE *capture = fdopen(fd, "w+");
+    if (!capture) {
+        (void)close(fd);
+        (void)unlink(capture_path);
+        return -1;
+    }
+    int saved = dup(STDERR_FILENO);
+    (void)fflush(stderr);
+    int result = -1;
+    if (saved >= 0 && dup2(fd, STDERR_FILENO) >= 0)
+        result = agent_broker_mode_main(3, args);
+    (void)fflush(stderr);
+    if (saved >= 0) {
+        if (dup2(saved, STDERR_FILENO) < 0)
+            result = -1;
+        (void)close(saved);
+    }
+    rewind(capture);
+    size_t got = fread(error, 1, cap - 1, capture);
+    error[got] = '\0';
+    if (ferror(capture) || !feof(capture))
+        result = -1;
+    if (fclose(capture) != 0)
+        result = -1;
+    if (unlink(capture_path) != 0)
+        result = -1;
+    return result;
+}
+
+/* Make only the parents: both broker leaves must be absent at entry. */
+static bool mb_scratch_fixture(char *dir)
+{
+    size_t used = strlen(g_dir);
+    if (used >= 431)
+        return false;
+    memcpy(dir, g_dir, used + 1);
+    while (used < 434) {
+        dir[used++] = '/';
+        size_t end = used + 100;
+        if (end > 434)
+            end = 434;
+        if (end >= 432 && end < 434)
+            end = 431;
+        while (used < end)
+            dir[used++] = 'a';
+        dir[used] = '\0';
+        if (used < 434 && mkdir(dir, 0700) != 0) {
+            printf("agent_broker: scratch fixture mkdir failed: %s\n", strerror(errno));
+            return false;
+        }
+    }
+    return true;
+}
+
+static int mb_scratch_oversized(char *dir)
+{
+    int failures = 0;
+    char option[448], scratch[460], shortened[460], error[8192];
+    snprintf(option, sizeof(option), "--broker-dir=%s", dir);
+    snprintf(scratch, sizeof(scratch), "%s/agent-scratch", dir);
+    snprintf(shortened, sizeof(shortened), "%s/agent-scratc", dir);
+    char *args[] = { "broker", option, "--listen", NULL };
+    int result = mb_scratch_mode(args, error, sizeof(error));
+    struct stat st;
+    MB_CHECK("oversized scratch gets named preflight refusal",
+             result == 3 && strstr(error, "broker: scratch pathname too long") != NULL);
+    MB_CHECK("oversized scratch creates no broker directory",
+             lstat(dir, &st) != 0 && errno == ENOENT);
+    MB_CHECK("oversized scratch creates no intended directory",
+             lstat(scratch, &st) != 0 && errno == ENOENT);
+    MB_CHECK("oversized scratch creates no shortened directory",
+             lstat(shortened, &st) != 0 && errno == ENOENT);
+    return failures;
+}
+
+static int mb_scratch_fitting(char *dir)
+{
+    int failures = 0;
+    char option[448], scratch[460], shortened[460], error[8192];
+    snprintf(option, sizeof(option), "--broker-dir=%s", dir);
+    snprintf(scratch, sizeof(scratch), "%s/agent-scratch", dir);
+    snprintf(shortened, sizeof(shortened), "%s/agent-scratc", dir);
+    char *args[] = { "broker", option, "--listen", NULL };
+    int result = mb_scratch_mode(args, error, sizeof(error));
+    struct stat st;
+    MB_CHECK("fitting scratch directory is created intact",
+             stat(scratch, &st) == 0 && S_ISDIR(st.st_mode));
+    MB_CHECK("fitting scratch creates no shortened directory",
+             lstat(shortened, &st) != 0 && errno == ENOENT);
+    MB_CHECK("fitting scratch reaches separate socket refusal",
+             result == 6 && strstr(error, "broker: cannot listen on ") != NULL &&
+             strstr(error, "scratch pathname too long") == NULL);
+    return failures;
+}
+#endif
+
+static int mb_scratch_path_bounds(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    char dir[435];
+    bool ready = mb_scratch_fixture(dir);
+    MB_CHECK("create scratch boundary fixture parents", ready);
+    if (!ready)
+        return failures;
+    const clock_iface_t *saved_clock = clock_default();
+    clock_set_default(&mb_scratch_clock_iface);
+    failures += mb_scratch_oversized(dir);
+    dir[433] = '\0';
+    failures += mb_scratch_fitting(dir);
+    clock_set_default(saved_clock);
+#endif
+    return failures;
+}
+
 int test_metaverse_agent_broker(void)
 {
     printf("\n=== metaverse confined-agent broker (adversarial) ===\n");
     int failures = 0;
 
     test_make_tmpdir(g_dir, sizeof(g_dir), "mvagent", "root");
+
+    failures += mb_scratch_path_bounds();
 
     failures += mb_codec();
     failures += mb_grant();

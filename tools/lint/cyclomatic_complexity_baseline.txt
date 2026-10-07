@@ -212,7 +212,6 @@ cognition/modules/session/src/agent_broker.c:agent_broker_handle:27
 cognition/modules/session/src/agent_broker.c:agent_broker_session_bind:17
 cognition/modules/session/src/agent_broker_grant.c:agent_grant_authorize:17
 cognition/modules/session/src/agent_broker_grant.c:project_grant:17
-cognition/modules/session/src/agent_broker_modes.c:agent_broker_mode_main:43
 cognition/modules/session/src/agent_broker_peer.c:agent_broker_peer_authorized:27
 cognition/modules/session/src/agent_broker_proto.c:mvap_param_is_safe:16
 cognition/modules/session/src/agent_broker_proto.c:mvap_status_name:25
