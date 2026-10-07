@@ -68,7 +68,7 @@ static int64_t hp_dump_int(const char *key)
  * (deserialize fails). */
 
 struct hp_mock {
-    platform_socket_t listen_fd;
+    _Atomic platform_socket_t listen_fd; /* stop thread closes accept fd */
     int port;
     int remote_tip;             /* canned getblockcount value */
     bool malformed_header;      /* true → return non-deserializable hex */
@@ -106,7 +106,8 @@ static void *hp_mock_loop(void *arg)  /* raw-pthread-ok: test-local */
     while (!atomic_load(&m->stop)) {
         struct sockaddr_in cli;
         size_t cl = sizeof(cli);
-        platform_socket_t cfd = platform_socket_accept(m->listen_fd,
+        platform_socket_t listen_fd = atomic_load(&m->listen_fd);
+        platform_socket_t cfd = platform_socket_accept(listen_fd,
                                                        (struct sockaddr *)&cli,
                                                        &cl);
         if (cfd == PLATFORM_SOCKET_INVALID) break;
@@ -266,13 +267,14 @@ static bool hp_mock_start(struct hp_mock *m, int remote_tip,
 static void hp_mock_stop(struct hp_mock *m)
 {
     atomic_store(&m->stop, true);
-    if (m->listen_fd != PLATFORM_SOCKET_INVALID) {
+    platform_socket_t listen_fd =
+        atomic_exchange(&m->listen_fd, PLATFORM_SOCKET_INVALID);
+    if (listen_fd != PLATFORM_SOCKET_INVALID) {
         /* Shut down, then close: the close interrupts the blocking accept()
          * so the thread exits (on Windows, closesocket from another thread
          * fails the in-flight accept; the shutdown arm is platform-aware). */
-        (void)platform_socket_shutdown_both(m->listen_fd);
-        platform_socket_close(m->listen_fd);
-        m->listen_fd = PLATFORM_SOCKET_INVALID;
+        (void)platform_socket_shutdown_both(listen_fd);
+        platform_socket_close(listen_fd);
     }
     pthread_join(m->thread, NULL);
 }
