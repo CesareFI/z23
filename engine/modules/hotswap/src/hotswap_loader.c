@@ -22,6 +22,7 @@
 #include "base/hex.h"
 #include "crypto/sha256.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "platform/dlopen_pin.h"
 #include "platform/time_compat.h"
 #include "util/clientversion.h"
@@ -217,6 +218,11 @@ static void rejection_set_locked(uint32_t gen, const char *stage,
 }
 #endif
 
+static const char *diagnostic_text(const char *text)
+{
+    return zutf8_validate_n(text, strlen(text)) ? text : "[invalid UTF-8]";
+}
+
 static void generation_json(struct json_value *obj,
                             const struct hotswap_generation *generation)
 {
@@ -227,29 +233,29 @@ static void generation_json(struct json_value *obj,
                          ? (generation->gen == g_active_gen
                                 ? "active" : "retired_mapped")
                          : "rejected");
-    json_push_kv_str(obj, "so_path", generation->so_path);
+    json_push_kv_str(obj, "so_path", diagnostic_text(generation->so_path));
     if (generation->mapped_path[0])
-        json_push_kv_str(obj, "mapped_path", generation->mapped_path);
+        json_push_kv_str(obj, "mapped_path", diagnostic_text(generation->mapped_path));
     json_push_kv_int(obj, "loaded_at", (int64_t)generation->loaded_at);
     json_push_kv_int(obj, "replaced_count",
                      (int64_t)generation->replaced_count);
     json_push_kv_bool(obj, "ok", generation->ok);
     json_push_kv_bool(obj, "mapped", generation->mapped);
-    json_push_kv_str(obj, "provider_id", generation->provider_id);
-    json_push_kv_str(obj, "build_identity", generation->build_identity);
-    json_push_kv_str(obj, "source_identity", generation->source_identity);
-    json_push_kv_str(obj, "input_content_sha256", generation->input_digest);
-    json_push_kv_str(obj, "artifact_sha256", generation->artifact_sha256);
+    json_push_kv_str(obj, "provider_id", diagnostic_text(generation->provider_id));
+    json_push_kv_str(obj, "build_identity", diagnostic_text(generation->build_identity));
+    json_push_kv_str(obj, "source_identity", diagnostic_text(generation->source_identity));
+    json_push_kv_str(obj, "input_content_sha256", diagnostic_text(generation->input_digest));
+    json_push_kv_str(obj, "artifact_sha256", diagnostic_text(generation->artifact_sha256));
     json_push_kv_bool(obj, "artifact_hash_available",
                       generation->artifact_sha256[0] != '\0');
     json_push_kv_bool(obj, "artifact_inode_pinned",
                       generation->mapped && generation->artifact_fd >= 0);
-    json_push_kv_str(obj, "mapped_tests", generation->mapped_tests_csv);
-    json_push_kv_str(obj, "probe_tools", generation->probe_tools_csv);
+    json_push_kv_str(obj, "mapped_tests", diagnostic_text(generation->mapped_tests_csv));
+    json_push_kv_str(obj, "probe_tools", diagnostic_text(generation->probe_tools_csv));
     if (generation->rejection_stage[0])
-        json_push_kv_str(obj, "rejection_stage", generation->rejection_stage);
+        json_push_kv_str(obj, "rejection_stage", diagnostic_text(generation->rejection_stage));
     if (generation->error[0])
-        json_push_kv_str(obj, "error", generation->error);
+        json_push_kv_str(obj, "error", diagnostic_text(generation->error));
 }
 
 bool hotswap_dump_state_json(struct json_value *out, const char *key)
@@ -273,6 +279,21 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_str(out, "artifact_hash_scope", "shared_object_bytes");
 
     pthread_mutex_lock(&g_lock);
+#ifdef ZCL_TESTING
+    /* Synthetic telemetry is scoped to this dump and restored under g_lock. */
+    bool fixture = key && strncmp(key, "test:utf8:", 10) == 0;
+    struct hotswap_generation saved_generation = g_gens[0];
+    struct hotswap_rejection saved_rejection = g_last_rejection;
+    size_t saved_count = g_gen_count;
+    if (fixture) {
+        g_gens[0] = (struct hotswap_generation){0};
+        g_gen_count = 1;
+        g_last_rejection = (struct hotswap_rejection){.present = true};
+        copy_text(g_gens[0].error, sizeof(g_gens[0].error), key + 10);
+        copy_text(g_gens[0].mapped_tests_csv, sizeof(g_gens[0].mapped_tests_csv), key + 10);
+        copy_text(g_last_rejection.so_path, sizeof(g_last_rejection.so_path), key + 10);
+    }
+#endif
     json_push_kv_int(out, "generation_count", (int64_t)g_gen_count);
     json_push_kv_int(out, "next_gen", (int64_t)g_next_gen);
     json_push_kv_int(out, "active_generation", (int64_t)g_active_gen);
@@ -301,14 +322,21 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key)
         json_push_kv_int(&last, "gen", (int64_t)g_last_rejection.gen);
         json_push_kv_int(&last, "rejected_at",
                          (int64_t)g_last_rejection.rejected_at);
-        json_push_kv_str(&last, "stage", g_last_rejection.stage);
-        json_push_kv_str(&last, "error", g_last_rejection.error);
-        json_push_kv_str(&last, "so_path", g_last_rejection.so_path);
+        json_push_kv_str(&last, "stage", diagnostic_text(g_last_rejection.stage));
+        json_push_kv_str(&last, "error", diagnostic_text(g_last_rejection.error));
+        json_push_kv_str(&last, "so_path", diagnostic_text(g_last_rejection.so_path));
         json_push_kv_str(&last, "source_identity",
-                         g_last_rejection.source_identity);
+                         diagnostic_text(g_last_rejection.source_identity));
     }
     json_push_kv(out, "last_rejection", &last);
     json_free(&last);
+#ifdef ZCL_TESTING
+    if (fixture) {
+        g_gens[0] = saved_generation;
+        g_last_rejection = saved_rejection;
+        g_gen_count = saved_count;
+    }
+#endif
     pthread_mutex_unlock(&g_lock);
 
     /* Merge module-ABI telemetry into the same `z23 dumpstate hotswap`

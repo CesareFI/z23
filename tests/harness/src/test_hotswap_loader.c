@@ -13,6 +13,7 @@
 #include "test/test_core.h"
 #include "hotswap/hotswap.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "util/clientversion.h"
 
 #include <stdio.h>
@@ -331,6 +332,55 @@ static int test_hotswap_dump_state(void)
 }
 
 
+static int loader_diagnostic_utf8(void)
+{
+    int failures = 0;
+    TEST("generation and rejection dumps validate UTF-8 after clipping") {
+        char short_split[258], long_split[514];
+        memset(short_split, 'a', 254);
+        memcpy(short_split + 254, "\xE2\x82\xAC", 4);
+        memset(long_split, 'a', 510);
+        memcpy(long_split + 510, "\xE2\x82\xAC", 4);
+        const char *samples[] = {"\xFF", short_split, long_split,
+                                "ASCII \" \\ \n\t\x01 \xE2\x82\xAC", ""};
+        for (size_t i = 0; i < sizeof(samples) / sizeof(samples[0]); ++i) {
+            char key[524], raw[16384], error[256], path[512];
+            snprintf(key, sizeof(key), "test:utf8:%s", samples[i]);
+            snprintf(error, sizeof(error), "%s", samples[i]);
+            snprintf(path, sizeof(path), "%s", samples[i]);
+            const char *expected_error = zutf8_validate_n(error, strlen(error))
+                                            ? error : "[invalid UTF-8]";
+            const char *expected_path = zutf8_validate_n(path, strlen(path))
+                                           ? path : "[invalid UTF-8]";
+            struct json_value out = {0}, parsed = {0};
+            bool dumped = hotswap_dump_state_json(&out, key);
+            size_t n = json_write(&out, raw, sizeof(raw));
+            bool valid = n < sizeof(raw) && zutf8_validate_n(raw, n);
+            bool read = valid && json_read(&parsed, raw, n);
+            const struct json_value *gen = json_at(json_get(&parsed, "generations"), 0);
+            const struct json_value *last = json_get(&parsed, "last_rejection");
+            bool values = read &&
+                strcmp(json_get_str(json_get(gen, "mapped_tests")), expected_error) == 0 &&
+                strcmp(json_get_str(json_get(last, "so_path")), expected_path) == 0 &&
+                (!error[0] || strcmp(json_get_str(json_get(gen, "error")), expected_error) == 0);
+            json_free(&parsed);
+            json_free(&out);
+            ASSERT(dumped);
+            ASSERT(valid);
+            ASSERT(read);
+            ASSERT(values);
+            ASSERT(hotswap_generation_count() == 0);
+        }
+        struct json_value restored = {0};
+        bool dumped = hotswap_dump_state_json(&restored, NULL);
+        bool present = json_get_bool(json_get(json_get(&restored, "last_rejection"), "present"));
+        json_free(&restored);
+        ASSERT(dumped && !present);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_hotswap_loader(void);
 
 int test_hotswap_loader(void)
@@ -344,5 +394,6 @@ int test_hotswap_loader(void)
     failures += test_hotswap_leaf_manifest_v4_contract();
     failures += test_hotswap_load_leaves_stub_and_registry();
     failures += test_hotswap_dump_state();
+    failures += loader_diagnostic_utf8();
     return failures;
 }
