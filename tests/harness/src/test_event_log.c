@@ -582,6 +582,150 @@ done:
 
 /* ── Task 6: benchmark ─────────────────────────────────────────────── */
 
+struct bench_readback {
+    uint64_t count;
+    uint64_t bytes;
+    bool valid;
+};
+
+static bool bench_readback_cb(uint64_t offset, enum event_log_type type,
+                              const void *payload, size_t len, void *user)
+{
+    struct bench_readback *c = user;
+    uint8_t expected[128];
+    memset(expected, 0xC3, sizeof(expected));
+    if (c->count >= 136u || type != EV_BLOCK_HEADER || len != sizeof(expected)) {
+        c->valid = false;
+        return false;
+    }
+    c->valid = c->valid && memcmp(payload, expected, sizeof(expected)) == 0;
+    c->valid = c->valid && offset == c->bytes;
+    c->count++;
+    c->bytes += EVENT_LOG_FRAME_OVERHEAD + sizeof(expected);
+    return c->valid;
+}
+
+static int bench_check_readback(const char *path, uint64_t expected_count)
+{
+    int failures = 0;
+    event_log_t *log = event_log_open(path);
+    EL_CHECK("bench proof: reopen", log != NULL);
+    if (!log) return failures;
+    struct bench_readback c = {.valid = true};
+    int rc = event_log_stream(log, 0, bench_readback_cb, &c);
+    EL_CHECK("bench proof: read-back count", c.count == expected_count);
+    EL_CHECK("bench proof: read-back bytes and payloads",
+             rc == 0 && c.valid &&
+             c.bytes == expected_count * (EVENT_LOG_FRAME_OVERHEAD + 128u) &&
+             event_log_size(log) == c.bytes);
+    event_log_close(log);
+    return failures;
+}
+
+static bool bench_proof_append(event_log_t *log, int count, bool deferred,
+                               unsigned *flushes_out)
+{
+    *flushes_out = 0;
+    uint8_t pay[128];
+    memset(pay, 0xC3, sizeof(pay));
+    bool ok = true;
+    for (int i = 0; i < count; i++) {
+        if (event_log_append(log, EV_BLOCK_HEADER, pay, sizeof(pay)) == UINT64_MAX)
+            ok = false;
+        if (deferred && ((i + 1) % 64) == 0) {
+            ++*flushes_out;
+            if (!event_log_flush(log)) ok = false;
+        }
+    }
+    if (deferred) {
+        ++*flushes_out;
+        if (!event_log_flush(log)) ok = false;
+    }
+    return ok;
+}
+
+static int bench_proof_mode(const char *path, int count, int warmup,
+                            bool deferred)
+{
+    int failures = 0;
+    event_log_t *log = event_log_open(path);
+    EL_CHECK("bench proof: open", log != NULL);
+    if (!log) return failures;
+    event_log_set_deferred_sync(log, deferred);
+    unsigned flushes = 0;
+    EL_CHECK("bench proof: warm-up appends succeed",
+             bench_proof_append(log, warmup, false, &flushes));
+    bool ok = bench_proof_append(log, count, deferred, &flushes);
+    printf("event_log: bounded push proof %s — %d requested events\n",
+           deferred ? "DEFERRED(flush/64)" : "PER-APPEND-fsync", count);
+    EL_CHECK("bench proof: all appends and flushes succeed", ok);
+    unsigned expected_flushes = deferred ? (unsigned)count / 64u + 1u : 0u;
+    EL_CHECK("bench proof: explicit flush count", flushes == expected_flushes);
+    event_log_close(log);
+    failures += bench_check_readback(path, (uint64_t)(count + warmup));
+    return failures;
+}
+
+static int run_benchmark_proof(void)
+{
+    char dir[256], path[512];
+    test_make_tmpdir(dir, sizeof(dir), "event_log", "bench_proof");
+    int failures = 0;
+    struct stat st;
+    EL_CHECK("bench proof: create directory",
+             stat(dir, &st) == 0 && S_ISDIR(st.st_mode));
+    if (failures) return failures;
+    event_log_test_set_force_per_append(0);
+    snprintf(path, sizeof(path), "%s/events.log", dir);
+    failures += bench_proof_mode(path, 128, 8, false);
+    snprintf(path, sizeof(path), "%s/ab_0.log", dir);
+    failures += bench_proof_mode(path, 64, 0, false);
+    snprintf(path, sizeof(path), "%s/ab_1.log", dir);
+    failures += bench_proof_mode(path, 64, 0, true);
+    event_log_test_set_force_per_append(-1);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int run_benchmark_ab(const char *dir, const uint8_t pay[128])
+{
+    int failures = 0;
+    /* A/B on fresh logs: per-append fsync (mode A) vs deferred batch-flush
+     * (mode B); flush_every mirrors the reducer drain-batch size. */
+    {
+        /* Small N: the per-append-fsync leg pays a disk barrier per event. */
+        const int Nab = 4000;
+        const int flush_every = 64;
+        for (int mode = 0; mode < 2; mode++) {
+            char abpath[544];
+            snprintf(abpath, sizeof(abpath), "%s/ab_%d.log", dir, mode);
+            unlink(abpath);
+            event_log_t *l = event_log_open(abpath);
+            if (!l) { EL_CHECK("bench: A/B open", false); continue; }
+            bool deferred = (mode == 1);
+            event_log_set_deferred_sync(l, deferred);
+            double a0 = mono_sec();
+            for (int i = 0; i < Nab; i++) {
+                event_log_append(l, EV_BLOCK_HEADER, pay, 128u);
+                if (deferred && ((i + 1) % flush_every) == 0)
+                    event_log_flush(l);
+            }
+            if (deferred) event_log_flush(l);
+            double a1 = mono_sec();
+            double s = a1 - a0;
+            double r = s > 0 ? (double)Nab / s : 0;
+            printf("event_log: A/B %s — %d events in %.3f s = %.0f ev/s "
+                   "(%.1f us/event)\n",
+                   deferred ? "DEFERRED(flush/64)" : "PER-APPEND-fsync",
+                   Nab, s, r, s * 1e6 / (double)Nab);
+            event_log_close(l);
+            unlink(abpath);
+        }
+    }
+
+    return failures;
+}
+
 /* Measures append throughput and prints events/sec. The 50K/sec target is
  * reported, not asserted: parallel groups contend on fsync. Opt-in via
  * ZCL_EVENT_LOG_BENCH=1, run in isolation for the real number. */
@@ -591,7 +735,12 @@ static int run_benchmark(int *failures_out)
     bool full_benchmark = getenv("ZCL_EVENT_LOG_BENCH") != NULL;
     bool push_proof = !full_benchmark &&
                       getenv("ZCL_EVENT_LOG_BENCH_PROOF") != NULL;
-    if (!full_benchmark && !push_proof) {
+    if (push_proof) {
+        int result = run_benchmark_proof();
+        *failures_out += result;
+        return result;
+    }
+    if (!full_benchmark) {
         printf("event_log: benchmark SKIP "
                "(set ZCL_EVENT_LOG_BENCH=1 for standalone measurement or "
                "use the push-proof runner contract)\n");
@@ -611,13 +760,11 @@ static int run_benchmark(int *failures_out)
     /* Warm-up. */
     uint8_t pay[128];
     memset(pay, 0xC3, sizeof(pay));
-    int warmup_count = push_proof ? 8 : 50;
+    int warmup_count = 50;
     for (int i = 0; i < warmup_count; i++)
         event_log_append(log, EV_BLOCK_HEADER, pay, sizeof(pay));
 
-    /* A 128-event sample asserts the same >10 event/s catastrophic-regression
-     * floor within the fixed 300 s group budget. */
-    int N = push_proof ? 128 : 50000;
+    int N = 50000;
 
     double t0 = mono_sec();
     for (int i = 0; i < N; i++)
@@ -627,7 +774,7 @@ static int run_benchmark(int *failures_out)
     double rate = sec > 0 ? (double)N / sec : 0;
     printf("event_log: benchmark — %d events in %.3f s = %.0f events/sec "
            "(%s)\n",
-           N, sec, rate, push_proof ? "bounded push proof" : "standalone");
+           N, sec, rate, "standalone");
     if (rate >= 50000.0)
         printf("event_log: benchmark — MEETS 50K/sec target\n");
     else
@@ -637,38 +784,7 @@ static int run_benchmark(int *failures_out)
     EL_CHECK("bench: rate > 10 events/sec (sanity)", rate > 10.0);
     event_log_close(log);
 
-    /* A/B on fresh logs: per-append fsync (mode A) vs deferred batch-flush
-     * (mode B); flush_every mirrors the reducer drain-batch size. */
-    {
-        /* Small N: the per-append-fsync leg pays a disk barrier per event. */
-        const int Nab = push_proof ? 64 : 4000;
-        const int flush_every = 64;
-        for (int mode = 0; mode < 2; mode++) {
-            char abpath[544];
-            snprintf(abpath, sizeof(abpath), "%s/ab_%d.log", dir, mode);
-            unlink(abpath);
-            event_log_t *l = event_log_open(abpath);
-            if (!l) { EL_CHECK("bench: A/B open", false); continue; }
-            bool deferred = (mode == 1);
-            event_log_set_deferred_sync(l, deferred);
-            double a0 = mono_sec();
-            for (int i = 0; i < Nab; i++) {
-                event_log_append(l, EV_BLOCK_HEADER, pay, sizeof(pay));
-                if (deferred && ((i + 1) % flush_every) == 0)
-                    event_log_flush(l);
-            }
-            if (deferred) event_log_flush(l);
-            double a1 = mono_sec();
-            double s = a1 - a0;
-            double r = s > 0 ? (double)Nab / s : 0;
-            printf("event_log: A/B %s — %d events in %.3f s = %.0f ev/s "
-                   "(%.1f us/event)\n",
-                   deferred ? "DEFERRED(flush/64)" : "PER-APPEND-fsync",
-                   Nab, s, r, s * 1e6 / (double)Nab);
-            event_log_close(l);
-            unlink(abpath);
-        }
-    }
+    failures += run_benchmark_ab(dir, pay);
 
     test_cleanup_tmpdir(dir);
 done:
