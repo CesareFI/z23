@@ -554,6 +554,34 @@ static int case_surface(void)
     return failures;
 }
 
+static int case_enum_narrowing(void)
+{
+    int failures = 0;
+    struct zcl_proof_receipt r;
+    const int invalid[] = {257, 0, -1, 256};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        for (int operand = 0; operand < 2; operand++) {
+            enum zcl_receipt_kind kind = operand == 0
+                ? (enum zcl_receipt_kind)invalid[i] : ZCL_RECEIPT_KIND_PASS;
+            enum zcl_receipt_verdict verdict = operand == 1
+                ? (enum zcl_receipt_verdict)invalid[i] : ZCL_RECEIPT_VERDICT_PASS;
+            memset(&r, 0xa5, sizeof(r));
+            memset(g_why, 0, sizeof(g_why));
+            RC_CHECK(operand == 0 ? "invalid full-width kind refuses"
+                                  : "invalid full-width verdict refuses",
+                !zcl_receipt_build(&r, &open_ledger, kind, verdict,
+                    g_root, NULL, "test_receipt", g_vec, 131,
+                    "gcc-13.2 -std=c23 -O2", "linux-glibc-x86_64-O2",
+                    g_producer, g_why, sizeof(g_why)));
+            RC_CHECK("invalid enum leaves no receipt", is_all_zero(&r, sizeof(r)));
+            RC_CHECK("invalid enum explains the group and reason",
+                strstr(g_why, "test_receipt") != NULL &&
+                strstr(g_why, "not structurally valid") != NULL);
+        }
+    }
+    return failures;
+}
+
 int test_receipt(void);
 int test_receipt(void)
 {
@@ -569,6 +597,7 @@ int test_receipt(void)
     failures += case_red_delta();
     failures += case_labels();
     failures += case_surface();
+    failures += case_enum_narrowing();
     printf("receipt: %d failure(s)\n", failures);
     return failures;
 }

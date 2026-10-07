@@ -136,14 +136,26 @@ static bool field_set(char *dst, size_t width, const char *src)
     return true;
 }
 
-static bool kind_in_range(uint8_t k)
+static bool kind_in_range(enum zcl_receipt_kind k)
 {
     return k == ZCL_RECEIPT_KIND_PASS || k == ZCL_RECEIPT_KIND_RED_DELTA;
 }
 
-static bool verdict_in_range(uint8_t v)
+static bool verdict_in_range(enum zcl_receipt_verdict v)
 {
     return v >= ZCL_RECEIPT_VERDICT_PASS && v <= ZCL_RECEIPT_VERDICT_UNVERIFIED;
+}
+
+static void receipt_set_enums(struct zcl_proof_receipt *out,
+                              enum zcl_receipt_kind kind,
+                              enum zcl_receipt_verdict verdict)
+{
+    /* Invalid caller enums leave the zeroed receipt structurally invalid. */
+    if (!kind_in_range(kind) || !verdict_in_range(verdict))
+        return;
+    out->version = ZCL_RECEIPT_VERSION;
+    out->kind = (uint8_t)kind;
+    out->verdict = (uint8_t)verdict;
 }
 
 /* ── validity ────────────────────────────────────────────────────────── */
@@ -338,6 +350,49 @@ enum zcl_receipt_eligibility zcl_receipt_group_eligibility(
     return ZCL_RECEIPT_ELIGIBILITY_UNKNOWN;
 }
 
+static bool receipt_build_eligible(const struct zcl_receipt_ledger *ledger,
+                                   const char *group,
+                                   char *why, size_t why_cap)
+{
+    if (!group || !group[0]) {
+        if (why && why_cap)
+            (void)snprintf(why, why_cap, "a receipt needs a group name");
+        return false;
+    }
+    enum zcl_receipt_eligibility e =
+        zcl_receipt_group_eligibility(ledger, group);
+    if (e != ZCL_RECEIPT_ELIGIBLE) {
+        if (why && why_cap)
+            (void)snprintf(why, why_cap,
+                "%s cannot produce a receipt: %s (ledger: %s)", group,
+                zcl_receipt_eligibility_label(e),
+                (ledger && ledger->source && ledger->source[0])
+                    ? ledger->source : "none wired");
+        return false;
+    }
+    return true;
+}
+
+static bool receipt_build_fields(struct zcl_proof_receipt *out,
+                                 const char *group, const char *toolchain,
+                                 const char *env_class,
+                                 char *why, size_t why_cap)
+{
+    if (!field_set(out->group, ZCL_RECEIPT_GROUP_MAX, group) ||
+        !field_set(out->toolchain, ZCL_RECEIPT_TOOLCHAIN_MAX,
+                   toolchain ? toolchain : "") ||
+        !field_set(out->env_class, ZCL_RECEIPT_ENV_MAX,
+                   env_class ? env_class : "")) {
+        memset(out, 0, sizeof(*out));
+        if (why && why_cap)
+            (void)snprintf(why, why_cap,
+                "a field does not fit its fixed width; a truncated name is a "
+                "different name");
+        return false;
+    }
+    return true;
+}
+
 bool zcl_receipt_build(struct zcl_proof_receipt *out,
                        const struct zcl_receipt_ledger *ledger,
                        enum zcl_receipt_kind kind,
@@ -358,28 +413,10 @@ bool zcl_receipt_build(struct zcl_proof_receipt *out,
         return false;
     memset(out, 0, sizeof(*out));
 
-    if (!group || !group[0]) {
-        if (why && why_cap)
-            (void)snprintf(why, why_cap, "a receipt needs a group name");
+    if (!receipt_build_eligible(ledger, group, why, why_cap))
         return false;
-    }
 
-    enum zcl_receipt_eligibility e =
-        zcl_receipt_group_eligibility(ledger, group);
-    if (e != ZCL_RECEIPT_ELIGIBLE) {
-        if (why && why_cap)
-            (void)snprintf(why, why_cap,
-                "%s cannot produce a receipt: %s (ledger: %s)", group,
-                zcl_receipt_eligibility_label(e),
-                (ledger && ledger->source && ledger->source[0])
-                    ? ledger->source
-                    : "none wired");
-        return false;
-    }
-
-    out->version = ZCL_RECEIPT_VERSION;
-    out->kind    = (uint8_t)kind;
-    out->verdict = (uint8_t)verdict;
+    receipt_set_enums(out, kind, verdict);
     if (source_root) memcpy(out->source_root, source_root, 32);
     if (base_root && kind == ZCL_RECEIPT_KIND_RED_DELTA)
         memcpy(out->base_root, base_root, 32);
@@ -387,18 +424,8 @@ bool zcl_receipt_build(struct zcl_proof_receipt *out,
     if (producer) memcpy(out->producer, producer, 32);
     out->checks_total = checks_total;
 
-    if (!field_set(out->group, ZCL_RECEIPT_GROUP_MAX, group) ||
-        !field_set(out->toolchain, ZCL_RECEIPT_TOOLCHAIN_MAX,
-                   toolchain ? toolchain : "") ||
-        !field_set(out->env_class, ZCL_RECEIPT_ENV_MAX,
-                   env_class ? env_class : "")) {
-        memset(out, 0, sizeof(*out));
-        if (why && why_cap)
-            (void)snprintf(why, why_cap,
-                "a field does not fit its fixed width; a truncated name is a "
-                "different name");
+    if (!receipt_build_fields(out, group, toolchain, env_class, why, why_cap))
         return false;
-    }
 
     if (!zcl_receipt_is_valid(out)) {
         memset(out, 0, sizeof(*out));
