@@ -46,6 +46,7 @@ SRCS=(
     "$MAIN"
     "$ROOT/core/modules/sapling/src/bls12_381.c"
     "$ROOT/core/modules/sapling/src/fr_avx512.c"
+    "$ROOT/core/modules/crypto/src/simd_dispatch.c"
     "$ROOT/core/modules/crypto/src/blake2b.c"
     "$ROOT/platform/modules/base/src/safe_alloc.c"
     "$ROOT/platform/modules/base/src/log_level.c"
