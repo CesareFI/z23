@@ -1649,6 +1649,89 @@ static int sss_t_object_cc_invalid(struct sss_ctx *c)
     return failures;
 }
 
+/* Empty and singleton semantic collections are valid, including a TU with
+ * no definitions. Cold and warm extraction must agree without passing absent
+ * arrays to sorting APIs; run these cases with sanitizers too. */
+static int sss_t_empty_collections(struct sss_ctx *c)
+{
+    static const char *const sources[] = {
+        "/* Empty translation unit. */\n",
+        "int value(void) { return 7; }\n",
+        "#define UNUSED 7\nint value(void) { return 1; }\n",
+        "#define VALUE 7\nint value(void) { return VALUE; }\n",
+        "#define A 3\n#define B 4\nint value(void) { return A + B; }\n"
+    };
+    int failures = 0;
+    struct sss_proc p = {0};
+    char reply[SSS_REPLY_MAX], log[PATH_MAX];
+    bool started = false;
+    TEST_CASE("semantic_sensor: empty and singleton collections match cold") {
+        for (size_t k = 0; k < sizeof(sources) / sizeof(sources[0]); k++) {
+            ASSERT(sss_fresh(c, "empty-collections"));
+            ASSERT(sss_write(c->root, "src/main.c", sources[k]));
+            ASSERT(snprintf(log, sizeof(log), "%s/empty.err", c->root) < (int)sizeof(log));
+            ASSERT(sss_start(&p, c->sensor, false, false, log));
+            started = true;
+            ASSERT(sss_step_as(c, &p, 0, "created", "first-parse", reply, sizeof(reply)));
+            ASSERT(sss_step_as(c, &p, 0, "reparsed", "", reply, sizeof(reply)));
+            ASSERT(sss_is(reply, "trust", "qualified"));
+            int rc = sss_finish(&p, reply, sizeof(reply));
+            started = false;
+            ASSERT_EQ(rc, 0);
+            ASSERT(strstr(reply, "\"requests\":2,\"refused\":0,") != NULL);
+        }
+    } TEST_END
+    if (started)
+        (void)sss_finish(&p, reply, sizeof(reply));
+    return failures;
+}
+
+/* A directory refuses the final write after the front end has run, even as
+ * root. Failed attempts must not become completed/avoided-work measurements.
+ * Keep the session alive across both refusals and compare its recovery with
+ * a separate cold oracle, including qualified and mismatch-disabled paths. */
+static int sss_t_write_counts(struct sss_ctx *c, const char *mode, bool inject,
+                               const char *counts)
+{
+    int failures = 0;
+    struct sss_proc p = {0};
+    struct sss_argv a;
+    const char *opts[3] = {mode, NULL, NULL};
+    char reply[SSS_REPLY_MAX], log[PATH_MAX], out[PATH_MAX], cold[PATH_MAX];
+    bool started = false;
+    TEST_CASE("semantic_sensor: refused output writes do not count as completed") {
+        ASSERT(sss_fresh(c, "write-counts"));
+        sss_argv(&a, false);
+        ASSERT(snprintf(log, sizeof(log), "%s/write.err", c->root) < (int)sizeof(log));
+        ASSERT(snprintf(out, sizeof(out), "%s/good.bin", c->root) < (int)sizeof(out));
+        ASSERT(snprintf(cold, sizeof(cold), "%s/cold.bin", c->root) < (int)sizeof(cold));
+        ASSERT(sss_start_opts(&p, c->sensor, opts, inject, log));
+        started = true;
+        ASSERT(sss_request(&p, c->root, c->root, &a, reply, sizeof(reply)));
+        ASSERT(strstr(reply, "\"ok\":false") != NULL);
+        ASSERT(sss_starts(reply, "why", "cannot write "));
+        ASSERT(sss_request(&p, c->root, out, &a, reply, sizeof(reply)));
+        ASSERT(strstr(reply, "\"ok\":true") != NULL);
+        ASSERT(sss_cold(c->sensor, c->root, cold, &a));
+        ASSERT(sss_same(out, cold));
+        ASSERT(sss_request(&p, c->root, c->root, &a, reply, sizeof(reply)));
+        ASSERT(strstr(reply, "\"ok\":false") != NULL);
+        ASSERT(sss_starts(reply, "why", "cannot write "));
+        ASSERT(sss_same(out, cold));
+        ASSERT(sss_request(&p, c->root, out, &a, reply, sizeof(reply)));
+        ASSERT(strstr(reply, "\"ok\":true") != NULL);
+        ASSERT(sss_same(out, cold));
+        int rc = sss_finish(&p, reply, sizeof(reply));
+        started = false;
+        ASSERT_EQ(rc, 3);
+        ASSERT(strstr(reply, "\"requests\":4,\"refused\":2,") != NULL);
+        ASSERT(strstr(reply, counts) != NULL);
+    } TEST_END
+    if (started)
+        (void)sss_finish(&p, reply, sizeof(reply));
+    return failures;
+}
+
 int semantic_sensor_session_cases(void)
 {
     int failures = 0;
@@ -1672,6 +1755,15 @@ int semantic_sensor_session_cases(void)
     failures += sss_t_object_cc_invalid(&c);
     failures += sss_t_bad_opts(&c);
     failures += sss_t_protocol(&c);
+    failures += sss_t_empty_collections(&c);
+    failures += sss_t_write_counts(&c, "--no-warm", false,
+                                   "\"warm_written\":0,\"cold_written\":2,");
+    failures += sss_t_write_counts(&c, NULL, false,
+                                   "\"warm_written\":1,\"cold_written\":1,");
+    failures += sss_t_write_counts(&c, "--verify-cold", false,
+                                   "\"warm_written\":0,\"cold_written\":2,");
+    failures += sss_t_write_counts(&c, NULL, true,
+                                   "\"warm_written\":0,\"cold_written\":2,");
     (void)test_rm_rf_recursive(c.dir);
     return failures;
 }

@@ -730,7 +730,6 @@ static bool cm_warm_path(struct cm_session *ss, struct cm_warm_tu *w,
     size_t warm_len = 0, cold_len = 0;
     uint8_t *warm = cm_warm_try(ss, w, o, r, &warm_len);
     if (warm != NULL && !ss->verify_cold && w->verified) {
-        ss->s.warm_written++;
         r->written = "warm";
         return cm_accept(w, o, warm, warm_len, r, why, why_len);
     }
@@ -741,7 +740,6 @@ static bool cm_warm_path(struct cm_session *ss, struct cm_warm_tu *w,
     if (warm != NULL)
         cm_verify(ss, w, o, warm, warm_len, cold, cold_len, r);
     free(warm);
-    ss->s.cold_written++;
     return cm_accept(w, o, cold, cold_len, r, why, why_len);
 }
 
@@ -762,7 +760,6 @@ static bool cm_session_emit(struct cm_session *ss, const struct cm_opts *o,
                    ss->no_warm ? "no-warm" : "warm-disabled");
     if (!cm_session_cold(o, &cold, &cold_len, r, why, why_len))
         return false;
-    ss->s.cold_written++;
     r->owned = cold;
     r->m = cold;
     r->n = cold_len;
@@ -830,6 +827,11 @@ static void cm_session_line(struct cm_session *ss, char *line)
         fprintf(stderr, "clang-manifest: refused: %s\n", why);
         cm_reply_refused(seq, o.source, why);
     } else {
+        /* Count completed outputs, never parses whose final write refused. */
+        if (strcmp(r.written, "warm") == 0)
+            ss->s.warm_written++;
+        else
+            ss->s.cold_written++;
         cm_reply_ok(seq, &o, &r, r.m, r.n);
     }
     free(r.owned);

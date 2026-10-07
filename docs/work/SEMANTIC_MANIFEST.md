@@ -620,7 +620,10 @@ ends the session: nothing after it is read. End of input ends it too, after
 a last line without an LF is served as a request. Either way the session
 prints one summary line (`requests`, `refused`, `warm_written`,
 `cold_written`, `verified_equal`, `mismatches`, `evicted`, `created`,
-`reparsed`, `recreated`). A request line is refused whole, never truncated
+`reparsed`, `recreated`). Written counts include only successful output writes;
+refused requests never count as completed outputs. Parse and verification counts
+still record work performed before a failed write.
+A request line is refused whole, never truncated
 or partly served, when it holds a NUL byte (`request line has a NUL byte`),
 is not valid UTF-8 (`request line is not UTF-8`), or is longer than
 256 × `PATH_MAX` bytes, 1 MiB on Linux (`request line too long`; the reader

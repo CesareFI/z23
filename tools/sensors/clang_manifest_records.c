@@ -172,7 +172,8 @@ static bool cm_emit_macros(struct cm_core *c, char **used, size_t nused)
     for (size_t k = 0; ok && k < c->nmacros; k++) {
         const struct cm_macro *m = &c->macros[k];
         const char *key = m->name;
-        bool is_used = bsearch(&key, used, nused, sizeof(*used), cm_str_cmp) != NULL;
+        bool is_used = nused > 0 &&
+                       bsearch(&key, used, nused, sizeof(*used), cm_str_cmp) != NULL;
         vcs_semantic_record_v1_reset(&rec);
         vcs_semantic_record_v1_cstr(&rec, m->path);
         vcs_semantic_record_v1_cstr(&rec, m->name);
@@ -300,12 +301,12 @@ static bool cm_emit_assert_refs(struct cm_core *c)
     return ok;
 }
 
-bool cm_emit_deferred(struct cm_core *c)
+/* Own only the pointer array; macro names remain borrowed from c. */
+static bool cm_emit_used_macros(struct cm_core *c)
 {
     char **used = NULL;
     size_t nused = 0, capused = 0;
     bool ok = true;
-    qsort(c->exps, c->nexps, sizeof(*c->exps), cm_exp_cmp);
     for (size_t k = 0; ok && k < c->nexps; k++) {
         if (c->exps[k].file->origin == VCS_SEMANTIC_ORIGIN_V1_MAIN)
             ok = cm_grow((void **)&used, &capused, nused, sizeof(*used)) &&
@@ -315,9 +316,19 @@ bool cm_emit_deferred(struct cm_core *c)
         free(used);
         return cm_fail(c, "out of memory");
     }
-    qsort(used, nused, sizeof(*used), cm_str_cmp);
+    if (nused > 1)
+        qsort(used, nused, sizeof(*used), cm_str_cmp);
     ok = cm_emit_macros(c, used, nused);
     free(used);
+    return ok;
+}
+
+bool cm_emit_deferred(struct cm_core *c)
+{
+    bool ok;
+    if (c->nexps > 1)
+        qsort(c->exps, c->nexps, sizeof(*c->exps), cm_exp_cmp);
+    ok = cm_emit_used_macros(c);
     for (size_t k = 0; ok && k < c->nfns; k++)
         ok = cm_emit_function(c, &c->fns[k]);
     return ok && cm_emit_scope_refs(c) && cm_emit_assert_refs(c) &&
