@@ -374,6 +374,193 @@ static bool parse_u64(const char *s, uint64_t *out)
     return true;
 }
 
+/* Copy a --flag=PATH argument into its fixed buffer, refusing truncation
+ * with exit status 2. snprintf discards the tail silently when the source
+ * outgrows the buffer; an unchecked copy then reaches fopen or the spawned
+ * node with a different argument. A truncated log basename may still be
+ * valid and open a different file. All callers supply a nonzero capacity. */
+static int soak_copy_path(const char *flag, char *dst, size_t cap,
+                          const char *src)
+{
+    int n = snprintf(dst, cap, "%s", src);
+    if (n < 0 || (size_t)n >= cap) {
+        dst[0] = '\0';
+        fprintf(stderr, "path argument too long: %s (max %zu characters)\n",
+                flag, cap - 1);
+        return 2;
+    }
+    return 0;
+}
+
+/* Post-parse validation the argument loop defers to: copy the three
+ * path arguments under refusal-on-truncation, then the checks that used
+ * to live inline in main. Returns 0, or the process exit status. */
+static int soak_validate_args(uint64_t interval_sec, soak_thresholds_t *cfg,
+                              struct spawn_cfg *sp, const char *log_src,
+                              const char *datadir_src, const char *connect_src,
+                              char *log_path, size_t log_cap)
+{
+    int rc;
+    if (log_src) {
+        rc = soak_copy_path("--log", log_path, log_cap, log_src);
+        if (rc) return rc;
+    }
+    if (datadir_src) {
+        rc = soak_copy_path("--node-datadir", sp->datadir,
+                            sizeof(sp->datadir), datadir_src);
+        if (rc) return rc;
+    }
+    if (connect_src) {
+        rc = soak_copy_path("--connect", sp->connect,
+                            sizeof(sp->connect), connect_src);
+        if (rc) return rc;
+    }
+    if (interval_sec == 0 || interval_sec > cfg->min_duration_sec) {
+        fprintf(stderr, "interval-sec (%" PRIu64 ") out of range\n",
+                interval_sec);
+        return 2;
+    }
+    if (sp->enabled) {
+        if (sp->rpcport <= 0) {
+            fprintf(stderr, "spawn mode: --rpcport is required with "
+                            "--node-datadir\n");
+            return 2;
+        }
+        if (sp->p2p_port <= 0)  sp->p2p_port  = sp->rpcport - 1;
+        if (sp->fs_port <= 0)   sp->fs_port   = sp->rpcport + 1;
+        if (sp->https_port <= 0)sp->https_port= sp->rpcport + 2;
+    }
+    return 0;
+}
+
+/* Keep argument routing bounded; each helper reports whether it owns the flag. */
+static bool soak_parse_threshold(const char *a, soak_thresholds_t *cfg,
+                                  uint64_t *interval_sec)
+{
+    struct { const char *flag; uint64_t *dst; } rows[] = {
+        {"--duration-sec=", &cfg->min_duration_sec},
+        {"--interval-sec=", interval_sec},
+        {"--stall-sec=", &cfg->max_tip_stall_sec},
+        {"--warmup-sec=", &cfg->rss_walk_warmup_sec},
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        size_t n = strlen(rows[i].flag);
+        if (strncmp(a, rows[i].flag, n) == 0) {
+            parse_u64(a + n, rows[i].dst);
+            return true;
+        }
+    }
+    if (strncmp(a, "--rss-growth-mib=", 17) == 0) {
+        uint64_t mib = 0;
+        if (parse_u64(a + 17, &mib))
+            cfg->max_rss_growth_bytes = mib * 1024ULL * 1024ULL;
+        return true;
+    }
+    return false;
+}
+
+static bool soak_parse_spawn(const char *a, struct spawn_cfg *sp,
+                              const char **datadir_src, const char **connect_src)
+{
+    if (strncmp(a, "--node-datadir=", 15) == 0) {
+        *datadir_src = a + 15;
+        sp->enabled = true;
+        return true;
+    }
+    if (strncmp(a, "--connect=", 10) == 0) {
+        *connect_src = a + 10;
+        return true;
+    }
+    struct { const char *flag; int *dst; } rows[] = {
+        {"--rpcport=", &sp->rpcport}, {"--p2p-port=", &sp->p2p_port},
+        {"--fs-port=", &sp->fs_port}, {"--https-port=", &sp->https_port},
+        {"--load=generate:", &sp->load_interval},
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        size_t n = strlen(rows[i].flag);
+        if (strncmp(a, rows[i].flag, n) == 0) {
+            *rows[i].dst = atoi(a + n);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* -1 means continue to validation; 0 and 2 are terminal CLI exits. */
+static int soak_parse_args(int argc, char **argv, soak_thresholds_t *cfg,
+                           uint64_t *interval_sec, const char **service,
+                           const char **rpc_bin, struct spawn_cfg *sp,
+                           const char **log_src, const char **datadir_src,
+                           const char **connect_src)
+{
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
+            usage(argv[0]); return 0;
+        }
+        if (strcmp(a, "--ci-proxy") == 0) {
+            soak_thresholds_ci_proxy(cfg); continue;
+        }
+        if (strncmp(a, "--service=", 10) == 0) { *service = a + 10; continue; }
+        if (strncmp(a, "--rpc=",      6) == 0) { *rpc_bin = a + 6; continue; }
+        if (strncmp(a, "--log=",      6) == 0) { *log_src = a + 6; continue; }
+        if (soak_parse_threshold(a, cfg, interval_sec)) continue;
+        if (soak_parse_spawn(a, sp, datadir_src, connect_src)) continue;
+        fprintf(stderr, "unknown flag: %s\n", a);
+        usage(argv[0]);
+        return 2;
+    }
+    return -1;
+}
+
+static void soak_sample_one(struct spawn_cfg *sp, const char *service,
+                             const char *rpc_bin, FILE *log, soak_state_t *st,
+                             time_t now, time_t *last_load)
+{
+    pid_t pid = sp->enabled ? sp->pid : pidof_service(service);
+    bool alive = pid > 0 && (sp->enabled ? kill(pid, 0) == 0 : true);
+    uint64_t rss = alive ? rss_bytes_for(pid) : 0;
+    int64_t h = 0;
+    if (alive && !height_via_rpc(sp->enabled ? sp : NULL, rpc_bin, &h))
+        alive = false;
+    soak_record_sample(st, (uint64_t)now, alive, h, rss);
+    fprintf(log, "%ld\t%d\t%" PRId64 "\t%" PRIu64 "\n",
+            (long)now, alive ? 1 : 0, h, rss);
+    if (sp->enabled && sp->load_interval > 0 && alive &&
+        now - *last_load >= sp->load_interval) {
+        spawn_generate_one(sp, rpc_bin);
+        *last_load = now;
+    }
+}
+
+static void soak_sample_loop(struct spawn_cfg *sp, const char *service,
+                              const char *rpc_bin, FILE *log,
+                              soak_state_t *st, const soak_thresholds_t *cfg,
+                              uint64_t interval_sec, time_t started)
+{
+    /* Sample for at least min_duration_sec of SPAN. The verdict requires
+     * last_sample_ts - first_sample_ts >= min_duration_sec; samples are taken
+     * at the top of the loop every interval_sec, so the last sample lands one
+     * interval before a `started + min_duration` deadline and the span falls
+     * short by ~interval_sec. Extend the deadline by one interval so the final
+     * sample's span reaches min_duration. */
+    time_t deadline = started + (time_t)cfg->min_duration_sec +
+                      (time_t)interval_sec;
+    time_t last_load = started;
+    while (!g_stop) {
+        time_t now = platform_time_wall_time_t();
+        if (now >= deadline) break;
+
+        soak_sample_one(sp, service, rpc_bin, log, st, now, &last_load);
+
+        /* Wake fractions of interval_sec to stay responsive to SIGTERM;
+         * using `sleep()` rounds up and can sit in the syscall for the
+         * full 60 s even after the flag is set. */
+        for (uint64_t slept = 0; slept < interval_sec && !g_stop; slept++)
+            sleep(1);
+    }
+}
+
 int main(int argc, char **argv)
 {
     soak_thresholds_t cfg;
@@ -383,79 +570,27 @@ int main(int argc, char **argv)
     const char *service   = "zclassic23";
     const char *rpc_bin   = "build/bin/zcl-rpc";
     char log_path[256] = {0};
-    default_log_path(log_path, sizeof(log_path));
-
+    /* Path arguments are recorded here and copied under truncation
+     * refusal by soak_validate_args after the loop. */
+    const char *log_src = NULL, *datadir_src = NULL, *connect_src = NULL;
     struct spawn_cfg sp;
     memset(&sp, 0, sizeof(sp));
 
-    for (int i = 1; i < argc; i++) {
-        const char *a = argv[i];
-        if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            usage(argv[0]); return 0;
-        }
-        if (strcmp(a, "--ci-proxy") == 0) {
-            soak_thresholds_ci_proxy(&cfg); continue;
-        }
-        if (strncmp(a, "--duration-sec=", 15) == 0) {
-            parse_u64(a + 15, &cfg.min_duration_sec); continue;
-        }
-        if (strncmp(a, "--interval-sec=", 15) == 0) {
-            parse_u64(a + 15, &interval_sec); continue;
-        }
-        if (strncmp(a, "--service=", 10) == 0) { service = a + 10; continue; }
-        if (strncmp(a, "--rpc=",      6) == 0) { rpc_bin = a + 6;  continue; }
-        if (strncmp(a, "--log=",      6) == 0) {
-            snprintf(log_path, sizeof(log_path), "%s", a + 6); continue;
-        }
-        if (strncmp(a, "--stall-sec=", 12) == 0) {
-            parse_u64(a + 12, &cfg.max_tip_stall_sec); continue;
-        }
-        if (strncmp(a, "--rss-growth-mib=", 17) == 0) {
-            uint64_t mib = 0;
-            if (parse_u64(a + 17, &mib))
-                cfg.max_rss_growth_bytes = mib * 1024ULL * 1024ULL;
-            continue;
-        }
-        if (strncmp(a, "--warmup-sec=", 13) == 0) {
-            parse_u64(a + 13, &cfg.rss_walk_warmup_sec); continue;
-        }
-        /* ── Spawn-mode (hermetic CI-proxy) flags ── */
-        if (strncmp(a, "--node-datadir=", 15) == 0) {
-            snprintf(sp.datadir, sizeof(sp.datadir), "%s", a + 15);
-            sp.enabled = true; continue;
-        }
-        if (strncmp(a, "--rpcport=", 10) == 0)   { sp.rpcport    = atoi(a + 10); continue; }
-        if (strncmp(a, "--p2p-port=", 11) == 0)  { sp.p2p_port   = atoi(a + 11); continue; }
-        if (strncmp(a, "--fs-port=", 10) == 0)   { sp.fs_port    = atoi(a + 10); continue; }
-        if (strncmp(a, "--https-port=", 13) == 0){ sp.https_port = atoi(a + 13); continue; }
-        if (strncmp(a, "--connect=", 10) == 0) {
-            snprintf(sp.connect, sizeof(sp.connect), "%s", a + 10); continue;
-        }
-        if (strncmp(a, "--load=generate:", 16) == 0) {
-            sp.load_interval = atoi(a + 16); continue;
-        }
-        fprintf(stderr, "unknown flag: %s\n", a);
-        usage(argv[0]);
-        return 2;
+    int parsed = soak_parse_args(argc, argv, &cfg, &interval_sec, &service,
+                                  &rpc_bin, &sp, &log_src, &datadir_src,
+                                  &connect_src);
+    if (parsed >= 0) return parsed;
+    /* Deferred copies (refuse truncation) plus the interval and spawn-mode
+     * checks that used to live inline here. */
+    {
+        int vrc = soak_validate_args(interval_sec, &cfg, &sp, log_src,
+                                     datadir_src, connect_src, log_path,
+                                     sizeof(log_path));
+        if (vrc) return vrc;
     }
 
-    if (interval_sec == 0 || interval_sec > cfg.min_duration_sec) {
-        fprintf(stderr, "interval-sec (%" PRIu64 ") out of range\n", interval_sec);
-        return 2;
-    }
-
-    /* Spawn-mode validation: a datadir REQUIRES a real isolated rpcport
-     * so a misconfigured invocation can never fall through to live. */
-    if (sp.enabled) {
-        if (sp.rpcport <= 0) {
-            fprintf(stderr, "spawn mode: --rpcport is required with "
-                            "--node-datadir\n");
-            return 2;
-        }
-        if (sp.p2p_port <= 0)  sp.p2p_port  = sp.rpcport - 1;
-        if (sp.fs_port <= 0)   sp.fs_port   = sp.rpcport + 1;
-        if (sp.https_port <= 0)sp.https_port= sp.rpcport + 2;
-    }
+    /* Invalid arguments and help exit before consulting the wall clock. */
+    if (!log_src) default_log_path(log_path, sizeof(log_path));
 
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
@@ -503,55 +638,8 @@ int main(int argc, char **argv)
         "soak: logging to %s; will run %" PRIu64 "s (SIGINT/TERM to stop early)\n",
         log_path, cfg.min_duration_sec);
 
-    /* Sample for at least min_duration_sec of SPAN. The verdict requires
-     * last_sample_ts - first_sample_ts >= min_duration_sec; samples are taken
-     * at the top of the loop every interval_sec, so the last sample lands one
-     * interval before a `started + min_duration` deadline and the span falls
-     * short by ~interval_sec. Extend the deadline by one interval so the final
-     * sample's span reaches min_duration. */
-    time_t deadline = started + (time_t)cfg.min_duration_sec +
-                      (time_t)interval_sec;
-    time_t last_load = started;
-    while (!g_stop) {
-        time_t now = platform_time_wall_time_t();
-        if (now >= deadline) break;
-
-        /* In spawn mode sample OUR OWN child pid directly — never
-         * pidof, which would resolve the LIVE node. In pidof mode the
-         * runner watches the externally-managed live node. */
-        pid_t pid = sp.enabled ? sp.pid : pidof_service(service);
-        bool alive = pid > 0 && (sp.enabled ? kill(pid, 0) == 0 : true);
-        uint64_t rss = alive ? rss_bytes_for(pid) : 0;
-        int64_t h = 0;
-        if (alive) {
-            /* RPC pinned to the isolated node in spawn mode (sp.enabled);
-             * NULL in pidof mode so zcl-rpc uses live defaults. */
-            if (!height_via_rpc(sp.enabled ? &sp : NULL, rpc_bin, &h)) {
-                /* RPC failed but process exists → treat as crash: a
-                 * node that can't answer getblockcount is, from the
-                 * user's perspective, not up. */
-                alive = false;
-            }
-        }
-        soak_record_sample(&st, (uint64_t)now, alive, h, rss);
-        fprintf(log, "%ld\t%d\t%" PRId64 "\t%" PRIu64 "\n",
-                (long)now, alive ? 1 : 0, h, rss);
-
-        /* Synthetic load: mine one block every load_interval seconds so
-         * the tip-stall HWM clock is genuinely exercised (not a frozen
-         * empty chain) and real connect_block/coins/WAL writes churn. */
-        if (sp.enabled && sp.load_interval > 0 && alive &&
-            now - last_load >= sp.load_interval) {
-            spawn_generate_one(&sp, rpc_bin);
-            last_load = now;
-        }
-
-        /* Wake fractions of interval_sec to stay responsive to SIGTERM;
-         * using `sleep()` rounds up and can sit in the syscall for the
-         * full 60 s even after the flag is set. */
-        for (uint64_t slept = 0; slept < interval_sec && !g_stop; slept++)
-            sleep(1);
-    }
+    soak_sample_loop(&sp, service, rpc_bin, log, &st, &cfg, interval_sec,
+                      started);
 
     soak_verdict_t v = soak_compute_verdict(&st);
     time_t ended = platform_time_wall_time_t();

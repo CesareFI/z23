@@ -140,6 +140,7 @@ static inline int test_mkstemp(char *buf, size_t n, const char *prefix)
 }
 
 /* Shared helper functions */
+int test_soak_runner(void);
 int check_hex(const unsigned char *data, size_t len, const char *expected);
 void test_hex_to_bytes(const char *hex, uint8_t *out, int len);
 void test_hex_to_bytes_rev(const char *hex, uint8_t *out, int len);

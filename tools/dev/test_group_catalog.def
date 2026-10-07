@@ -196,6 +196,8 @@ ZCL_TEST_GROUP(simnet_shielded_wallet_e2e)
 ZCL_TEST_GROUP(store_e2e_gate)
 ZCL_TEST_GROUP(store_e2e_shielded)
 ZCL_TEST_GROUP(soak_harness)
+/* POSIX path-argument refusal; the host-needs table supplies the runner. */
+ZCL_TEST_GROUP(soak_runner)
 /* crash-recovery harness CLI regressions (tools/crash_recovery_test.c ->
  * build/bin/crash_recovery_test): an over-long --datadir/--connect is
  * refused with exit 2 naming the flag instead of silently truncating
