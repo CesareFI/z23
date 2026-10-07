@@ -48,9 +48,11 @@ struct header_probe_config {
     int         lag_threshold;  /* only probe when our_tip < their_tip - this; default 100 */
 };
 
-/* Apply config + load credentials. Safe to call before start to
- * override defaults. Idempotent. Returns a non-ok zcl_result only on a
- * missing zclassic.conf when no user/password were supplied. */
+/* Replace config + load credentials for the current lifecycle. Safe to call
+ * before start to override defaults and safe to call again after an in-process
+ * restart: no credential or initialized state is inherited from the prior
+ * call. Returns a non-ok zcl_result only on a missing zclassic.conf when no
+ * user/password were supplied, and leaves the service inactive on failure. */
 struct zcl_result header_probe_init(const struct header_probe_config *cfg,
                                     struct main_state *ms,
                                     const struct chain_params *params);

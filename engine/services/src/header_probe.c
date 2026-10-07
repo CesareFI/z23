@@ -343,6 +343,14 @@ struct zcl_result header_probe_init(const struct header_probe_config *cfg,
 {
     pthread_mutex_lock(&g_hp.lock);
 
+    /* An init call describes the current process lifecycle, not a partial
+     * update to the prior one. Clear credential and readiness state before
+     * applying it so a failed in-process restart cannot keep operating with
+     * credentials inherited from the previous run. */
+    g_hp.initialized = false;
+    g_hp.rpc_user[0] = '\0';
+    g_hp.rpc_password[0] = '\0';
+
     snprintf(g_hp.rpc_host, sizeof(g_hp.rpc_host), "%s",
              (cfg && cfg->rpc_host) ? cfg->rpc_host : HP_DEFAULT_HOST);
     g_hp.rpc_port = (cfg && cfg->rpc_port > 0)

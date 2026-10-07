@@ -310,6 +310,54 @@ static void hp_teardown(void)
 
 int test_header_probe(void);
 
+static int hp_test_reinit_clears_credentials(const struct chain_params *params)
+{
+    int failures = 0;
+    hp_build_fixture();
+    struct header_probe_config first = {
+        .rpc_host = "127.0.0.1",
+        .rpc_port = 18232,
+        .rpc_user = "prior-user",
+        .rpc_password = "prior-password",
+    };
+    HP_CHECK("initial init with explicit credentials",
+             header_probe_init(&first, &g_hp_ms, params).ok);
+
+    const char *old_home = getenv("HOME");
+    char old_home_copy[1024] = {0};
+    if (old_home)
+        snprintf(old_home_copy, sizeof(old_home_copy), "%s", old_home);
+    char empty_home[] = "/tmp/z23-header-probe-home.XXXXXX";
+    bool home_created = mkdtemp(empty_home) != NULL;
+    bool home_ready = home_created && setenv("HOME", empty_home, 1) == 0;
+    HP_CHECK("empty restart HOME fixture", home_ready);
+    if (home_ready) {
+        struct header_probe_config replacement = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = 18233,
+        };
+        struct zcl_result reinit =
+            header_probe_init(&replacement, &g_hp_ms, params);
+        HP_CHECK("restart without current credentials is refused", !reinit.ok);
+
+        struct json_value dump;
+        json_init(&dump);
+        bool inactive = header_probe_dump_state_json(&dump, NULL) &&
+            json_get(&dump, "initialized") != NULL &&
+            !json_get_bool(json_get(&dump, "initialized"));
+        HP_CHECK("failed restart leaves header probe inactive", inactive);
+        json_free(&dump);
+    }
+    if (old_home_copy[0])
+        (void)setenv("HOME", old_home_copy, 1);
+    else
+        (void)unsetenv("HOME");
+    if (home_created)
+        (void)rmdir(empty_home);
+    hp_teardown();
+    return failures;
+}
+
 int test_header_probe(void)
 {
     printf("\n=== header probe service tests ===\n");
@@ -498,6 +546,11 @@ int test_header_probe(void)
         hp_mock_stop(&srv);
         hp_teardown();
     }
+
+    /* Test 6: an in-process restart must not inherit RPC credentials from the
+     * prior run. With no credentials in the replacement config and no conf
+     * file, re-init fails closed and leaves the probe inactive. */
+    failures += hp_test_reinit_clears_credentials(params);
 
     if (failures == 0)
         printf("=== header probe service: all checks passed ===\n");
