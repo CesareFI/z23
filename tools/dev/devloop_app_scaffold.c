@@ -29,6 +29,7 @@
 #include "platform/directory_compat.h"
 
 #include <stdio.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -49,12 +50,18 @@ struct scaffold_plan {
 };
 
 /* Read the whole file at path. Returns NULL when it does not exist or cannot
- * be read; *len_out is the byte count on success. Caller frees. */
-static char *scaffold_read(const char *path, size_t *len_out)
+ * be read; *len_out is the byte count on success. Caller frees.
+ * When supplied, *missing is true only for an ENOENT open failure. */
+static char *scaffold_read(const char *path, size_t *len_out, bool *missing)
 {
+    if (missing)
+        *missing = false;
     FILE *fp = fopen(path, "rb");
-    if (!fp)
+    if (!fp) {
+        if (missing)
+            *missing = errno == ENOENT;
         return NULL;
+    }
     char *buf = NULL;
     size_t len = 0, cap = 0;
     for (;;) {
@@ -115,9 +122,13 @@ static void scaffold_classify_create(struct scaffold_plan *p, size_t i,
                                      const char *abs)
 {
     size_t have_len = 0;
-    char *have = scaffold_read(abs, &have_len);
+    bool missing = false;
+    char *have = scaffold_read(abs, &have_len, &missing);
     if (!have) {
-        p->action[i] = SCAFFOLD_WRITE;
+        if (missing)
+            p->action[i] = SCAFFOLD_WRITE;
+        else
+            scaffold_refuse(p, "could not be read", f->path);
         return;
     }
     bool same = have_len == f->body_len &&
@@ -137,7 +148,7 @@ static void scaffold_classify_row(struct scaffold_plan *p, size_t i,
                                   const char *abs)
 {
     size_t have_len = 0;
-    char *have = scaffold_read(abs, &have_len);
+    char *have = scaffold_read(abs, &have_len, NULL);
     if (!have) {
         scaffold_refuse(p, "is missing; this registry is not created for you",
                         f->path);

@@ -23,6 +23,29 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <errno.h>
+
+static const char *das_denied_path;
+static unsigned das_denied_reads;
+static FILE *das_open(const char *path, const char *mode)
+{
+    if (das_denied_path && strcmp(path, das_denied_path) == 0 &&
+        strcmp(mode, "rb") == 0) {
+        das_denied_reads++;
+        errno = EACCES;
+        return NULL;
+    }
+    return fopen(path, mode);
+}
+#define fopen das_open
+static size_t das_scaffold_json(const char *, const char *, const char *, char *, size_t);
+[[maybe_unused]] static int das_scaffold(const char *, const char *, const char *);
+#define zcl_devloop_app_scaffold_json das_scaffold_json
+#define zcl_devloop_app_scaffold das_scaffold
+#include "../../../tools/dev/devloop_app_scaffold.c"
+#undef zcl_devloop_app_scaffold
+#undef zcl_devloop_app_scaffold_json
+#undef fopen
 
 #define DAS_CHECK(name, expr) do {                            \
     printf("dev_app_scaffold: %s... ", (name));               \
@@ -279,11 +302,65 @@ static int das_refuses_bad_input(void)
     return failures;
 }
 
+static bool das_plant_unreadable(char *root, char *path, struct stat *before)
+{
+    char body[8192];
+    if (!das_make_root(root, 128))
+        return false;
+    if (!das_scaffold_json(root, "social", "posts", body, sizeof(body)))
+        return false;
+    (void)snprintf(path, 768, "%s/engine/models/src/posts.c", root);
+    FILE *fp = fopen(path, "wb");
+    if (!fp)
+        return false;
+    bool planted = fputs("/* retained source */\n", fp) >= 0;
+    planted = fclose(fp) == 0 && planted;
+    return planted && stat(path, before) == 0 && chmod(path, 0000) == 0;
+}
+static bool das_retained_bytes(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    char bytes[64] = {0};
+    bool exact = fp && fread(bytes, 1, sizeof(bytes), fp) ==
+                           strlen("/* retained source */\n");
+    if (fp) {
+        exact = ferror(fp) == 0 && exact;
+        exact = fclose(fp) == 0 && exact;
+    }
+    return exact && strcmp(bytes, "/* retained source */\n") == 0;
+}
+static int das_refuses_unreadable(void)
+{
+    int failures = 0;
+    char root[128], path[768], body[8192] = {0};
+    struct stat before, after;
+    if (!das_plant_unreadable(root, path, &before))
+        return 1;
+    das_denied_reads = 0;
+    das_denied_path = geteuid() == 0 ? path : NULL;
+    size_t n = das_scaffold_json(root, "social", "posts", body, sizeof(body));
+    das_denied_path = NULL;
+    DAS_CHECK("unreadable source refuses before writing",
+              n > 0 && strstr(body, "\"status\":\"refused\"") &&
+              strstr(body, "engine/models/src/posts.c could not be read") &&
+              strstr(body, "\"written\":0") &&
+              (geteuid() != 0 || das_denied_reads == 1));
+    DAS_CHECK("unreadable source retains its inode and permissions",
+              stat(path, &after) == 0 && before.st_dev == after.st_dev &&
+              before.st_ino == after.st_ino && (after.st_mode & 0777) == 0);
+    if (chmod(path, 0600) != 0)
+        return failures + 1;
+    DAS_CHECK("unreadable source retains exact bytes",
+              das_retained_bytes(path));
+    return failures;
+}
+
 int test_dev_app_scaffold(void)
 {
     int failures = 0;
     failures += das_writes_the_plan();
     failures += das_refuses_a_conflict();
     failures += das_refuses_bad_input();
+    failures += das_refuses_unreadable();
     return failures;
 }
