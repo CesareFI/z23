@@ -89,6 +89,59 @@ static int test_hotswap_datadir_guard(void)
     return failures;
 }
 
+#if !defined(_WIN32)
+static int test_datadir_home_bounds(void)
+{
+    int failures = 0;
+    TEST("dev datadir refuses truncated HOME suffix and admits exact fit") {
+        const char suffix[] = "/.zclassic-c23-dev";
+        const char *original = getenv("HOME");
+        bool had_home = original != NULL;
+        char saved[PATH_MAX];
+        /* Refuse setup before overriding an environment value we cannot save. */
+        ASSERT(!had_home || strlen(original) < sizeof(saved));
+        if (had_home)
+            memcpy(saved, original, strlen(original) + 1);
+        const size_t lengths[] = {
+            PATH_MAX - 1,
+            PATH_MAX - sizeof(suffix) + 1,
+            PATH_MAX - sizeof(suffix) + 2,
+            PATH_MAX - sizeof(suffix)
+        };
+        bool setup_ok = true, results[4] = {false};
+        size_t generations = hotswap_generation_count();
+        for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
+            char home[PATH_MAX], dev[PATH_MAX + sizeof(suffix)];
+            memset(home, 'x', lengths[i]);
+            home[0] = '/';
+            home[lengths[i]] = '\0';
+            /* The overlong first component prevents realpath resolution. */
+            memcpy(dev, home, lengths[i]);
+            memcpy(dev + lengths[i], suffix, sizeof(suffix));
+            if (setenv("HOME", home, 1) != 0) {
+                setup_ok = false;
+                break;
+            }
+            const char *candidate = i == 0 ? home : dev;
+            results[i] = hotswap_datadir_is_dev(candidate);
+        }
+        /* Restore before assertions: their failure path jumps out of TEST. */
+        int restored = had_home ? setenv("HOME", saved, 1) : unsetenv("HOME");
+        ASSERT(restored == 0);
+        const char *after = getenv("HOME");
+        ASSERT(had_home ? after && strcmp(after, saved) == 0 : after == NULL);
+        ASSERT(setup_ok);
+        ASSERT(!results[0]);
+        ASSERT(!results[1]);
+        ASSERT(!results[2]);
+        ASSERT(results[3]);
+        ASSERT(hotswap_generation_count() == generations);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
+
 static bool manifest_self_test_ok(const struct zcl_hotswap_host *host,
                                   char *why, size_t why_sz)
 {
@@ -285,6 +338,9 @@ int test_hotswap_loader(void)
     int failures = 0;
     failures += test_hotswap_path_acceptance();
     failures += test_hotswap_datadir_guard();
+#if !defined(_WIN32)
+    failures += test_datadir_home_bounds();
+#endif
     failures += test_hotswap_leaf_manifest_v4_contract();
     failures += test_hotswap_load_leaves_stub_and_registry();
     failures += test_hotswap_dump_state();

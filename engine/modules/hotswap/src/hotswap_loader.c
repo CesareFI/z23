@@ -193,7 +193,9 @@ bool hotswap_datadir_is_dev(const char *resolved_datadir)
     if (!home || home[0] != '/')
         return false;
     char exact_dev[PATH_MAX];
-    snprintf(exact_dev, sizeof(exact_dev), "%s/.zclassic-c23-dev", home);
+    int n = snprintf(exact_dev, sizeof(exact_dev), "%s/.zclassic-c23-dev", home);
+    if (n < 0 || (size_t)n >= sizeof(exact_dev))
+        return false;
     return same_dir(resolved_datadir, exact_dev);
 #endif
 }
