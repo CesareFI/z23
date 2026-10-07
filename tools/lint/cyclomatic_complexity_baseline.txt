@@ -2694,7 +2694,6 @@ platform/modules/platform/src/private_destination.c:platform_private_destination
 platform/modules/platform/src/private_directory.c:platform_private_directory_create:17
 platform/modules/platform/src/private_file.c:platform_private_file_link_no_clobber:24
 platform/modules/platform/src/private_file.c:platform_private_file_link_no_clobber#2:17
-platform/modules/platform/src/private_file.c:platform_private_file_retire_if_identity#2:23
 platform/modules/platform/src/private_file.c:platform_private_path_resolve:50
 platform/modules/platform/src/process_lifecycle.c:append_arg:20
 platform/modules/platform/src/process_lifecycle.c:environment_block:16

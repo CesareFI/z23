@@ -14,6 +14,7 @@
 
 #include "platform/private_file.h"
 #include "platform/file_sync.h"
+#include "platform/rename_compat.h"
 #include "base/safe_alloc.h"
 
 #include <errno.h>
@@ -728,7 +729,7 @@ bool platform_private_file_retire_if_identity(
   if (!path || !expected || !platform_private_file_identity(f, &actual) ||
       actual.volume != expected->volume || actual.file != expected->file)
     return false;
-#if defined(__linux__) && defined(SYS_renameat2)
+#if !defined(_WIN32)
   static _Atomic unsigned long long sequence;
   char quarantine[4096];
   unsigned long long value = atomic_fetch_add_explicit(
@@ -737,8 +738,7 @@ bool platform_private_file_retire_if_identity(
                    path, (long)getpid(), value);
   if (n <= 0 || (size_t)n >= sizeof(quarantine))
     return false;
-  if (syscall(SYS_renameat2, AT_FDCWD, path, AT_FDCWD, quarantine,
-              RENAME_NOREPLACE) != 0)
+  if (platform_renameat_noreplace(AT_FDCWD, path, AT_FDCWD, quarantine) != 0)
     return false;
   struct stat moved, held;
   bool same = lstat(quarantine, &moved) == 0 && fstat(pf_fd(f), &held) == 0 &&
@@ -748,42 +748,15 @@ bool platform_private_file_retire_if_identity(
     return unlink(quarantine) == 0;
   /* A substituted pathname was moved, not deleted. Restore it only without
    * clobbering any concurrently recreated original name. */
-  (void)syscall(SYS_renameat2, AT_FDCWD, quarantine, AT_FDCWD, path,
-                RENAME_NOREPLACE);
+  (void)platform_renameat_noreplace(AT_FDCWD, quarantine, AT_FDCWD, path);
   errno = ESTALE;
   return false;
 #else
-  /* Generic POSIX fallback without renameat2/RENAME_NOREPLACE. Create a
-   * unique hard link to the held inode, prove the quarantined name points to
-   * the same file, then remove both names. This gives the same "retire only
-   * the exact inode we opened" guarantee as the Linux renameat2 path, without
-   * requiring a NOREPLACE syscall. */
-  char quarantine[4096];
-  static _Atomic unsigned long long sequence;
-  unsigned long long value = atomic_fetch_add_explicit(
-      &sequence, 1, memory_order_relaxed);
-  int n = snprintf(quarantine, sizeof(quarantine), "%s.z23-retire.%d.%llu",
-                   path, (int)getpid(), value);
-  if (n <= 0 || (size_t)n >= sizeof(quarantine))
-    return false;
-  if (link(path, quarantine) != 0)
-    return false;
-  struct stat moved, held;
-  bool same = lstat(quarantine, &moved) == 0 &&
-              fstat(pf_fd(f), &held) == 0 &&
-              S_ISREG(moved.st_mode) &&
-              moved.st_dev == held.st_dev &&
-              moved.st_ino == held.st_ino;
-  if (!same) {
-    (void)unlink(quarantine);
-    errno = ESTALE;
-    return false;
-  }
-  if (unlink(path) != 0) {
-    (void)unlink(quarantine);
-    return false;
-  }
-  return unlink(quarantine) == 0;
+  (void)f;
+  (void)path;
+  (void)expected;
+  errno = ENOTSUP;
+  return false;
 #endif
 }
 bool platform_private_file_identity(struct platform_private_file *f,
