@@ -15,6 +15,17 @@ static bool secret_destination(JNIEnv *env, jarray output, jsize capacity)
     return length == capacity;
 }
 
+/* New wallets use 128-bit BIP39 entropy; retain the original 256-bit caller.
+ * Reject every other destination before acquiring any secret material. */
+static jsize entropy_destination(JNIEnv *env, jbyteArray output)
+{
+    if (env == NULL || output == NULL) return 0;
+    if ((*env)->ExceptionCheck(env)) return 0;
+    const jsize length = (*env)->GetArrayLength(env, output);
+    if ((*env)->ExceptionCheck(env)) return 0;
+    return length == 16 || length == 32 ? length : 0;
+}
+
 /* Each private writer receives a prevalidated, caller-owned destination.
  * Java array lengths cannot change; successful input reads leave no exception. */
 static jint write_secret_bytes(JNIEnv *env, jbyteArray output, const uint8_t *bytes, size_t length)
@@ -28,13 +39,12 @@ JNIEXPORT jint JNICALL
 Java_org_zclassic_wallet_core_NativeCore_createEntropy(JNIEnv *env, jclass type, jbyteArray output)
 {
     (void)type;
-    if (!secret_destination(env, output, 32)) return 0;
+    const jsize capacity = entropy_destination(env, output);
+    if (capacity == 0) return 0;
     uint8_t entropy[32] = {0};
     jint length = 0;
-    if (zcl_random_bytes(entropy, sizeof(entropy)) == ZCL_OK) {
-        (*env)->SetByteArrayRegion(env, output, 0, 32, (const jbyte *)entropy);
-        if (!(*env)->ExceptionCheck(env)) length = 32;
-    }
+    if (zcl_random_bytes(entropy, (size_t)capacity) == ZCL_OK)
+        length = write_secret_bytes(env, output, entropy, (size_t)capacity);
     zcl_secure_zero(entropy, sizeof(entropy));
     return length;
 }

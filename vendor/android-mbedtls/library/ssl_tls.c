@@ -3821,6 +3821,29 @@ static int ssl_tls12_session_load(mbedtls_ssl_session *session,
     return 0;
 }
 
+/* Admit the session-ID length before the decoder constructs owned state.
+ * Session and context restoration both enter through this boundary. The
+ * serialized ID field always contains 32 bytes regardless of its length. */
+MBEDTLS_CHECK_RETURN_CRITICAL
+static int ssl_tls12_session_load_checked(mbedtls_ssl_session *session,
+                                         const unsigned char *buf,
+                                         size_t len)
+{
+#if defined(MBEDTLS_HAVE_TIME)
+    const size_t id_offset = 8;
+#else
+    const size_t id_offset = 0;
+#endif
+
+    if (len <= id_offset) {
+        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    }
+    if (buf[id_offset] > sizeof(session->id)) {
+        return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    }
+    return ssl_tls12_session_load(session, buf, len);
+}
+
 #endif /* MBEDTLS_SSL_PROTO_TLS1_2 */
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
@@ -4517,7 +4540,7 @@ static int ssl_session_load(mbedtls_ssl_session *session,
     switch (session->tls_version) {
 #if defined(MBEDTLS_SSL_PROTO_TLS1_2)
         case MBEDTLS_SSL_VERSION_TLS1_2:
-            return ssl_tls12_session_load(session, p, remaining_len);
+            return ssl_tls12_session_load_checked(session, p, remaining_len);
 #endif /* MBEDTLS_SSL_PROTO_TLS1_2 */
 
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)

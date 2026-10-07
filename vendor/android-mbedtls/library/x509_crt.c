@@ -296,6 +296,15 @@ static int x509_check_wildcard(const char *cn, const mbedtls_x509_buf *name)
     return -1;
 }
 
+/* Parsed empty Names have NULL data pointers in their sentinel OID and value.
+ * Do not pass these to memcmp even when the length is zero. Nonempty buffers
+ * retain the parser's existing readable-length precondition.
+ */
+static int x509_memcmp(const void *a, const void *b, size_t len)
+{
+    return len == 0 ? 0 : memcmp(a, b, len);
+}
+
 /*
  * Compare two X.509 strings, case-insensitive, and allowing for some encoding
  * variations (but not all).
@@ -306,7 +315,7 @@ static int x509_string_cmp(const mbedtls_x509_buf *a, const mbedtls_x509_buf *b)
 {
     if (a->tag == b->tag &&
         a->len == b->len &&
-        memcmp(a->p, b->p, b->len) == 0) {
+        x509_memcmp(a->p, b->p, b->len) == 0) {
         return 0;
     }
 
@@ -341,7 +350,7 @@ static int x509_name_cmp(const mbedtls_x509_name *a, const mbedtls_x509_name *b)
         /* type */
         if (a->oid.tag != b->oid.tag ||
             a->oid.len != b->oid.len ||
-            memcmp(a->oid.p, b->oid.p, b->oid.len) != 0) {
+            x509_memcmp(a->oid.p, b->oid.p, b->oid.len) != 0) {
             return -1;
         }
 
