@@ -612,6 +612,46 @@ static int serve_case_manifest_serve_and_replay(struct sw_node *n,
     return failures;
 }
 
+static bool serve_chunk_reply_matches(const struct vcs_swarm_frame_result *res,
+                                     const struct vcs_package_swarm_object *want,
+                                     const struct sw_pkg *p)
+{
+    struct vcs_package_swarm_message data;
+    if (!res->reply ||
+        !vcs_package_swarm_parse(res->reply, res->reply_len, &data) ||
+        data.type != VCS_PACKAGE_SWARM_DATA)
+        return false;
+    const struct vcs_package_swarm_object *object = &data.body.data.object;
+    return object->request_id == want->request_id &&
+           memcmp(object->package_root, want->package_root, 32) == 0 &&
+           object->object_kind == want->object_kind &&
+           object->file_index == want->file_index &&
+           object->chunk_index == want->chunk_index &&
+           memcmp(object->expected_hash, want->expected_hash, 32) == 0 &&
+           data.body.data.bytes_len == p->lens[want->file_index] &&
+           memcmp(data.body.data.bytes, p->contents[want->file_index],
+                  p->lens[want->file_index]) == 0;
+}
+
+static int serve_check_burst_reply(const struct vcs_swarm_frame_result *res,
+                                  const struct vcs_package_swarm_object *want,
+                                  const struct sw_pkg *p, bool allowed,
+                                  uint32_t *served_chunks)
+{
+    int failures = 0;
+    if (allowed) {
+        bool served = res->penalty == VCS_SWARM_PENALTY_NONE &&
+                      serve_chunk_reply_matches(res, want, p);
+        SW_CHECK("allowed chunk reply matches request and bytes", served);
+        *served_chunks += served;
+    } else {
+        SW_CHECK("burst limit refuses reply",
+                 res->reply == NULL && res->reply_len == 0 &&
+                 res->penalty == VCS_SWARM_PENALTY_REQUEST_FLOOD);
+    }
+    return failures;
+}
+
 static int serve_case_bad_coords_and_burst(struct sw_node *n,
                                             struct sw_pkg *p,
                                             const uint8_t *key,
@@ -661,13 +701,14 @@ static int serve_case_bad_coords_and_burst(struct sw_node *n,
                                              &wlen));
         res = vcs_swarm_engine_handle_frame(n->engine, peer, frame, wlen,
                                             SW_DAY, 1);
-        free(res.reply);
-        if (res.penalty == VCS_SWARM_PENALTY_NONE)
-            served_chunks++;
+        failures += serve_check_burst_reply(&res, &cw.body.want, p,
+                                            i < burst_limit - 2u,
+                                            &served_chunks);
         if (res.penalty == VCS_SWARM_PENALTY_REQUEST_FLOOD &&
             res.rule != NULL &&
             strcmp(res.rule, "request-burst-limit") == 0)
             flood_named = true;
+        free(res.reply);
     }
     SW_CHECK("burst allowance served then stopped",
              served_chunks == burst_limit - 2u && flood_named);
