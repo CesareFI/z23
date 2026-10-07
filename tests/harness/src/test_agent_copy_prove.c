@@ -26,6 +26,8 @@
 #include "platform/directory_compat.h"
 
 #include <stdio.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -642,6 +644,78 @@ static int test_acp_rpc_launch_and_poll(void)
 
 /* ── D: dumper safety-invariant + not_found/invalid-key refusals ───── */
 
+static bool acp_flag_recorded(const char *path, const char *args, size_t length)
+{
+    char actual[2002];
+    return acp_read_file(path, actual, sizeof(actual)) &&
+           strlen(actual) == length + 1 &&
+           memcmp(actual, args, length) == 0 && actual[length] == '\n';
+}
+
+static int test_acp_rpc_long_args(void)
+{
+    int failures = 0;
+    char work[512], stub[600], status[600], ready[640], recorder[640];
+    test_make_tmpdir(work, sizeof(work), "acp_args", "exact");
+    snprintf(stub, sizeof(stub), "%s/record.sh", work);
+    snprintf(status, sizeof(status), "%s/args-slug.json", work);
+    snprintf(ready, sizeof(ready), "%s.ready", status);
+    snprintf(recorder, sizeof(recorder), "%s.argv", status);
+    const char *body =
+        "#!/bin/sh\n"
+        "status=''\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    --status-file=*) status=${1#--status-file=} ;;\n"
+        "    --) shift; break ;;\n"
+        "  esac\n"
+        "  shift\n"
+        "done\n"
+        "printf '%s\\n' \"$@\" > \"$status.argv\" || exit 1\n"
+        "printf x > \"$status.ready\"\n";
+    bool setup = acp_write_file(stub, body) && chmod(stub, 0700) == 0 &&
+                 mkfifo(ready, 0600) == 0;
+    ACP_CHECK("long-args recorder setup", setup);
+    if (!setup) { test_rm_rf_recursive(work); return failures; }
+    int fd = open(ready, O_RDWR | O_NONBLOCK);
+    ACP_CHECK("open bounded recorder notification", fd >= 0);
+    if (fd < 0) { test_rm_rf_recursive(work); return failures; }
+    struct acp_saved_env status_env, script_env;
+    acp_env_save(&status_env, "ZCL_COPY_PROVE_STATUS_DIR");
+    acp_env_save(&script_env, "ZCL_AGENT_COPY_PROVE_SCRIPT");
+    bool env_ok = setenv("ZCL_COPY_PROVE_STATUS_DIR", work, 1) == 0 &&
+                  setenv("ZCL_AGENT_COPY_PROVE_SCRIPT", stub, 1) == 0;
+    ACP_CHECK("set isolated long-args environment", env_ok);
+    const size_t lengths[] = {1023, 1024, 2000};
+    for (size_t i = 0; env_ok && i < 3; i++) {
+        char args[2001], label[100], signal;
+        memset(args, 'a', lengths[i]);
+        args[0] = '-';
+        args[lengths[i]] = '\0';
+        struct json_value params, result;
+        acp_build_params(&params, "args-slug", "", args, -1, 1, false, false);
+        json_init(&result);
+        bool rc = rpc_agent_copy_prove(&params, false, &result);
+        ACP_CHECK("long-args RPC starts recorder", rc &&
+            strcmp(json_get_str(json_get(&result, "status")), "started") == 0);
+        struct pollfd notification = { .fd = fd, .events = POLLIN };
+        bool done = poll(&notification, 1, 5000) == 1 &&
+                    read(fd, &signal, 1) == 1 && signal == 'x';
+        ACP_CHECK("recorder finished within bounded condition wait", done);
+        bool exact = done && acp_flag_recorded(recorder, args, lengths[i]);
+        snprintf(label, sizeof(label), "%zu-byte flag reaches child exactly", lengths[i]);
+        ACP_CHECK(label, exact);
+        json_free(&params);
+        json_free(&result);
+        if (!done) break;
+    }
+    acp_env_restore(&script_env);
+    acp_env_restore(&status_env);
+    ACP_CHECK("close recorder notification", close(fd) == 0);
+    test_rm_rf_recursive(work);
+    return failures;
+}
+
 static int test_acp_dumper_safety_invariant(void)
 {
     int failures = 0;
@@ -730,6 +804,7 @@ int test_agent_copy_prove(void)
     failures += test_acp_launchd_like_live();
     failures += test_acp_rpc_refusals();
     failures += test_acp_rpc_launch_and_poll();
+    failures += test_acp_rpc_long_args();
     failures += test_acp_dumper_safety_invariant();
     printf("[test_agent_copy_prove] %d failure(s)\n", failures);
     return failures;

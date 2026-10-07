@@ -402,7 +402,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
     /* args: allowlist-validated above (each token begins with '-', charset
      * [A-Za-z0-9_.:=,/-]); split on whitespace into argv words after a `--`
      * separator — the exact tokens the old `-- %s` shell suffix produced. */
-    char args_copy[1024];
+    char args_copy[2001]; /* cp_args_valid permits 2000 bytes plus NUL. */
     if (args && args[0]) {
         argv[argc++] = "--";
         if (snprintf(args_copy, sizeof(args_copy), "%s", args)
