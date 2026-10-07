@@ -52,6 +52,7 @@ enum {
     UE_PASS = 0, UE_FAIL = 1, UE_USAGE = 2, UE_PREMISE_INCOMPLETE = 3,
     UE_UNCONFINED = 4, UE_REFUSED = 5, UE_SETUP = 125,
     UE_MAX_ENV = 32, UE_MAX_TOOLCHAIN = 32,
+    UE_ENV_BYTES = PREMISE_PATH_MAX + 16,
 };
 
 static const char *const k_toolchain_roots[] = {
@@ -116,6 +117,10 @@ static int parse_one(struct ue_opts *o, const char *a)
         return 0;
     }
     if (opt_val(a, "--env", &v) && strchr(v, '=') && o->nenv < UE_MAX_ENV) {
+        if (strlen(v) >= UE_ENV_BYTES) {
+            fputs("unit-exec: environment entry exceeds storage capacity\n", stderr);
+            return 2;
+        }
         o->env[o->nenv++] = v;
         return 0;
     }
@@ -266,7 +271,7 @@ static void close_above(int keep)
 
 struct ue_env {
     char *v[UE_MAX_ENV + 5];
-    char store[UE_MAX_ENV + 4][PREMISE_PATH_MAX + 16];
+    char store[UE_MAX_ENV + 4][UE_ENV_BYTES];
 };
 
 static void child_env(const struct ue_opts *o, struct ue_env *e)

@@ -443,6 +443,58 @@ static int lsel_ux_run(const struct lsel_ux *ux, bool no_landlock,
     return lint_unit_exec_main(n, argv);
 }
 
+static int lsel_ux_env_run(const struct lsel_ux *ux, char *env, size_t count,
+                           const char *script)
+{
+    char root[PATH_MAX + 16], premise[PATH_MAX + 16], scratch[PATH_MAX + 16];
+    (void)snprintf(root, sizeof(root), "--root=%s", ux->root);
+    (void)snprintf(premise, sizeof(premise), "--premise=%s", ux->premise);
+    (void)snprintf(scratch, sizeof(scratch), "--scratch=%s", ux->scratch);
+    char *argv[41] = { root, premise, scratch };
+    if (count > 33)
+        return -1;
+    int n = 3;
+    for (size_t i = 0; i < count; i++)
+        argv[n++] = env;
+    argv[n++] = (char *)"--";
+    argv[n++] = (char *)"sh";
+    argv[n++] = (char *)"-c";
+    argv[n++] = (char *)script;
+    argv[n] = NULL;
+    return lint_unit_exec_main(n, argv);
+}
+
+static int test_lsel_ux_env_bounds(void)
+{
+    int failures = 0;
+    TEST_CASE("lint_selection: unit-exec refuses oversized environments before execution") {
+        struct lsel_ux ux;
+        char env[sizeof("--env=X=") + 4111], marker[PATH_MAX + 16];
+        ASSERT(lsel_ux_fixture(&ux));
+        (void)snprintf(marker, sizeof(marker), "%s/ran", ux.scratch);
+        memcpy(env, "--env=X=", 8);
+        memset(env + 8, 'a', 4111);
+        env[8 + 4111] = '\0';
+        ASSERT_EQ(lsel_ux_env_run(&ux, env, 1, ": > \"$HOME/ran\""), 2);
+        ASSERT(access(marker, F_OK) != 0);
+        /* NAME=VALUE length 4112 also cannot fit its terminator. */
+        env[8 + 4110] = '\0';
+        ASSERT_EQ(lsel_ux_env_run(&ux, env, 1, ": > \"$HOME/ran\""), 2);
+        ASSERT(access(marker, F_OK) != 0);
+        /* The largest fitting entry preserves every byte (4109 value bytes). */
+        env[8 + 4109] = '\0';
+        ASSERT_EQ(lsel_ux_env_run(&ux, env, 1,
+                  "case $X in *[!a]*) exit 1;; esac; test \"${#X}\" -eq 4109"), 0);
+        env[8 + 4095] = '\0';
+        ASSERT_EQ(lsel_ux_env_run(&ux, env, 1,
+                  "case $X in *[!a]*) exit 1;; esac; test \"${#X}\" -eq 4095"), 0);
+        ASSERT_EQ(lsel_ux_env_run(&ux, env, 33, ": > \"$HOME/ran\""), 2);
+        ASSERT(access(marker, F_OK) != 0);
+        test_rm_rf_recursive(ux.dir);
+    } TEST_END
+    return failures;
+}
+
 static int test_lsel_ux_declared_and_undeclared(void)
 {
     int failures = 0;
@@ -1087,6 +1139,7 @@ int test_lint_selection(void)
     failures += test_lsel_tampered_tree();
     failures += test_lsel_non_ancestor();
     failures += test_lsel_ux_declared_and_undeclared();
+    failures += test_lsel_ux_env_bounds();
     failures += test_lsel_ux_read_dir();
     failures += test_lsel_ux_home();
     failures += test_lsel_ux_tcp();
