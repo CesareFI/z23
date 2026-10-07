@@ -34,6 +34,7 @@
 #include "util/safe_alloc.h"
 #include "crypto/sha3.h"
 #include "platform/file_metadata.h"
+#include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
 #include <sqlite3.h>
@@ -197,6 +198,18 @@ static bool create_schema(sqlite3 *db)
     return true;
 }
 
+static bool meta_parse_u64(const unsigned char *s, int len, uint64_t *value)
+{
+    if (!s || len <= 0 || s[0] < '0' || s[0] > '9') return false;
+    char *end = NULL;
+    errno = 0;
+    unsigned long long x = strtoull((const char *)s, &end, 10);
+    if (errno == ERANGE || x > UINT64_MAX ||
+        end != (const char *)s + len) return false;
+    *value = (uint64_t)x;
+    return true;
+}
+
 /* Read a u64 from projection_meta or return `def`. */
 static uint64_t meta_get_u64(sqlite3 *db, const char *k, uint64_t def)
 {
@@ -209,10 +222,9 @@ static uint64_t meta_get_u64(sqlite3 *db, const char *k, uint64_t def)
     uint64_t v = def;
     if (sqlite3_step(stmt) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
         const unsigned char *s = sqlite3_column_text(stmt, 0);
-        if (s) {
-            char *end = NULL;
-            unsigned long long x = strtoull((const char *)s, &end, 10);
-            if (end != (const char *)s) v = (uint64_t)x;
+        int len = sqlite3_column_bytes(stmt, 0);
+        if (!meta_parse_u64(s, len, &v)) {
+            LOG_WARN("block_index_projection", "invalid metadata number: %s", k);
         }
     }
     sqlite3_finalize(stmt);

@@ -150,6 +150,57 @@ static bool emit_status(event_log_t *log, const struct ev_block_header *h)
 
 /* ── Test 1: open_close_clean ──────────────────────────────────────── */
 
+static bool store_cursor_text(const char *path, const char *text, int len)
+{
+    sqlite3 *raw = NULL;
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_open_v2(path, &raw, SQLITE_OPEN_READWRITE, NULL);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_prepare_v2(raw,
+            "INSERT OR REPLACE INTO projection_meta(k,v) "
+            "VALUES('last_consumed_offset',?)", -1, &stmt, NULL);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_bind_text(stmt, 1, text, len, SQLITE_TRANSIENT);
+    if (rc == SQLITE_OK) rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    int close_rc = raw ? sqlite3_close(raw) : SQLITE_OK;
+    return rc == SQLITE_DONE && close_rc == SQLITE_OK;
+}
+
+static void check_cursor_text(const char *path, event_log_t *log, int *failures)
+{
+    static const struct {
+        const char *label, *text;
+        int len;
+        uint64_t expected;
+    } cases[] = {
+        {"cursor: trailing junk defaults", "7junk", 5, 0},
+        {"cursor: embedded NUL defaults", "7\0x", 3, 0},
+        {"cursor: negative defaults", "-1", 2, 0},
+        {"cursor: overflow defaults", "18446744073709551616", 20, 0},
+        {"cursor: empty defaults", "", 0, 0},
+        {"cursor: leading space defaults", " 7", 2, 0},
+        {"cursor: plus sign defaults", "+7", 2, 0},
+        {"cursor: trailing space defaults", "7 ", 2, 0},
+        {"cursor: leading zero retained", "007", 3, 7},
+        {"cursor: zero retained", "0", 1, 0},
+        {"cursor: nonzero retained", "7", 1, 7},
+        {"cursor: maximum retained", "18446744073709551615", 20, UINT64_MAX},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        bool stored = store_cursor_text(path, cases[i].text, cases[i].len);
+        BIP_CHECK("cursor: exact-length fixture stored", stored);
+        if (!stored) continue;
+        block_index_projection_t *p = block_index_projection_open(path, log);
+        BIP_CHECK("cursor: reopen succeeds", p != NULL);
+        if (p) {
+            /* Observe the production-restored cursor, not read_meta_u64. */
+            BIP_CHECK(cases[i].label, p->last_consumed_offset == cases[i].expected);
+            block_index_projection_close(p);
+        }
+    }
+}
+
 static int run_open_close_clean(int *failures)
 {
     int start_failures = *failures;
@@ -182,6 +233,7 @@ static int run_open_close_clean(int *failures)
                   block_index_projection_count(p) == 0);
         block_index_projection_close(p);
     }
+    check_cursor_text(db_path, log, failures);
     event_log_close(log);
     bip_cleanup_dir(dir);
 done:
@@ -1334,6 +1386,8 @@ int test_block_index_projection(void)
 {
     int failed = 0;
     int *failures = &failed;
+    /* The exact group runs here; shard-only cases are not selected by it. */
+    (void)run_open_close_clean(failures);
     unsigned counts[BIP_SHARD_COUNT] = {0};
     bool unique = true;
     for (size_t i = 0; i < BIP_CASE_COUNT; i++) {
