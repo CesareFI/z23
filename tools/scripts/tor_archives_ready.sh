@@ -149,6 +149,12 @@ primary_checkout() {
 # So each worktree gets its own inode: a reflink where the filesystem can
 # share blocks for free, a byte copy otherwise -- that copy is the accepted
 # price. Falls back to a copy across filesystems (EXDEV) same as before.
+tor_copy_artifact() {
+    # GNU cp can share blocks; BSD cp lacks --reflink. Both paths give the
+    # receiver its own inode, for provenance manifests as well as archives.
+    cp -a --reflink=auto -- "$1" "$2" 2>/dev/null || cp -p "$1" "$2"
+}
+
 link_from() {
     local src="$1" a linked=0
     [ -n "$src" ] || return 1
@@ -167,10 +173,7 @@ link_from() {
     for a in "${ARCHIVES[@]}"; do
         [ -s "$ROOT/$a" ] && continue
         mkdir -p "$ROOT/${a%/*}"
-        # GNU cp can share blocks; BSD cp lacks --reflink. Both paths copy
-        # into an independent inode instead of linking the donor's archive.
-        if cp -a --reflink=auto -- "$src/$a" "$ROOT/$a" 2>/dev/null ||
-           cp -p "$src/$a" "$ROOT/$a"; then
+        if tor_copy_artifact "$src/$a" "$ROOT/$a"; then
             linked=$((linked + 1))
         else
             return 1
@@ -184,7 +187,7 @@ link_from() {
     # provenance check below fails closed and do_ready falls through to a
     # real build, same as any other mismatch.
     if [ -s "$src/$TOR_TREE/.provenance" ]; then
-        cp -a --reflink=auto -- "$src/$TOR_TREE/.provenance" "$ROOT/$TOR_TREE/.provenance" 2>/dev/null || true
+        tor_copy_artifact "$src/$TOR_TREE/.provenance" "$ROOT/$TOR_TREE/.provenance" || return 1
     fi
     have_all || return 1
     echo "tor-ready: copied $linked vendored Tor archive(s) from $src (independent inodes; real-Tor link, no rebuild)"
@@ -363,6 +366,57 @@ case "${1:-ready}" in
             echo "tor_archives_ready: selftest FAILED — link_from did not carry the source's .provenance manifest byte-for-byte" >&2
             exit 1
         fi
+        # Exercise the no-reflink path on every host. All four archives AND
+        # the original manifest must survive the same portable copy path.
+        tor_copy_test_fail() {
+            echo "tor_archives_ready: selftest FAILED — $*" >&2
+            exit 1
+        }
+        tor_copy_portable_selftest() (
+            local a before refuse_manifest=0 trace="$fixture/portable-copy.trace"
+            ROOT="$fixture/portable-copy"
+            mkdir -p "$ROOT"
+            cd "$ROOT"
+            cp() {
+                if [ "${2:-}" = --reflink=auto ]; then
+                    printf 'reflink refused\n' >>"$trace"
+                    return 64
+                fi
+                if [ "$refuse_manifest" = 1 ] && [ "${2##*/}" = .provenance ]; then
+                    echo 'injected provenance copy failure' >&2
+                    return 73
+                fi
+                printf 'portable:%s\n' "${2##*/}" >>"$trace"
+                command cp "$@"
+            }
+            link_from "$fake_primary" >"$fixture/portable-copy.log" 2>&1 ||
+                tor_copy_test_fail 'portable archive/manifest copy refused'
+            grep -Fx 'reflink refused' "$trace" >/dev/null || tor_copy_test_fail 'copy injection was not exercised'
+            grep -Fx 'portable:.provenance' "$trace" >/dev/null || tor_copy_test_fail 'manifest fallback was not exercised'
+            cmp -s "$fake_primary/$TOR_TREE/.provenance" "$ROOT/$TOR_TREE/.provenance" ||
+                tor_copy_test_fail 'portable copy changed provenance'
+            for a in "${ARCHIVES[@]}"; do
+                cmp -s "$fake_primary/$a" "$ROOT/$a" || tor_copy_test_fail 'portable copy changed an archive'
+                [ "$(ls -l "$ROOT/$a" | awk '{print $2}')" = 1 ] || tor_copy_test_fail 'portable copy shared an inode'
+            done
+            [ "$(ls -l "$ROOT/$TOR_TREE/.provenance" | awk '{print $2}')" = 1 ] ||
+                tor_copy_test_fail 'portable manifest shared an inode'
+            echo 'tor_archives_ready: selftest PASS — portable copy preserves archives, manifest and inode independence'
+
+            # A failed copy must not be swallowed even when the receiver's
+            # existing, valid manifest would make have_all pass afterward.
+            before="$(sha256sum "${ARCHIVES[@]/#/$ROOT/}" "$ROOT/$TOR_TREE/.provenance")"
+            refuse_manifest=1
+            if link_from "$fake_primary" >"$fixture/portable-refusal.log" 2>&1; then
+                tor_copy_test_fail 'failed provenance copy was accepted'
+            fi
+            grep -F 'injected provenance copy failure' "$fixture/portable-refusal.log" >/dev/null ||
+                tor_copy_test_fail 'manifest failure injection was not exercised'
+            [ "$before" = "$(sha256sum "${ARCHIVES[@]/#/$ROOT/}" "$ROOT/$TOR_TREE/.provenance")" ] ||
+                tor_copy_test_fail 'failed provenance copy changed artifact bytes'
+            echo 'tor_archives_ready: selftest PASS — failed manifest copy refuses without changing artifacts'
+        )
+        tor_copy_portable_selftest
         # have_all() must fail closed on a tree whose archives are present
         # but whose .provenance manifest is simply absent -- the exact state
         # a checkout ends up in when its archives were built before the
