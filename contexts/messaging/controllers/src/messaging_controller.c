@@ -497,9 +497,12 @@ static bool rpc_msg_send_named(const struct json_value *params, bool help,
     snprintf(msg.body, sizeof(msg.body), "%s", body);
     zmsg_compute_id(&msg, msg.msg_id);
 
+    if (!db_zmsg_save(g_msg_ndb, &msg)) {
+        LOG_ERROR("zmsg", "msg_send_named: local message save failed");
+        json_set_str(result, "Local message save failed; message not queued");
+        return false;
+    }
     zmsg_store_add(&msg);
-    if (g_msg_ndb)
-        db_zmsg_save(g_msg_ndb, &msg);
 
     json_set_object(result);
     char hex[65];

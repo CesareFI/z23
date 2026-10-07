@@ -82,9 +82,79 @@ static bool inbox_counts(const struct json_value *root, int *shown,
     return true;
 }
 
+static bool named_message_queued(struct node_db *ndb,
+                                  const struct json_value *result, int before)
+{
+    const char *status = json_get_str(json_get(result, "status"));
+    struct zmsg_message row = {0};
+    return status && strcmp(status, "queued") == 0 &&
+           zmsg_store_count() == before + 1 && db_zmsg_count(ndb, false) == 1 &&
+           db_zmsg_list(ndb, &row, 1, false) == 1 &&
+           strcmp(row.body, "hello") == 0 &&
+           strcmp(row.recipient, "alice (fixture-target)") == 0;
+}
+
+static bool named_message_save_test(bool query_only)
+{
+    struct node_db ndb = {0};
+    struct znam_entry entry = {0};
+    struct json_value params = {0}, arg = {0}, result = {0};
+    struct rpc_table table;
+    rpc_table_init(&table);
+    register_msg_rpc_commands(&table);
+    const struct rpc_command *cmd = rpc_table_find(&table, "msg_send_named");
+    snprintf(entry.name, sizeof(entry.name), "alice");
+    snprintf(entry.owner_address, sizeof(entry.owner_address), "fixture-owner");
+    entry.target_type = ZNAM_TYPE_CONTENT;
+    snprintf(entry.target_value, sizeof(entry.target_value), "fixture-target");
+    memset(entry.reg_txid, 0x43, sizeof(entry.reg_txid));
+    entry.reg_height = 1;
+    bool ready = node_db_open(&ndb, ":memory:") && db_znam_save(&ndb, &entry);
+    json_set_array(&params);
+    json_set_str(&arg, "alice");
+    ready = ready && json_push_back(&params, &arg);
+    json_set_str(&arg, "hello");
+    ready = ready && json_push_back(&params, &arg);
+    if (ready && query_only)
+        ready = sqlite3_exec(ndb.db, "PRAGMA query_only=ON", NULL, NULL,
+                             NULL) == SQLITE_OK;
+    int before = zmsg_store_count();
+    rpc_msg_set_state(&ndb, NULL);
+    bool called = ready && cmd && cmd->actor(&params, false, &result);
+    bool ok = false;
+    if (query_only) {
+        const char *error = json_get_str(&result);
+        ok = ready && cmd && !called;
+        ok &= result.type == JSON_STR && error &&
+              strstr(error, "Local message save failed");
+        ok &= zmsg_store_count() == before;
+        ok &= db_zmsg_count(&ndb, false) == 0;
+    } else {
+        ok = called && named_message_queued(&ndb, &result, before);
+    }
+    json_free(&result);
+    json_free(&arg);
+    json_free(&params);
+    rpc_msg_set_state(NULL, NULL);
+    node_db_close(&ndb);
+    return ok;
+}
+
+static int named_message_save_report(bool query_only)
+{
+    printf("api: named message %s... ", query_only ?
+           "refuses failed local save" : "queues one durable local copy");
+    bool ok = named_message_save_test(query_only);
+    printf("%s\n", ok ? "OK" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int api_msg_routes_focused_tests(void)
 {
     int failures = 0;
+
+    failures += named_message_save_report(true);
+    failures += named_message_save_report(false);
 
     /* ── Fitting inbox: the window holds everything ──────────────── */
     printf("api: /api/messages/index returns the inbox index object... ");
