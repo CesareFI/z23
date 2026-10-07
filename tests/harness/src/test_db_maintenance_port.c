@@ -131,6 +131,159 @@ static int t_wal_ckpt_classify_counts(void)
     return failures;
 }
 
+/* Only the main file is forwarded. Native VFS journal/WAL creation can
+ * use fixed pathname buffers even when the wrapper advertises a larger
+ * mxPathname. Seed the size witnesses separately; do not enter those paths. */
+static sqlite3_vfs *long_path_base;
+
+static int long_path_open(sqlite3_vfs *vfs, const char *name, sqlite3_file *file,
+                          int flags, int *out_flags)
+{
+    (void)vfs;
+    if (!(flags & SQLITE_OPEN_MAIN_DB) || !(flags & SQLITE_OPEN_READONLY))
+        return SQLITE_CANTOPEN;
+    return long_path_base->xOpen(long_path_base, name, file, flags, out_flags);
+}
+
+static int long_path_full(sqlite3_vfs *vfs, const char *name, int size, char *out)
+{
+    (void)vfs;
+    size_t len = strlen(name);
+    if (name[0] != '/' || size <= 0 || len >= (size_t)size)
+        return SQLITE_CANTOPEN;
+    memcpy(out, name, len + 1);
+    return SQLITE_OK;
+}
+
+static bool long_path_seed(const char *path, const char *suffix)
+{
+    char name[1100];
+    int n = snprintf(name, sizeof name, "%s%s", path, suffix);
+    if (n < 0 || (size_t)n >= sizeof name)
+        return false;
+    FILE *file = fopen(name, "wb");
+    if (!file)
+        return false;
+    bool wrote = fwrite("size witness", 1, 12, file) == 12;
+    return fclose(file) == 0 && wrote;
+}
+
+static int t_wal_path_probe(sqlite3 *db, const char *path, size_t length)
+{
+    int failures = 0;
+    const char *actual = sqlite3_db_filename(db, "main");
+    DBMP_CHECK("exact returned filename", actual &&
+               strlen(actual) == length && strcmp(actual, path) == 0);
+    struct db_maintenance_sqlite_ctx ctx;
+    struct db_maintenance_port port = {0};
+    DBMP_CHECK("long-path bind", db_maintenance_sqlite_bind(&ctx, db, &port));
+    int64_t bytes = 777;
+    bool got = port.wal_size_bytes(port.self, &bytes);
+    if (length == 1019) {
+        DBMP_CHECK("fitting WAL exact size", got && bytes == 12);
+    } else {
+        DBMP_CHECK("oversized WAL path refuses", !got);
+        DBMP_CHECK("refusal preserves sentinel", bytes == 777);
+    }
+    return failures;
+}
+
+static int t_wal_path_case(const char *dir, size_t length, const char *vfs_name)
+{
+    int failures = 0;
+    char path[1100], truncated[1024];
+    size_t len = strlen(dir);
+    bool bounded = len < length && length <= 1023 && length - len - 1 <= 250;
+    DBMP_CHECK("bounded long-path components", bounded);
+    if (!bounded) return failures;
+    memcpy(path, dir, len);
+    path[len] = '/';
+    memset(path + len + 1, 'p', length - len - 1);
+    path[length] = 0;
+    /* Nonempty real files make the mutant return true at every refusal
+     * boundary, including 1020 where truncation leaves the suffix '-wa'.
+     * sqlite3_open_v2 does not read the schema; no SQL is run on witnesses. */
+    DBMP_CHECK("main size witness created", long_path_seed(path, ""));
+    DBMP_CHECK("WAL size witness created", long_path_seed(path, "-wal"));
+    memcpy(truncated, path, length);
+    size_t suffix = 1023 - length;
+    memcpy(truncated + length, "-wal", suffix);
+    truncated[1023] = 0;
+    if (length != 1019)
+        DBMP_CHECK("truncated-path witness created", long_path_seed(truncated, ""));
+    sqlite3 *db = NULL;
+    bool opened = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, vfs_name) == SQLITE_OK;
+    DBMP_CHECK("long-path DB opens", opened);
+    if (opened) failures += t_wal_path_probe(db, path, length);
+    DBMP_CHECK("long-path DB closes", !db || sqlite3_close(db) == SQLITE_OK);
+    clean_file_db(NULL, path);
+    if (length != 1019 && length != 1023)
+        DBMP_CHECK("truncated-path witness removed", unlink(truncated) == 0);
+    DBMP_CHECK("long-path files removed", access(path, F_OK) != 0 && wal_file_size(path) < 0);
+    return failures;
+}
+
+static bool long_path_directory(char *dir, char *root, size_t capacity)
+{
+    if (!test_mkdtemp(dir, capacity, "dbmp_bounds")) return false;
+    memcpy(root, dir, strlen(dir) + 1);
+    size_t len = strlen(dir);
+    if (len > 850) return false;
+    while (len < 848) {
+        size_t part = 850 - len - 1;
+        if (part > 180) part = 180;
+        dir[len++] = '/';
+        memset(dir + len, 'd', part);
+        len += part;
+        dir[len] = 0;
+        if (mkdir(dir, 0700) != 0) {
+            *strrchr(dir, '/') = 0;
+            return false;
+        }
+    }
+    return true;
+}
+
+static int long_path_cleanup(char *dir, const char *root)
+{
+    int failures = 0;
+    while (strlen(dir) > strlen(root)) {
+        DBMP_CHECK("fixture directory removed", rmdir(dir) == 0);
+        *strrchr(dir, '/') = 0;
+    }
+    DBMP_CHECK("fixture root removed", rmdir(root) == 0);
+    return failures;
+}
+
+static int t_wal_path_bounds(void)
+{
+    int failures = 0;
+    char dir[1100] = "", root[1100] = "";
+    bool ready = long_path_directory(dir, root, sizeof dir);
+    DBMP_CHECK("long-path fixture ready", ready);
+    if (!root[0]) return failures;
+    long_path_base = sqlite3_vfs_find(NULL);
+    sqlite3_vfs vfs = {0};
+    bool registered = false;
+    if (ready && long_path_base) {
+        vfs = *long_path_base;
+        vfs.pNext = NULL;
+        vfs.zName = "dbmp-long-path";
+        vfs.mxPathname = 4096;
+        vfs.xOpen = long_path_open;
+        vfs.xFullPathname = long_path_full;
+        registered = sqlite3_vfs_register(&vfs, 0) == SQLITE_OK;
+    }
+    DBMP_CHECK("long-path VFS registered", registered);
+    const size_t lengths[] = {1019, 1020, 1023};
+    for (size_t i = 0; registered && i < 3; ++i)
+        failures += t_wal_path_case(dir, lengths[i], vfs.zName);
+    if (registered)
+        DBMP_CHECK("fixture VFS removed", sqlite3_vfs_unregister(&vfs) == SQLITE_OK);
+    failures += long_path_cleanup(dir, root);
+    return failures;
+}
+
 int test_db_maintenance_port(void)
 {
     int failures = 0;
@@ -318,6 +471,7 @@ int test_db_maintenance_port(void)
         PASS();
     } _test_next:;
 
+    failures += t_wal_path_bounds();
     failures += t_wal_ckpt_classify_ranking();
     failures += t_wal_ckpt_classify_unknown();
     failures += t_wal_ckpt_classify_counts();

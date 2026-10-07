@@ -142,7 +142,9 @@ static bool dbm_wal_size_bytes(void *self, int64_t *out)
         return false;
     char wal_path[1024];
     struct stat st;
-    snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
+    int written = snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
+    if (written < 0 || (size_t)written >= sizeof(wal_path))
+        return false;
     if (stat(wal_path, &st) != 0)
         return false;
     *out = (int64_t)st.st_size;
