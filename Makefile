@@ -9555,6 +9555,11 @@ bench-sync: zclassic23 bench_fresh_sync
 
 .PHONY: bench_fresh_sync
 bench_fresh_sync: $(BIN_DIR)/bench_fresh_sync
+
+.PHONY: bench-fresh-sync-tail-io-selftest
+bench-fresh-sync-tail-io-selftest:
+	@bash tools/scripts/bench_fresh_sync_tail_io_selftest.sh --analyze
+
 $(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c \
 		platform/modules/platform/src/clock.c platform/modules/base/src/log_level.c
 	@mkdir -p $(dir $@)
