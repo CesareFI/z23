@@ -9,6 +9,10 @@ repository's C23 convention. Rust is not used.
 This is unfinished development software. Do not fund development addresses or
 import a key controlling real funds. No signing or broadcast is enabled yet.
 
+The native core also has an offline [shielded public address envelope reader](docs/SHIELDED_ADDRESS.md).
+It checks encoding only and does not enable shielded payments or establish
+spendability, ownership or chain identity.
+
 ## Build
 
 JDK 17, CMake 3.22.1, Android NDK 27.2.12479018, Android SDK platform 36 and
@@ -180,11 +184,18 @@ probes verify that the extra checks stop faults ordinary UBSan permits, and the
 fuzz-profile gate verifies the actual authored compile commands. These checks
 do not replace explicit bounds/conversion review or instrument Android releases.
 
+The payment-URI fuzzer's generated percent-encoded labels use an independent
+UTF-8 oracle to require both valid acceptance and invalid refusal. Accepted
+labels must match the input bytes exactly, without invented amount/message
+fields. The registered `wallet_payment_fuzz_contract` replays empty labels,
+every byte value, UTF-8 truncations and field-length boundaries in normal host
+safety runs. This qualifies the fuzz oracle; it grants no payment authority.
+
 LeakSanitizer needs a host that permits its process inspection. Do not disable
 it to call a restricted sandbox run successful. The manual pre-commit review is
 [C_SAFETY_REVIEW.md](docs/C_SAFETY_REVIEW.md).
 
-The registered JNI sync-owner race fixture also supports a separate host Clang
+The registered JNI sync-owner and unsigned-review race fixtures support a separate host Clang
 ThreadSanitizer build. Keep it separate from ASan/UBSan and Android releases:
 
 ```sh
@@ -194,9 +205,9 @@ cmake -S native -B native/build/thread-safety -DCMAKE_C_COMPILER=clang-20 \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
   '-DCMAKE_C_FLAGS=-fsanitize=thread -fno-sanitize-recover=all -fno-omit-frame-pointer' \
   '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread'
-cmake --build native/build/thread-safety --target jni_sync_race_tests -j4
+cmake --build native/build/thread-safety --target jni_sync_race_tests jni_review_race_tests -j4
 TSAN_OPTIONS=halt_on_error=1:report_bugs=1:exitcode=66 \
-  ctest --test-dir native/build/thread-safety -R '^wallet_jni_sync_races$' --output-on-failure
+  ctest --test-dir native/build/thread-safety -R '^wallet_jni_(sync|review)_races$' --output-on-failure
 ```
 
 Two native callers query an owner during closure/replacement, then require
@@ -204,6 +215,15 @@ retired callbacks to refuse even when the replacement has the same attempt
 token. The fake VM uses independent thread-local result buffers. This tests the
 native registry, not a real JVM or every possible thread schedule. The measured
 detector rejects an unlocked-registry mutation; see the review and work log.
+
+The review fixture races snapshot/wire reads against cancellation and replacement.
+Retired IDs must not read, expire or cancel the new draft, including callbacks
+carrying extreme timestamps. Positive controls check the exact synthetic wire
+and assessment before and after replacement. Each thread owns its fake VM result;
+there are no keys, network operations or signing calls. The separate TSan run
+detects an isolated removal of the JNI review mutex; the real locking path passes.
+This is coverage of observed native interleavings, not proof of all schedules or
+Android VM behavior.
 
 ## Ordered milestones
 

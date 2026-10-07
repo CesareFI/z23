@@ -43,6 +43,16 @@ changes. Its upstream version string alone does not identify the reviewed code.
 
 ## Verification and remaining acceptance
 
+The `CameraPreviewPixelsInstrumentedTest` fixture checks every rendered pixel
+of asymmetric public grayscale frames, rather than relying on a uniform image
+that cannot distinguish rotation or mirroring. It covers four sensor
+orientations, both lens directions, two rectangular sizes and horizontal or
+vertical letterboxing (48 cases). Expected coordinates use integer quarter-turn
+mapping independently of the production Canvas transforms. Unit scale avoids
+assuming a bitmap magnification filter; input bytes must remain unchanged.
+These unattached-view tests qualify the natural-display software Canvas path.
+They do not establish physical camera/display rotation or GPU behavior.
+
 Native fixtures exercise 16 public addresses over four rotations and pixel
 strides 1..4, optional final-row padding, payment metadata, network mismatch,
 blank/unsupported payloads and adversarial span bounds. Provider regressions
@@ -416,3 +426,21 @@ unqualified. The scanner fixture's no-wallet-directory guard passes throughout.
 The final minified APK is restored and the evidence is retained under
 `.cache/android-wallet/api36-20260914`; exact final artifacts remain bound by
 the camera directory's `compact-all-signing-proof/inputs.sha256`.
+
+## Measuring native packet packing
+
+From `apps/zcl-wallet`, build the explicit host benchmark in its own directory:
+
+```sh
+cmake -S native -B native/build/camera-benchmark -DCMAKE_BUILD_TYPE=RelWithDebInfo -DZCL_TLS_REVIEW=OFF
+cmake --build native/build/camera-benchmark --target bench_camera_frame -j4
+native/build/camera-benchmark/bench_camera_frame
+```
+
+It uses bounded public pixels and verifies exact packet bytes with the independent
+sampling reference before and after each timed batch. Validated scalar dimensions
+and strides are sampled once before writing pixels; packet format, bounds and
+ownership are unchanged. Compare the same compiler, flags, fixtures and host
+conditions across revisions. Wall/CPU time describes C packing only, not camera
+capture, JNI/Binder, decoding, UI latency, phone performance or battery usage.
+The benchmark imposes no timing threshold and does not replace sanitizer tests.
