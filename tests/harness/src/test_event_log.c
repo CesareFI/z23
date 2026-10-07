@@ -668,13 +668,11 @@ static int bench_proof_mode(const char *path, int count, int warmup,
 
 static int run_benchmark_proof(void)
 {
-    char dir[256], path[512];
-    test_make_tmpdir(dir, sizeof(dir), "event_log", "bench_proof");
+    char dir[4096], path[4128];
     int failures = 0;
-    struct stat st;
-    EL_CHECK("bench proof: create directory",
-             stat(dir, &st) == 0 && S_ISDIR(st.st_mode));
-    if (failures) return failures;
+    char *created = test_mkdtemp(dir, sizeof(dir), "event_log_bench_proof");
+    EL_CHECK("bench proof: fixture creation succeeds", created != NULL);
+    if (!created) return failures;
     event_log_test_set_force_per_append(0);
     snprintf(path, sizeof(path), "%s/events.log", dir);
     failures += bench_proof_mode(path, 128, 8, false);
@@ -683,7 +681,10 @@ static int run_benchmark_proof(void)
     snprintf(path, sizeof(path), "%s/ab_1.log", dir);
     failures += bench_proof_mode(path, 64, 0, true);
     event_log_test_set_force_per_append(-1);
-    test_cleanup_tmpdir(dir);
+    EL_CHECK("bench proof: fixture cleanup succeeds",
+             test_rm_rf_recursive(dir) == 0);
+    if (failures == 0)
+        printf("event_log: bounded push proof completed: counts=136,64,64 flushes=0,0,2\n");
     return failures;
 }
 

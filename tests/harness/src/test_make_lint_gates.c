@@ -212,6 +212,34 @@ static bool observation_child_complete(const struct zcl_devloop_process_result *
     return !run->timed_out && !run->cancelled && !run->output_truncated;
 }
 
+static bool observation_bounded_event_log(const char *const argv[],
+    int image_fd, struct zcl_devloop_process_result *run)
+{
+    char saved[4096];
+    const char *prior = getenv("ZCL_EVENT_LOG_BENCH");
+    bool present = prior != NULL;
+    memset(run, 0, sizeof(*run));
+    if (present) {
+        int n = snprintf(saved, sizeof(saved), "%s", prior);
+        if (n < 0 || (size_t)n >= sizeof(saved)) {
+            fprintf(stderr, "observation fixture: standalone setting too long\n");
+            return false;
+        }
+    }
+    if (unsetenv("ZCL_EVENT_LOG_BENCH") != 0) {
+        fprintf(stderr, "observation fixture: cannot clear standalone setting\n");
+        return false;
+    }
+    bool started = zcl_devloop_process_run_fd(".", image_fd, argv, 60000, run);
+    int restored = present ? setenv("ZCL_EVENT_LOG_BENCH", saved, 1)
+                           : unsetenv("ZCL_EVENT_LOG_BENCH");
+    if (restored != 0) {
+        fprintf(stderr, "observation fixture: cannot restore standalone setting\n");
+        return false;
+    }
+    return started;
+}
+
 /* Open the mapped image once and use the existing descriptor-bound executor.
  * These selections cannot recurse into this group; every child is bounded. */
 static int t_dev_proof_runner_observations(void)
@@ -258,8 +286,10 @@ static int t_dev_proof_runner_observations(void)
         argv[1] = "--exact=test_event_log_benchmark";
         argv[5] = "--collect-observations";
         argv[6] = "--activate-proof-contracts";
-        ASSERT(zcl_devloop_process_run_fd(".", image_fd, argv, 60000, &run));
+        ASSERT(observation_bounded_event_log(argv, image_fd, &run));
         ASSERT(observation_child_complete(&run));
+        ASSERT(strstr(run.output,
+            "event_log: bounded push proof completed: counts=136,64,64 flushes=0,0,2") != NULL);
         ASSERT(strstr(run.output, "groups_ran=1 groups_cached=0") != NULL);
         ASSERT(strstr(run.output, "groups_failed=0 self_skips=0 env_unobserved=0 load_flaky=0") != NULL);
         ASSERT_EQ(run.exit_code, 0);
