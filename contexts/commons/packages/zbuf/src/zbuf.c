@@ -1,6 +1,7 @@
 /* zbuf — bounded growable byte buffer. See include/zbuf/zbuf.h. */
 #include "zbuf/zbuf.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,7 +46,9 @@ static zbuf_err zbuf__reserve(zbuf *b, size_t extra) {
   size_t need, ncap;
   unsigned char *nd;
   if (b->err != ZBUF_OK) return b->err;
-  if (extra > b->max - b->len) { /* also catches len > max */
+  /* Check both the payload bound and the extra NUL before adding sizes. */
+  if (b->len > b->max || extra > b->max - b->len ||
+      extra >= SIZE_MAX - b->len) {
     b->err = ZBUF_ERR_FULL;
     return b->err;
   }
@@ -60,7 +63,7 @@ static zbuf_err zbuf__reserve(zbuf *b, size_t extra) {
     }
     ncap = next;
   }
-  if (ncap > b->max + 1) ncap = b->max + 1;
+  if (b->max < SIZE_MAX && ncap > b->max + 1) ncap = b->max + 1;
   nd = realloc(b->data, ncap);
   if (nd == NULL) {
     b->err = ZBUF_ERR_OOM;

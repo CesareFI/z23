@@ -1,5 +1,5 @@
 /* Tests for zbuf — bounded growable byte buffer.
- * Groups: basic, printf, bound, sticky, null, fuzz. */
+ * Groups: basic, printf, bound, sticky, null, extreme_max, overflow, fuzz. */
 #include "zbuf/zbuf.h"
 
 #include <stdint.h>
@@ -85,6 +85,48 @@ static void test_null(void) {
   zbuf_free(&b);
 }
 
+static void test_extreme_max(void) {
+  static const size_t limits[] = {0, 1, 63, 64, 65, SIZE_MAX - 1, SIZE_MAX};
+  for (size_t i = 0; i < sizeof limits / sizeof limits[0]; i++) {
+    zbuf b;
+    CHECK(zbuf_init(&b, limits[i]) == ZBUF_OK);
+    CHECK(zbuf_write(&b, NULL, 0) == ZBUF_OK);
+    CHECK(b.cap >= 1 && b.data != NULL && b.data[0] == '\0');
+    if (limits[i] != 0) {
+      CHECK(zbuf_put(&b, 'x') == ZBUF_OK);
+      CHECK(b.len == 1 && b.cap >= 2 && strcmp(zbuf_cstr(&b), "x") == 0);
+    } else {
+      CHECK(zbuf_put(&b, 'x') == ZBUF_ERR_FULL);
+      CHECK(b.len == 0 && strcmp(zbuf_cstr(&b), "") == 0);
+    }
+    zbuf_free(&b);
+  }
+}
+
+static void test_overflow(void) {
+  zbuf b;
+  CHECK(zbuf_init(&b, SIZE_MAX) == ZBUF_OK);
+  CHECK(zbuf_write(&b, "x", SIZE_MAX) == ZBUF_ERR_FULL);
+  CHECK(b.data == NULL && b.len == 0 && b.cap == 0);
+  CHECK(zbuf_status(&b) == ZBUF_ERR_FULL);
+  CHECK(zbuf_put(&b, 'x') == ZBUF_ERR_FULL);
+  zbuf_clear(&b);
+  CHECK(zbuf_str(&b, "ok") == ZBUF_OK);
+  unsigned char *saved = b.data;
+  size_t cap = b.cap;
+  CHECK(zbuf_write(&b, "x", SIZE_MAX - b.len) == ZBUF_ERR_FULL);
+  CHECK(b.data == saved && b.cap == cap && b.len == 2);
+  CHECK(strcmp(zbuf_cstr(&b), "ok") == 0);
+  CHECK(zbuf_printf(&b, "%s", "ignored") == ZBUF_ERR_FULL);
+  zbuf_clear(&b);
+  CHECK(zbuf_printf(&b, "%s", "ok") == ZBUF_OK);
+  b.max = 1; /* A lowered public bound must not underflow max - len. */
+  CHECK(zbuf_put(&b, 'x') == ZBUF_ERR_FULL);
+  CHECK(b.data == saved && b.cap == cap && b.len == 2);
+  CHECK(strcmp(zbuf_cstr(&b), "ok") == 0);
+  zbuf_free(&b);
+}
+
 /* ---- fuzz against a reference model ---------------------------------------- */
 
 static uint64_t rng_state = 0xE5C1A94F0B3D7628ull;
@@ -142,11 +184,13 @@ int main(void) {
   test_bound();
   test_sticky();
   test_null();
+  test_extreme_max();
+  test_overflow();
   test_fuzz();
   if (g_fail) {
     fprintf(stderr, "test_zbuf: FAILURES\n");
     return 1;
   }
-  printf("test_zbuf: all groups passed (basic printf bound sticky null fuzz)\n");
+  printf("test_zbuf: all groups passed (basic printf bound sticky null extreme_max overflow fuzz)\n");
   return 0;
 }

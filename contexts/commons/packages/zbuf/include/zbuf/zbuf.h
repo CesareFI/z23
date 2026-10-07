@@ -35,7 +35,8 @@ typedef struct {
   zbuf_err err;    /* sticky */
 } zbuf;
 
-/* Initialize an empty buffer with hard maximum `max` bytes. */
+/* Initialize an empty buffer with hard maximum `max` payload bytes.
+ * Storage also needs one NUL byte; an unrepresentable total reports FULL. */
 zbuf_err zbuf_init(zbuf *b, size_t max);
 
 /* Free storage and reset to a fresh empty state (max kept). */
