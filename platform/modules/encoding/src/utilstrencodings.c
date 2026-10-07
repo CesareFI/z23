@@ -17,6 +17,8 @@ static const char SAFE_UA[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW
 
 void SanitizeString(const char *str, int rule, char *out, size_t out_size)
 {
+    if (out_size == 0)
+        return;
     const char *safe = (rule == SAFE_CHARS_UA_COMMENT) ? SAFE_UA : SAFE_DEFAULT;
     size_t j = 0;
     for (size_t i = 0; str[i] && j + 1 < out_size; i++) {
@@ -84,6 +86,8 @@ static const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqr
 
 size_t EncodeBase64(const unsigned char *data, size_t len, char *out, size_t out_size)
 {
+    if (out_size == 0)
+        return 0;
     size_t j = 0;
     size_t acc = 0, bits = 0;
     for (size_t i = 0; i < len; i++) {
@@ -152,6 +156,8 @@ static const char base32_chars[] = "abcdefghijklmnopqrstuvwxyz234567";
 
 size_t EncodeBase32(const unsigned char *data, size_t len, char *out, size_t out_size)
 {
+    if (out_size == 0)
+        return 0;
     size_t j = 0, acc = 0, bits = 0;
     for (size_t i = 0; i < len; i++) {
         acc = (acc << 8) | data[i];

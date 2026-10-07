@@ -16,6 +16,7 @@ enum safe_chars {
     SAFE_CHARS_UA_COMMENT
 };
 
+/* No output access when out_size is zero; out may then be NULL. */
 void SanitizeString(const char *str, int rule, char *out, size_t out_size);
 
 extern const signed char p_util_hexdigit[256];
@@ -23,6 +24,8 @@ signed char HexDigit(char c);
 bool IsHex(const char *str);
 size_t ParseHex(const char *psz, unsigned char *out, size_t out_size);
 
+/* Encoders return zero without output access when out_size is zero;
+ * out may then be NULL. Positive capacities include the terminator. */
 size_t EncodeBase64(const unsigned char *data, size_t len, char *out, size_t out_size);
 size_t DecodeBase64(const char *p, unsigned char *out, size_t out_size, bool *invalid);
 
