@@ -77,17 +77,9 @@ static void clear_files(void)
     }
 }
 
-static void verify(jint status, const uint8_t *record, size_t record_len, const uint8_t *entropy,
+static void verify_success(const uint8_t *record, size_t record_len, const uint8_t *entropy,
     size_t entropy_len)
 {
-    if (status == ZCL_IO_FAILURE || status == ZCL_IO_UNCERTAIN) return;
-    struct stat info = {0};
-    if (status != ZCL_OK) {
-        require(fstatat(fixture.directory, ".change.index", &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT);
-        require(fstatat(fixture.directory, "wallet.zcl", &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT);
-        require(fstatat(fixture.directory, ".wallet.pending", &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT);
-        return;
-    }
     require(!pending && record_len <= 140 && entropy_len <= 32);
     uint8_t stored[140] = {0}, blind[32] = {1};
     size_t size = 0;
@@ -100,6 +92,31 @@ static void verify(jint status, const uint8_t *record, size_t record_len, const 
     uint32_t index = UINT32_MAX;
     require(zcl_change_state_decode(record, 80, entropy, entropy_len, blind, 32,
         snapshot.tail, snapshot.tail_len, &index) == ZCL_OK && index == 0);
+}
+
+static void verify(jint status, const uint8_t *record, size_t record_len, const uint8_t *entropy,
+    size_t entropy_len)
+{
+    if (status == ZCL_IO_FAILURE || status == ZCL_IO_UNCERTAIN) return;
+    if (status == ZCL_OK) {
+        verify_success(record, record_len, entropy, entropy_len);
+        return;
+    }
+    struct stat info = {0};
+    require(fstatat(fixture.directory, ".change.index", &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT);
+    require(fstatat(fixture.directory, "wallet.zcl", &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT);
+    require(fstatat(fixture.directory, ".wallet.pending", &info, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT);
+}
+
+static void mutate_lengths(const uint8_t bytes[8], fake_array inputs[3])
+{
+    /* Truncating an absolute path can name a DIFFERENT valid directory. Keep
+     * the sole valid locator fixed to this owned fixture; vary only lengths
+     * that cannot authorize filesystem access. Do not fuzz ambient paths. */
+    static const jsize invalid_paths[3] = {0, -1, 1025};
+    if ((bytes[0] & 4U) != 0) inputs[0].length = invalid_paths[bytes[3] % 3U];
+    if ((bytes[0] & 8U) != 0) inputs[1].length = (jsize)bytes[4];
+    if ((bytes[0] & 16U) != 0) inputs[2].length = bytes[5] == 255 ? -1 : (jsize)bytes[5];
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *bytes, size_t length)
@@ -116,13 +133,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *bytes, size_t length)
         {path, sizeof(path), (jsize)fixture_path_len()},
         {record, sizeof(record), (jsize)data.wallet_len}, {entropy, sizeof(entropy), 16}
     };
-    /* Truncating an absolute path can name a DIFFERENT valid directory. Keep
-     * the sole valid locator fixed to this owned fixture; vary only lengths
-     * that cannot authorize filesystem access. Do not fuzz ambient paths. */
-    if ((bytes[0] & 4U) != 0)
-        inputs[0].length = bytes[3] % 3U == 0 ? 0 : bytes[3] % 3U == 1 ? -1 : 1025;
-    if ((bytes[0] & 8U) != 0) inputs[1].length = (jsize)bytes[4];
-    if ((bytes[0] & 16U) != 0) inputs[2].length = bytes[5] == 255 ? -1 : (jsize)bytes[5];
+    mutate_lengths(bytes, inputs);
     fail_call = bytes[6] % 7U;
     vm_calls = 0;
     pending = (bytes[0] & 32U) != 0;
