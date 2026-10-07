@@ -2721,8 +2721,6 @@ tests/harness/src/test_db_txn.c:t_rollback_on_induced_failure:17
 tests/harness/src/test_debug_bundle.c:test_debug_bundle:23
 tests/harness/src/test_dev_fleet_start.c:fsx_repo_fixture:16
 tests/harness/src/test_dev_fleet_start.c:test_dev_fleet_start:16
-tests/harness/src/test_dev_land.c:dlx_regen_conflict:21
-tests/harness/src/test_dev_land.c:test_dev_land:63
 tests/harness/src/test_dev_platform.c:run_darwin_attested_descriptor_fixture:24
 tests/harness/src/test_dev_platform.c:run_failure_store_fixture:59
 tests/harness/src/test_dev_platform.c:run_hotswap_artifact_cache_fixture:79

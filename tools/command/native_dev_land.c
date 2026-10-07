@@ -4122,9 +4122,10 @@ static void dl_beat(const struct dl_row *row, const char *beat, int64_t started)
  * upstream side, re-run the generator that owns the file, then GATE the
  * result and commit what the code actually says.
  *
- * The table is CLOSED, and deliberately: it names the only paths in the
- * tree whose content is fully derived from a make target this file can
- * name. A conflict touching anything else — even alongside these — is
+ * The table is CLOSED, and deliberately: it names the only artifact paths
+ * with a regeneration target this file can name. CODEBASE_MAP also carries
+ * authored prose, which must merge cleanly before regeneration. A conflict
+ * touching anything else — even alongside these — is
  * still a conflict and is reported exactly as it is today, because nothing
  * mechanical can settle it. */
 struct dl_regen_artifact {
@@ -4139,9 +4140,9 @@ static const struct dl_regen_artifact DL_REGEN_ARTIFACTS[] = {
     { "docs/API_REFERENCE.md", "docs-api-reference", "API reference" },
     /* No target regenerates this page's body; `fix-doc-counts` (Makefile,
      * next to check-doc-counts) rewrites the machine-readable DOC-COUNTS
-     * block from the code-measured values, which is the whole of what a
-     * landing race can move. Prose drift is left to the gate below to
-     * refuse rather than to a rewrite nobody can derive. */
+     * block from the code-measured values. Recovery normalizes that block
+     * to upstream before merging the three stages' authored prose; an
+     * authored conflict refuses recovery before regeneration or gates. */
     { "docs/CODEBASE_MAP.md", "fix-doc-counts", "codebase map" },
 };
 
@@ -4245,12 +4246,72 @@ static bool dl_regen_only(const char *paths, bool *seen)
     return any;
 }
 
-/* Take the upstream side of every conflicted artifact and stage it.
+/* Merge count-page prose; take upstream for fully generated artifacts.
  * During `git rebase <upstream>` "ours" IS the upstream being rebased
  * onto — the side whose generated content already agrees with the code
  * that is on main. A path with no stage-2 entry (a delete/modify
  * conflict) makes `checkout --ours` fail, and that refuses the whole
  * auto-resolve rather than guessing. */
+static inline bool dl_counts_span(char *text, char **begin, char **end)
+{
+    const char *b = "<!-- DOC-COUNTS-BEGIN -->\n";
+    const char *e = "<!-- DOC-COUNTS-END -->\n";
+    *begin = strstr(text, b);
+    *end = strstr(text, e);
+    if (!*begin || !*end || *end < *begin ||
+        strstr(text, "<!-- DOC-COUNTS-BEGIN -->") != *begin ||
+        strstr(text, "<!-- DOC-COUNTS-END -->") != *end ||
+        (*begin != text && (*begin)[-1] != '\n') ||
+        (*end != text && (*end)[-1] != '\n') ||
+        strstr(*begin + strlen(b), "<!-- DOC-COUNTS-BEGIN -->") ||
+        strstr(*end + strlen(e), "<!-- DOC-COUNTS-END -->"))
+        return false;
+    *end += strlen(e);
+    return true;
+}
+static bool dl_counts_merge(const struct dl_dirs *d)
+{
+#if defined(_WIN32)
+    (void)d;
+    return false;
+#else
+    char text[3][65536], merged[65536], scratch[4200], file[3][4220];
+    char *begin[3], *end[3];
+    struct zcl_spawn_binary_observation capture;
+    bool ok = false;
+    if (snprintf(scratch, sizeof(scratch), "%s/counts.XXXXXX", d->land) >=
+        (int)sizeof(scratch) || !mkdtemp(scratch)) return false;
+    for (int i = 0; i < 3; i++) {
+        char spec[64];
+        (void)snprintf(spec, sizeof(spec), ":%d:docs/CODEBASE_MAP.md", i + 1);
+        const char *show[] = { "git", "-C", d->wt, "show", spec, NULL };
+        if (!zcl_spawn_capture_binary(show, text[i], sizeof(text[i]) - 1,
+                                      DL_GIT_TIMEOUT_MS, &capture).ok) goto done;
+        text[i][capture.output_len] = '\0';
+        if (strlen(text[i]) != capture.output_len ||
+            !dl_counts_span(text[i], &begin[i], &end[i])) goto done;
+        (void)snprintf(file[i], sizeof(file[i]), "%s/%d", scratch, i);
+    }
+    for (int i = 0; i < 3; i++) {
+        memcpy(merged, text[i], (size_t)(begin[i] - text[i]));
+        merged[begin[i] - text[i]] = '\0';
+        if (!dl_append_text(file[i], merged) ||
+            !dl_append_row(file[i], begin[1], (size_t)(end[1] - begin[1])) ||
+            !dl_append_text(file[i], end[i])) goto done;
+    }
+    const char *merge[] = { "git", "-C", d->wt, "merge-file", "-p", "--",
+                            file[1], file[0], file[2], NULL };
+    if (!zcl_spawn_capture_binary(merge, merged, sizeof(merged) - 1,
+                                  DL_GIT_TIMEOUT_MS, &capture).ok) goto done;
+    merged[capture.output_len] = '\0';
+    (void)snprintf(file[0], sizeof(file[0]), "%s/merged", scratch);
+    (void)snprintf(file[1], sizeof(file[1]), "%s/docs/CODEBASE_MAP.md", d->wt);
+    ok = dl_append_text(file[0], merged) && rename(file[0], file[1]) == 0;
+done:
+    if (!zcl_tree_remove(scratch).ok) ok = false;
+    return ok;
+#endif
+}
 static bool dl_regen_resolve(const struct dl_dirs *d, const char *paths)
 {
     char work[DL_REGEN_PATHS_CAP];
@@ -4267,7 +4328,9 @@ static bool dl_regen_resolve(const struct dl_dirs *d, const char *paths)
             line[--n] = '\0';
         if (!line[0])
             continue;
-        if (dl_git(d->wt, ours, NULL, 0, DL_GIT_TIMEOUT_MS) != 0 ||
+        bool resolved = strcmp(line, "docs/CODEBASE_MAP.md") == 0
+            ? dl_counts_merge(d) : dl_git(d->wt, ours, NULL, 0, DL_GIT_TIMEOUT_MS) == 0;
+        if (!resolved ||
             dl_git(d->wt, add, NULL, 0, DL_GIT_TIMEOUT_MS) != 0)
             return false;
     }

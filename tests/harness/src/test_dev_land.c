@@ -1077,6 +1077,17 @@ static bool dlx_sign_arm(const char *dir, const char *tag)
           dlx_git(dir, c_name) == 0 && dlx_git(dir, c_mail) == 0;
 }
 
+/* Write the fixture artifacts, retaining every optional write refusal. */
+static bool dlx_regen_files(struct dlx_rig *rig, const char *body,
+                            const char *map_body, const char *third,
+                            const char *extra)
+{
+    return dlx_write_dep(rig->clone, "docs/CAPABILITY_INVENTORY.jsonl", body) &&
+           dlx_write_dep(rig->clone, "docs/CODEBASE_MAP.md", map_body) &&
+           (!third || dlx_write_dep(rig->clone, third, body)) &&
+           (!extra || dlx_write_dep(rig->clone, extra, body));
+}
+
 /* A rig whose origin and whose submitted tip regenerate the SAME generated
  * artifacts differently, so `git rebase origin/main` reports exactly those
  * paths as unmerged. `extra` (may be NULL) is one more path both sides
@@ -1090,12 +1101,9 @@ static bool dlx_regen_conflict(struct dlx_rig *rig, const char *extra,
     char basec[64], theirs[64];
     const char *reset[] = { "reset", "--quiet", "--hard", basec, NULL };
     /* A shared base both sides agree on, on origin/main. */
-    if (!dlx_write_dep(rig->clone, "docs/CAPABILITY_INVENTORY.jsonl",
-                       "base\n") ||
-        !dlx_write_dep(rig->clone, "docs/API_REFERENCE.md", "base\n") ||
-        !dlx_write_dep(rig->clone, "docs/CODEBASE_MAP.md", "base\n"))
-        return false;
-    if (extra && !dlx_write_dep(rig->clone, extra, "base\n"))
+    if (!dlx_regen_files(rig, "base\n",
+            "<!-- DOC-COUNTS-BEGIN -->\nbase\n<!-- DOC-COUNTS-END -->\n",
+            "docs/API_REFERENCE.md", extra))
         return false;
     if (!dlx_commit_tree(rig->clone, "generated artifacts", basec))
         return false;
@@ -1103,12 +1111,9 @@ static bool dlx_regen_conflict(struct dlx_rig *rig, const char *extra,
         return false;
     /* The submitted tip: its own real work, plus its regeneration of two
      * of the three artifacts. */
-    if (!dlx_write_dep(rig->clone, "docs/CAPABILITY_INVENTORY.jsonl",
-                       "mine\n") ||
-        !dlx_write_dep(rig->clone, "docs/CODEBASE_MAP.md", "mine\n") ||
-        !dlx_write_dep(rig->clone, "mine.txt", "mine\n"))
-        return false;
-    if (extra && !dlx_write_dep(rig->clone, extra, "mine\n"))
+    if (!dlx_regen_files(rig, "mine\n",
+            "<!-- DOC-COUNTS-BEGIN -->\nmine\n<!-- DOC-COUNTS-END -->\n",
+            "mine.txt", extra))
         return false;
     if (!dlx_commit_tree(rig->clone, "the submitted work", out_tip))
         return false;
@@ -1119,11 +1124,9 @@ static bool dlx_regen_conflict(struct dlx_rig *rig, const char *extra,
         return false;
     /* origin/main lands someone else's train, which regenerated the same
      * two artifacts from ITS code. */
-    if (!dlx_write_dep(rig->clone, "docs/CAPABILITY_INVENTORY.jsonl",
-                       "theirs\n") ||
-        !dlx_write_dep(rig->clone, "docs/CODEBASE_MAP.md", "theirs\n"))
-        return false;
-    if (extra && !dlx_write_dep(rig->clone, extra, "theirs\n"))
+    if (!dlx_regen_files(rig, "theirs\n",
+            "<!-- DOC-COUNTS-BEGIN -->\ntheirs\n<!-- DOC-COUNTS-END -->\n",
+            NULL, extra))
         return false;
     if (!dlx_commit_tree(rig->clone, "someone else's train", theirs))
         return false;
@@ -9770,58 +9773,9 @@ static int dlx_string_compatibility_cases(void)
     failures += dlx_row_member_boundary_case(4096, false);
     return failures;
 }
-int test_dev_land(void)
+static int dlx_case_registration(void)
 {
-    /* Canonical registered group: private bare origin only, no live queue. */
     int failures = 0;
-    failures += dlx_publication_hold_cases();
-    failures += dlx_hold_legacy_case();
-    failures += dlx_hold_pushed_case();
-    failures += dlx_hold_malformed_case();
-    failures += dlx_hold_sealed_case();
-    failures += dlx_hold_lock_case();
-    failures += dlx_launcher_join_cases();
-    failures += dlx_attest_only_cases();
-    failures += dlx_attest_bounded_wire_cases();
-    failures += dlx_attest_refusal_cases();
-    failures += test_dev_land_signed_intent();
-#if !defined(_WIN32)
-    failures += dlx_fence_cases();
-    failures += dlx_fence_concurrent();
-    failures += dlx_fence_negative_cases();
-    failures += test_dev_land_status_observation();
-#endif
-    failures += test_dev_land_signed_tamper();
-    failures += test_dev_land_receipt_adversarial();
-    failures += test_dev_land_signer_takeover();
-    failures += test_dev_land_signed_stale();
-    failures += test_dev_land_signed_recovery();
-    failures += test_dev_land_new_source_precheck();
-    failures += test_dev_land_drive_producer_reproof();
-    failures += test_dev_land_signed_lost_ack();
-    failures += test_dev_land_signed_lost_race();
-    failures += test_dev_land_signed_lost_ack_resend();
-    failures += test_dev_land_signed_push_lost_race();
-    failures += test_dev_land_cancel_push_refused();
-    failures += test_dev_land_signed_publisher_death();
-    failures += test_dev_land_watcher_admission();
-    failures += test_dev_land_long_proof_root();
-    failures += test_dev_land_malformed_queue_refusal();
-    failures += test_dev_land_chain_codec();
-    failures += test_dev_land_chain_relation();
-    failures += test_dev_land_malformed_priority_refusal();
-    failures += test_dev_land_malformed_outcome_refusal();
-    failures += test_dev_land_exact_tree();
-    failures += test_dev_land_source_binding();
-#if !defined(_WIN32)
-    failures += test_dev_land_tree_types();
-    failures += test_dev_land_tree_malformed();
-    failures += test_dev_land_tree_replacements();
-    failures += test_dev_land_tree_missing();
-    failures += test_dev_land_proof_evidence_test();
-    failures += test_dev_land_proof_evidence_compile();
-#endif
-
     TEST("land: the leaf is registered with its verb and row keys") {
         const struct zcl_command_spec *spec =
             zcl_command_registry_find(zcl_command_catalog(), DLX_PATH, NULL);
@@ -9837,7 +9791,14 @@ int test_dev_land(void)
                strstr(spec->positional_keys, "action") != NULL);
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_unknown_action(void)
+{
+    int failures = 0;
     TEST("land: an unknown action and a missing one are refused") {
         struct dlx_call c;
         dlx_isolate("route");
@@ -9852,9 +9813,16 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
 #if !defined(_WIN32)
 
+static int dlx_case_unsigned_tip(void)
+{
+    int failures = 0;
     TEST("land: submit refuses an unsigned tip and an unknown one") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -9889,12 +9857,26 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_checkout_location(void)
+{
+    int failures = 0;
     TEST("land: queue survives outside HOME from checkout and nested cwd") {
         ASSERT(dlx_queue_outside_home_child());
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_submit_status(void)
+{
+    int failures = 0;
     TEST("land: submit queues the tip and status lists it, without waiting") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -9934,14 +9916,28 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_duplicate_submit(void)
+{
+    int failures = 0;
     TEST("land: retrying the exact tip in one checkout attaches to its live row") {
         ASSERT(dlx_exact_submit_retry());
         ASSERT(dlx_exact_submit_mid_rebase_refused());
         ASSERT(dlx_submit_operation_markers_refused());
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_empty_step(void)
+{
+    int failures = 0;
     TEST("land: a step over an empty queue is a no-op that returns at once") {
         struct dlx_call c;
         time_t t0, t1;
@@ -9957,7 +9953,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_step_lock(void)
+{
+    int failures = 0;
     TEST("land: a step finds its own lock already held and says STEP_BUSY, "
         "retryable, touching nothing; released, it proceeds") {
         struct dlx_rig rig;
@@ -10012,7 +10015,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_starts_proof(void)
+{
+    int failures = 0;
     TEST("land: the step that asks for a proof returns before it finishes") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10054,7 +10064,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_absent_watcher(void)
+{
+    int failures = 0;
     TEST("land: an absent resident watcher is named, twice, not hidden") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10080,7 +10097,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_unarmed_proof(void)
+{
+    int failures = 0;
     TEST("land: an unarmed proof has an exact worker-stealable step") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10108,22 +10132,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
-    failures += test_dev_land_missing_worker();
-
-    failures += test_dev_land_interrupted_proof();
-#if !defined(_WIN32)
-    failures += test_dev_land_drive_base_watch();
-#endif
-
-    failures += test_dev_land_competing_publish("step", "step", true);
-    failures += test_dev_land_competing_publish("step", "drive", true);
-    failures += test_dev_land_competing_publish("drive", "step", true);
-    failures += test_dev_land_competing_publish("step", "drive", false);
-    failures += test_dev_land_competing_publish("drive", "step", false);
-
-    failures += test_dev_land_bounded_drive();
-
+static int dlx_case_stub_detail(void)
+{
+    int failures = 0;
     TEST("land: an unrelated stub value still reports its own detail") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10141,7 +10157,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_lands_proof(void)
+{
+    int failures = 0;
     TEST("land: a passing proof fast-forwards the real origin and lands") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10191,7 +10214,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_hook_refusal(void)
+{
+    int failures = 0;
     TEST("land: pushes through the pre-push hook — a refusing hook wins") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10234,7 +10264,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_proof_failure(void)
+{
+    int failures = 0;
     TEST("land: a failing proof records the dimension and a log path") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10297,7 +10334,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_timing_detail(void)
+{
+    int failures = 0;
     TEST("land: a lint timing-table row never becomes a proof failure detail") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10339,7 +10383,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_moved_base(void)
+{
+    int failures = 0;
     TEST("land: a base that moved while proving re-rebases, never lands") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10386,15 +10437,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
-    failures += test_dev_land_explicit_main();
-
-    failures += test_dev_land_missing_main();
-
-    failures += test_dev_land_initial_remote_missing();
-
-    failures += test_dev_land_final_observation_missing();
-
+static int dlx_case_cancel_request(void)
+{
+    int failures = 0;
     TEST("land: cancel drops one request by sequence number") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10433,7 +10483,22 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static size_t dlx_case_trim_row(char *line)
+{
+    size_t len = strlen(line);
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+        line[--len] = '\0';
+    return len;
+}
+
+static int dlx_case_concurrent_submit(void)
+{
+    int failures = 0;
     TEST("land: two concurrent exact submitters attach one complete row") {
         struct dlx_rig rig;
         char landdir[1200], qf[1400], line[8192];
@@ -10474,10 +10539,7 @@ int test_dev_land(void)
         if (f) {
             while (fgets(line, sizeof(line), f)) {
                 struct json_value v;
-                size_t len = strlen(line);
-                while (len > 0 &&
-                       (line[len - 1] == '\n' || line[len - 1] == '\r'))
-                    line[--len] = '\0';
+                size_t len = dlx_case_trim_row(line);
                 if (len == 0)
                     continue;
                 nlines++;
@@ -10491,7 +10553,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_dense_detail(void)
+{
+    int failures = 0;
     TEST("land: a control-byte-dense detail persists instead of "
         "un-committing the row") {
         struct dlx_rig rig;
@@ -10537,25 +10606,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
-    failures += test_dev_land_publisher_death();
-    failures += test_dev_land_drain_adoption();
-    failures += test_dev_land_postpush_observation_missing(false);
-    failures += test_dev_land_postpush_observation_missing(true);
-    failures += test_dev_land_prepush_checkpoint();
-    failures += test_dev_land_prepush_persist_refusal();
-    failures += test_dev_land_prepush_sync_refusal();
-    failures += test_dev_land_missing_publication_intent();
-    failures += test_dev_land_attach_target_cases();
-    failures += test_dev_land_postpush_result_unconfirmed();
-    failures += test_dev_land_expected_base_race();
-    failures += test_dev_land_recovery_ignores_replace_refs();
-    failures += test_dev_land_nonfastforward_client_guard();
-    failures += test_dev_land_lost_persistence();
-    failures += test_dev_land_after_proof_restart();
-    failures += test_dev_land_terminal_replay();
-    failures += test_dev_land_outcome_visible_in_mail();
-
+static int dlx_case_missing_hook(void)
+{
+    int failures = 0;
     TEST("land: a hooksPath naming no real pre-push cannot skip admission") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10626,7 +10684,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_cancel_race(void)
+{
+    int failures = 0;
     TEST("land: a cancel that beats a landing records exactly one outcome") {
         struct dlx_rig rig;
         struct dlx_call c, cancelc;
@@ -10694,11 +10759,8 @@ int test_dev_land(void)
         if (f) {
             while (fgets(line, sizeof(line), f)) {
                 struct json_value v;
-                size_t len = strlen(line);
+                size_t len = dlx_case_trim_row(line);
                 const struct json_value *seqv, *statev;
-                while (len > 0 &&
-                       (line[len - 1] == '\n' || line[len - 1] == '\r'))
-                    line[--len] = '\0';
                 if (len == 0)
                     continue;
                 json_init(&v);
@@ -10726,7 +10788,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_aged_successor(void)
+{
+    int failures = 0;
     TEST("land: moving main keeps the aged successor ahead of newer work") {
         struct dlx_rig rig;
         struct dlx_call c;
@@ -10800,8 +10869,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
-    failures += test_dev_land_main_moves_converge();
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_option_path(void)
+{
+    int failures = 0;
     TEST("land: a worktree that looks like a git option is refused at "
         "parse, never reaches git") {
         struct dlx_rig rig;
@@ -10892,9 +10967,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
-    failures += test_dev_land_vendor_dependencies();
-
+static int dlx_case_dependency_links(void)
+{
+    int failures = 0;
     TEST("land: a dependency link whose only extra name sits in the "
         "leaf's own generation pool is repaired, not refused") {
         struct dlx_rig rig;
@@ -10998,7 +11078,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_missing_dependency(void)
+{
+    int failures = 0;
     TEST("land: a proof-generation dependency missing from the submitting "
         "checkout too refuses by name instead of proceeding") {
         struct dlx_rig rig;
@@ -11031,9 +11118,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
-    failures += test_dev_land_missing_tor_makefile();
-
+static int dlx_case_tor_gitlink(void)
+{
+    int failures = 0;
     TEST("land: vendor/tor as a real submodule gitlink is initialised "
         "before any archive is materialized, and a failed init refuses by "
         "name without ever copying one") {
@@ -11101,7 +11193,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_tor_head(void)
+{
+    int failures = 0;
     TEST("land: a submitting checkout whose vendor/tor HEAD differs from "
         "the tip's pinned gitlink refuses by name, naming both commits, "
         "instead of reusing the stale archive") {
@@ -11165,7 +11264,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_hook_drift(void)
+{
+    int failures = 0;
     TEST("land: a landing worktree whose installed native hooks drifted "
         "from the binary its own lint rebuilt is repaired before the proof "
         "is asked for, and missing hook names are relinked") {
@@ -11278,7 +11384,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_idle_proof(void)
+{
+    int failures = 0;
     TEST("land: a queued proof request no worker claims past the idle "
         "bound is named, not read as an ordinary pending") {
         char detail[192];
@@ -11304,7 +11417,14 @@ int test_dev_land(void)
         ASSERT(zcl_native_dev_land_test_idle_bound() == 900);
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_missing_hook_binary(void)
+{
+    int failures = 0;
     TEST("land: a landing worktree with no rebuilt hook binary at all "
         "fails the step by name instead of asking a proof for hooks it "
         "cannot vouch for") {
@@ -11334,7 +11454,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_quiet_hooks(void)
+{
+    int failures = 0;
     TEST("land: a step quiets the armed hooks' proof scheduling for its "
         "own transient checkouts, so a rebase's throwaway HEAD can never "
         "enqueue a doomed proof pair") {
@@ -11399,7 +11526,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_uninitialised_tor(void)
+{
+    int failures = 0;
     TEST("land: an uninitialised vendor/tor in the SUBMITTING checkout "
         "refuses by name and by fix, never as a phantom pin mismatch") {
         struct dlx_rig rig;
@@ -11461,7 +11595,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_current_tor(void)
+{
+    int failures = 0;
     TEST("land: a landing worktree already standing on the tip's vendor/tor "
         "pin with the archive in place never consults the submitting "
         "checkout again") {
@@ -11547,8 +11688,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
-
+static int dlx_case_generated_conflict(void)
+{
+    int failures = 0;
     TEST("land: a rebase conflict confined to the regenerated artifacts is "
         "resolved from the code and folded, signed, into the candidate's "
         "own commit, not refused") {
@@ -11599,7 +11746,7 @@ int test_dev_land(void)
                0);
         ASSERT_STR_EQ(subject, "theirs\nregenerated by dev.land");
         ASSERT(dlx_git_out(landwt, map, subject, sizeof(subject)) == 0);
-        ASSERT_STR_EQ(subject, "theirs\nregenerated by dev.land");
+        ASSERT_STR_EQ(subject, "<!-- DOC-COUNTS-BEGIN -->\ntheirs\n<!-- DOC-COUNTS-END -->\nregenerated by dev.land");
         ASSERT(dlx_git_out(landwt, mine, subject, sizeof(subject)) == 0);
         ASSERT_STR_EQ(subject, "mine");
         /* Signed by AMBIENT config: dev.land passes no signing flag, and
@@ -11610,7 +11757,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_rerere_conflict(void)
+{
+    int failures = 0;
     TEST("land: rerere autoupdate cannot hide a previously resolved "
         "generated-artifact conflict from the rebase classifier") {
         struct dlx_rig rig;
@@ -11646,7 +11800,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_regen_gate(void)
+{
+    int failures = 0;
     TEST("land: a post-regeneration gate that still refuses fails the row "
         "by name instead of landing a tree the gates reject") {
         struct dlx_rig rig;
@@ -11679,7 +11840,14 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
 
+static int dlx_case_mixed_conflict(void)
+{
+    int failures = 0;
     TEST("land: one conflicted path outside the regenerated-artifact table "
         "keeps the whole conflict a conflict") {
         struct dlx_rig rig;
@@ -11713,6 +11881,189 @@ int test_dev_land(void)
         dlx_restore();
         PASS();
     }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+#endif /* !defined(_WIN32) */
+
+int test_dev_land(void)
+{
+    /* Canonical registered group: private bare origin only, no live queue. */
+    int failures = 0;
+    failures += dlx_publication_hold_cases();
+    failures += dlx_hold_legacy_case();
+    failures += dlx_hold_pushed_case();
+    failures += dlx_hold_malformed_case();
+    failures += dlx_hold_sealed_case();
+    failures += dlx_hold_lock_case();
+    failures += dlx_launcher_join_cases();
+    failures += dlx_attest_only_cases();
+    failures += dlx_attest_bounded_wire_cases();
+    failures += dlx_attest_refusal_cases();
+    failures += test_dev_land_signed_intent();
+#if !defined(_WIN32)
+    failures += dlx_fence_cases();
+    failures += dlx_fence_concurrent();
+    failures += dlx_fence_negative_cases();
+    failures += test_dev_land_status_observation();
+#endif
+    failures += test_dev_land_signed_tamper();
+    failures += test_dev_land_receipt_adversarial();
+    failures += test_dev_land_signer_takeover();
+    failures += test_dev_land_signed_stale();
+    failures += test_dev_land_signed_recovery();
+    failures += test_dev_land_new_source_precheck();
+    failures += test_dev_land_drive_producer_reproof();
+    failures += test_dev_land_signed_lost_ack();
+    failures += test_dev_land_signed_lost_race();
+    failures += test_dev_land_signed_lost_ack_resend();
+    failures += test_dev_land_signed_push_lost_race();
+    failures += test_dev_land_cancel_push_refused();
+    failures += test_dev_land_signed_publisher_death();
+    failures += test_dev_land_watcher_admission();
+    failures += test_dev_land_long_proof_root();
+    failures += test_dev_land_malformed_queue_refusal();
+    failures += test_dev_land_chain_codec();
+    failures += test_dev_land_chain_relation();
+    failures += test_dev_land_malformed_priority_refusal();
+    failures += test_dev_land_malformed_outcome_refusal();
+    failures += test_dev_land_exact_tree();
+    failures += test_dev_land_source_binding();
+#if !defined(_WIN32)
+    failures += test_dev_land_tree_types();
+    failures += test_dev_land_tree_malformed();
+    failures += test_dev_land_tree_replacements();
+    failures += test_dev_land_tree_missing();
+    failures += test_dev_land_proof_evidence_test();
+    failures += test_dev_land_proof_evidence_compile();
+#endif
+
+    failures += dlx_case_registration();
+
+    failures += dlx_case_unknown_action();
+
+#if !defined(_WIN32)
+
+    failures += dlx_case_unsigned_tip();
+
+    failures += dlx_case_checkout_location();
+
+    failures += dlx_case_submit_status();
+
+    failures += dlx_case_duplicate_submit();
+
+    failures += dlx_case_empty_step();
+
+    failures += dlx_case_step_lock();
+
+    failures += dlx_case_starts_proof();
+
+    failures += dlx_case_absent_watcher();
+
+    failures += dlx_case_unarmed_proof();
+
+    failures += test_dev_land_missing_worker();
+
+    failures += test_dev_land_interrupted_proof();
+#if !defined(_WIN32)
+    failures += test_dev_land_drive_base_watch();
+#endif
+
+    failures += test_dev_land_competing_publish("step", "step", true);
+    failures += test_dev_land_competing_publish("step", "drive", true);
+    failures += test_dev_land_competing_publish("drive", "step", true);
+    failures += test_dev_land_competing_publish("step", "drive", false);
+    failures += test_dev_land_competing_publish("drive", "step", false);
+
+    failures += test_dev_land_bounded_drive();
+
+    failures += dlx_case_stub_detail();
+
+    failures += dlx_case_lands_proof();
+
+    failures += dlx_case_hook_refusal();
+
+    failures += dlx_case_proof_failure();
+
+    failures += dlx_case_timing_detail();
+
+    failures += dlx_case_moved_base();
+
+    failures += test_dev_land_explicit_main();
+
+    failures += test_dev_land_missing_main();
+
+    failures += test_dev_land_initial_remote_missing();
+
+    failures += test_dev_land_final_observation_missing();
+
+    failures += dlx_case_cancel_request();
+
+    failures += dlx_case_concurrent_submit();
+
+    failures += dlx_case_dense_detail();
+
+    failures += test_dev_land_publisher_death();
+    failures += test_dev_land_drain_adoption();
+    failures += test_dev_land_postpush_observation_missing(false);
+    failures += test_dev_land_postpush_observation_missing(true);
+    failures += test_dev_land_prepush_checkpoint();
+    failures += test_dev_land_prepush_persist_refusal();
+    failures += test_dev_land_prepush_sync_refusal();
+    failures += test_dev_land_missing_publication_intent();
+    failures += test_dev_land_attach_target_cases();
+    failures += test_dev_land_postpush_result_unconfirmed();
+    failures += test_dev_land_expected_base_race();
+    failures += test_dev_land_recovery_ignores_replace_refs();
+    failures += test_dev_land_nonfastforward_client_guard();
+    failures += test_dev_land_lost_persistence();
+    failures += test_dev_land_after_proof_restart();
+    failures += test_dev_land_terminal_replay();
+    failures += test_dev_land_outcome_visible_in_mail();
+
+    failures += dlx_case_missing_hook();
+
+    failures += dlx_case_cancel_race();
+
+    failures += dlx_case_aged_successor();
+    failures += test_dev_land_main_moves_converge();
+
+    failures += dlx_case_option_path();
+
+    failures += test_dev_land_vendor_dependencies();
+
+    failures += dlx_case_dependency_links();
+
+    failures += dlx_case_missing_dependency();
+
+    failures += test_dev_land_missing_tor_makefile();
+
+    failures += dlx_case_tor_gitlink();
+
+    failures += dlx_case_tor_head();
+
+    failures += dlx_case_hook_drift();
+
+    failures += dlx_case_idle_proof();
+
+    failures += dlx_case_missing_hook_binary();
+
+    failures += dlx_case_quiet_hooks();
+
+    failures += dlx_case_uninitialised_tor();
+
+    failures += dlx_case_current_tor();
+
+
+    failures += dlx_case_generated_conflict();
+
+    failures += dlx_case_rerere_conflict();
+
+    failures += dlx_case_regen_gate();
+
+    failures += dlx_case_mixed_conflict();
 
     failures += test_dev_land_integrated_merge(false);
     failures += test_dev_land_integrated_merge(true);
@@ -11733,7 +12084,6 @@ int test_dev_land(void)
 
 #endif /* !defined(_WIN32) */
 
-_test_next:;
     dlx_restore();
     if (failures == 0)
         printf("test_dev_land: all passed\n");
@@ -12097,10 +12447,64 @@ _test_next:;
 static int test_dev_land_rebase_regen_cases(void)
 {
     int failures = 0;
+    const char *block = "<!-- DOC-COUNTS-BEGIN -->\ntest_groups: 1253\nport_interfaces: 13\npersistence_adapters: 14\ncondition_registrations: 56\ncommand_bundles: 31\ncommand_roots: 13\ndumpstate_subsystems: 167\napp_shape_folders: 7\n<!-- DOC-COUNTS-END -->\n";
+    for (int ordinal = 0; ordinal < 5; ordinal++) {
+        int mode = ordinal == 0 ? 4 : ordinal - 1;
+        TEST("land: count recovery preserves proposals and refuses invalid blocks") {
+            struct dlx_rig rig;
+            struct dlx_call c;
+            char base[64], tip[64], upstream[64], a[512], b[512], p[512], wt[1300], out[1024];
+            const char *push[] = { "push", "--quiet", "origin", "HEAD:main", NULL };
+            const char *keep[] = { "branch", "keep-tip", NULL };
+            const char *reset[] = { "reset", "--hard", base, NULL };
+            const char *show[] = { "show", "keep-tip:docs/CODEBASE_MAP.md", NULL };
+            const char *head[] = { "show", "HEAD:docs/CODEBASE_MAP.md", NULL };
+            dlx_isolate("countsprose");
+            ASSERT(dlx_rig_make(&rig, "countsprose_rig"));
+            snprintf(a, sizeof(a), "Action A.\n%s", block);
+            snprintf(b, sizeof(b), "Action B.\n%s", block);
+            snprintf(p, sizeof(p), "Action C.\n%s", block);
+            if (mode == 2) { strcpy(a, "Action A.\n"); strcpy(b, "Action B.\n"); strcpy(p, "Action C.\n"); }
+            if (mode == 3) { strcat(a, block); strcat(b, block); strcat(p, block); }
+            if (mode == 4) {
+                snprintf(b, sizeof(b), "Action A.\n%s", block);
+                strstr(b, "1253")[3] = '4';
+                strstr(p, "1253")[3] = '5';
+            }
+            ASSERT(dlx_write_dep(rig.clone, "docs/CODEBASE_MAP.md", a)); ASSERT(dlx_commit_tree(rig.clone, "base", base));
+            ASSERT(dlx_git(rig.clone, push) == 0);
+            ASSERT(dlx_write_dep(rig.clone, "docs/CODEBASE_MAP.md", p));
+            if (mode == 1) ASSERT(dlx_write_dep(rig.clone, "clean.txt", "clean\n"));
+            ASSERT(dlx_commit_tree(rig.clone, "proposal", tip));
+            ASSERT(dlx_git(rig.clone, keep) == 0);
+            ASSERT(dlx_git(rig.clone, reset) == 0);
+            ASSERT(dlx_write_dep(rig.clone, "docs/CODEBASE_MAP.md", b)); ASSERT(dlx_commit_tree(rig.clone, "upstream", upstream));
+            ASSERT(dlx_git(rig.clone, push) == 0);
+            setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+            setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+            setenv("ZCL_LAND_REGEN_MAKE_STUB", "1", 1);
+            dlx_submit(&c, &rig, tip);
+            ASSERT(dlx_run(&c)); ASSERT(dlx_ok(&c)); dlx_end(&c);
+            dlx_begin(&c, "step");
+            ASSERT(dlx_run(&c)); ASSERT(dlx_ok(&c));
+            ASSERT_STR_EQ(dlx_str(&c, "state"), mode == 4 ? "started" : "conflict");
+            if (mode == 4)
+                ASSERT(strstr(dlx_str(&c, "detail"),
+                              "rebase: regenerated docs/CODEBASE_MAP.md") != NULL);
+            dlx_end(&c);
+            ASSERT(dlx_git_out(rig.clone, show, out, sizeof(out)) == 0);
+            p[strlen(p) - 1] = '\0';
+            ASSERT_STR_EQ(out, p);
+            if (mode == 4) { dlx_land_wt(wt, sizeof(wt)); ASSERT(dlx_git_out(wt, head, out, sizeof(out)) == 0); ASSERT(strstr(out, "Action C.\n") == out); }
+            dlx_restore(); PASS();
+        }
+    }
     failures += test_dev_land_merge_tip_regenerates();
     failures += test_dev_land_merge_tip_source_conflict();
     failures += test_dev_land_late_conflict_named();
     failures += test_dev_land_regen_generator_fails();
+_test_next:
+    dlx_restore();
     return failures;
 }
 
