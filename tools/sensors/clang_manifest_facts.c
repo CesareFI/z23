@@ -90,7 +90,8 @@ static bool cm_emit_unknowns(struct cm_core *c)
 {
     struct vcs_semantic_record_v1 rec = {0};
     bool ok = true;
-    qsort(c->occ, c->nocc, sizeof(*c->occ), cm_occ_cmp);
+    if (c->nocc > 1)
+        qsort(c->occ, c->nocc, sizeof(*c->occ), cm_occ_cmp);
     for (size_t k = 0; ok && k < c->nocc;) {
         size_t j = k + 1;
         while (j < c->nocc && cm_occ_cmp(&c->occ[k], &c->occ[j]) == 0)
