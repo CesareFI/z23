@@ -5,6 +5,42 @@
 #include "platform/time_compat.h"
 #include "util/workpool.h"
 #include <unistd.h>
+#include "base/safe_alloc.h"
+#include "command/native_command.h"
+#include "controllers/agent_impact_rules.h"
+
+/* Observe the real initializer's allocation boundary without relying on the
+ * host's zero-size allocation result or entering a zero-capacity worker. */
+static unsigned wp_probe_allocations;
+static void *wp_probe_calloc(size_t count, size_t size, const char *label,
+                             const char *file, int line)
+{
+    (void)count; (void)size; (void)label; (void)file; (void)line;
+    wp_probe_allocations++;
+    return NULL;
+}
+
+static bool wp_probe_init(struct workpool *, int, size_t, workpool_fn);
+[[maybe_unused]] static void wp_probe_destroy(struct workpool *);
+[[maybe_unused]] static void wp_probe_submit(struct workpool *, void **, size_t);
+[[maybe_unused]] static bool wp_probe_wait(struct workpool *);
+[[maybe_unused]] static bool wp_probe_run(struct workpool *, void **, size_t);
+[[maybe_unused]] static int wp_probe_num_threads(const struct workpool *);
+#define workpool_init wp_probe_init
+#define workpool_destroy wp_probe_destroy
+#define workpool_submit wp_probe_submit
+#define workpool_wait wp_probe_wait
+#define workpool_run wp_probe_run
+#define workpool_num_threads wp_probe_num_threads
+#define zcl_calloc_impl wp_probe_calloc
+#include "../../../platform/modules/util/src/workpool.c"
+#undef zcl_calloc_impl
+#undef workpool_num_threads
+#undef workpool_run
+#undef workpool_wait
+#undef workpool_submit
+#undef workpool_destroy
+#undef workpool_init
 
 /* ── Simple work functions for testing ─────────────────────── */
 
@@ -85,6 +121,42 @@ static int t_wp_reject_zero_cap(void)
     printf("workpool: reject zero capacity... ");
     struct workpool wp;
     ASSERT(!workpool_init(&wp, 2, 0, wp_always_true));
+    PASS();
+    _test_next: return failures;
+}
+
+static int t_wp_reject_overflow_cap(void)
+{
+    int failures = 0;
+    printf("workpool: reject overflowing capacity before allocation... ");
+    struct workpool wp;
+    wp_probe_allocations = 0;
+    ASSERT(!wp_probe_init(&wp, 1, SIZE_MAX, wp_always_true));
+    ASSERT_EQ(wp_probe_allocations, 0);
+    /* The adjacent representable addition still reaches allocation. */
+    ASSERT(!wp_probe_init(&wp, 1, SIZE_MAX - 1, wp_always_true));
+    ASSERT_EQ(wp_probe_allocations, 1);
+    PASS();
+    _test_next: return failures;
+}
+
+static int t_wp_production_routes(void)
+{
+    int failures = 0;
+    printf("workpool: production paths own the focused regression... ");
+    static const char *const paths[] = {
+        "platform/modules/util/src/workpool.c",
+        "platform/modules/util/include/util/workpool.h",
+        "tests/harness/src/test_workpool.c",
+    };
+    for (size_t i = 0; i < sizeof paths / sizeof paths[0]; i++) {
+        struct agent_impact_acc impact = {0};
+        bool consensus_risk = false;
+        const char *route = zcl_native_code_route_for_path(
+            paths[i], &impact, &consensus_risk);
+        ASSERT(strcmp(route, "workpool") == 0);
+        ASSERT(!consensus_risk);
+    }
     PASS();
     _test_next: return failures;
 }
@@ -296,6 +368,8 @@ int test_workpool(void)
     failures += t_wp_auto_threads();
     failures += t_wp_reject_null_fn();
     failures += t_wp_reject_zero_cap();
+    failures += t_wp_reject_overflow_cap();
+    failures += t_wp_production_routes();
     failures += t_wp_single_item();
     failures += t_wp_all_succeed();
     failures += t_wp_failure_propagation();

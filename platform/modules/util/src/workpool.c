@@ -63,6 +63,10 @@ bool workpool_init(struct workpool *wp, int num_threads, size_t queue_cap,
 {
     if (!wp || !fn || queue_cap == 0)
         return false;
+    if (queue_cap == SIZE_MAX) {
+        fprintf(stderr, "workpool_init: queue capacity cannot hold the extra ring slot\n");
+        return false;
+    }
 
     memset(wp, 0, sizeof(*wp));
 
