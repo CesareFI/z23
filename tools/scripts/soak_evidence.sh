@@ -595,9 +595,13 @@ st_running_identity() (
         echo "selftest: SKIP case=running-image requires Linux procfs"
         return
     fi
-    cp "$(command -v sleep)" "$image"
+    # GNU coreutils dispatches `sleep` by argv[0], so a copied binary whose
+    # pathname deliberately contains spaces refuses before it can exercise
+    # the /proc running-image reader. A POSIX shell accepts an explicit -c
+    # program under any basename and stays resident while its child sleeps.
+    cp "$(command -v sh)" "$image"
     expected="$(sha256sum -- "$image")"; expected="${expected%% *}"
-    "$image" 60 & pid=$!
+    "$image" -c 'while :; do sleep 1; done' & pid=$!
     for attempt in $(seq 1 50); do
         actual="$(evidence_exe_sha256 "$pid")"
         [ "$actual" = "$expected" ] && break
