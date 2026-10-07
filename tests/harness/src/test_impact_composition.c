@@ -7948,6 +7948,27 @@ static bool ic_tool_path_maps(const char *path, const char *group)
     return false;
 }
 
+static int test_ic_metaverse_view_state_routes(void)
+{
+    int failures = 0;
+    TEST("metaverse view source and header select the state contract") {
+        struct agent_impact_acc source = {0}, header = {0};
+        ASSERT(agent_impact_apply_shared_rules(
+            "contexts/commons/modules/metaverse/src/property_view.c", &source));
+        ASSERT(agent_impact_apply_shared_rules(
+            "contexts/commons/modules/metaverse/include/metaverse/property_view.h",
+            &header));
+        ASSERT(!source.groups_lost && !header.groups_lost);
+        ASSERT(ic_acc_has_group(&source, "metaverse_view_state"));
+        ASSERT(ic_acc_has_group(&header, "metaverse_view_state"));
+        ASSERT(ic_acc_has_group(&source, "metaverse_catalog"));
+        ASSERT(ic_acc_has_group(&source, "make_lint_gates"));
+        ASSERT(ic_acc_has_group(&header, "make_lint_gates"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_snapshot_tool_routes(void)
 {
     int failures = 0;
@@ -11595,6 +11616,7 @@ int test_impact_composition(void)
     failures += test_ic_proof_test_needs_leave_provided_tools();
     failures += test_ic_proof_test_needs_whole_catalog();
     failures += test_ic_build_need_umbrella_fold();
+    failures += test_ic_metaverse_view_state_routes();
     failures += test_ic_snapshot_tool_routes();
     failures += test_ic_pr69_sensor_routes();
     failures += test_ic_local_selection_build_needs();

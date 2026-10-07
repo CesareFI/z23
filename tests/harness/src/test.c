@@ -1849,6 +1849,7 @@ int main(int argc, char **argv)
     { extern int test_zcode_discovery_projection(void);
       failures += test_zcode_discovery_projection(); }
     { extern int test_metaverse_catalog(void); failures += test_metaverse_catalog(); }
+    { extern int test_metaverse_view_state(void); failures += test_metaverse_view_state(); }
     { extern int test_site_routes(void); failures += test_site_routes(); }
     { extern int test_install_sh_site(void); failures += test_install_sh_site(); }
     { extern int test_mesh_observation(void); failures += test_mesh_observation(); }
