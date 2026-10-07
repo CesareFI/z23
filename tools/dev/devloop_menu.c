@@ -15,23 +15,64 @@
 
 #include "config/command_catalog.h"
 #include "kernel/command_registry.h"
+#include "json/json.h"
+#include "zutf8/zutf8.h"
 
 #include <stdio.h>
 #include <string.h>
+
+/* Count the serialized bytes without entering the writer on truncation. */
+static bool unknown_path_fits(const char *path, size_t capacity)
+{
+    size_t needed = sizeof("{\"schema\":\"zcl.command_menu.v1\","
+                           "\"error\":\"unknown_path\",\"path\":\"\","
+                           "\"agent_next_action\":"
+                           "\"z23-dev dev search <intent>\"}") - 1;
+    if (needed >= capacity)
+        return false;
+    for (const unsigned char *p = (const unsigned char *)path; *p; p++) {
+        size_t extra = 1;
+        if (strchr("\"\\\010\f\n\r\t", *p))
+            extra = 2;
+        else if (*p < 0x20)
+            extra = 6;
+        if (extra >= capacity - needed)
+            return false;
+        needed += extra;
+    }
+    return true;
+}
 
 /* Emit the compact unknown-path error document. Keeps the `"error"` marker the
  * devloop CLI uses to map an unknown branch to a non-zero exit code. */
 static size_t emit_unknown_path(const char *path, char *out, size_t out_sz)
 {
-    int n = snprintf(out, out_sz,
-                     "{\"schema\":\"zcl.command_menu.v1\","
-                     "\"error\":\"unknown_path\",\"path\":\"%s\","
-                     "\"agent_next_action\":"
-                     "\"z23-dev dev search <intent>\"}",
-                     path && path[0] ? path : "dev");
-    if (n <= 0 || (size_t)n >= out_sz)
+    const char *wanted = path && path[0] ? path : "dev";
+    out[0] = '\0';
+    if (!zutf8_validate(wanted))
+        return 0; /* Invalid encoding is refused without a partial document. */
+    if (!unknown_path_fits(wanted, out_sz))
         return 0;
-    return (size_t)n;
+    struct json_value doc;
+    json_init(&doc);
+    json_set_object(&doc);
+    bool ok = json_push_kv_str(&doc, "schema", "zcl.command_menu.v1") &&
+              json_push_kv_str(&doc, "error", "unknown_path") &&
+              json_push_kv_str(&doc, "path", wanted) &&
+              json_push_kv_str(&doc, "agent_next_action",
+                               "z23-dev dev search <intent>");
+    const char *keys[] = { "schema", "error", "path", "agent_next_action" };
+    for (size_t i = 0; ok && i < sizeof(keys) / sizeof(keys[0]); i++) {
+        const struct json_value *v = json_get(&doc, keys[i]);
+        ok = v && v->type == JSON_STR; /* Refuse allocation degradation. */
+    }
+    size_t n = ok ? json_write(&doc, out, out_sz) : 0;
+    json_free(&doc);
+    if (!n || n >= out_sz) {
+        out[0] = '\0';
+        return 0;
+    }
+    return n;
 }
 
 size_t zcl_devloop_menu_json(const char *path, char *out, size_t out_sz)

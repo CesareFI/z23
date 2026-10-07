@@ -153,6 +153,42 @@ static bool de_skips(const char *root, const char *facts_dir,
     return ok;
 }
 
+static int de_test_menu_encoding(void)
+{
+    int failures = 0;
+    struct json_value doc = {0};
+    TEST("devloop menu: unknown paths retain exact text or refuse encoding and overflow") {
+        const char *paths[] = { "dev.bad\"x", "dev.bad\\n", "dev.bad\bx",
+                                "dev.bad\fx", "dev.bad\nx", "dev.bad\rx",
+                                "dev.bad\tx", "dev.bad\001x", "dev.badé" };
+        char out[512];
+        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            size_t n = zcl_devloop_menu_json(paths[i], out, sizeof(out));
+            ASSERT(n > 0 && n < sizeof(out));
+            ASSERT(json_valid(out, n) && zutf8_validate_n(out, n));
+            ASSERT(json_read(&doc, out, n));
+            ASSERT_STR_EQ(de_json_str(&doc, "error"), "unknown_path");
+            ASSERT_STR_EQ(de_json_str(&doc, "path"), paths[i]);
+            json_free(&doc);
+            ASSERT_EQ(zcl_devloop_menu_json(paths[i], out, n), 0);
+            ASSERT_EQ(out[0], '\0');
+            ASSERT_EQ(zcl_devloop_menu_json(paths[i], out, n + 1), n);
+            ASSERT(json_valid(out, n));
+            ASSERT(json_read(&doc, out, n));
+            ASSERT_STR_EQ(de_json_str(&doc, "path"), paths[i]);
+            json_free(&doc);
+        }
+        char tiny[1] = {'x'};
+        ASSERT_EQ(zcl_devloop_menu_json("dev.bad", tiny, sizeof(tiny)), 0);
+        ASSERT_EQ(tiny[0], '\0');
+        ASSERT_EQ(zcl_devloop_menu_json("dev.bad\xff", out, sizeof(out)), 0);
+        ASSERT_EQ(out[0], '\0');
+        PASS();
+    } _test_next:;
+    json_free(&doc);
+    return failures;
+}
+
 static int de_test_skips(void)
 {
     int failures = 0;
@@ -1581,6 +1617,7 @@ int test_devloop_early(void)
     int failures = 0;
     failures += de_test_cycle_encoding();
     failures += de_test_skips();
+    failures += de_test_menu_encoding();
     failures += de_test_restart();
     return failures;
 }

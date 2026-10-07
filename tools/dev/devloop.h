@@ -918,6 +918,9 @@ bool zcl_devloop_unseal_token_present(const char *repo_root);
 size_t zcl_devloop_refusal_json(const char *const *files, size_t file_count,
                                 char *out, size_t out_sz);
 
+/* Emit a registry menu or an unknown-path error, returning its JSON byte count.
+ * Failed unknown-path encoding returns 0 with an empty output when out is
+ * non-NULL and out_sz is positive. NULL or empty paths select "dev". */
 size_t zcl_devloop_menu_json(const char *path, char *out, size_t out_sz);
 size_t zcl_devloop_menu_search_json(const char *query,
                                     char *out, size_t out_sz);
