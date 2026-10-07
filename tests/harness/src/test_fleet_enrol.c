@@ -689,6 +689,8 @@ static int test_fe_bridge_nul(void)
         const char record[] = "\0\nrestrict,port-forwarding,permitlisten=\"127.0.0.1:22207\" "
                               "ssh-ed25519 AAAAC3NzaC1 owner@box z23-fleet-studio\n";
         const struct { const char *bytes; size_t size; bool accepted; } cases[] = {
+            /* No existing grant: the NUL must also prevent a fresh append. */
+            {"\0", 1u, false},
             /* Include the terminating NUL as a measured byte after the tag. */
             {record + 2, sizeof(record) - 2u, false},
             {record, sizeof(record) - 1u, false},

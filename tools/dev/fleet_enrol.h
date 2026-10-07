@@ -414,7 +414,9 @@ bool fleet_bridge_line(const char *ssh_pubkey, uint16_t port, const char *name,
 /* Append `line` to the operator's ~/.ssh/authorized_keys, once. `added` is
  * false when a line carrying the same `z23-fleet-<name>` comment is already
  * there, which makes re-admitting the same box a no-op rather than a
- * second grant. Refuses when HOME is unset or the file cannot be written. */
+ * second grant. Refuses when HOME is unset or the file cannot be written.
+ * An embedded NUL in the measured file refuses before searching or appending,
+ * leaving the file bytes unchanged and `added` false. */
 bool fleet_bridge_authorize(const char *line, const char *name, bool *added,
                             const char **why);
 
