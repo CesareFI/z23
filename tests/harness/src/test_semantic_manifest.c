@@ -1916,6 +1916,29 @@ int semantic_sensor_identity_tests(void);
 /* semantic_sensor_probe.c: probes the conditional-lookup scan must see. */
 int semantic_sensor_probe_tests(void);
 
+static int smt_t_root_failed_read(void)
+{
+    int failures = 0;
+    char message[4096] = "";
+    bool timed_out = false;
+    const char *path = SMT_FIXTURES "/base.bin";
+    const char *argv[] = {"build/bin/z23-clang-manifest-root-fixture",
+                          "root", path, NULL};
+    char expected[4096];
+    TEST_CASE("semantic_sensor: failed read with allocation reports unreadable") {
+        int n = snprintf(expected, sizeof(expected),
+                         "clang-manifest: %s: not a valid manifest: unreadable\n",
+                         path);
+        ASSERT(n > 0 && (size_t)n < sizeof(expected));
+        int rc = zcl_spawn_capture_merged_observed(argv, message, sizeof(message),
+                                                   60000, &timed_out);
+        ASSERT(!timed_out);
+        ASSERT_EQ(rc, 2);
+        ASSERT_STR_EQ(message, expected);
+    } TEST_END
+    return failures;
+}
+
 int test_semantic_sensor(void)
 {
     int failures = 0;
@@ -1926,6 +1949,7 @@ int test_semantic_sensor(void)
                "where libclang's C API is installed)\n", SMT_SENSOR);
         return 0;
     }
+    failures += smt_t_root_failed_read();
     failures += smt_t_sensor_invariance(&r);
     failures += smt_t_sensor_seeds(&r);
     failures += smt_t_sensor_home_guard();

@@ -7606,13 +7606,17 @@ CLANG_MANIFEST_SRCS := tools/sensors/clang_manifest.c \
 	tools/sensors/clang_manifest_session.c \
 	tools/sensors/clang_manifest_tokens.c \
 	$(CLANG_MANIFEST_CORE_SRCS)
-clang-manifest: $(BIN_DIR)/z23-clang-manifest
+clang-manifest: $(BIN_DIR)/z23-clang-manifest $(BIN_DIR)/z23-clang-manifest-root-fixture
+$(BIN_DIR)/z23-clang-manifest-root-fixture: CLANG_MANIFEST_SRCS := \
+	$(filter-out tools/sensors/clang_manifest.c,$(CLANG_MANIFEST_SRCS)) \
+	tests/fixtures/semantic_sensor/root_failed_read.c
+$(BIN_DIR)/z23-clang-manifest-root-fixture: tests/fixtures/semantic_sensor/root_failed_read.c
 # The type spelling call is chosen by a LINK probe, not by CINDEX_VERSION:
 # Apple's libclang.dylib declares clang_getTypePrettyPrinted and does not
 # export it. The sensor then spells types by clang_getTypeSpelling, a
 # different grammar that its producer digest names (CM_TYPE_GRAMMAR).
-$(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manifest.h \
-		$(CLANG_MANIFEST_CORE_HDRS) $(CLANG_MANIFEST_VENDOR_HDRS)
+$(BIN_DIR)/z23-clang-manifest-root-fixture $(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manifest.h \
+		$(CLANG_MANIFEST_CORE_HDRS) $(CLANG_MANIFEST_VENDOR_HDRS) Makefile
 	@mkdir -p $(dir $@)
 	@if [ "$(CLANG_MANIFEST_LLVM_DIR)" = vendor/clang-c-18 ]; then \
 	    if [ "$$(stat -L -c '%u:%a' / 2>/dev/null)" != 0:755 ] || \

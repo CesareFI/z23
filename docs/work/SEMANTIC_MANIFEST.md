@@ -414,6 +414,11 @@ never serves either one.
   libclang sensor").
 - `semantic_sensor` runs the sensor live, and prints a visible SKIP when the
   sensor binary has not been built. It proves:
+  - the `root` command reports `unreadable` and exits 2 when a failed read
+    retains an allocation. `make clang-manifest` also builds a test executable
+    from the command source with a deterministic failed-reader fixture
+    (`tests/fixtures/semantic_sensor/root_failed_read.c`, outside the
+    directories the Windows manifest ledger reads);
   - the fixture tree gives byte-identical manifests before and after
     `git commit` and at two different absolute roots, with an absolute
     `-I<root>/...` in argv on both;

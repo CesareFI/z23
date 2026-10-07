@@ -800,10 +800,10 @@ static int cm_cmd_root(const char *path)
 {
     uint8_t *b = NULL, d[32];
     size_t n = 0;
-    char why[256], hex[65];
+    /* A failed read can retain b; only validation may replace this reason. */
+    char why[256] = "unreadable", hex[65];
     if (!cm_read_file(path, &b, &n) || !vcs_semantic_root_v1(b, n, d, why, sizeof(why))) {
-        fprintf(stderr, "clang-manifest: %s: not a valid manifest: %s\n", path,
-                b == NULL ? "unreadable" : why);
+        fprintf(stderr, "clang-manifest: %s: not a valid manifest: %s\n", path, why);
         free(b);
         return 2;
     }
