@@ -496,6 +496,13 @@ uint64_t metrics_prometheus_consensus_rejects_total(void)
 
 /* ── Event observers ────────────────────────────────────────── */
 
+static bool peer_payload_text(const char *payload, size_t *len)
+{
+    /* Accept one optional terminator; reject NUL inside the measured text. */
+    if (*len > 0 && payload[*len - 1] == '\0') (*len)--;
+    return memchr(payload, '\0', *len) == NULL;
+}
+
 /* Extract the offence kind from an EV_PEER_MISBEHAVE / EV_PEER_BANNED
  * payload.  The shapes used by net.c are:
  *   misbehave: "+10=50 invalid_message: bad header"
@@ -508,6 +515,7 @@ static void parse_peer_kind(const char *payload, size_t payload_len,
 {
     if (cap == 0) return;
     out[0] = '\0';
+    if (!peer_payload_text(payload, &payload_len)) return;
     size_t i = 0;
     /* Skip the score header token (the one with '=') */
     while (i < payload_len) {

@@ -545,6 +545,48 @@ static int test_metrics_reset_clears_alert_state(void)
     return failures;
 }
 
+static int test_peer_offence_payload_extent(void)
+{
+    static const char witness[] = "+1=1 invalid_message\0junk: detail";
+    static const char score_nul[] = "+1=1\0junk invalid_message: detail";
+    static const char detail_nul[] = "+1=1 invalid_message: detail\0junk";
+    static const char valid[] = "+1=1 invalid_message: detail";
+    static const char double_nul[] = "+1=1 invalid_message: detail\0";
+    static const struct {
+        const char *payload;
+        uint32_t len;
+        bool malformed;
+    } cases[] = {
+        {witness, sizeof(witness) - 1, true},
+        {score_nul, sizeof(score_nul) - 1, true},
+        {detail_nul, sizeof(detail_nul) - 1, true},
+        {valid, sizeof(valid) - 1, false},
+        {valid, sizeof(valid), false},
+        {double_nul, sizeof(double_nul), true},
+    };
+    int failures = 0;
+    TEST("metric_alerts: peer payload NUL routes to other without losing totals") {
+        event_log_init();
+        metrics_prometheus_init();
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            char rendered[16384];
+            metrics_prometheus_reset();
+            event_emit(EV_PEER_MISBEHAVE, 1, cases[i].payload, cases[i].len);
+            size_t n = metrics_prometheus_render_prometheus(rendered, sizeof(rendered));
+            ASSERT(n > 0 && n < sizeof(rendered) - 1);
+            ASSERT(strstr(rendered, cases[i].malformed
+                ? "\nzcl_peer_offences_total{kind=\"other\"} 1\n"
+                : "\nzcl_peer_offences_total{kind=\"other\"} 0\n") != NULL);
+            ASSERT(strstr(rendered, cases[i].malformed
+                ? "\nzcl_peer_offences_total{kind=\"invalid_message\"} 0\n"
+                : "\nzcl_peer_offences_total{kind=\"invalid_message\"} 1\n") != NULL);
+            ASSERT(strstr(rendered, "\nzcl_peer_offences_total{kind=\"all\"} 1\n") != NULL);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ────────────────────────────────────────────── */
 
 int test_metric_alerts(void);
@@ -573,6 +615,7 @@ int test_metric_alerts(void)
     failures += test_consensus_reject_spike_rule();
 
     failures += test_metrics_reset_clears_alert_state();
+    failures += test_peer_offence_payload_extent();
 
     event_clear_observers(EV_CONDITION_DETECTED);
     blocker_clear("test.metric_alert_permanent");
