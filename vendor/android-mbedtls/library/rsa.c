@@ -252,8 +252,8 @@ int mbedtls_rsa_parse_pubkey(mbedtls_rsa_context *rsa, const unsigned char *key,
         return ret;
     }
 
-    if ((ret = mbedtls_rsa_import_raw(rsa, p, len, NULL, 0, NULL, 0,
-                                      NULL, 0, NULL, 0)) != 0) {
+    if (mbedtls_rsa_import_raw(rsa, p, len, NULL, 0, NULL, 0,
+                               NULL, 0, NULL, 0) != 0) {
         return MBEDTLS_ERR_RSA_BAD_INPUT_DATA;
     }
 
@@ -264,8 +264,8 @@ int mbedtls_rsa_parse_pubkey(mbedtls_rsa_context *rsa, const unsigned char *key,
         return ret;
     }
 
-    if ((ret = mbedtls_rsa_import_raw(rsa, NULL, 0, NULL, 0, NULL, 0,
-                                      NULL, 0, p, len)) != 0) {
+    if (mbedtls_rsa_import_raw(rsa, NULL, 0, NULL, 0, NULL, 0,
+                               NULL, 0, p, len) != 0) {
         return MBEDTLS_ERR_RSA_BAD_INPUT_DATA;
     }
 
