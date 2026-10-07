@@ -24,6 +24,7 @@
  *
  * And the refusals, each one its own assertion:
  *   - a datadir held by another writer (the pidfile flock)
+ *   - a held pidfile whose valid datadir path exceeds the probe buffer
  *   - a backup path that does not exist
  *   - a file that is not a SQLite database
  *   - a SQLite database holding none of the wallet tables
@@ -280,6 +281,88 @@ static void wr_rmdir_datadir(const char *dir)
     rmdir(dir);
 }
 
+#if !defined(_WIN32)
+/* Remove only the nested directories created below, leaving the root alone. */
+static void wr_remove_long_datadir(char *datadir, size_t root_len)
+{
+    while (strlen(datadir) > root_len) {
+        (void)rmdir(datadir);
+        char *slash = strrchr(datadir, '/');
+        if (!slash || (size_t)(slash - datadir) < root_len)
+            break;
+        *slash = '\0';
+    }
+}
+
+/* A valid datadir can be longer than the lock probe's fixed pathname buffer.
+ * The probe must refuse that input, never truncate it and inspect a different
+ * file while the real pidfile remains locked. */
+static int wr_test_long_datadir_lock(void)
+{
+    int failures = 0;
+    char datadir[1400];
+    char pidfile[1450];
+    size_t root_len;
+    size_t target_len = 1185;
+
+    int n = snprintf(datadir, sizeof(datadir), "%s", wr_dir());
+    WR_CHECK("represented the fixture root exactly",
+             n > 0 && (size_t)n < sizeof(datadir));
+    if (failures)
+        return failures;
+    root_len = strlen(datadir);
+    if (root_len >= target_len) {
+        WR_CHECK("fixture root leaves room for the long datadir", false);
+        return failures;
+    }
+    if ((target_len - root_len) % 17 == 1)
+        target_len++;
+    while (strlen(datadir) < target_len) {
+        size_t used = strlen(datadir);
+        size_t remaining = target_len - used;
+        size_t component = remaining > 17 ? 16 : remaining - 1;
+        datadir[used++] = '/';
+        memset(datadir + used, 'l', component);
+        datadir[used + component] = '\0';
+        if (mkdir(datadir, 0700) != 0) {
+            /* Do not remove a directory this invocation did not create. */
+            datadir[used - 1] = '\0';
+            break;
+        }
+    }
+    WR_CHECK("built a valid datadir beyond the lock probe capacity",
+             strlen(datadir) == target_len);
+    if (failures) {
+        wr_remove_long_datadir(datadir, root_len);
+        return failures;
+    }
+
+    n = snprintf(pidfile, sizeof(pidfile), "%s/zclassic23.pid", datadir);
+    WR_CHECK("represented the real long-datadir pidfile exactly",
+             n > 0 && (size_t)n < sizeof(pidfile));
+    if (failures) {
+        wr_remove_long_datadir(datadir, root_len);
+        return failures;
+    }
+    int fd = open(pidfile, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    WR_CHECK("opened the real long-datadir pidfile", fd >= 0);
+    if (fd >= 0) {
+        bool held = flock(fd, LOCK_EX | LOCK_NB) == 0;
+        WR_CHECK("held the real long-datadir pidfile", held);
+        if (held) {
+            struct zcl_result r = wallet_restore_datadir_free(datadir);
+            WR_CHECK("long datadir never bypasses the held pidfile", !r.ok);
+            (void)flock(fd, LOCK_UN);
+        }
+        close(fd);
+        unlink(pidfile);
+    }
+
+    wr_remove_long_datadir(datadir, root_len);
+    return failures;
+}
+#endif
+
 /* ── rescan honesty ─────────────────────────────────────────── */
 
 /* struct wallet is large; keep it out of the group's stack frame. */
@@ -330,88 +413,12 @@ static int wr_test_rescan_reports_missing_bodies(void)
     return failures;
 }
 
-/* ── the group ──────────────────────────────────────────────── */
-
-int test_wallet_restore(void)
+#if !defined(_WIN32)
+static int wr_test_restore_refusals(struct wallet_restore_request req, const char *backup_dir,
+                                    const char *target, const char *target_db)
 {
-#if defined(_WIN32)
-    /* Production native-Windows wallet restore is FAIL-CLOSED by design:
-     * wallet_restore_datadir_free/_hold refuse (-58) until current-SID
-     * single-writer qualification passes (engine/services/src/
-     * wallet_restore_service.c:69-72 and :128-132). Every case below runs
-     * through those gates, so none can pass here. The refusal contract
-     * itself is proven by the Windows-lane acceptance
-     * (tests/harness/src/wallet_restore_windows_refusal_acceptance.c). */
-    printf("wallet_restore: SKIP (Windows): restore is fail-closed on "
-           "native Windows; refusal proven by "
-           "wallet_restore_windows_refusal_acceptance\n");
-    return 0;
-#else
     int failures = 0;
-    char src_db[256], backup_dir[256], target[256], target_db[320];
-    const char *scratch = wr_dir();
-    snprintf(src_db, sizeof(src_db), "%s/wr_%d_src.db", scratch, (int)getpid());
-    snprintf(backup_dir, sizeof(backup_dir), "%s/wr_%d_bk", scratch, (int)getpid());
-    snprintf(target, sizeof(target), "%s/wr_%d_target", scratch, (int)getpid());
-    snprintf(target_db, sizeof(target_db), "%s/node.db", target);
-    wr_rm(src_db);
-    wr_rmdir_datadir(target);
-    /* wallet_backup_run_once -> wbs_ensure_backup_dir ->
-     * platform_private_directory_ensure requires exactly 0700 and refuses a
-     * wider directory. mkdir is umask-masked, so restate the mode. */
-    if (!platform_private_directory_ensure(backup_dir))
-        return false;
-
-    /* ---- source wallet with transparent AND shielded rows ---- */
-    struct node_db ndb;
-    bool opened = node_db_open(&ndb, src_db);
-    WR_CHECK("source node_db opens", opened);
-    if (!opened) return failures + 1;
-
-    WR_CHECK("seeded 4 transparent keys", wr_seed_keys(ndb.db, 4) == 4);
-    WR_CHECK("seeded 3 sapling keys", wr_seed_sapling_keys(ndb.db, 3) == 3);
-    WR_CHECK("seeded the sapling seed row", wr_seed_seed_row(ndb.db));
-    WR_CHECK("seeded 2 sapling notes", wr_seed_notes(ndb.db, 2) == 2);
-
-    /* wallet_scripts is left EMPTY on purpose: a table that exists with no
-     * rows must restore as zero, not as "missing". */
-
-    /* ---- take a backup ---- */
-    char backup_path[512] = "";
-    int64_t key_count = -1;
-    char err[256] = "";
-    struct zcl_result br = wallet_backup_run_once(backup_dir, &ndb,
-                                                  backup_path,
-                                                  sizeof(backup_path),
-                                                  &key_count, err, sizeof(err));
-    WR_CHECK("backup run_once ok", br.ok);
-    WR_CHECK("backup counted 4 keys", key_count == 4);
-    node_db_close(&ndb);
-    if (!br.ok) {
-        printf("  backup error: %s\n", err);
-        return failures + 1;
-    }
-
-    /* ---- (B) the manifest exists and covers EVERY wallet table ---- */
-    size_t n_wallet_tables = 0;
-    (void)wallet_backup_tables(&n_wallet_tables);
-    WR_CHECK("backup carries a manifest row per wallet table",
-             wr_count_in_file(backup_path, WALLET_BACKUP_MANIFEST_TABLE)
-                 == (int64_t)n_wallet_tables);
-    WR_CHECK("backup captured the sapling keys",
-             wr_count_in_file(backup_path, "wallet_sapling_keys") == 3);
-    WR_CHECK("backup captured the seed row",
-             wr_count_in_file(backup_path, "wallet_seed") == 1);
-    WR_CHECK("backup captured the sapling notes",
-             wr_count_in_file(backup_path, "wallet_sapling_notes") == 2);
-
-    /* ---- refusals, before any successful restore ---- */
-    struct wallet_restore_request req = {0};
     struct wallet_restore_report rep;
-
-    req = (struct wallet_restore_request){ .backup_path = backup_path,
-                                           .datadir = target, .dry_run = true };
-
     {   /* a path that does not exist */
         struct wallet_restore_request bad = req;
         char missing[512];
@@ -478,6 +485,292 @@ int test_wallet_restore(void)
 #endif /* !defined(_WIN32) */
     }
 
+    return failures;
+}
+#endif
+
+#if !defined(_WIN32)
+static int wr_test_dek_conflict(struct wallet_restore_request req, const char *backup_path,
+                                const char *backup_dir, const char *target_db)
+{
+    int failures = 0;
+    struct wallet_restore_report rep;
+    /* A different wrapped DEK must refuse before importing unreadable WKD1
+     * ciphertext. The normal source fixture leaves this table empty, so plant
+     * distinct identities only for this negative restore. */
+    {
+        sqlite3 *t = NULL;
+        if (sqlite3_open(target_db, &t) == SQLITE_OK) {
+            (void)wr_exec(t, "INSERT OR REPLACE INTO wallet_key_encryption "
+                             "(id,wrapped_dek) VALUES(1,X'01020304')");
+            sqlite3_close(t);
+        }
+        char conflict[512];
+        snprintf(conflict, sizeof(conflict), "%s/dek-conflict.sqlite",
+                 backup_dir);
+        wr_rm(conflict);
+        FILE *in = fopen(backup_path, "rb");
+        FILE *out = fopen(conflict, "wb");
+        bool copied = in && out;
+        if (copied) {
+            char bytes[4096];
+            size_t n;
+            while ((n = fread(bytes, 1, sizeof(bytes), in)) > 0)
+                if (fwrite(bytes, 1, n, out) != n) {
+                    copied = false;
+                    break;
+                }
+        }
+        if (in) fclose(in);
+        if (out) fclose(out);
+        WR_CHECK("copied backup for wrapped-DEK conflict", copied);
+        sqlite3 *c = NULL;
+        if (copied && sqlite3_open(conflict, &c) == SQLITE_OK) {
+            (void)wr_exec(c, "INSERT INTO wallet_key_encryption "
+                             "(id,wrapped_dek) VALUES(1,X'05060708')");
+            sqlite3_close(c);
+        }
+        struct wallet_restore_request conflict_req = req;
+        conflict_req.backup_path = conflict;
+        struct zcl_result conflict_result =
+            wallet_restore_run(&conflict_req, &rep);
+        WR_CHECK("restore refuses a conflicting wrapped wallet DEK",
+                 !conflict_result.ok);
+        WR_CHECK("DEK conflict imports no wallet keys",
+                 wr_count_in_file(target_db, "wallet_keys") == 4);
+        wr_rm(conflict);
+    }
+
+    return failures;
+}
+#endif
+
+#if !defined(_WIN32)
+static int wr_test_keep_existing(struct wallet_restore_request req, const char *target_db)
+{
+    int failures = 0;
+    struct wallet_restore_report rep;
+    /* An existing target row must WIN. Mutate one privkey in the target,
+     * restore again, and prove the mutation survived. */
+    {
+        sqlite3 *t = NULL;
+        uint8_t marker[32];
+        memset(marker, 0xAB, sizeof(marker));
+        if (sqlite3_open(target_db, &t) == SQLITE_OK) {
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(t,
+                    "UPDATE wallet_keys SET privkey=? WHERE rowid=1",
+                    -1, &st, NULL) == SQLITE_OK) {
+                sqlite3_bind_blob(st, 1, marker, sizeof(marker), SQLITE_STATIC);
+                (void)sqlite3_step(st);
+                sqlite3_finalize(st);
+            }
+            sqlite3_close(t);
+        }
+        ZCL_IGNORE_RESULT(wallet_restore_run(&req, &rep),
+                          "the assertion below is about the row, not the run");
+        bool kept = false;
+        if (sqlite3_open_v2(target_db, &t, SQLITE_OPEN_READONLY, NULL)
+                == SQLITE_OK) {
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(t,
+                    "SELECT privkey FROM wallet_keys WHERE rowid=1",
+                    -1, &st, NULL) == SQLITE_OK) {
+                if (sqlite3_step(st) == SQLITE_ROW) {
+                    const void *b = sqlite3_column_blob(st, 0);
+                    kept = b && sqlite3_column_bytes(st, 0) == 32 &&
+                           memcmp(b, marker, 32) == 0;
+                }
+                sqlite3_finalize(st);
+            }
+            sqlite3_close(t);
+        }
+        WR_CHECK("keep-existing: the target's row was NOT overwritten", kept);
+    }
+
+    return failures;
+}
+#endif
+
+#if !defined(_WIN32)
+static int wr_test_short_copy(struct wallet_restore_request req, const char *backup_path,
+                              const char *backup_dir)
+{
+    int failures = 0;
+    struct wallet_restore_report rep;
+    /* ---- (B) a short-copied backup is detected via the manifest ---- */
+    {
+        char shorted[512];
+        snprintf(shorted, sizeof(shorted), "%s/shorted.sqlite", backup_dir);
+        wr_rm(shorted);
+        char cp[1200];
+        /* Copy the backup byte-for-byte, then delete rows behind the
+         * manifest's back — exactly what a truncated/damaged copy looks
+         * like from the outside. */
+        FILE *in = fopen(backup_path, "rb");
+        FILE *outf = fopen(shorted, "wb");
+        bool copied = in && outf;
+        if (copied) {
+            size_t n;
+            while ((n = fread(cp, 1, sizeof(cp), in)) > 0)
+                if (fwrite(cp, 1, n, outf) != n) { copied = false; break; }
+        }
+        if (in) fclose(in);
+        if (outf) fclose(outf);
+        WR_CHECK("copied the backup for the short-copy case", copied);
+
+        sqlite3 *s = NULL;
+        if (sqlite3_open(shorted, &s) == SQLITE_OK) {
+            (void)wr_exec(s, "DELETE FROM wallet_sapling_keys");
+            sqlite3_close(s);
+        }
+        struct wallet_restore_request sreq = req;
+        sreq.backup_path = shorted;
+        sreq.dry_run = true;
+        struct zcl_result sr = wallet_restore_run(&sreq, &rep);
+        WR_CHECK("short-copied backup still restores what it has", sr.ok);
+        WR_CHECK("short copy is DETECTED as a manifest mismatch",
+                 rep.manifest_mismatches >= 1);
+        WR_CHECK("short copy raises a warning",
+                 strstr(rep.warnings, "manifest_mismatch") != NULL);
+        wr_rm(shorted);
+    }
+
+    return failures;
+}
+#endif
+
+#if !defined(_WIN32)
+static int wr_test_encrypted(struct wallet_restore_request req, const char *backup_path,
+                             const char *backup_dir, const char *target_db,
+                             size_t n_wallet_tables)
+{
+    int failures = 0;
+    struct wallet_restore_report rep;
+    /* ---- encrypted backups ---- */
+    {
+        char enc[512];
+        snprintf(enc, sizeof(enc), "%s/encrypted.sqlite.enc", backup_dir);
+        wr_rm(enc);
+        struct zcl_result er =
+            wallet_backup_encrypt_file(backup_path, enc, "restore-test-pw");
+        WR_CHECK("encrypt the backup", er.ok);
+
+        struct wallet_restore_request ereq = req;
+        ereq.backup_path = enc;
+        ereq.dry_run = true;
+        ereq.password = NULL;
+        (void)wr_environment_unset("WALLET_BACKUP_PASSWORD");
+        struct zcl_result nr = wallet_restore_run(&ereq, &rep);
+        WR_CHECK("refuses an encrypted backup with no password", !nr.ok);
+        WR_CHECK("the refusal says the file is encrypted",
+                 rep.source_was_encrypted);
+
+        ereq.password = "restore-test-pw";
+        struct zcl_result pr = wallet_restore_run(&ereq, &rep);
+        WR_CHECK("restores an encrypted backup with the password", pr.ok);
+        WR_CHECK("encrypted restore sees all eight tables",
+                 rep.tables_in_backup == (int)n_wallet_tables);
+        char tmp[512];
+        snprintf(tmp, sizeof(tmp), "%s.restore-%ld.tmp", target_db,
+                 (long)getpid());
+        WR_CHECK("encrypted restore leaves no plaintext temp behind",
+                 access(tmp, F_OK) != 0);
+        wr_rm(enc);
+    }
+
+    return failures;
+}
+#endif
+
+/* ── the group ──────────────────────────────────────────────── */
+
+int test_wallet_restore(void)
+{
+#if defined(_WIN32)
+    /* Production native-Windows wallet restore is FAIL-CLOSED by design:
+     * wallet_restore_datadir_free/_hold refuse (-58) until current-SID
+     * single-writer qualification passes (engine/services/src/
+     * wallet_restore_service.c:69-72 and :128-132). Every case below runs
+     * through those gates, so none can pass here. The refusal contract
+     * itself is proven by the Windows-lane acceptance
+     * (tests/harness/src/wallet_restore_windows_refusal_acceptance.c). */
+    printf("wallet_restore: SKIP (Windows): restore is fail-closed on "
+           "native Windows; refusal proven by "
+           "wallet_restore_windows_refusal_acceptance\n");
+    return 0;
+#else
+    int failures = 0;
+    char src_db[256], backup_dir[256], target[256], target_db[320];
+    const char *scratch = wr_dir();
+    snprintf(src_db, sizeof(src_db), "%s/wr_%d_src.db", scratch, (int)getpid());
+    snprintf(backup_dir, sizeof(backup_dir), "%s/wr_%d_bk", scratch, (int)getpid());
+    snprintf(target, sizeof(target), "%s/wr_%d_target", scratch, (int)getpid());
+    snprintf(target_db, sizeof(target_db), "%s/node.db", target);
+    wr_rm(src_db);
+    wr_rmdir_datadir(target);
+    /* wallet_backup_run_once -> wbs_ensure_backup_dir ->
+     * platform_private_directory_ensure requires exactly 0700 and refuses a
+     * wider directory. mkdir is umask-masked, so restate the mode. */
+    if (!platform_private_directory_ensure(backup_dir)) {
+        WR_CHECK("created the private backup fixture directory", false);
+        return failures;
+    }
+
+    /* ---- source wallet with transparent AND shielded rows ---- */
+    struct node_db ndb;
+    bool opened = node_db_open(&ndb, src_db);
+    WR_CHECK("source node_db opens", opened);
+    if (!opened) return failures + 1;
+
+    WR_CHECK("seeded 4 transparent keys", wr_seed_keys(ndb.db, 4) == 4);
+    WR_CHECK("seeded 3 sapling keys", wr_seed_sapling_keys(ndb.db, 3) == 3);
+    WR_CHECK("seeded the sapling seed row", wr_seed_seed_row(ndb.db));
+    WR_CHECK("seeded 2 sapling notes", wr_seed_notes(ndb.db, 2) == 2);
+
+    /* wallet_scripts is left EMPTY on purpose: a table that exists with no
+     * rows must restore as zero, not as "missing". */
+
+    /* ---- take a backup ---- */
+    char backup_path[512] = "";
+    int64_t key_count = -1;
+    char err[256] = "";
+    struct zcl_result br = wallet_backup_run_once(backup_dir, &ndb,
+                                                  backup_path,
+                                                  sizeof(backup_path),
+                                                  &key_count, err, sizeof(err));
+    WR_CHECK("backup run_once ok", br.ok);
+    WR_CHECK("backup counted 4 keys", key_count == 4);
+    node_db_close(&ndb);
+    if (!br.ok) {
+        printf("  backup error: %s\n", err);
+        return failures + 1;
+    }
+
+    /* ---- (B) the manifest exists and covers EVERY wallet table ---- */
+    size_t n_wallet_tables = 0;
+    (void)wallet_backup_tables(&n_wallet_tables);
+    WR_CHECK("backup carries a manifest row per wallet table",
+             wr_count_in_file(backup_path, WALLET_BACKUP_MANIFEST_TABLE)
+                 == (int64_t)n_wallet_tables);
+    WR_CHECK("backup captured the sapling keys",
+             wr_count_in_file(backup_path, "wallet_sapling_keys") == 3);
+    WR_CHECK("backup captured the seed row",
+             wr_count_in_file(backup_path, "wallet_seed") == 1);
+    WR_CHECK("backup captured the sapling notes",
+             wr_count_in_file(backup_path, "wallet_sapling_notes") == 2);
+
+    /* ---- refusals, before any successful restore ---- */
+    struct wallet_restore_request req = {0};
+    struct wallet_restore_report rep;
+
+    req = (struct wallet_restore_request){ .backup_path = backup_path,
+                                           .datadir = target, .dry_run = true };
+
+    failures += wr_test_long_datadir_lock();
+
+    failures += wr_test_restore_refusals(req, backup_dir, target, target_db);
+
     /* ---- (A) dry run: exact counts, nothing written ---- */
     struct zcl_result r = wallet_restore_run(&req, &rep);
     WR_CHECK("dry run ok", r.ok);
@@ -527,51 +820,7 @@ int test_wallet_restore(void)
     WR_CHECK("the BACKUP file, by contrast, lost its primary key",
              !wr_table_has_pk(backup_path, "wallet_keys"));
 
-    /* A different wrapped DEK must refuse before importing unreadable WKD1
-     * ciphertext. The normal source fixture leaves this table empty, so plant
-     * distinct identities only for this negative restore. */
-    {
-        sqlite3 *t = NULL;
-        if (sqlite3_open(target_db, &t) == SQLITE_OK) {
-            (void)wr_exec(t, "INSERT OR REPLACE INTO wallet_key_encryption "
-                             "(id,wrapped_dek) VALUES(1,X'01020304')");
-            sqlite3_close(t);
-        }
-        char conflict[512];
-        snprintf(conflict, sizeof(conflict), "%s/dek-conflict.sqlite",
-                 backup_dir);
-        wr_rm(conflict);
-        FILE *in = fopen(backup_path, "rb");
-        FILE *out = fopen(conflict, "wb");
-        bool copied = in && out;
-        if (copied) {
-            char bytes[4096];
-            size_t n;
-            while ((n = fread(bytes, 1, sizeof(bytes), in)) > 0)
-                if (fwrite(bytes, 1, n, out) != n) {
-                    copied = false;
-                    break;
-                }
-        }
-        if (in) fclose(in);
-        if (out) fclose(out);
-        WR_CHECK("copied backup for wrapped-DEK conflict", copied);
-        sqlite3 *c = NULL;
-        if (copied && sqlite3_open(conflict, &c) == SQLITE_OK) {
-            (void)wr_exec(c, "INSERT INTO wallet_key_encryption "
-                             "(id,wrapped_dek) VALUES(1,X'05060708')");
-            sqlite3_close(c);
-        }
-        struct wallet_restore_request conflict_req = req;
-        conflict_req.backup_path = conflict;
-        struct zcl_result conflict_result =
-            wallet_restore_run(&conflict_req, &rep);
-        WR_CHECK("restore refuses a conflicting wrapped wallet DEK",
-                 !conflict_result.ok);
-        WR_CHECK("DEK conflict imports no wallet keys",
-                 wr_count_in_file(target_db, "wallet_keys") == 4);
-        wr_rm(conflict);
-    }
+    failures += wr_test_dek_conflict(req, backup_path, backup_dir, target_db);
 
     /* ---- keep-existing: a second restore changes nothing ---- */
     r = wallet_restore_run(&req, &rep);
@@ -582,113 +831,11 @@ int test_wallet_restore(void)
     WR_CHECK("target row count is unchanged",
              wr_count_in_file(target_db, "wallet_keys") == 4);
 
-    /* An existing target row must WIN. Mutate one privkey in the target,
-     * restore again, and prove the mutation survived. */
-    {
-        sqlite3 *t = NULL;
-        uint8_t marker[32];
-        memset(marker, 0xAB, sizeof(marker));
-        if (sqlite3_open(target_db, &t) == SQLITE_OK) {
-            sqlite3_stmt *st = NULL;
-            if (sqlite3_prepare_v2(t,
-                    "UPDATE wallet_keys SET privkey=? WHERE rowid=1",
-                    -1, &st, NULL) == SQLITE_OK) {
-                sqlite3_bind_blob(st, 1, marker, sizeof(marker), SQLITE_STATIC);
-                (void)sqlite3_step(st);
-                sqlite3_finalize(st);
-            }
-            sqlite3_close(t);
-        }
-        ZCL_IGNORE_RESULT(wallet_restore_run(&req, &rep),
-                          "the assertion below is about the row, not the run");
-        bool kept = false;
-        if (sqlite3_open_v2(target_db, &t, SQLITE_OPEN_READONLY, NULL)
-                == SQLITE_OK) {
-            sqlite3_stmt *st = NULL;
-            if (sqlite3_prepare_v2(t,
-                    "SELECT privkey FROM wallet_keys WHERE rowid=1",
-                    -1, &st, NULL) == SQLITE_OK) {
-                if (sqlite3_step(st) == SQLITE_ROW) {
-                    const void *b = sqlite3_column_blob(st, 0);
-                    kept = b && sqlite3_column_bytes(st, 0) == 32 &&
-                           memcmp(b, marker, 32) == 0;
-                }
-                sqlite3_finalize(st);
-            }
-            sqlite3_close(t);
-        }
-        WR_CHECK("keep-existing: the target's row was NOT overwritten", kept);
-    }
+    failures += wr_test_keep_existing(req, target_db);
 
-    /* ---- (B) a short-copied backup is detected via the manifest ---- */
-    {
-        char shorted[512];
-        snprintf(shorted, sizeof(shorted), "%s/shorted.sqlite", backup_dir);
-        wr_rm(shorted);
-        char cp[1200];
-        /* Copy the backup byte-for-byte, then delete rows behind the
-         * manifest's back — exactly what a truncated/damaged copy looks
-         * like from the outside. */
-        FILE *in = fopen(backup_path, "rb");
-        FILE *outf = fopen(shorted, "wb");
-        bool copied = in && outf;
-        if (copied) {
-            size_t n;
-            while ((n = fread(cp, 1, sizeof(cp), in)) > 0)
-                if (fwrite(cp, 1, n, outf) != n) { copied = false; break; }
-        }
-        if (in) fclose(in);
-        if (outf) fclose(outf);
-        WR_CHECK("copied the backup for the short-copy case", copied);
+    failures += wr_test_short_copy(req, backup_path, backup_dir);
 
-        sqlite3 *s = NULL;
-        if (sqlite3_open(shorted, &s) == SQLITE_OK) {
-            (void)wr_exec(s, "DELETE FROM wallet_sapling_keys");
-            sqlite3_close(s);
-        }
-        struct wallet_restore_request sreq = req;
-        sreq.backup_path = shorted;
-        sreq.dry_run = true;
-        struct zcl_result sr = wallet_restore_run(&sreq, &rep);
-        WR_CHECK("short-copied backup still restores what it has", sr.ok);
-        WR_CHECK("short copy is DETECTED as a manifest mismatch",
-                 rep.manifest_mismatches >= 1);
-        WR_CHECK("short copy raises a warning",
-                 strstr(rep.warnings, "manifest_mismatch") != NULL);
-        wr_rm(shorted);
-    }
-
-    /* ---- encrypted backups ---- */
-    {
-        char enc[512];
-        snprintf(enc, sizeof(enc), "%s/encrypted.sqlite.enc", backup_dir);
-        wr_rm(enc);
-        struct zcl_result er =
-            wallet_backup_encrypt_file(backup_path, enc, "restore-test-pw");
-        WR_CHECK("encrypt the backup", er.ok);
-
-        struct wallet_restore_request ereq = req;
-        ereq.backup_path = enc;
-        ereq.dry_run = true;
-        ereq.password = NULL;
-        (void)wr_environment_unset("WALLET_BACKUP_PASSWORD");
-        struct zcl_result nr = wallet_restore_run(&ereq, &rep);
-        WR_CHECK("refuses an encrypted backup with no password", !nr.ok);
-        WR_CHECK("the refusal says the file is encrypted",
-                 rep.source_was_encrypted);
-
-        ereq.password = "restore-test-pw";
-        struct zcl_result pr = wallet_restore_run(&ereq, &rep);
-        WR_CHECK("restores an encrypted backup with the password", pr.ok);
-        WR_CHECK("encrypted restore sees all eight tables",
-                 rep.tables_in_backup == (int)n_wallet_tables);
-        char tmp[512];
-        snprintf(tmp, sizeof(tmp), "%s.restore-%ld.tmp", target_db,
-                 (long)getpid());
-        WR_CHECK("encrypted restore leaves no plaintext temp behind",
-                 access(tmp, F_OK) != 0);
-        wr_rm(enc);
-    }
+    failures += wr_test_encrypted(req, backup_path, backup_dir, target_db, n_wallet_tables);
 
     failures += wr_test_rescan_reports_missing_bodies();
 

@@ -72,7 +72,11 @@ struct zcl_result wallet_restore_datadir_free(const char *datadir)
                    "until current-SID single-writer qualification passes");
 #else
     char path[1200];
-    snprintf(path, sizeof(path), "%s/%s", datadir, WRS_PIDFILE);
+    int n = snprintf(path, sizeof(path), "%s/%s", datadir, WRS_PIDFILE);
+    if (n <= 0 || (size_t)n >= sizeof(path)) {
+        LOG_WARN(WRS_TAG, "datadir_free: datadir path is too long");
+        return ZCL_ERR(-50, "datadir path too long for the node lock");
+    }
 
     /* No pidfile at all: nothing has ever locked this datadir. A restore
      * into a fresh directory is the whole disaster-recovery case, so this
