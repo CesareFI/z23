@@ -349,7 +349,6 @@ static int test_binary_ab_fallback_platform_arm(void)
         AB_CHECK("last-good is executable",
                  stat(lastgood, &st) == 0 && (st.st_mode & S_IXUSR));
         AB_CHECK("promote with empty current_path fails", !binary_ab_promote(dir, ""));
-        AB_CHECK("promote with empty slots_dir fails", !binary_ab_promote("", cur));
     }
 
     /* ── 3. normal ready promotes durably before resetting streak ───── */
@@ -758,7 +757,32 @@ static int test_binary_ab_fallback_platform_arm(void)
 }
 #endif
 
+static int test_binary_ab_missing_slots(void)
+{
+    int failures = 0;
+    const char nul_prefix[] = { '\0', '/', '.', '.', '\0' };
+    const char *missing[] = { NULL, "", nul_prefix };
+    /* Intercept before filesystem access: even a missing production guard
+     * cannot write /last-good or resolve NULL through printf's %s handling.
+     * These are inert fixture locators, not paths to a host executable. */
+    for (size_t i = 0; i < sizeof(missing) / sizeof(missing[0]); ++i) {
+        (void)binary_ab_test_intercept_source_open(true);
+        bool promoted = binary_ab_promote(missing[i], "fixture/current");
+        bool attempted = binary_ab_test_intercept_source_open(false);
+        AB_CHECK("missing destination refuses before any filesystem access",
+                 !promoted && !attempted);
+    }
+    /* Prove the observation is live, independent of source existence or UID.
+     * This API accepts nonempty locators; it is not a path-containment policy. */
+    (void)binary_ab_test_intercept_source_open(true);
+    bool promoted = binary_ab_promote("fixture/slots", "fixture/current");
+    bool attempted = binary_ab_test_intercept_source_open(false);
+    AB_CHECK("valid destination reaches the armed source-open interception",
+             !promoted && attempted);
+    return failures;
+}
+
 int test_binary_ab_fallback(void)
 {
-    return test_binary_ab_fallback_platform_arm();
+    return test_binary_ab_missing_slots() + test_binary_ab_fallback_platform_arm();
 }

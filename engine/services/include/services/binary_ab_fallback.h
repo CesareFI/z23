@@ -117,6 +117,11 @@ void binary_ab_note_self_respawn_exit_env(void);
 /* One-shot durability seam after the promoted file is closed but before its
  * atomic rename. The committed last-good and streak must remain unchanged. */
 void binary_ab_test_fail_before_promote_rename_once(void);
+/* Synchronous test interception before any source or destination filesystem
+ * access in binary_ab_promote. Set enabled=true to arm; set false to disarm.
+ * Each call returns and clears the attempted-open observation. An intercepted
+ * open fails without accessing a path. Not for concurrent callers. */
+bool binary_ab_test_intercept_source_open(bool enabled);
 #endif
 
 #endif /* ZCL_SERVICES_BINARY_AB_FALLBACK_H */
