@@ -609,7 +609,8 @@ static FILE *rcv_stage_open(const char *tmp)
     }
     return f;
 }
-/* Publish whole flushed bytes, then acknowledge the parent-directory barrier. */
+/* Publish whole flushed bytes, then acknowledge the parent-directory barrier.
+ * Report the destination on refusal, including a failed post-rename barrier. */
 static bool rcv_write_atomic(const char *path, const char *text, size_t len)
 {
     char tmp[4096], resolved[4096], parent[4096];
@@ -618,28 +619,34 @@ static bool rcv_write_atomic(const char *path, const char *text, size_t len)
     if (!path || !text || !rng_fill((uint8_t *)&nonce, sizeof(nonce)) ||
         !platform_private_destination_resolve(path, resolved, sizeof(resolved),
                                               parent, sizeof(parent)))
-        return false;
+        goto failed;
     int n = snprintf(tmp, sizeof(tmp), "%s.tmp-%016llx", resolved,
                      (unsigned long long)nonce);
     if (n < 0 || (size_t)n >= sizeof(tmp))
-        return false;
+        goto failed;
     f = rcv_stage_open(tmp);
     if (!f)
-        return false;
+        goto failed;
     if (len > 0 && fwrite(text, 1, len, f) != len) {
         (void)fclose(f);
         (void)remove(tmp);
-        return false;
+        goto failed;
     }
     if (!rcv_stream_finish(f, path)) {
         (void)remove(tmp);
-        return false;
+        goto failed;
     }
     if (rename(tmp, resolved) != 0) {
         (void)remove(tmp);
-        return false;
+        goto failed;
     }
-    return rcv_io_fault(path, 2) == 0 && platform_private_parent_flush(parent);
+    if (rcv_io_fault(path, 2) != 0 || !platform_private_parent_flush(parent))
+        goto failed;
+    return true;
+failed:
+    LOG_ERROR(RCV_LOG, "receiver file persistence refused: %s",
+              path ? path : "(null)");
+    return false;
 }
 
 /* JSON string escape for the small sibling inputs this leaf builds. */

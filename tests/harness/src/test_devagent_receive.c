@@ -23,6 +23,7 @@
 #include "kernel/command_registry.h"
 #include "platform/directory_watcher.h"
 #include "platform/time_compat.h"
+#include "util/log_level.h"
 #include "zutf8/zutf8.h"
 
 #include <errno.h>
@@ -1422,6 +1423,53 @@ _test_next:;
     return failures;
 }
 
+/* Capture the real drive's diagnostic; match the destination, not a timestamp.
+ * The caller keeps the barrier hook armed through this single beat. */
+static int rtx_install_logged_drive(const struct rcv_drive_opts *o,
+                                   struct rcv_beat_stats *st, const char *path)
+{
+    int failures = 0, saved = -1, fd = -1;
+    enum zcl_log_level level = zcl_log_level_get();
+    char fixture[PATH_MAX], output[16384], expected[2048];
+    ASSERT_EQ(fflush(stderr), 0);
+    saved = dup(STDERR_FILENO);
+    ASSERT(saved >= 0);
+    fd = test_mkstemp(fixture, sizeof(fixture), "receive_refusal_log");
+    ASSERT(fd >= 0);
+    ASSERT_EQ(dup2(fd, STDERR_FILENO), STDERR_FILENO);
+    zcl_log_level_set(ZCL_LOG_ERROR);
+    ASSERT_EQ(zcl_devagent_receive_drive(o, st), 1);
+    ASSERT_EQ(fflush(stderr), 0);
+    ASSERT_EQ(lseek(fd, 0, SEEK_SET), 0);
+    ssize_t got = read(fd, output, sizeof(output) - 1);
+    ASSERT(got >= 0);
+    ASSERT((size_t)got < sizeof(output) - 1);
+    output[got] = '\0';
+    int n = snprintf(expected, sizeof(expected),
+                     "receiver file persistence refused: %s/z23/dev/%s origin=",
+                     g_rtx_state, path);
+    ASSERT(n > 0);
+    ASSERT((size_t)n < sizeof(expected));
+    ASSERT(strstr(output, expected) != NULL);
+_test_next:;
+    zcl_log_level_set(level);
+    if (saved >= 0) {
+        if (fflush(stderr) != 0)
+            failures++;
+        if (dup2(saved, STDERR_FILENO) != STDERR_FILENO)
+            failures++;
+        if (close(saved) != 0)
+            failures++;
+    }
+    if (fd >= 0) {
+        if (close(fd) != 0)
+            failures++;
+        if (unlink(fixture) != 0)
+            failures++;
+    }
+    return failures;
+}
+
 static int rtx_install_refusal(const char *tail, int phase, size_t files)
 {
     int failures = 0;
@@ -1450,8 +1498,10 @@ static int rtx_install_refusal(const char *tail, int phase, size_t files)
         g_rtx_install_phase = phase;
         g_rtx_install_hits = 0;
         zcl_devagent_receive_test_io(rtx_install_fault);
-        ASSERT_EQ(zcl_devagent_receive_drive(&o, &st), 1);
+        failures += rtx_install_logged_drive(&o, &st, path);
         zcl_devagent_receive_test_io(NULL);
+        if (failures)
+            goto _test_next;
         ASSERT_EQ(st.admitted, 0);
         ASSERT_EQ(st.refused, 1);
         ASSERT_EQ(g_rtx_install_hits, 1);
