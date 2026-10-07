@@ -34,6 +34,42 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
+static int check_restart_period_bounds(void)
+{
+    int failures = 0;
+    static struct liveness_contract c;
+    supervisor_reset_for_testing();
+    liveness_contract_init(&c, "restart.bounds");
+    supervisor_child_id id = supervisor_register(&c);
+    SUP_CHECK("restart bounds child registered", id >= 0);
+    supervisor_set_restart_policy(id, SUPERVISOR_RESTART_TRANSIENT, 3, 7);
+    atomic_store(&c.restart_window_start_us, 123);
+    atomic_store(&c.restarts_in_window, 2u);
+    supervisor_set_restart_policy(id, SUPERVISOR_RESTART_PERMANENT, 1,
+                                  INT64_C(9223372036855));
+    SUP_CHECK("overflow restart period preserves policy and window",
+        atomic_load(&c.restart_policy) == SUPERVISOR_RESTART_TRANSIENT &&
+        atomic_load(&c.restart_intensity_max) == 3 &&
+        atomic_load(&c.restart_period_us) == 7000000 &&
+        atomic_load(&c.restart_window_start_us) == 123 &&
+        atomic_load(&c.restarts_in_window) == 2u);
+    supervisor_set_restart_policy(id, SUPERVISOR_RESTART_PERMANENT, 1,
+                                  INT64_C(9223372036854));
+    SUP_CHECK("maximum restart period stays exact",
+        atomic_load(&c.restart_period_us) == INT64_C(9223372036854000000) &&
+        atomic_load(&c.restart_policy) == SUPERVISOR_RESTART_PERMANENT);
+    supervisor_set_restart_policy(id, SUPERVISOR_RESTART_TRANSIENT, 0, 0);
+    SUP_CHECK("zero restart period disables window and clamps intensity",
+        atomic_load(&c.restart_period_us) == 0 &&
+        atomic_load(&c.restart_intensity_max) == 1 &&
+        atomic_load(&c.restart_policy) == SUPERVISOR_RESTART_TRANSIENT);
+    supervisor_set_restart_policy(id, SUPERVISOR_RESTART_TRANSIENT, 1, -1);
+    SUP_CHECK("negative restart period retains disabled convention",
+        atomic_load(&c.restart_period_us) == 0);
+    supervisor_reset_for_testing();
+    return failures;
+}
+
 static void sleep_ms(int ms)
 {
     struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
@@ -991,6 +1027,8 @@ int test_supervisor(void)
             kids && json_size(kids) == 2);
         json_free(&v);
     }
+
+    failures += check_restart_period_bounds();
 
     /* ── restart policy: names + default is TEMPORARY ───────────────── */
     SUP_CHECK("policy_name(TEMPORARY)",

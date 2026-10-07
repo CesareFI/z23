@@ -674,6 +674,13 @@ void supervisor_set_restart_policy(supervisor_child_id id,
             "— ignored (child keeps the default TEMPORARY policy)\n", (int)id);
         return;
     }
+    if (period_secs > INT64_MAX / 1000000) {
+        fprintf(stderr,  // obs-ok:supervisor-invalid-restart-period
+            "[supervisor] set_restart_policy: child_id=%d restart period "
+            "%lld seconds exceeds the microsecond range — ignored\n",
+            (int)id, (long long)period_secs);
+        return;
+    }
     if (intensity_max < 1) intensity_max = 1;
     atomic_store(&c->restart_intensity_max, intensity_max);
     atomic_store(&c->restart_period_us,
