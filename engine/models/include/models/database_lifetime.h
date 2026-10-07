@@ -15,6 +15,9 @@ enum db_lifetime_authority {
     DB_LIFETIME_BORROWED = 0,
     DB_LIFETIME_HANDLE_OWNER = 1,
     DB_LIFETIME_BACKING_OWNER = 2,
+    /* Classification may observe ownership, never repair it. Linux's SQLite
+     * VFS requests fchown even while opening an existing WAL read-only. */
+    DB_LIFETIME_SCHEMA_PREFLIGHT = 3,
 };
 
 struct db_lifetime_scope {
