@@ -17,6 +17,8 @@ static const char SAFE_UA[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW
 
 void SanitizeString(const char *str, int rule, char *out, size_t out_size)
 {
+    if (out_size == 0)
+        return;
     const char *safe = (rule == SAFE_CHARS_UA_COMMENT) ? SAFE_UA : SAFE_DEFAULT;
     size_t j = 0;
     for (size_t i = 0; str[i] && j + 1 < out_size; i++) {

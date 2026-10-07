@@ -21,9 +21,35 @@
 
 #include <errno.h>
 
+static int sanitize_capacity_cases(void)
+{
+    int failures = 0;
+    const char *inputs[] = { "", "hello" };
+    const int rules[] = { SAFE_CHARS_DEFAULT, SAFE_CHARS_UA_COMMENT };
+    for (size_t i = 0; i < sizeof(inputs) / sizeof(inputs[0]); i++) {
+        for (size_t r = 0; r < sizeof(rules) / sizeof(rules[0]); r++) {
+            char guard = 'X';
+            SanitizeString(inputs[i], rules[r], &guard, 0);
+            if (guard != 'X') {
+                printf("FAIL: SanitizeString capacity 0 input %zu rule %d\n", i, rules[r]);
+                failures++;
+            }
+            char bounded[] = { 'X', 'X' };
+            SanitizeString(inputs[i], rules[r], bounded, 1);
+            if (bounded[0] != '\0' || bounded[1] != 'X') {
+                printf("FAIL: SanitizeString capacity 1 input %zu rule %d\n", i, rules[r]);
+                failures++;
+            }
+        }
+    }
+    return failures;
+}
+
 int test_encoding(void)
 {
     int failures = 0;
+
+    failures += sanitize_capacity_cases();
 
     printf("uint256 hex... ");
     struct uint256 u;
