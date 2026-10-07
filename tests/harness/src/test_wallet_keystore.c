@@ -8,6 +8,7 @@
 #include "wallet/keystore.h"   /* basic_keystore + keystore_wipe_private_keys */
 #include "config/boot.h"   /* wallet_at_rest_boot_decision + operator lanes */
 
+#include <limits.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -312,6 +313,43 @@ static int test_null_passphrase(void)
         size_t plain_len = 0;
         ASSERT(!wks_decrypt(env, env_len, NULL,
                             plain, sizeof(plain), &plain_len));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_decrypt_length_bounds(void)
+{
+    int failures = 0;
+    TEST("wallet_keystore: oversized ciphertext refuses before KDF/output") {
+        uint8_t env[WKS_HEADER_LEN + sizeof(k_secret_key)] = {0};
+        size_t env_len = 0;
+        ASSERT(wks_encrypt(k_secret_key, sizeof(k_secret_key),
+                           k_passphrase, TEST_ITERS,
+                           env, sizeof(env), &env_len));
+        uint8_t out[64], expected[64];
+        memset(out, 0xa5, sizeof(out));
+        memset(expected, 0xa5, sizeof(expected));
+        const size_t lengths[] = {
+            (size_t)WKS_HEADER_LEN + (size_t)INT_MAX + 1, SIZE_MAX
+        };
+        for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+            size_t out_len = 99;
+            ASSERT(!wks_decrypt(env, lengths[i], k_passphrase,
+                                out, SIZE_MAX, &out_len));
+            ASSERT(out_len == 0);
+            ASSERT(memcmp(out, expected, sizeof(out)) == 0);
+        }
+#if SIZE_MAX > UINT_MAX
+        /* A narrowed EVP length writes the fixture plaintext before the
+         * full-length comparison refuses it when the bound is removed. */
+        size_t out_len = 99;
+        const size_t wrapped_len = (size_t)UINT_MAX + 1 + env_len;
+        ASSERT(!wks_decrypt(env, wrapped_len, k_passphrase,
+                            out, SIZE_MAX, &out_len));
+        ASSERT(out_len == 0);
+        ASSERT(memcmp(out, expected, sizeof(out)) == 0);
+#endif
         PASS();
     } _test_next:;
     return failures;
@@ -622,6 +660,7 @@ int test_wallet_keystore(void)
     failures += test_empty_plaintext();
     failures += test_long_plaintext();
     failures += test_null_passphrase();
+    failures += test_decrypt_length_bounds();
     failures += test_wallet_lock_register();
     failures += test_wallet_lock_boot_credential();
     failures += test_keystore_secure_erase();

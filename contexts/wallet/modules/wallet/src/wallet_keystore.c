@@ -8,6 +8,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -147,36 +148,14 @@ done:
 
 /* ── Decrypt ────────────────────────────────────────────────── */
 
-bool wks_decrypt(const uint8_t *envelope, size_t env_len,
-                  const char *passphrase,
-                  uint8_t *out, size_t out_cap, size_t *out_len)
+static bool decrypt_ciphertext(const uint8_t *envelope, size_t ct_len,
+                               const uint8_t key[WKS_KEY_LEN],
+                               uint8_t *out, size_t *out_len)
 {
-    if (!envelope || env_len < WKS_HEADER_LEN) return false;
-    if (!passphrase) return false;
-    if (!out || !out_len) return false;
-
-    if (memcmp(envelope, WKS_MAGIC, WKS_MAGIC_LEN) != 0) return false;
-    uint32_t version = get_u32_be(envelope + 4);
-    if (version != 1) return false;
-    uint32_t iters = get_u32_be(envelope + 8);
-    if (iters < WKS_MIN_ITERS || iters > WKS_MAX_ITERS) return false;
-
-    const uint8_t *salt  = envelope + 16;
     const uint8_t *nonce = envelope + 32;
-    const uint8_t *tag   = envelope + 44;
-
-    size_t ct_len = env_len - WKS_HEADER_LEN;
-    if (out_cap < ct_len) return false;
-
-    uint8_t key[WKS_KEY_LEN];
-    if (!derive_key(passphrase, salt, iters, key)) {
-        OPENSSL_cleanse(key, sizeof(key));
-        return false;
-    }
-
+    const uint8_t *tag = envelope + 44;
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     if (!ctx) {
-        OPENSSL_cleanse(key, sizeof(key));
         return false;
     }
 
@@ -213,6 +192,30 @@ bool wks_decrypt(const uint8_t *envelope, size_t env_len,
 
 done:
     EVP_CIPHER_CTX_free(ctx);
+    return ok;
+}
+
+bool wks_decrypt(const uint8_t *envelope, size_t env_len,
+                  const char *passphrase,
+                  uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    if (out_len) *out_len = 0;
+    if (!envelope || env_len < WKS_HEADER_LEN) return false;
+    if (!passphrase) return false;
+    if (!out || !out_len) return false;
+
+    if (memcmp(envelope, WKS_MAGIC, WKS_MAGIC_LEN) != 0) return false;
+    uint32_t version = get_u32_be(envelope + 4);
+    if (version != 1) return false;
+    uint32_t iters = get_u32_be(envelope + 8);
+    if (iters < WKS_MIN_ITERS || iters > WKS_MAX_ITERS) return false;
+
+    size_t ct_len = env_len - WKS_HEADER_LEN;
+    if (ct_len > (size_t)INT_MAX || out_cap < ct_len) return false;
+
+    uint8_t key[WKS_KEY_LEN];
+    bool ok = derive_key(passphrase, envelope + 16, iters, key);
+    if (ok) ok = decrypt_ciphertext(envelope, ct_len, key, out, out_len);
     OPENSSL_cleanse(key, sizeof(key));
     return ok;
 }

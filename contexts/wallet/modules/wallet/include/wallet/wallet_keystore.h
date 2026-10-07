@@ -104,9 +104,12 @@ bool wks_encrypt(const uint8_t *plaintext, size_t plen,
 
 /* Decrypt an envelope produced by wks_encrypt.  Writes plaintext
  * into `out`; `out_cap` must be at least env_len - WKS_HEADER_LEN.
+ * Sets *out_len to zero on failure when out_len is non-NULL.
+ * Oversized ciphertext is refused before KDF or output writes.
  * Returns false on:
  *   - bad magic / unsupported version
  *   - too-small envelope
+ *   - ciphertext longer than the signed length admitted by OpenSSL EVP
  *   - too-small output buffer
  *   - wrong passphrase (GCM tag fails)
  *   - tampered ciphertext (GCM tag fails)
