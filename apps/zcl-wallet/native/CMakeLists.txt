@@ -1798,6 +1798,16 @@ if(NOT ANDROID)
             -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
         add_test(NAME wallet_change_ownership COMMAND change_ownership_tests)
         set_tests_properties(wallet_change_ownership PROPERTIES TIMEOUT 60)
+        foreach(mode reservation ownership)
+            add_executable(change_${mode}_fuzz_tests tests/test_change_address_fuzz.c
+                tests/fuzz_change_reservation.c tests/change_storage_fixture.c tests/storage_fixture.c)
+            target_link_libraries(change_${mode}_fuzz_tests PRIVATE zcl_wallet_core)
+            target_compile_options(change_${mode}_fuzz_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+                -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
+            add_test(NAME wallet_change_${mode}_fuzz_contract COMMAND change_${mode}_fuzz_tests)
+            set_tests_properties(wallet_change_${mode}_fuzz_contract PROPERTIES TIMEOUT 30)
+        endforeach()
+        target_compile_definitions(change_ownership_fuzz_tests PRIVATE ZCL_CHANGE_RECONSTRUCT=1)
         add_library(review_wallet_test_fixture STATIC tests/review_wallet_fixture.c
             tests/assessment_fixture.c tests/change_storage_fixture.c tests/storage_fixture.c)
         target_include_directories(review_wallet_test_fixture PUBLIC src)

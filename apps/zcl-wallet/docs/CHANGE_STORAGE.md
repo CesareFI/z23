@@ -303,6 +303,14 @@ with `ZCL_FUZZ=ON`, `ZCL_SANITIZE=ON` builds `fuzz_change_ownership`. Its seed
 format is shared with `seed_change_reservation`; use a new private corpus and
 artifact directory, max_len246, timeout5, RSS512MiB and a bounded duration.
 
+Both fuzz modes require success for exact known authentic state controls, so an
+implementation that refuses every operation cannot satisfy their oracles.
+Reservation also requires its unmodified initial-state control to succeed.
+The registered `wallet_change_reservation_fuzz_contract` and
+`wallet_change_ownership_fuzz_contract` replay the controls, ignored metadata,
+selector boundaries and a damaged head while checking input immutability.
+These checks add no recovery or signing permission and change no stored format.
+
 ## Android fresh creation
 
 Fresh Android creation now reaches paired persistence through
