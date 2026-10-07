@@ -213,6 +213,114 @@ write_fail:
             "result write failed; previous wallet projection retained");
 }
 
+/* Own the descriptor until after its mapping is closed. A failed open/read
+ * leaves cleanup to the caller and must never authorize a partial result. */
+struct wallet_scan_source {
+    int number;
+    int fd;
+    struct platform_read_mapping mapping;
+};
+
+static bool wallet_scan_source_close(struct wallet_scan_source *source)
+{
+    platform_read_mapping_close(&source->mapping);
+    int fd = source->fd;
+    source->fd = -1;
+    source->number = -1;
+    if (fd >= 0 && close(fd) != 0)
+        LOG_FAIL("wallet_scan", "closing block source failed");
+    return true;
+}
+
+static bool wallet_scan_source_open(struct wallet_scan_source *source,
+                                     const char *datadir, int number)
+{
+    if (source->number == number)
+        return true;
+    if (!wallet_scan_source_close(source))
+        LOG_FAIL("wallet_scan", "releasing previous block source failed (next file=%d)", number);
+    char path[512];
+    int n = snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat", datadir, number);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        LOG_FAIL("wallet_scan", "block source path is too long (file=%d)", number);
+    source->fd = open(path, O_RDONLY);
+    if (source->fd < 0)
+        LOG_FAIL("wallet_scan", "opening block source failed (file=%d)", number);
+    struct stat st;
+    if (fstat(source->fd, &st) != 0)
+        LOG_FAIL("wallet_scan", "reading block source size failed (file=%d)", number);
+    if (!S_ISREG(st.st_mode) || st.st_size <= 0 ||
+        (uintmax_t)st.st_size > (uintmax_t)SIZE_MAX)
+        LOG_FAIL("wallet_scan", "invalid block source size/type (file=%d)", number);
+    if (!platform_read_mapping_open(&source->mapping, source->fd, (size_t)st.st_size))
+        LOG_FAIL("wallet_scan", "mapping block source failed (file=%d)", number);
+    source->number = number;
+    platform_read_mapping_advise_sequential(&source->mapping);
+    return true;
+}
+
+/* blk is initialized by the caller and remains caller-owned on failure. */
+static bool wallet_scan_source_read(struct wallet_scan_source *source,
+                                     const char *datadir,
+                                     const struct block_index *index,
+                                     struct block *blk)
+{
+    if (!wallet_scan_source_open(source, datadir, index->nFile))
+        LOG_FAIL("wallet_scan", "acquiring required block source failed (file=%d)",
+                 index->nFile);
+    if (index->nDataPos >= source->mapping.size)
+        LOG_FAIL("wallet_scan", "block offset outside source (file=%d pos=%u)",
+                 index->nFile, index->nDataPos);
+    struct byte_stream bs;
+    stream_init_from_data(&bs, source->mapping.data + index->nDataPos,
+                          source->mapping.size - index->nDataPos);
+    if (!block_deserialize(blk, &bs))
+        LOG_FAIL("wallet_scan", "block source decode failed (file=%d pos=%u)",
+                 index->nFile, index->nDataPos);
+    return true;
+}
+
+/* Read in height order so spend tracking remains ordered. This owns only the
+ * source mapping; the caller owns and discards accumulated rows on failure. */
+static bool wallet_scan_read_matches(const struct active_chain *chain,
+                                      const char *datadir,
+                                      int start_height, int end_height,
+                                      const struct scan_addr_ht *aht,
+                                      const bool *file_has_match, int num_files,
+                                      struct scan_utxo_set *uset,
+                                      struct scan_wtx_list *wl,
+                                      uint64_t *blocks_deserialized)
+{
+    struct wallet_scan_source source = {.number = -1, .fd = -1};
+    platform_read_mapping_init(&source.mapping);
+    bool complete = false;
+    for (int64_t h = start_height; h <= end_height; h++) {
+        const struct block_index *pi = active_chain_at(chain, (int)h);
+        if (!pi) continue;
+        if (!(pi->nStatus & BLOCK_HAVE_DATA)) continue;
+        /* Pass 1's array length is distinct from its number of matches. */
+        if (pi->nFile < 0 || pi->nFile >= num_files) {
+            LOG_WARN("wallet_scan", "block file outside Pass-1 evidence (height=%d file=%d)",
+                     (int)h, pi->nFile);
+            goto cleanup;
+        }
+        if (!file_has_match[pi->nFile]) continue;
+        struct block blk;
+        block_init(&blk);
+        if (!wallet_scan_source_read(&source, datadir, pi, &blk)) {
+            block_free(&blk);
+            goto cleanup;
+        }
+        (*blocks_deserialized)++;
+        (void)scan_block_txs(&blk, (int)h, aht, uset, wl);
+        block_free(&blk);
+    }
+    complete = true;
+cleanup:
+    /* Close even on an incomplete scan, before the caller may store rows. */
+    return wallet_scan_source_close(&source) && complete;
+}
+
 static int wallet_scan_pass2_nonempty(struct node_db *ndb,
                                       const struct active_chain *chain,
                                       const char *datadir,
@@ -220,6 +328,7 @@ static int wallet_scan_pass2_nonempty(struct node_db *ndb,
                                       int end_height,
                                       const struct scan_addr_ht *aht,
                                       const bool *file_has_match,
+                                      int num_files,
                                       const struct timespec *ts_start,
                                       const struct timespec *ts_p1)
 {
@@ -230,76 +339,17 @@ static int wallet_scan_pass2_nonempty(struct node_db *ndb,
     scan_uset_init(&uset);
     struct scan_wtx_list wl;
     scan_wl_init(&wl);
-
-    /* We need to process blocks in height order for correct spend tracking.
-     * Build a set of heights whose blocks are in matched files, then
-     * iterate heights in order. */
-
-    /* First, find which heights map to matched files */
-    int blocks_deserialized = 0;
-    int cached_file = -1;
-    int cached_fd = -1;
-    struct platform_read_mapping cached_mapping;
-    platform_read_mapping_init(&cached_mapping);
-
-    for (int h = start_height; h <= end_height; h++) {
-        const struct block_index *pi = active_chain_at(chain, h);
-        if (!pi) continue;
-        if (!(pi->nStatus & BLOCK_HAVE_DATA)) continue;
-
-        /* Skip files that pass 1 ruled out */
-        if (!file_has_match[pi->nFile]) continue;
-
-        if (pi->nFile != cached_file) {
-            platform_read_mapping_close(&cached_mapping);
-            if (cached_fd >= 0) {
-                close(cached_fd);
-                cached_fd = -1;
-            }
-            cached_file = -1;
-            char path[512];
-            snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-                     datadir, pi->nFile);
-            int fd = open(path, O_RDONLY);
-            if (fd < 0) continue;
-            struct stat st;
-            if (fstat(fd, &st) != 0) { close(fd); continue; }
-            if (st.st_size <= 0 ||
-                (uintmax_t)st.st_size > (uintmax_t)SIZE_MAX) {
-                close(fd);
-                continue;
-            }
-            if (!platform_read_mapping_open(&cached_mapping, fd,
-                                            (size_t)st.st_size)) {
-                close(fd);
-                continue;
-            }
-            cached_fd = fd;
-            cached_file = pi->nFile;
-            platform_read_mapping_advise_sequential(&cached_mapping);
-        }
-        if (!cached_mapping.data ||
-            pi->nDataPos >= cached_mapping.size) continue;
-
-        struct block blk;
-        block_init(&blk);
-        size_t rem = cached_mapping.size - pi->nDataPos;
-        struct byte_stream bs;
-        stream_init_from_data(&bs,
-                              cached_mapping.data + pi->nDataPos, rem);
-        if (!block_deserialize(&blk, &bs)) {
-            block_free(&blk);
-            continue;
-        }
-        blocks_deserialized++;
-
-        (void)scan_block_txs(&blk, h, aht, &uset, &wl);
-
-        block_free(&blk);
+    int result = -1;
+    if (!uset.items || !wl.items) {
+        LOG_WARN("wallet_scan", "allocating scan working sets failed");
+        goto cleanup;
     }
-    platform_read_mapping_close(&cached_mapping);
-    if (cached_fd >= 0)
-        close(cached_fd);
+
+    uint64_t blocks_deserialized = 0;
+    if (!wallet_scan_read_matches(chain, datadir, start_height, end_height,
+                                  aht, file_has_match, num_files, &uset, &wl,
+                                  &blocks_deserialized))
+        goto cleanup;
 
     platform_time_monotonic_timespec(&ts_p2);
     double p2_ms = (double)(ts_p2.tv_sec - ts_p1->tv_sec) * 1000.0 +
@@ -317,16 +367,16 @@ static int wallet_scan_pass2_nonempty(struct node_db *ndb,
         }
     }
 
-    printf("wallet_scan: pass 2 done in %.1f ms — %d blocks deserialized, "
-           "%d wallet txs\n", p2_ms, blocks_deserialized, wl.count);
+    printf("wallet_scan: pass 2 done in %.1f ms — %llu blocks deserialized, "
+           "%d wallet txs\n", p2_ms, (unsigned long long)blocks_deserialized, wl.count);
     printf("wallet_scan: TOTAL %.1f ms — %d unspent UTXOs, "
            "balance %.8f ZCL\n",
            total_ms, unspent, (double)balance / (double)ZATOSHI_PER_ZCL);
     fflush(stdout);
 
-    int result = wallet_scan_store_results(ndb, &uset, &wl);
+    result = wallet_scan_store_results(ndb, &uset, &wl);
 
-    /* Cleanup */
+cleanup:
     scan_uset_free(&uset);
     scan_wl_free(&wl);
 
@@ -340,13 +390,14 @@ int wallet_scan_pass2_execute(struct node_db *ndb,
                               int end_height,
                               const struct scan_addr_ht *aht,
                               const bool *file_has_match,
+                              int num_files,
                               int matched_files,
                               const struct timespec *ts_start,
                               const struct timespec *ts_p1)
 {
-    if (matched_files < 0)
-        LOG_ERR("wallet_scan", "negative matched-file evidence: %d",
-                matched_files);
+    if (num_files < 0 || matched_files < 0 || matched_files > num_files)
+        LOG_ERR("wallet_scan", "invalid matched-file evidence: %d/%d",
+                matched_files, num_files);
 
     /* Keep the empty replacement outside the nonempty worker's large stack
      * frame and heap working sets on every compiler/profile. */
@@ -356,8 +407,12 @@ int wallet_scan_pass2_execute(struct node_db *ndb,
         return wallet_scan_store_results(ndb, &empty_uset, &empty_wl);
     }
 
+    if (!chain || !datadir || !aht || !file_has_match || !ts_start || !ts_p1 ||
+        start_height < 0 || end_height < start_height)
+        LOG_ERR("wallet_scan", "invalid nonempty scan arguments");
+
     return wallet_scan_pass2_nonempty(ndb, chain, datadir,
                                       start_height, end_height,
-                                      aht, file_has_match,
+                                      aht, file_has_match, num_files,
                                       ts_start, ts_p1);
 }

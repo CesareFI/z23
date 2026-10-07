@@ -38,11 +38,14 @@
  * end_height:     last height to deserialize (inclusive)
  * aht:            address hash table built by Pass 1 (caller-owned)
  * file_has_match: per-file Pass-1 match flags (caller-owned)
+ * num_files:      length of file_has_match; indexed file numbers are checked
  * matched_files:  number of true entries; zero preserves the O(1) empty
  *                 replacement path without a chain-height walk
  * ts_start:       monotonic timestamp captured before Pass 1 (for totals)
  * ts_p1:          monotonic timestamp captured after Pass 1
  *
+ * The chain, addresses and flags remain borrowed and stable until return.
+ * An unreadable required source aborts before replacing the wallet projection.
  * Returns the number of wallet transactions found, or -1 on error. */
 int wallet_scan_pass2_execute(struct node_db *ndb,
                               const struct active_chain *chain,
@@ -51,6 +54,7 @@ int wallet_scan_pass2_execute(struct node_db *ndb,
                               int end_height,
                               const struct scan_addr_ht *aht,
                               const bool *file_has_match,
+                              int num_files,
                               int matched_files,
                               const struct timespec *ts_start,
                               const struct timespec *ts_p1);

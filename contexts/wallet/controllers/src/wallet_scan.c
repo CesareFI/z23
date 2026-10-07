@@ -216,7 +216,7 @@ int wallet_scan_blocks(struct node_db *ndb,
                "replacing with empty result\n", start_height, end_height);
         return wallet_scan_pass2_execute(ndb, chain, datadir,
                                          start_height, end_height,
-                                         NULL, NULL, 0, NULL, NULL);
+                                         NULL, NULL, 0, 0, NULL, NULL);
     }
 
     struct timespec ts_start, ts_p1;
@@ -243,7 +243,7 @@ int wallet_scan_blocks(struct node_db *ndb,
         printf("wallet_scan: no wallet keys, skipping block scan\n");
         int empty_result = wallet_scan_pass2_execute(
             ndb, chain, datadir, start_height, end_height,
-            &aht, NULL, 0, NULL, NULL);
+            &aht, NULL, 0, 0, NULL, NULL);
         scan_aht_free(&aht);
         return empty_result;
     }
@@ -393,7 +393,7 @@ int wallet_scan_blocks(struct node_db *ndb,
      * Service by const reference and frees them afterward. */
     int found = wallet_scan_pass2_execute(ndb, chain, datadir,
                                           start_height, end_height,
-                                          &aht, file_has_match, matched_files,
+                                          &aht, file_has_match, num_files, matched_files,
                                           &ts_start, &ts_p1);
 
     /* Cleanup */

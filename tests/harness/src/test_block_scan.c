@@ -4,6 +4,7 @@
 
 #include "test/test_core.h"
 #include "storage/coins_view_sqlite.h"
+#include "storage/disk_block_io.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/pow.h"
@@ -19,7 +20,11 @@
 #include "config/boot_cursor_state.h"
 #include "util/storage_pacing.h"
 #include "wallet/wallet.h"
+#include "script/standard.h"
+#include "platform/time_compat.h"
+#include "platform/os_proc.h"
 #include <fcntl.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -380,6 +385,220 @@ static bool node_db_has_no_open_transaction(struct node_db *ndb)
     return !status.tx_open && sqlite3_get_autocommit(ndb->db) != 0;
 }
 
+/* A serialized coinbase-shaped payment fixture, not a consensus-valid chain.
+ * This exercises the wallet scanner's real decode/match/store path without
+ * spending funds, generating keys, or bypassing any node validation. */
+static bool wallet_scan_write_source(const char *datadir,
+                                     struct block_index *index)
+{
+    struct block blk;
+    block_init(&blk);
+    blk.header.nVersion = 4;
+    blk.header.nTime = 1700000000;
+    blk.vtx = calloc(1, sizeof(*blk.vtx));
+    if (!blk.vtx)
+        return false;
+    blk.num_vtx = 1;
+    struct transaction *tx = blk.vtx;
+    transaction_init(tx);
+    tx->vin = calloc(1, sizeof(*tx->vin));
+    tx->vout = calloc(1, sizeof(*tx->vout));
+    bool ok = tx->vin && tx->vout;
+    if (ok) {
+        tx->num_vin = 1;
+        tx->num_vout = 1;
+        tx->version = 1;
+        outpoint_set_null(&tx->vin[0].prevout);
+        tx->vin[0].sequence = UINT32_MAX;
+        tx->vout[0].value = 9000;
+        struct key_id id = {0};
+        id.id.data[0] = 1;
+        script_for_p2pkh(&tx->vout[0].script_pub_key, &id);
+        struct disk_block_pos pos;
+        disk_block_pos_init(&pos);
+        const unsigned char magic[] = {0x24, 0xe9, 0x27, 0x64};
+        ok = write_block_to_disk(&blk, &pos, datadir, magic);
+        index->nFile = pos.nFile;
+        index->nDataPos = pos.nPos;
+    }
+    block_free(&blk);
+    return ok;
+}
+
+enum wallet_scan_source_case { SCAN_SOURCE_VALID, SCAN_SOURCE_MISSING,
+                              SCAN_SOURCE_EMPTY, SCAN_SOURCE_TRUNCATED,
+                              SCAN_SOURCE_BAD_OFFSET };
+
+static bool wallet_scan_damage_source(const char *datadir,
+                                      struct block_index *index,
+                                      enum wallet_scan_source_case mode)
+{
+    if (mode == SCAN_SOURCE_VALID)
+        return true;
+    if (mode == SCAN_SOURCE_BAD_OFFSET) {
+        index->nDataPos = UINT32_MAX;
+        return true;
+    }
+    char path[600];
+    int n = snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                     datadir, index->nFile);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return false;
+    if (mode == SCAN_SOURCE_MISSING)
+        return unlink(path) == 0;
+    FILE *file = fopen(path, "wb");
+    if (!file)
+        return false;
+    bool ok = true;
+    if (mode == SCAN_SOURCE_TRUNCATED) {
+        ok = (uintmax_t)index->nDataPos <= (uintmax_t)LONG_MAX &&
+             fseek(file, (long)index->nDataPos, SEEK_SET) == 0 &&
+             fputc(4, file) != EOF;
+    }
+    return fclose(file) == 0 && ok;
+}
+
+static int test_wallet_scan_source_case(enum wallet_scan_source_case mode)
+{
+    struct node_db ndb = {0};
+    if (!node_db_open(&ndb, ":memory:"))
+        return 1;
+    bool ok = seed_wallet_projection(&ndb);
+    char datadir[512];
+    test_make_tmpdir(datadir, sizeof(datadir), "wallet_scan_source", "input");
+    struct block_index index;
+    block_index_init(&index);
+    index.nStatus = BLOCK_HAVE_DATA;
+    ok = ok && wallet_scan_write_source(datadir, &index);
+    ok = ok && wallet_scan_damage_source(datadir, &index, mode);
+    struct block_index *entries[] = {&index};
+    /* Borrowed entries remain live through the scan; no chain-owned heap. */
+    struct active_chain chain = {.chain = entries, .height = 0, .capacity = 1};
+    struct scan_addr_ht addresses;
+    scan_aht_init(&addresses);
+    /* A Pass-1 raw-byte hit need not be an owned output. This control keeps
+     * source-I/O coverage independent of payment projection bookkeeping. */
+    uint8_t address[20] = {2};
+    scan_aht_insert(&addresses, address);
+    ok = ok && scan_aht_has(&addresses, address);
+    const bool matches[] = {true};
+    struct timespec started;
+    platform_time_monotonic_timespec(&started);
+    int result = wallet_scan_pass2_execute(&ndb, &chain, datadir, 0, 0,
+                                          &addresses, matches, 1, 1,
+                                          &started, &started);
+    bool preserved = wallet_projection_seed_is_present(&ndb);
+    bool outcome = result == -1 && preserved;
+    if (mode == SCAN_SOURCE_VALID)
+        outcome = result == 0 && db_wallet_utxo_balance(&ndb) == 0 && !preserved;
+    ok = ok && outcome && node_db_has_no_open_transaction(&ndb);
+    printf("wallet scan source mode=%d result=%d preserved=%d %s\n",
+           mode, result, preserved, ok ? "PASS" : "FAIL");
+    scan_aht_free(&addresses);
+    node_db_close(&ndb);
+    test_rm_rf(datadir);
+    return ok ? 0 : 1;
+}
+
+static int test_wallet_scan_sources(void)
+{
+    int failures = 0;
+    for (int mode = SCAN_SOURCE_VALID; mode <= SCAN_SOURCE_BAD_OFFSET; mode++)
+        failures += test_wallet_scan_source_case((enum wallet_scan_source_case)mode);
+    return failures;
+}
+
+static int test_wallet_scan_file_bound(int number)
+{
+    struct node_db ndb = {0};
+    if (!node_db_open(&ndb, ":memory:"))
+        return 1;
+    bool seeded = seed_wallet_projection(&ndb);
+    struct block_index index;
+    block_index_init(&index);
+    index.nStatus = BLOCK_HAVE_DATA;
+    index.nFile = number;
+    struct block_index *entries[] = {&index};
+    struct active_chain chain = {.chain = entries, .height = 0, .capacity = 1};
+    struct scan_addr_ht addresses = {0};
+    /* Backing guards make a removed bounds check deterministic without UB:
+     * either invalid index would read false and silently clear the wallet. */
+    const bool backing[] = {false, true, false};
+    struct timespec started;
+    platform_time_monotonic_timespec(&started);
+    int result = wallet_scan_pass2_execute(&ndb, &chain, "/nonexistent", 0, 0,
+                                          &addresses, backing + 1, 1, 1,
+                                          &started, &started);
+    bool preserved = wallet_projection_seed_is_present(&ndb);
+    bool ok = seeded && result == -1 && preserved &&
+              node_db_has_no_open_transaction(&ndb);
+    printf("wallet scan file bound number=%d result=%d preserved=%d %s\n",
+           number, result, preserved, ok ? "PASS" : "FAIL");
+    node_db_close(&ndb);
+    return ok ? 0 : 1;
+}
+
+static int test_wallet_scan_working_set_failure(const char *label)
+{
+    struct node_db ndb = {0};
+    if (!node_db_open(&ndb, ":memory:"))
+        return 1;
+    bool seeded = seed_wallet_projection(&ndb);
+    struct active_chain chain = {.height = -1};
+    struct scan_addr_ht addresses = {0};
+    const bool matches[] = {true};
+    struct timespec started;
+    platform_time_monotonic_timespec(&started);
+    zcl_alloc_fault_fail_next(label);
+    int result = wallet_scan_pass2_execute(&ndb, &chain, "/nonexistent", 0, 0,
+                                          &addresses, matches, 1, 1,
+                                          &started, &started);
+    bool injected = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    bool preserved = wallet_projection_seed_is_present(&ndb);
+    bool ok = seeded && injected && result == -1 && preserved &&
+              node_db_has_no_open_transaction(&ndb);
+    printf("wallet scan working set label=%s injected=%d result=%d preserved=%d %s\n",
+           label, injected, result, preserved, ok ? "PASS" : "FAIL");
+    node_db_close(&ndb);
+    return ok ? 0 : 1;
+}
+
+static int test_wallet_scan_partial_source(void)
+{
+    struct node_db ndb = {0};
+    if (!node_db_open(&ndb, ":memory:"))
+        return 1;
+    bool ok = seed_wallet_projection(&ndb);
+    char dir[512];
+    test_make_tmpdir(dir, sizeof(dir), "wallet_scan_partial", "input");
+    struct block_index first;
+    block_index_init(&first);
+    first.nStatus = BLOCK_HAVE_DATA;
+    ok = ok && wallet_scan_write_source(dir, &first);
+    struct block_index second = first;
+    second.nDataPos = UINT32_MAX;
+    struct block_index *entries[] = {&first, &second};
+    struct active_chain chain = {.chain = entries, .height = 1, .capacity = 2};
+    struct scan_addr_ht addresses = {0};
+    const bool matches[] = {true};
+    size_t fds_before = 0, fds_after = 0;
+    ok = ok && os_proc_open_fd_count(&fds_before);
+    struct timespec started;
+    platform_time_monotonic_timespec(&started);
+    int result = wallet_scan_pass2_execute(&ndb, &chain, dir, 0, 1,
+                                          &addresses, matches, 1, 1,
+                                          &started, &started);
+    bool preserved = wallet_projection_seed_is_present(&ndb);
+    ok = ok && os_proc_open_fd_count(&fds_after) && fds_before == fds_after;
+    ok = ok && result == -1 && preserved && node_db_has_no_open_transaction(&ndb);
+    printf("wallet scan partial source result=%d preserved=%d %s\n",
+           result, preserved, ok ? "PASS" : "FAIL");
+    node_db_close(&ndb);
+    test_rm_rf(dir);
+    return ok ? 0 : 1;
+}
+
 static int test_wallet_scan_empty_replacement(void)
 {
     printf("GIVEN stale wallet rows WHEN empty Pass2 replaces them "
@@ -404,7 +623,7 @@ static int test_wallet_scan_empty_replacement(void)
     struct timespec pass1 = {.tv_sec = 1, .tv_nsec = 0};
     int failed = ok ? wallet_scan_pass2_execute(
         &ndb, &chain, "/nonexistent", 0, 1000000000,
-        &ht, file_has_match, 0, &started, &pass1) : 0;
+        &ht, file_has_match, 1, 0, &started, &pass1) : 0;
     ok = ok && failed == -1 && wallet_projection_seed_is_present(&ndb) &&
          node_db_has_no_open_transaction(&ndb);
 
@@ -414,7 +633,7 @@ static int test_wallet_scan_empty_replacement(void)
     }
     int cleared = ok ? wallet_scan_pass2_execute(
         &ndb, &chain, "/nonexistent", 0, 1000000000,
-        &ht, file_has_match, 0, &started, &pass1) : -1;
+        &ht, file_has_match, 1, 0, &started, &pass1) : -1;
     uint8_t txid[32];
     struct db_wallet_tx tx;
     memset(txid, 0x91, sizeof(txid));
@@ -561,6 +780,13 @@ int test_block_scan(void)
     failures += test_wallet_scan_cache_valid();
     failures += test_wallet_scan_cursor_start();
     failures += test_wallet_scan_empty_replacement();
+    failures += test_wallet_scan_sources();
+    failures += test_wallet_scan_file_bound(-1);
+    failures += test_wallet_scan_file_bound(1);
+    for (int attempt = 0; attempt < 8; attempt++)
+        failures += test_wallet_scan_partial_source();
+    failures += test_wallet_scan_working_set_failure("scan utxo set");
+    failures += test_wallet_scan_working_set_failure("scan wtx list");
     failures += test_legacy_import_clear_rollback();
 
     printf("block_scan: %d failure(s)\n\n", failures);
