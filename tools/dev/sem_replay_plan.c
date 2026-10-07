@@ -70,12 +70,19 @@ static void row_flush(struct pctx *c)
     c->row_open = false;
 }
 
+/* Publish a TU after its object has been fully decoded. */
+static void on_container_close(void *ctx, const char *path)
+{
+    struct pctx *c = ctx;
+    if (in_facts(path) && key_is(path, "tus[]"))
+        row_flush(c);
+}
+
 static bool on_tu(struct pctx *c, const char *path, const char *v)
 {
     if (strstr(path, "tus[].") == NULL)
         return false;
     if (key_is(path, "tus[].path")) {
-        row_flush(c);
         c->failed |= !copy_tu(c->row_path, sizeof(c->row_path), v);
         c->row_open = !c->failed;
         copy_str(c->row_aff, sizeof(c->row_aff), "?");
@@ -252,11 +259,10 @@ static bool plan_page(const char *planner, const char *repo,
     if (raw != NULL && out != NULL)
         (void)sr_write_file(raw, out, len);
     c->p->next_offset = -1;
-    bool ok = rc == 0 && out != NULL && sr_json_flatten(out, len, on_value, c);
+    bool ok = rc == 0 && out != NULL &&
+        sr_json_flatten_with_close(out, len, on_value, on_container_close, c);
+    c->row_open = false;
     ok = ok && !c->failed;
-    if (!ok)
-        c->row_open = false;
-    row_flush(c);
     if (!ok)
         snprintf(c->p->error, sizeof(c->p->error), "planner exit %d at offset %ld",
                  rc, offset);

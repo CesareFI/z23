@@ -817,6 +817,7 @@ static int srt_tu_paths(const struct srt_fx *fx)
         " on_value(&c, \"data.facts.tus[].path\", path);\n"
         " if (c.failed || !c.row_open || strcmp(c.row_path, path)) return 2;\n"
         " on_value(&c, \"data.facts.tus[].affected\", \"true\");\n"
+        " on_container_close(&c, \"data.facts.tus[]\");\n"
         " on_value(&c, \"data.facts.tus[].path\", \"src/a.c\");\n"
         " if (p.tus_affected.n != 1 || strcmp(c.row_path, \"src/a.c\")) return 3;\n"
         " return c.row_open ? 0 : 4;\n"
@@ -934,28 +935,33 @@ _test_next:;
     return failures;
 }
 
-/* Refuse a malformed first row before it or a later row enters the plan. */
+/* Preserve a completed row, excluding the malformed row and its successor. */
 static int srt_plan_decode_case(const struct srt_fx *fx, const char *key,
                                 size_t field, const char *value)
 {
     int failures = 0;
     char reply[1800], probe[PATH_MAX + 32], planner[PATH_MAX + 32];
     const char *v[] = {"src/next.c", "true", "false", "changed"};
+    const char *keys[] = {"path", "affected", "broadened", "reason"};
+    keys[field] = key;
     v[field] = value;
     snprintf(probe, sizeof probe, "%s/plan-fields", fx->tools);
     snprintf(planner, sizeof planner, "%s/fx-fields", fx->tools);
     snprintf(reply, sizeof reply, SRT_ENVELOPE
-        "\"facts\":{\"tus\":[{\"%s\":\"%s\",\"affected\":\"%s\","
-        "\"broadened\":\"%s\",\"reason\":\"%s\"},"
+        "\"facts\":{\"tus\":[{\"path\":\"src/keep.c\",\"affected\":true,"
+        "\"broadened\":false,\"reason\":\"keep\"},"
+        "{\"%s\":\"%s\",\"%s\":\"%s\","
+        "\"%s\":\"%s\",\"%s\":\"%s\"},"
         "{\"path\":\"src/later.c\",\"affected\":true,"
         "\"broadened\":false,\"reason\":\"later\"}]}}}",
-        key, v[0], v[1], v[2], v[3]);
+        keys[0], v[0], keys[1], v[1], keys[2], v[2], keys[3], v[3]);
     TEST("replay plan reader refuses decoded NUL and invalid strings") {
         printf("(key=%s field=%zu) ", key, field);
         ASSERT(srt_write(fx->tools, "fx-fields.facts.json", reply));
         const char *argv[] = {probe, planner, NULL};
         ASSERT_EQ(srt_run(argv), 0);
-        const char *expected = "0 0 0 0 planner exit 0 at offset 0\n";
+        const char *expected = "0 0 1 1 planner exit 0 at offset 0\n"
+            "src/keep.c\ttrue\tfalse\tkeep\nsrc/keep.c\n";
         const char *result = strstr(g_srt_out, expected);
         ASSERT(result != NULL);
         ASSERT_STR_EQ(result, expected);
@@ -996,8 +1002,7 @@ static int srt_plan_nul_case(const struct srt_fx *fx, size_t field, int length,
         ASSERT(srt_write(fx->tools, "fx-fields.facts.json", reply));
         const char *argv[] = {probe, planner, NULL};
         ASSERT_EQ(srt_run(argv), 0);
-        const char *expected = field == 0 ? "0 0 0 0 planner exit 0 at offset 0\n" :
-            "0 0 1 1 planner exit 0 at offset 0\n"
+        const char *expected = "0 0 1 1 planner exit 0 at offset 0\n"
             "src/keep.c\ttrue\tfalse\tkeep\nsrc/keep.c\n";
         const char *result = strstr(g_srt_out, expected);
         ASSERT(result != NULL);
@@ -1051,6 +1056,7 @@ static int srt_plan_key_alloc(const struct srt_fx *fx)
 static int srt_plan_fields(const struct srt_fx *fx)
 {
     static const int caps[] = {1024, 8, 8, 128};
+    static const char *names[] = {"path", "affected", "broadened", "reason"};
     if (!srt_plan_probe(fx) || !srt_cc(fx, "fx-fields", k_planner))
         return 1;
     int failures = srt_plan_key_alloc(fx);
@@ -1060,14 +1066,17 @@ static int srt_plan_fields(const struct srt_fx *fx)
         char value[1033] = "ok\\u0000";
         memset(value + 8, 'a', (size_t)caps[i]);
         value[8 + caps[i]] = '\0';
-        failures += srt_plan_decode_case(fx, "path", i, value);
+        failures += srt_plan_decode_case(fx, names[i], i, value);
+        char key[32];
+        snprintf(key, sizeof key, "%s\\u0000suffix", names[i]);
+        static const char *values[] = {"src/next.c", "true", "false", "changed"};
+        failures += srt_plan_decode_case(fx, key, i, values[i]);
         failures += srt_plan_nul_case(fx, i, caps[i], false);
         failures += srt_plan_nul_case(fx, i, 1, false);
         failures += srt_plan_nul_case(fx, i, 1, true);
     }
-    failures += srt_plan_decode_case(fx, "path\\u0000suffix", 0, "src/next.c");
-    failures += srt_plan_decode_case(fx, "path", 3, "ok\xff");
-    failures += srt_plan_decode_case(fx, "path", 3, "ok\\ud800");
+    failures += srt_plan_decode_case(fx, "reason", 3, "ok\xff");
+    failures += srt_plan_decode_case(fx, "reason", 3, "ok\\ud800");
     return failures;
 }
 

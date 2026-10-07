@@ -483,10 +483,12 @@ static void flat_open(struct flat *f, bool array)
     f->mark[f->depth] = strlen(f->path);
 }
 
-static void flat_close(struct flat *f)
+static void flat_close(struct flat *f, sr_json_close_cb cb, void *ctx)
 {
     if (f->depth == 0)
         return;
+    if (cb != NULL)
+        cb(ctx, f->path);
     f->depth--;
     f->path[f->mark[f->depth + 1]] = '\0';
     /* Back to the enclosing container's own path. */
@@ -551,7 +553,8 @@ static void flat_key(struct flat *f, const char *text, const zjsonp_event *ev)
     flat_append(f, key, n);
 }
 
-bool sr_json_flatten(const char *text, size_t len, sr_json_cb cb, void *ctx)
+bool sr_json_flatten_with_close(const char *text, size_t len, sr_json_cb cb,
+                               sr_json_close_cb close_cb, void *ctx)
 {
     zjsonp p;
     zjsonp_event ev;
@@ -562,7 +565,7 @@ bool sr_json_flatten(const char *text, size_t len, sr_json_cb cb, void *ctx)
         if (ev.kind == ZJRP_OBJ_OPEN || ev.kind == ZJRP_ARR_OPEN)
             flat_open(&f, ev.kind == ZJRP_ARR_OPEN);
         else if (ev.kind == ZJRP_OBJ_CLOSE || ev.kind == ZJRP_ARR_CLOSE)
-            flat_close(&f);
+            flat_close(&f, close_cb, ctx);
         else if (ev.kind == ZJRP_KEY)
             flat_key(&f, text, &ev);
         else
@@ -580,4 +583,9 @@ bool sr_json_flatten(const char *text, size_t len, sr_json_cb cb, void *ctx)
         fprintf(stderr, "sem-replay: JSON %s at byte %zu\n",
                 zjsonp_status_name(st), zjsonp_pos(&p));
     return st == ZJRP_DONE;
+}
+
+bool sr_json_flatten(const char *text, size_t len, sr_json_cb cb, void *ctx)
+{
+    return sr_json_flatten_with_close(text, len, cb, NULL, ctx);
 }
