@@ -192,6 +192,58 @@ static const struct ci_inventory_symbol *ci_symbol(
     return NULL;
 }
 
+static bool ci_visibility_fixture(unsigned mask)
+{
+    char source[384];
+    int n = snprintf(source, sizeof(source),
+        "%s%sint test_code_inventory_fixture(void) { return local_pick(2); }\n",
+        mask & 1u ? "#include \"demo/demo.h\"\n" : "",
+        mask & 2u ? "#include \"demo/other.h\"\n" : "");
+    return n > 0 && (size_t)n < sizeof(source) &&
+        ci_write(CI_FIX "/tests/harness/src/test_fixture.c", source);
+}
+
+static void ci_check_local_reachability(const struct ci_inventory_report *report,
+                                       const char *header, bool expected)
+{
+    const struct ci_inventory_symbol *symbol = ci_symbol(
+        report, ci_cap(report, header), "local_pick");
+    CI_ASSERT(symbol != NULL);
+    CI_ASSERT(symbol &&
+        (symbol->test_evidence == CI_INVENTORY_TEST_REGISTERED_REACHABLE) ==
+            expected);
+}
+
+/* Same-name bodies in distinct headers require exactly one visible target.
+ * Neither a missing include nor two visible definitions proves reachability. */
+static void ci_visibility_cases(void)
+{
+    for (unsigned mask = 0; mask < 4; mask++) {
+        if (!ci_visibility_fixture(mask)) { CI_ASSERT(false); return; }
+        struct ci_inventory_report *report = codeindex_inventory_analyze(CI_FIX);
+        CI_ASSERT(report != NULL);
+        if (!report) return;
+        CI_ASSERT(report->registered_test_roots_found == 1);
+        CI_ASSERT(report->ambiguous_test_call_edges ==
+                  (mask == 0 || mask == 3 ? 1 : 0));
+        ci_check_local_reachability(report,
+            "platform/modules/demo/include/demo/demo.h", mask == 1);
+        ci_check_local_reachability(report,
+            "platform/modules/demo/include/demo/other.h", mask == 2);
+        codeindex_inventory_free(report);
+    }
+}
+
+static int ci_finish_fixture(void)
+{
+    if (!ci_failures) {
+        int result = system("rm -rf " CI_FIX);
+        CI_ASSERT(result == 0);
+    }
+    printf("  code_inventory: %s\n", ci_failures ? "FAIL" : "PASS");
+    return ci_failures ? 1 : 0;
+}
+
 enum ci_semantic_kat_evidence {
     CI_SEMANTIC_KAT_MISMATCH = 0,
     CI_SEMANTIC_KAT_MATCH = 1,
@@ -863,7 +915,6 @@ int test_code_inventory(void)
                                 changed->source_root_sha3, 32) != 0);
     codeindex_inventory_free(changed);
     codeindex_inventory_free(first);
-    if (!ci_failures) (void)system("rm -rf " CI_FIX);
-    printf("  code_inventory: %s\n", ci_failures ? "FAIL" : "PASS");
-    return ci_failures ? 1 : 0;
+    ci_visibility_cases();
+    return ci_finish_fixture();
 }
