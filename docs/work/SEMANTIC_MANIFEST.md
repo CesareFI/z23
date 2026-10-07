@@ -14,7 +14,7 @@ only. It never links a compiler to do so.
 | Reader, builder, roots, diff, dump | `contexts/commons/modules/vcs/src/semantic_manifest.c`, `semantic_manifest_build.c`, `semantic_manifest_dump.c` | SHA3 only |
 | The producer (the "sensor") | `tools/sensors/clang_manifest.c`, `clang_manifest_ast.c` and the compiler-API-free core `clang_manifest_core.c`, `_paths.c`, `_lookup.c`, `_records.c`, `_facts.c`, `_producer.c` | libclang C API; built by `make clang-manifest` |
 | The warm session (`z23-clang-manifest session`) | `tools/sensors/clang_manifest_session.c` and the compiler-API-free checks `clang_manifest_warm.c` | libclang C API; the same binary |
-| Tests | `tests/harness/src/test_semantic_manifest.c`, `semantic_sensor_session.c`, `tests/fixtures/semantic_manifest/*.bin` | groups `semantic_manifest` (no libclang) and `semantic_sensor` |
+| Tests | `tests/harness/src/test_semantic_manifest.c`, `semantic_warm_directory_cases.h`, `semantic_sensor_session.c`, `tests/fixtures/semantic_manifest/*.bin` | groups `semantic_manifest` (no libclang) and `semantic_sensor` |
 | Facts extension and snapshot namespace | `contexts/commons/modules/vcs/src/semantic_manifest_facts.c`, `semantic_namespace.c`, `vcs_path_policy.c` | SHA3, a ZVCS tree object |
 | Fuzz harness | `tools/fuzz/fuzz_semantic_manifest.c`, `tests/harness/fuzz_seeds/semantic_manifest/` | libFuzzer; a `FUZZ_TARGETS` entry |
 | Windows acceptance | `tests/harness/src/semantic_manifest_windows_acceptance.c`, `semantic_manifest_windows_fixtures.h`, `tests/fixtures/semantic_facts/*.zsm` | row `semantic_manifest` in `platform/modules/platform/tests/windows_acceptance.mk` |
@@ -636,6 +636,12 @@ or service: the warm state lives
 only as long as the process. The source is
 `tools/sensors/clang_manifest_session.c`; the compiler-API-free checks are
 in `tools/sensors/clang_manifest_warm.c`.
+
+The shadow-directory reader counts a name only after its duplication succeeds
+(`cm_sdir_add` in `tools/sensors/clang_manifest_warm.c`). If duplication fails,
+the reader refuses the scan and sorts only the names already retained. The
+`semantic_manifest` directory regression refuses the second duplication and
+checks the production reader's sorting input and retained count.
 
 **What stays warm.** Only the `CXTranslationUnit` and its preamble. The
 session parses with `DetailedPreprocessingRecord | PrecompiledPreamble |

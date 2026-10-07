@@ -1039,6 +1039,8 @@ static int smt_t_ledger(void)
 /* semantic_sensor_identity.c: the facts rule's argv, which needs only make. */
 int semantic_sensor_argv_tests(void);
 
+#include "semantic_warm_directory_cases.h"
+
 int test_semantic_manifest(void)
 {
     int failures = 0;
@@ -1052,6 +1054,7 @@ int test_semantic_manifest(void)
     failures += smt_t_fixture_seeds();
     failures += smt_t_ledger();
     failures += semantic_sensor_argv_tests();
+    failures += smwd_directory_case();
     return failures;
 }
 
