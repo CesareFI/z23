@@ -58,9 +58,23 @@ static void history_reply(const uint8_t *data, size_t size)
     }
 }
 
-static void replies(const uint8_t *data, size_t size)
+static void identity_replies(const uint8_t *data, size_t size)
 {
-    history_reply(data, size);
+    /* The pinned networks have different genesis identities. This checks only
+     * mutually exclusive acceptance, not authentication of a remote source. */
+    const zcl_status main_features = zcl_electrum_features_reply(data, size, 1, ZCL_MAINNET);
+    const zcl_status test_features = zcl_electrum_features_reply(data, size, 1, ZCL_TESTNET);
+    const zcl_status main_genesis = zcl_electrum_genesis_reply(data, size, 1, ZCL_MAINNET);
+    const zcl_status test_genesis = zcl_electrum_genesis_reply(data, size, 1, ZCL_TESTNET);
+    if ((main_features == ZCL_OK && test_features == ZCL_OK) ||
+        (main_genesis == ZCL_OK && test_genesis == ZCL_OK)) {
+        fprintf(stderr, "Electrum identity accepted both networks\n");
+        abort();
+    }
+}
+
+static void balance_reply(const uint8_t *data, size_t size)
+{
     zcl_reported_balance balance, before;
     memset(&balance, 0xa5, sizeof(balance));
     memcpy(&before, &balance, sizeof(before));
@@ -70,10 +84,15 @@ static void replies(const uint8_t *data, size_t size)
         if (balance.pending_delta < -(int64_t)ZCL_MAX_MONEY || balance.pending_delta > (int64_t)ZCL_MAX_MONEY) abort();
         if ((int64_t)balance.total != (int64_t)balance.confirmed + balance.pending_delta) abort();
     } else if (memcmp(&balance, &before, sizeof(before)) != 0) abort();
+}
+
+static void replies(const uint8_t *data, size_t size)
+{
+    history_reply(data, size);
+    identity_replies(data, size);
+    balance_reply(data, size);
     (void)zcl_electrum_version_reply(data, size, 1);
     for (int chain = 0; chain < 2; ++chain) {
-        (void)zcl_electrum_features_reply(data, size, 1, (zcl_network)chain);
-        (void)zcl_electrum_genesis_reply(data, size, 1, (zcl_network)chain);
         zcl_reported_tip tip, old;
         memset(&tip, 0xa5, sizeof(tip));
         memcpy(&old, &tip, sizeof(old));
