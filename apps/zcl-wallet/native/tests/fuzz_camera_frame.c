@@ -1,6 +1,8 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_camera.h"
 #include "camera_reference.h"
+#include "scan_result_reference.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
@@ -14,9 +16,10 @@ static void scan_packet(const uint8_t *data, size_t size, zcl_network network)
     if (status != ZCL_OK && memcmp(&before, &result, sizeof(result)) != 0) abort();
     if (status == ZCL_OK) {
         if (result.text_len == 0 || result.text_len > ZCL_PAYMENT_TEXT_MAX) abort();
-        zcl_payment_request reparsed = {0};
-        if (zcl_payment_parse(result.text, result.text_len, network, &reparsed) != ZCL_OK) abort();
-        if (reparsed.amount != result.request.amount || reparsed.address.network != network) abort();
+        if (!scan_result_matches(result.text, result.text_len, network, &result.request)) {
+            fputs("Camera request differs from decoded text\n", stderr);
+            abort();
+        }
     }
 }
 
