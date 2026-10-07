@@ -282,6 +282,48 @@ static int test_operator_needed_latch(void)
     return failures;
 }
 
+static int test_operator_needed_payload_extent(void)
+{
+    int failures = 0;
+    TEST("alerts: operator-needed scans only the declared payload") {
+        alerts_shutdown();
+        unsetenv("ZCL_ALERTS_DISABLE");
+        unsetenv("ZCL_ALERT_WEBHOOK_URL");
+        alerts_init();
+        alerts_reset();
+
+        char detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN];
+        const char backing[] = "Xterminal=0";
+        event_emit(EV_OPERATOR_NEEDED, 0, backing, 1);
+        ASSERT(alerts_operator_needed(detail, sizeof(detail), NULL));
+        ASSERT(strcmp(detail, "X") == 0);
+        alerts_operator_needed_clear();
+
+        const char raw[1] = {'X'};
+        event_emit(EV_OPERATOR_NEEDED, 0, raw, sizeof(raw));
+        ASSERT(alerts_operator_needed(detail, sizeof(detail), NULL));
+        ASSERT(strcmp(detail, "X") == 0);
+        alerts_operator_needed_clear();
+
+        event_emit(EV_OPERATOR_NEEDED, 0, backing, 0);
+        ASSERT(alerts_operator_needed(detail, sizeof(detail), NULL));
+        ASSERT(strcmp(detail, "(unspecified)") == 0);
+        alerts_operator_needed_clear();
+
+        event_emit(EV_OPERATOR_NEEDED, 0, NULL, 1);
+        ASSERT(alerts_operator_needed(detail, sizeof(detail), NULL));
+        ASSERT(strcmp(detail, "(unspecified)") == 0);
+        alerts_operator_needed_clear();
+
+        const char nonterminal[] = "terminal=0";
+        event_emit(EV_OPERATOR_NEEDED, 0, nonterminal, sizeof(nonterminal) - 1);
+        ASSERT(!alerts_operator_needed(NULL, 0, NULL));
+        alerts_shutdown();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_operator_needed_chain_advance_recovery_clear(void)
 {
     int failures = 0;
@@ -337,6 +379,7 @@ int test_alerts(void)
     failures += test_reset_clears_state();
     failures += test_rule_table_full();
     failures += test_operator_needed_latch();
+    failures += test_operator_needed_payload_extent();
     failures += test_operator_needed_chain_advance_recovery_clear();
 
     alerts_shutdown();

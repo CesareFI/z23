@@ -171,11 +171,21 @@ static void operator_needed_set(const char *detail)
     }
 }
 
+static bool operator_needed_nonterminal(const char *payload, size_t len)
+{
+    const char marker[] = "terminal=0";
+    for (size_t i = 0; len - i >= sizeof(marker) - 1; i++) {
+        if (memcmp(payload + i, marker, sizeof(marker) - 1) == 0)
+            return true;
+    }
+    return false;
+}
+
 static void alert_observer(enum event_type type, uint32_t peer_id,
                             const void *payload, uint32_t payload_len,
                             void *ctx)
 {
-    (void)peer_id; (void)payload_len; (void)ctx;
+    (void)peer_id; (void)ctx;
 
     /* EV_OPERATOR_NEEDED is the loudest signal the framework emits: the
      * condition engine ran out of remedies. Latch it for the health surface
@@ -188,8 +198,14 @@ static void alert_observer(enum event_type type, uint32_t peer_id,
          * after the tip climbs back to the network. Only latch genuine
          * remedy-exhaustion pages, which omit the terminal=0 marker. */
         const char *p = payload ? (const char *)payload : "";
-        if (!strstr(p, "terminal=0"))
-            operator_needed_set(p);
+        size_t len = payload ? strnlen(p, payload_len) : 0;
+        if (!operator_needed_nonterminal(p, len)) {
+            char detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN];
+            size_t copied = len < sizeof(detail) - 1 ? len : sizeof(detail) - 1;
+            memcpy(detail, p, copied);
+            detail[copied] = '\0';
+            operator_needed_set(detail);
+        }
     }
     /* The symptom resolved (remedy witnessed) → drop the DEGRADED latch so
      * the node returns to healthy without operator intervention. */
