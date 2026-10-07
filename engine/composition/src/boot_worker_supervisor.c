@@ -112,4 +112,6 @@ void boot_complete_worker_supervisor(_Atomic supervisor_child_id *slot)
     if (id == SUPERVISOR_INVALID_ID)
         return;
     supervisor_child_complete(id);
+    supervisor_unregister(id);
+    atomic_store(slot, SUPERVISOR_INVALID_ID);
 }
