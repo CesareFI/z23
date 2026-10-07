@@ -49,6 +49,14 @@
 #endif
 #include <unistd.h>
 
+#if !defined(_WIN32)
+#define LAND_CLI_TEST
+#define main land_cli_main
+#include "../../../tools/land/land_main.c"
+#undef main
+#undef LAND_CLI_TEST
+#endif
+
 #define LQ_CHECK(name, expr)                                            \
     do {                                                                \
         const bool lq_ok_ = (expr);                                     \
@@ -1260,6 +1268,198 @@ static int case_git_selectors(void)
 #endif
 }
 
+#if !defined(_WIN32)
+/* Exercise the real dispatcher with actual writable/read-only descriptors. */
+static int cli_output_run(int argc, char **argv, FILE *sink, FILE *errors)
+{
+    int saved[2] = { -1, -1 }, rc = -1;
+    FILE *streams[2] = { stdout, stderr }, *targets[2] = { sink, errors };
+    for (int i = 0; i < 2; i++) {
+        if (fflush(streams[i]) != 0 || (saved[i] = dup(fileno(streams[i]))) < 0)
+            goto restore;
+        if (dup2(fileno(targets[i]), fileno(streams[i])) < 0)
+            goto restore;
+    }
+    rc = land_cli_main(argc, argv);
+restore:
+    for (int i = 0; i < 2; i++) {
+        if (saved[i] < 0) continue;
+        if (fflush(streams[i]) != 0 && i == 1) rc = -1;
+        clearerr(streams[i]);
+        if (dup2(saved[i], fileno(streams[i])) < 0) rc = -1;
+        if (close(saved[i]) != 0) rc = -1;
+    }
+    return rc;
+}
+
+static int cli_descriptor_rows(char *path, FILE *healthy, FILE *readonly,
+                               FILE *errors)
+{
+    int failures = 0;
+    char diagnostic[512] = {0};
+    char *digest[] = { "land", "digest", "--head", (char *)k_head_a,
+                       "--state", "landed", "--stress", "1" };
+    LQ_CHECK("healthy digest output succeeds",
+             cli_output_run(8, digest, healthy, errors) == 0);
+    LQ_CHECK("digest output failure refuses success",
+             cli_output_run(8, digest, readonly, errors) == 1);
+    char *submit[] = { "land", "submit", "--queue", path, "--branch", "lane/a",
+                       "--head", (char *)k_head_a, "--submitter", "test" };
+    LQ_CHECK("committed submit output failure refuses success",
+             cli_output_run(10, submit, readonly, errors) == 1);
+    LQ_CHECK("diagnostics rewind", fseek(errors, 0, SEEK_SET) == 0);
+    size_t n = fread(diagnostic, 1, sizeof diagnostic - 1, errors);
+    diagnostic[n] = '\0';
+    LQ_CHECK("committed-effect warning discourages blind retry",
+             !ferror(errors) && strstr(diagnostic, "after action committed; inspect queue before retrying"));
+    struct zcl_chainlog_report report;
+    struct land_queue *q = land_queue_open(path, &report);
+    LQ_CHECK("failed output leaves exactly one durable submission",
+             q && land_queue_count(q) == 1);
+    land_queue_close(q);
+    const char *commands[] = { "pending", "status", "metrics", "verify" };
+    for (size_t i = 0; i < sizeof commands / sizeof commands[0]; i++) {
+        char *args[] = { "land", (char *)commands[i], "--queue", path };
+        LQ_CHECK(commands[i], cli_output_run(4, args, healthy, errors) == 0);
+        LQ_CHECK(commands[i], cli_output_run(4, args, readonly, errors) == 1);
+    }
+    return failures;
+}
+
+static int case_cli_output_failure(void)
+{
+    int failures = 0;
+    char dir[512], path[640], outpath[640], errpath[640];
+    if (!test_mkdtemp(dir, sizeof dir, "land-output")) {
+        LQ_CHECK("output fixture directory opens", false);
+        return failures;
+    }
+    snprintf(path, sizeof path, "%s/queue.chainlog", dir);
+    snprintf(outpath, sizeof outpath, "%s/stdout", dir);
+    snprintf(errpath, sizeof errpath, "%s/stderr", dir);
+    FILE *healthy = fopen(outpath, "w+"), *errors = fopen(errpath, "w+");
+    FILE *readonly = NULL;
+    struct zcl_chainlog_report report;
+    struct land_queue *q = land_queue_open(path, &report);
+    bool opened = healthy && errors && q;
+    LQ_CHECK("output fixture opens", opened);
+    land_queue_close(q);
+    if (!opened) goto cleanup;
+    readonly = fopen(path, "r");
+    LQ_CHECK("read-only output opens", readonly != NULL);
+    if (!readonly) goto cleanup;
+    failures += cli_descriptor_rows(path, healthy, readonly, errors);
+cleanup:
+    if (readonly) LQ_CHECK("read-only output closes", fclose(readonly) == 0);
+    if (healthy) LQ_CHECK("healthy output closes", fclose(healthy) == 0);
+    if (errors) LQ_CHECK("diagnostic output closes", fclose(errors) == 0);
+    LQ_CHECK("output fixture cleanup succeeds", test_rm_rf_recursive(dir) == 0);
+    return failures;
+}
+
+static bool cli_warning(FILE *errors)
+{
+    char diagnostic[512] = {0};
+    if (fseek(errors, 0, SEEK_SET) != 0) return false;
+    size_t n = fread(diagnostic, 1, sizeof diagnostic - 1, errors);
+    diagnostic[n] = '\0';
+    return !ferror(errors) && strcmp(diagnostic,
+        "z23-land: stdout output failed after action committed; inspect queue before retrying\n") == 0;
+}
+
+static int cli_pipe_setup(const char *path, FILE *errors)
+{
+    struct sigaction normal = {0};
+    normal.sa_handler = SIG_DFL;
+    if (sigemptyset(&normal.sa_mask) != 0 ||
+        sigaction(SIGALRM, &normal, NULL) != 0 ||
+        sigaction(SIGPIPE, &normal, NULL) != 0) return 120;
+    sigset_t unblocked;
+    if (sigemptyset(&unblocked) != 0 ||
+        sigaddset(&unblocked, SIGALRM) != 0 ||
+        sigaddset(&unblocked, SIGPIPE) != 0 ||
+        sigprocmask(SIG_UNBLOCK, &unblocked, NULL) != 0) return 129;
+    alarm(10); /* A watchdog, never a timing assertion or clock reading. */
+    char output_path[768];
+    snprintf(output_path, sizeof output_path, "%s.stdout", path);
+    if (!freopen(output_path, "w", stdout)) return 130;
+    int ends[2];
+    if (pipe(ends) != 0) return 121;
+    if (close(ends[0]) != 0) return 122;
+    if (dup2(ends[1], STDOUT_FILENO) < 0) return 123;
+    if (close(ends[1]) != 0) return 124;
+    if (dup2(fileno(errors), STDERR_FILENO) < 0) return 125;
+    return 0;
+}
+
+/* All readers are closed before the actual CLI entry. */
+static int cli_pipe_child(const char *path, FILE *errors, bool buffered)
+{
+    int setup = cli_pipe_setup(path, errors);
+    if (setup != 0) return setup;
+    clearerr(stdout);
+    clearerr(stderr);
+    char buffer[4096];
+    if (setvbuf(stdout, buffered ? buffer : NULL,
+                buffered ? _IOFBF : _IONBF, buffered ? sizeof buffer : 0) != 0)
+        return 126;
+    char *submit[] = { "land", "submit", "--queue", (char *)path,
+        "--branch", "lane/pipe", "--head", (char *)k_head_a,
+        "--submitter", "test" };
+    int rc = land_cli_main(10, submit);
+    struct sigaction restored;
+    if (sigaction(SIGPIPE, NULL, &restored) != 0 ||
+        restored.sa_handler != SIG_DFL) return 127;
+    if (fflush(stderr) != 0 || ferror(stderr)) return 128;
+    return rc;
+}
+
+static bool cli_wait(pid_t child, int *status)
+{
+    pid_t got;
+    do { got = waitpid(child, status, 0); } while (got < 0 && errno == EINTR);
+    return got == child;
+}
+
+static int case_cli_pipe(bool buffered)
+{
+    int failures = 0;
+    char dir[512], path[640], error_path[640];
+    if (!test_mkdtemp(dir, sizeof dir, "land-pipe")) {
+        LQ_CHECK("pipe fixture directory opens", false);
+        return failures;
+    }
+    snprintf(path, sizeof path, "%s/queue.chainlog", dir);
+    snprintf(error_path, sizeof error_path, "%s/stderr", dir);
+    FILE *errors = fopen(error_path, "w+");
+    LQ_CHECK("pipe diagnostics open", errors != NULL);
+    if (!errors) goto cleanup;
+    LQ_CHECK("parent streams flush before fork", fflush(NULL) == 0);
+    if (failures) goto cleanup;
+    pid_t child = fork();
+    if (child == 0) _exit(cli_pipe_child(path, errors, buffered));
+    LQ_CHECK("pipe child starts", child > 0);
+    if (child < 0) goto cleanup;
+    int status = 0;
+    bool waited = cli_wait(child, &status);
+    LQ_CHECK("pipe child wait succeeds", waited);
+    LQ_CHECK(buffered ? "buffered pipe exits normally with failure" :
+                       "unbuffered pipe exits normally with failure",
+             waited && WIFEXITED(status) && WEXITSTATUS(status) == 1);
+    LQ_CHECK("pipe committed warning is exact", cli_warning(errors));
+    struct zcl_chainlog_report report;
+    struct land_queue *q = land_queue_open(path, &report);
+    LQ_CHECK("pipe leaves exactly one durable record",
+             q && report.records == 1 && land_queue_count(q) == 1);
+    land_queue_close(q);
+cleanup:
+    if (errors) LQ_CHECK("pipe diagnostics close", fclose(errors) == 0);
+    LQ_CHECK("pipe fixture cleanup succeeds", test_rm_rf_recursive(dir) == 0);
+    return failures;
+}
+
+#endif
+
 int test_land_queue(void);
 int test_land_queue(void)
 {
@@ -1289,6 +1489,11 @@ int test_land_queue(void)
     failures += case_unreachable_queue();
     failures += case_surface();
     failures += case_git_selectors();
+#if !defined(_WIN32)
+    failures += case_cli_output_failure();
+    failures += case_cli_pipe(true);
+    failures += case_cli_pipe(false);
+#endif
     printf("land_queue: %d failure(s)\n", failures);
     return failures;
 }

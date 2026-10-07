@@ -38,6 +38,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <signal.h>
+#endif
 
 static int usage(void)
 {
@@ -653,7 +656,7 @@ static int cmd_verify(const struct args *a)
     return m.unbacked_landings == 0 ? 0 : 1;
 }
 
-int main(int argc, char **argv)
+static int dispatch(int argc, char **argv)
 {
     if (argc < 2)
         return usage();
@@ -671,4 +674,38 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "timing") == 0)   return cmd_timing(&a);
     if (strcmp(cmd, "digest") == 0)   return cmd_digest(&a);
     return usage();
+}
+
+#ifdef LAND_CLI_TEST
+static
+#endif
+int main(int argc, char **argv)
+{
+#if !defined(_WIN32)
+    struct sigaction ignored = {0}, previous;
+    ignored.sa_handler = SIG_IGN;
+    if (sigemptyset(&ignored.sa_mask) != 0 ||
+        sigaction(SIGPIPE, &ignored, &previous) != 0) {
+        fputs("z23-land: cannot guard stdout pipe errors\n", stderr);
+        return 2;
+    }
+#endif
+    int rc = dispatch(argc, argv);
+    int flushed = fflush(stdout);
+    if (flushed != 0 || ferror(stdout)) {
+        fprintf(stderr, "z23-land: stdout output failed%s\n",
+            rc == 0 && argc > 1 &&
+            (strcmp(argv[1], "submit") == 0 ||
+             strcmp(argv[1], "gate-run") == 0 ||
+             strcmp(argv[1], "verdict") == 0)
+                ? " after action committed; inspect queue before retrying" : "");
+        if (rc == 0) rc = 1;
+    }
+#if !defined(_WIN32)
+    if (sigaction(SIGPIPE, &previous, NULL) != 0) {
+        fputs("z23-land: cannot restore stdout pipe signal state\n", stderr);
+        return rc == 0 ? 1 : rc;
+    }
+#endif
+    return rc;
 }
