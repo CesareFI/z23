@@ -2054,6 +2054,21 @@ static int test_snapshot_blacklist_survives_reset(void)
     return failures;
 }
 
+static int test_snapshot_global_ensure_init_completes(void)
+{
+    int failures = 0;
+    TEST("snapshot global lazy init completes without recursive lock") {
+        struct node_db ndb = {0};
+
+        snapsync_global_ensure_init(&ndb);
+        ASSERT(snapsync_global_initialized());
+        ASSERT(snapsync_global()->state == SNAPSYNC_IDLE);
+        ASSERT(snapsync_global()->ndb == &ndb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_snapshot_sync_service(void)
 {
     int failures = 0;
@@ -2106,6 +2121,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_blacklist_multiple();
     failures += test_snapshot_blacklist_rejects_offer();
     failures += test_snapshot_blacklist_survives_reset();
+    failures += test_snapshot_global_ensure_init_completes();
     progress_store_close();
     test_cleanup_tmpdir(progress_dir);
     return failures;
