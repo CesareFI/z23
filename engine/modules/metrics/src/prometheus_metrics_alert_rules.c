@@ -21,6 +21,9 @@
 
 #include "prometheus_metrics_internal.h"
 
+#include <ctype.h>
+#include <errno.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -34,14 +37,18 @@ static bool g_alert_rules_seeded;
 
 /* Env override for a threshold, trivial cases only (numeric knobs an
  * operator may reasonably want to tune without a rebuild). Malformed or
- * absent env values fall back to `def`. */
+ * absent env values fall back to `def`. Overrides must be finite,
+ * nonnegative and in range, with only whitespace around the number. */
 double alert_env_double(const char *name, double def)
 {
     const char *v = getenv(name);
     if (!v || !*v) return def;
     char *end = NULL;
+    errno = 0;
     double d = strtod(v, &end);
-    if (end == v) return def;  /* not parseable — keep the default */
+    if (end == v || errno == ERANGE || !isfinite(d) || d < 0.0) return def;
+    while (isspace((unsigned char)*end)) end++;
+    if (*end != '\0') return def;
     return d;
 }
 

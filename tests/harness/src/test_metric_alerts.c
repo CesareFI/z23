@@ -74,6 +74,58 @@ static void ma_reset_all(void)
 
 /* ── Rule table shape ────────────────────────────────────────── */
 
+static int test_peer_floor_env_bounds(void)
+{
+    int failures = 0;
+    TEST("metric_alerts: malformed peer floors fall back without disabling alerts") {
+        const char *knob = "ZCL_ALERT_PEER_COLLAPSE_MIN_PEERS";
+        const char *old = getenv(knob);
+        char saved[4096];
+        ASSERT(!old || strlen(old) < sizeof(saved));
+        if (old) memcpy(saved, old, strlen(old) + 1);
+        const struct { const char *value; int64_t peers; uint64_t fires; } cases[] = {
+            {"nan", 0, 1}, {"inf", 2, 0}, {"-inf", 0, 1},
+            {"1e999", 2, 0}, {"2junk", 0, 1}, {"3junk", 2, 0},
+            {" \t\n", 0, 1},
+            {"-1", 0, 1}, {"1e-999", 0, 1}, {"", 0, 1},
+            {"2", 0, 1}, {"2", 2, 0}, {"2.5", 2, 1},
+            {" \t2.5\n ", 2, 1}, {"0", 0, 0},
+            {NULL, 0, 1}, {NULL, 2, 0},
+        };
+        bool ok = true;
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            int rc = cases[i].value ? setenv(knob, cases[i].value, 1)
+                                   : unsetenv(knob);
+            if (rc != 0) {
+                fprintf(stderr, "peer floor case %zu: environment setup failed\n", i);
+                ok = false;
+                break;
+            }
+            /* This knob is read by the setter, not the lazy catalog seed. */
+            ma_reset_all();
+            metrics_prometheus_set_node_gauges(0, cases[i].peers, 0, 0, 150);
+            metrics_prometheus_evaluate_alert_rules();
+            uint64_t initial = metrics_prometheus_alert_fire_count("peer_count_collapsed");
+            metrics_prometheus_set_node_gauges(0, cases[i].peers, 0, 0, 500);
+            metrics_prometheus_evaluate_alert_rules();
+            uint64_t fires = metrics_prometheus_alert_fire_count("peer_count_collapsed");
+            if (initial != 0 || fires != cases[i].fires) {
+                fprintf(stderr, "peer floor case %zu: initial=%" PRIu64
+                        " fires=%" PRIu64 " expected=%" PRIu64 "\n",
+                        i, initial, fires, cases[i].fires);
+                ok = false;
+            }
+        }
+        int restored = old ? setenv(knob, saved, 1) : unsetenv(knob);
+        if (restored != 0) fprintf(stderr, "peer floor environment restore failed\n");
+        ma_reset_all();
+        ASSERT(restored == 0);
+        ASSERT(ok);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_rule_count_and_names(void)
 {
     int failures = 0;
@@ -502,6 +554,7 @@ int test_metric_alerts(void)
     int failures = 0;
 
     failures += test_rule_count_and_names();
+    failures += test_peer_floor_env_bounds();
     failures += test_allow_listed_for_push();
 
     failures += test_fires_exactly_once_on_crossing();
