@@ -9,6 +9,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <regex.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1424,21 +1425,28 @@ int cic_invoke(const char *gate, int merge_err, char *out, size_t cap,
 #define FL_MAX 512
 #define FL_NAME 256
 
-static int fl_count(const char *path, long *out)
+int lint_count_lines(const char *path, long *out)
 {
     FILE *f = fopen(path, "r");
     if (!f)
         return die("z23-lint: cannot open %s\n", path);
     long n = 0;
-    int c;
-    while ((c = fgetc(f)) != EOF)
-        if (c == '\n')
-            n++;
-    if (ferror(f)) {
-        fclose(f);
-        return die("z23-lint: read error on %s\n", path);
+    char buf[4096];
+    int rc = 0;
+    while (!feof(f) && !ferror(f)) {
+        size_t got = fread(buf, 1, sizeof buf, f);
+        long added = 0;
+        for (size_t i = 0; i < got; i++)
+            added += buf[i] == '\n';
+        if (added > LONG_MAX - n) {
+            rc = die("z23-lint: line count overflow: %s\n", path);
+            break;
+        }
+        n += added;
     }
-    fclose(f);
+    rc = fin(f, NULL, path, rc);
+    if (rc)
+        return rc;
     *out = n;
     return 0;
 }
@@ -1492,7 +1500,7 @@ int lint_families_ledger(void)
                 sizeof path))
             return 2;
         long lines;
-        int rc = fl_count(path, &lines);
+        int rc = lint_count_lines(path, &lines);
         if (rc)
             return rc;
         printf("%s: %ld lines, %ld headroom to %d\n", path, lines,

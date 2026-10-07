@@ -414,23 +414,6 @@ static int lgw_check_d(const char *root, const char *driver, const struct sr_set
 }
 
 /* ── E: lintc family-file line ceiling ───────────────────────────────────── */
-static int lgw_count_lines(const char *path, long *out)
-{
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return die("z23-lint: cannot open %s\n", path);
-    long n = 0;
-    int c;
-    while ((c = fgetc(f)) != EOF)
-        if (c == '\n')
-            n++;
-    int bad = ferror(f);
-    fclose(f);
-    if (bad)
-        return die("z23-lint: read error on %s\n", path);
-    *out = n;
-    return 0;
-}
 static int lgw_read_ceiling(const char *lintc_h, long *out)
 {
     FILE *f = fopen(lintc_h, "r");
@@ -485,7 +468,7 @@ static int lgw_scan_family_files(const char *lintc_dir, long ceiling, char *over
             break;
         }
         long lines = 0;
-        rc = lgw_count_lines(path, &lines);
+        rc = lint_count_lines(path, &lines);
         if (rc)
             break;
         if (lines > ceiling)

@@ -50,6 +50,10 @@ extern char g_auth[RS_AUTH][RS_PATH];
 
 int die(const char *msg, const char *arg);
 int fin(FILE *f, char *line, const char *path, int rc);
+/* Count newline bytes (wc -l semantics), without retaining the path or a
+ * buffer. Own and close the stream; assign *out only after a complete read
+ * and successful close. Missing/unreadable input or long overflow returns 2. */
+int lint_count_lines(const char *path, long *out);
 int reg_fail(regex_t *re, int err);
 int ovf(int n, size_t cap);
 int cmd_done(const char *cmd, int st, int allow_exit1);

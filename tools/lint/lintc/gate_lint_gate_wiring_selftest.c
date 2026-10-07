@@ -472,11 +472,74 @@ static const char *lgws_absolutize(char *d0, char *scratch, size_t cap, int *rc)
     return scratch;
 }
 
+static int lgws_count_fixture(const char *path, const unsigned char *bytes,
+                              size_t size, int *fails)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return die("z23-lint: cannot create line fixture: %s\n", path);
+    int bad = fwrite(bytes, 1, size, f) != size;
+    if (fclose(f) != 0) bad = 1;
+    if (bad) return die("z23-lint: cannot write line fixture: %s\n", path);
+    long expected = 0, actual = -1;
+    for (size_t i = 0; i < size; i++)
+        if (bytes[i] == '\n') expected++;
+    int rc = lint_count_lines(path, &actual);
+    if (rc != 0 || actual != expected) {
+        fprintf(stderr, "SELFTEST FAIL: newline count at %zu bytes: "
+                        "expected %ld, got %ld (rc %d)\n",
+                size, expected, actual, rc);
+        (*fails)++;
+    }
+    return 0;
+}
+
+/* Vary exact/partial block endings. The binary pattern contains NULs, CR,
+ * LF, and every high byte; no non-newline byte may terminate a scan. */
+static int lgws_case_line_counts(const char *base, int *fails)
+{
+    char path[4096];
+    if (ovf(snprintf(path, sizeof path, "%s/line-count", base), sizeof path))
+        return 2;
+    static unsigned char bytes[12289];
+    static const size_t sizes[] = {0, 1, 2, 255, 256, 257, 4095, 4096,
+                                   4097, 8191, 8192, 8193, sizeof bytes};
+    for (int pattern = 0; pattern < 3; pattern++) {
+        memset(bytes, '\n', sizeof bytes);
+        if (pattern == 1) memset(bytes, 'x', sizeof bytes);
+        if (pattern == 2)
+            for (size_t i = 0; i < sizeof bytes; i++)
+                bytes[i] = (unsigned char)i;
+        for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++)
+            if (lgws_count_fixture(path, bytes, sizes[i], fails)) return 2;
+    }
+    puts("  selftest: newline counts exercised across 39 binary/EOF/block cases");
+    return 0;
+}
+
+static int lgws_case_line_errors(const char *base, int *fails)
+{
+    char missing[4096];
+    if (ovf(snprintf(missing, sizeof missing, "%s/missing-lines", base),
+            sizeof missing)) return 2;
+    const char *paths[] = {missing, base};
+    for (size_t i = 0; i < sizeof paths / sizeof paths[0]; i++) {
+        long actual = -1;
+        int rc = lint_count_lines(paths[i], &actual);
+        if (rc != 2 || actual != -1) {
+            fprintf(stderr, "SELFTEST FAIL: line read refusal %zu: rc %d, "
+                            "output %ld\n", i, rc, actual);
+            (*fails)++;
+        }
+    }
+    return 0;
+}
+
 typedef int (*lgws_case_fn)(const char *, int *);
 static const lgws_case_fn k_lgws_cases[] = {
     lgws_case_a, lgws_case_b, lgws_case_c, lgws_case_d,
     lgws_case_e, lgws_case_f, lgws_case_g, lgws_case_h,
     lgws_case_i, lgws_case_j, lgws_case_k,
+    lgws_case_line_counts, lgws_case_line_errors,
 };
 
 int check_lint_gate_wiring_selftest(void)
@@ -507,6 +570,7 @@ int check_lint_gate_wiring_selftest(void)
         printf("\xe2\x95\x90\xe2\x95\x90 selftest: FAIL \xe2\x95\x90\xe2\x95\x90\n");
         return 1;
     }
-    printf("\xe2\x95\x90\xe2\x95\x90 selftest: PASS (11/11) \xe2\x95\x90\xe2\x95\x90\n");
+    printf("\xe2\x95\x90\xe2\x95\x90 selftest: PASS (%zu/%zu) \xe2\x95\x90\xe2\x95\x90\n",
+           ncases, ncases);
     return 0;
 }
