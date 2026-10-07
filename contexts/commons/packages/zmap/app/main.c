@@ -43,6 +43,14 @@ static int entry_cmp(const void *va, const void *vb) {
   return strcmp(a->word, b->word);
 }
 
+/* Empty input leaves n == 0 with a possibly-NULL entries (malloc(0));
+ * qsort's base is declared nonnull, so the no-op sort is UB. main is
+ * complexity-pinned, so the guard lives here. */
+static void entries_sort(entry *entries, size_t n) {
+  if (n > 1)
+    qsort(entries, n, sizeof(*entries), entry_cmp);
+}
+
 int main(int argc, char **argv) {
   long top = 20;
   if (argc > 1) {
@@ -101,7 +109,7 @@ int main(int argc, char **argv) {
     entries[k].count = (uintptr_t)value;
     k++;
   }
-  qsort(entries, n, sizeof(*entries), entry_cmp);
+    entries_sort(entries, n);
 
   size_t shown = top == 0 || (size_t)top > n ? n : (size_t)top;
   for (size_t i = 0; i < shown; i++)

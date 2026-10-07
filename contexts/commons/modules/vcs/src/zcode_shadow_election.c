@@ -42,6 +42,15 @@ static int shadow_evidence_cmp(const void *a, const void *b)
     return memcmp(ea->contribution_root, eb->contribution_root, 32);
 }
 
+/* evidence_count == 0 is a valid input and leaves evidence == NULL;
+ * qsort's base is declared nonnull, so sorting the empty set is UB for
+ * a no-op. The builder is complexity-pinned, so the guard lives here. */
+static void shadow_evidence_sort(struct shadow_evidence *evidence, size_t n)
+{
+    if (n > 1)
+        qsort(evidence, n, sizeof(*evidence), shadow_evidence_cmp);
+}
+
 static void shadow_hash_begin(struct sha3_256_ctx *sha, const char *domain,
                               size_t domain_len)
 {
@@ -246,8 +255,7 @@ enum vcs_c23_shadow_election_error vcs_c23_evidence_snapshot_build(
             goto evidence_done;
         }
     }
-    qsort(evidence, input->evidence_count, sizeof(*evidence),
-          shadow_evidence_cmp);
+    shadow_evidence_sort(evidence, input->evidence_count);
     for (size_t i = 0; i < input->evidence_count; i++) {
         if (i != 0 && memcmp(evidence[i - 1].contribution_root,
                              evidence[i].contribution_root, 32) == 0) {

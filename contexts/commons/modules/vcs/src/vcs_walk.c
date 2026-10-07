@@ -152,6 +152,16 @@ static int walk_name_compare(const void *left, const void *right)
     return strcmp(*(char *const *)left, *(char *const *)right);
 }
 
+/* An enumeration yielding no non-dot entries reaches the sort with
+ * names == NULL and count == 0 (qsort's base is declared nonnull — UB
+ * for a no-op sort). walk_dir_windows is complexity-pinned, so the
+ * guard lives here. */
+static void walk_names_sort(char **names, size_t count)
+{
+    if (count > 1)
+        walk_names_sort(names, count);
+}
+
 static bool walk_windows_time(LARGE_INTEGER value, int64_t *nanoseconds)
 {
     constexpr int64_t epoch = INT64_C(116444736000000000);

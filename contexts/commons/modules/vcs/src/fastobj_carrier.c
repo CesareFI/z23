@@ -253,6 +253,15 @@ static int fc_entry_cmp(const void *a, const void *b)
                   ((const struct fc_entry *)b)->key);
 }
 
+/* A cache scan that finds no valid entries reaches the sort with list ==
+ * NULL and n == 0 (qsort's base is declared nonnull — UB for a no-op
+ * sort). fc_scan_cache is complexity-pinned, so the guard lives here. */
+static void fc_entries_sort(struct fc_entry *list, size_t n)
+{
+    if (n > 1)
+        qsort(list, n, sizeof(*list), fc_entry_cmp);
+}
+
 /* Collect the sorted entry keys of a fastobj cache. A pair member with
  * no twin is a torn entry and refuses. */
 static bool fc_scan_cache(const char *cache_dir, struct fc_entry **entries,
@@ -369,7 +378,7 @@ static bool fc_scan_cache(const char *cache_dir, struct fc_entry **entries,
         free(list);
         return false;
     }
-    qsort(list, n, sizeof(*list), fc_entry_cmp);
+    fc_entries_sort(list, n);
     *entries = list;
     *count = n;
     return true;
