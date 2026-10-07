@@ -215,6 +215,58 @@ static int case_refusal_is_clean(void)
 
 /* ── the id ──────────────────────────────────────────────────────────── */
 
+static int case_structural_refusals(void)
+{
+    int failures = 0;
+    struct zcl_proof_receipt valid;
+    if (!build_pass(&valid)) {
+        printf("receipt: FAIL could not build the fixture receipt\n");
+        return 1;
+    }
+    RC_CHECK("the structural refusal fixture is valid",
+             zcl_receipt_is_valid(&valid));
+    struct zcl_proof_receipt changed = valid;
+    memcpy(changed.base_root, g_base, sizeof(changed.base_root));
+    RC_CHECK("a plain receipt with a nonzero base is invalid",
+             !zcl_receipt_is_valid(&changed));
+    changed = valid;
+    memset(changed.group, 0, sizeof(changed.group));
+    RC_CHECK("an assembled receipt with an empty group is invalid",
+             !zcl_receipt_is_valid(&changed));
+
+    const char *names[] = { "group", "toolchain", "env_class" };
+    const char *defects[] = {
+        "unterminated", "control byte", "non-ASCII byte", "nonzero tail"
+    };
+    for (size_t field = 0; field < 3; field++) {
+        for (size_t defect = 0; defect < 4; defect++) {
+            changed = valid;
+            char *fields[] = {
+                changed.group, changed.toolchain, changed.env_class
+            };
+            const size_t widths[] = {
+                sizeof(changed.group), sizeof(changed.toolchain),
+                sizeof(changed.env_class)
+            };
+            char *value = fields[field];
+            size_t width = widths[field];
+            switch (defect) {
+            case 0: memset(value, 'g', width); break;
+            case 1: value[0] = 0x1b; break;
+            case 2: value[0] = (char)0x80; break;
+            case 3: value[width - 1] = 'x'; break;
+            }
+            char label[128];
+            (void)snprintf(label, sizeof(label), "%s with %s is invalid",
+                           names[field], defects[defect]);
+            RC_CHECK(label, !zcl_receipt_is_valid(&changed));
+        }
+    }
+    RC_CHECK("the unchanged structural fixture remains valid",
+             zcl_receipt_is_valid(&valid));
+    return failures;
+}
+
 static int case_id(void)
 {
     int failures = 0;
@@ -350,6 +402,12 @@ static int case_belief(void)
     }
     uint8_t none[32] = { 0 };
 
+    RC_CHECK("a nonzero vector covering zero checks stays UNVERIFIED",
+             zcl_receipt_corroborate(&r, g_vec, 0) ==
+                 ZCL_RECEIPT_UNVERIFIED);
+    RC_CHECK("a valid claim with no observed vector stays UNVERIFIED",
+             zcl_receipt_corroborate(&r, NULL, 131) ==
+                 ZCL_RECEIPT_UNVERIFIED);
     RC_CHECK("a node with no run of its own believes UNVERIFIED",
              zcl_receipt_corroborate(&r, none, 0) == ZCL_RECEIPT_UNVERIFIED);
     RC_CHECK("a claimed check count cannot substitute for a run",
@@ -475,6 +533,7 @@ int test_receipt(void)
     fixtures_init();
     failures += case_canonical();
     failures += case_refusal_is_clean();
+    failures += case_structural_refusals();
     failures += case_id();
     failures += case_publishable();
     failures += case_eligibility();
