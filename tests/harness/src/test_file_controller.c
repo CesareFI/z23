@@ -714,6 +714,33 @@ static int test_file_export_snapshot_fail_closes_partial(void)
     return failures;
 }
 
+static int test_file_export_snapshot_rejects_overlong_datadir(void)
+{
+    int failures = 0;
+
+    printf("file_controller: consensus snapshot export rejects truncated paths... ");
+    {
+        /* Long enough to overflow the 576-byte source/destination buffers,
+         * while still fitting the separate 640-byte proof-path buffer. */
+        char datadir[581];
+        const uint8_t block_hash[32] = {0};
+        memset(datadir, 'a', sizeof(datadir) - 1);
+        datadir[0] = '/';
+        datadir[sizeof(datadir) - 1] = '\0';
+
+        struct zcl_result result = consensus_snapshot_export_service_run_bound(
+            datadir, 0, block_hash);
+        bool ok = !result.ok && strstr(result.message, "path too long") != NULL;
+        if (ok) printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    return failures;
+}
+
 int test_file_controller(void)
 {
     int failures = 0;
@@ -728,6 +755,7 @@ int test_file_controller(void)
     failures += test_file_service_resolved_connect_lifecycle();
     failures += test_file_export_snapshot_success();
     failures += test_file_export_snapshot_fail_closes_partial();
+    failures += test_file_export_snapshot_rejects_overlong_datadir();
 
     return failures;
 }

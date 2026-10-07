@@ -87,6 +87,18 @@ static bool export_path(char *out, size_t out_size, const char *datadir,
     return n >= 0 && (size_t)n < out_size;
 }
 
+static bool export_snapshot_paths(const char *datadir,
+                                  char *src_path, size_t src_size,
+                                  char *dst_path, size_t dst_size,
+                                  char *proof_path, size_t proof_size)
+{
+    return export_path(src_path, src_size, datadir, "node.db") &&
+           export_path(dst_path, dst_size, datadir,
+                       "consensus_snapshot.db") &&
+           export_path(proof_path, proof_size, datadir,
+                       LOCAL_EXPORT_PROOF_NAME);
+}
+
 static bool snapshot_identity_equal(
     const struct platform_positioned_file_snapshot *a,
     const struct platform_positioned_file_snapshot *b)
@@ -489,11 +501,10 @@ static struct zcl_result consensus_snapshot_export_service_run_internal(
         return ZCL_ERR(-1, "export_snapshot: invalid state binding");
 
     char src_path[576], dst_path[576], proof_path[640];
-    snprintf(src_path, sizeof(src_path), "%s/node.db", datadir);
-    snprintf(dst_path, sizeof(dst_path), "%s/consensus_snapshot.db", datadir);
-    if (!export_path(proof_path, sizeof(proof_path), datadir,
-                     LOCAL_EXPORT_PROOF_NAME))
-        return ZCL_ERR(-1, "export_snapshot: proof path too long");
+    if (!export_snapshot_paths(datadir, src_path, sizeof(src_path),
+                               dst_path, sizeof(dst_path), proof_path,
+                               sizeof(proof_path)))
+        return ZCL_ERR(-1, "export_snapshot: path too long");
 
     struct platform_file_metadata src_metadata;
     if (platform_file_metadata_read(src_path, &src_metadata) !=
