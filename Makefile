@@ -4798,8 +4798,11 @@ zcode-c23-commons-alpha:
 # Runs the real DHT fixture's central lifecycle boundary without booting full
 # nodes: concurrent owners, a forced middle failure, signal cleanup, immediate
 # port reuse, and an uncontaminated rerun are all fail-closed assertions.
-zcode-dht-harness-selftest: tools/arena-product-journey-c23 process-group-exec
-	@DHT_LIFECYCLE_MODE=selftest bash tools/dev/zcode_dht_acceptance.sh
+zcode-dht-harness-selftest: tools/arena-product-journey-c23 process-group-exec $(BIN_DIR)/z23_bounded_run
+	@unset BASH_ENV ENV; \
+	DHT_LIFECYCLE_MODE=selftest "$(abspath $(BIN_DIR))/z23_bounded_run" \
+	  300000 "$(SHELL)" -c 'selftest_shell=$$(command -v bash) || exit 125; case "$$selftest_shell" in /*) ;; *) exit 125 ;; esac; exec "$$selftest_shell" "$$1"' \
+	  dht-selftest tools/dev/zcode_dht_acceptance.sh
 
 # Zero-wait development protocol acceptance. The exact groups jointly prove
 # three interchangeable signed work nodes, dead-peer retry/stale-result

@@ -43,6 +43,7 @@ struct app_buffer {
     size_t len;
 };
 
+#ifndef ZCL_DHT_ACCEPTANCE_PEER_TEST
 static int usage(const char *prog)
 {
     fprintf(stderr,
@@ -51,6 +52,8 @@ static int usage(const char *prog)
             prog, prog);
     return 2;
 }
+
+#endif
 
 static bool write_all_fd(int fd, const uint8_t *p, size_t n)
 {
@@ -291,18 +294,175 @@ static int connect_ipv4(const char *host, uint16_t port)
     return fd;
 }
 
+/* Load the three identity artifacts for one attack. A datadir long enough
+ * to truncate the v2_identity.key path is refused: read_exact_0600 would
+ * otherwise open the chopped path while the online-key and delegation
+ * loads use the full datadir. Their own bounds already prevent a successful
+ * mixed-directory handshake; refuse before attempting the truncated read.
+ * Private contract: all output pointers are valid; err_cap is nonzero.
+ * Initialize every output before refusal; callers discard outputs on failure. */
+static bool load_identity(const char *datadir, uint8_t *noise_priv,
+                          uint8_t *online_seed, uint8_t *online_pub,
+                          struct vcs_zcode_dht_delegation *delegation,
+                          uint8_t *node_id, char *err, size_t err_cap)
+{
+    char path[1400];
+    memset(noise_priv, 0, 32);
+    memset(online_seed, 0, 32);
+    memset(online_pub, 0, 32);
+    memset(delegation, 0, sizeof(*delegation));
+    memset(node_id, 0, 32);
+    err[0] = '\0';
+    if (strlen(datadir) > sizeof(path) - sizeof("/v2_identity.key")) {
+        snprintf(err, err_cap, "identity-datadir too long (max %zu "
+                 "characters)", sizeof(path) - sizeof("/v2_identity.key"));
+        return false;
+    }
+    snprintf(path, sizeof(path), "%s/v2_identity.key", datadir);
+    if (!read_exact_0600(path, noise_priv, 32) ||
+        !vcs_zcode_dht_online_key_load(datadir, online_seed, online_pub,
+                                       err, err_cap) ||
+        !vcs_zcode_dht_delegation_load(datadir, delegation, err,
+                                       err_cap) ||
+        !vcs_zcode_dht_delegation_node_id(node_id, delegation)) {
+        if (err[0] == '\0')
+            snprintf(err, err_cap, "identity unreadable");
+        return false;
+    }
+    return true;
+}
+
+static bool exchange_version(int fd, struct noise_transport *transport,
+                             struct app_buffer *app)
+{
+    uint8_t version[128];
+    size_t version_len = build_version(version);
+    bool ok = send_p2p(fd, transport, "version", version, version_len);
+
+    bool saw_version = false, saw_verack = false, sent_verack = false;
+    uint8_t payload[APP_CAP];
+    for (int i = 0; ok && (!saw_version || !saw_verack) && i < 30; i++) {
+        ok = feed_once(fd, transport, app, 1000);
+        char command[13]; size_t payload_len = 0;
+        while (ok && pop_p2p(app, command, payload, sizeof(payload),
+                             &payload_len)) {
+            if (strcmp(command, "version") == 0) {
+                saw_version = true;
+                if (!sent_verack) {
+                    ok = send_p2p(fd, transport, "verack", NULL, 0);
+                    sent_verack = ok;
+                }
+            } else if (strcmp(command, "verack") == 0) {
+                saw_verack = true;
+            }
+        }
+    }
+    memory_cleanse(version, sizeof(version));
+    return ok && saw_version && saw_verack;
+}
+
+static bool await_peer_query(int fd, struct noise_transport *transport,
+                             struct app_buffer *app, uint8_t peer_query[16])
+{
+    bool ok = true, saw_peer_query = false;
+    uint8_t payload[APP_CAP];
+    /* Wait for the responder's bootstrap FIND_NODE and retain its query id
+     * for the deliberately late NODES response below. */
+    for (int i = 0; ok && !saw_peer_query && i < 30; i++) {
+        (void)feed_once(fd, transport, app, 500);
+        char command[13]; size_t payload_len = 0;
+        while (pop_p2p(app, command, payload, sizeof(payload), &payload_len))
+            if (strcmp(command, "zpkgswm") == 0 &&
+                payload_len >= VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES &&
+                payload[10] == VCS_ZCODE_DHT_MSG_FIND_NODE) {
+                memcpy(peer_query, payload + VCS_ZCODE_DHT_MSGS_HEADER_BYTES +
+                       8 + 32, 16);
+                saw_peer_query = true;
+            }
+    }
+    return ok && saw_peer_query;
+}
+
+static bool send_find_attacks(int fd, struct noise_transport *transport,
+                        const struct vcs_zcode_dht_delegation *delegation,
+                        const uint8_t node_id[32],
+                        const struct noise_transport_snapshot *snapshot,
+                        const uint8_t online_seed[32])
+{
+    uint8_t wire[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES + 1];
+    size_t wire_len = 0;
+    bool ok = make_find(delegation, node_id, snapshot->connection_generation,
+                         snapshot->transcript_hash, online_seed, 0x11,
+                         wire, &wire_len);
+    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len);
+    struct timespec short_pause = {.tv_nsec = 200000000};
+    nanosleep(&short_pause, NULL);
+    ok = ok && send_p2p(fd, transport, "zpkgswm",
+                        (const uint8_t *)"ZCDHTM", 6);
+    memset(wire, 0, sizeof(wire)); memcpy(wire, "ZCDHTM", 6);
+    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, sizeof(wire));
+
+    /* Put more than the old 16-entry replay-cache population through the
+     * real Noise session while staying beneath the 4/s admission rate. The
+     * first query must remain live in the full 30-second replay ledger. */
+    struct timespec replay_pace = {.tv_nsec = 350000000};
+    for (uint8_t i = 0; ok && i < 24; i++) {
+        ok = make_find(delegation, node_id, snapshot->connection_generation,
+                       snapshot->transcript_hash, online_seed,
+                       (uint8_t)(0x40 + i), wire, &wire_len) &&
+             send_p2p(fd, transport, "zpkgswm", wire, wire_len);
+        nanosleep(&replay_pace, NULL);
+    }
+    ok = ok && make_find(delegation, node_id, snapshot->connection_generation,
+                         snapshot->transcript_hash, online_seed, 0x11,
+                         wire, &wire_len);
+    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len); /* replay */
+    wire[VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 8] ^= 1; /* sender mismatch */
+    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len);
+
+    return ok;
+}
+
+static bool send_nodes_attacks(int fd, struct noise_transport *transport,
+                        const struct vcs_zcode_dht_delegation *delegation,
+                        const uint8_t node_id[32],
+                        const struct noise_transport_snapshot *snapshot,
+                        const uint8_t online_seed[32],
+                        const uint8_t peer_query[16])
+{
+    uint8_t wire[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES + 1];
+    size_t wire_len = 0;
+    struct timespec short_pause = {.tv_nsec = 200000000};
+    uint8_t arbitrary_query[16]; memset(arbitrary_query, 0x33, 16);
+    bool ok = make_nodes(delegation, node_id, snapshot->connection_generation,
+                          snapshot->transcript_hash, online_seed,
+                          arbitrary_query, false, wire, &wire_len);
+    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len);
+    ok = ok && make_nodes(delegation, node_id, snapshot->connection_generation,
+                          snapshot->transcript_hash, online_seed,
+                          arbitrary_query, true, wire, &wire_len);
+    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len);
+
+    /* Cross the per-query deadline but stay inside the 30-second expired-ID
+     * tombstone so this is classified as an expired response, not merely an
+     * unknown unsolicited response. */
+    sleep(VCS_ZCODE_DHT_SERVICE_QUERY_TIMEOUT_S + 1);
+    ok = ok && make_nodes(delegation, node_id, snapshot->connection_generation,
+                          snapshot->transcript_hash, online_seed, peer_query,
+                          false, wire, &wire_len);
+    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len);
+    nanosleep(&short_pause, NULL);
+
+    return ok;
+}
+
 static int attack_peer(const char *host, uint16_t port, const char *datadir)
 {
-    char path[1400], err[160];
+    char err[160];
     uint8_t noise_priv[32], online_seed[32], online_pub[32], node_id[32];
     struct vcs_zcode_dht_delegation delegation;
-    snprintf(path, sizeof(path), "%s/v2_identity.key", datadir);
-    if (!read_exact_0600(path, noise_priv, sizeof(noise_priv)) ||
-        !vcs_zcode_dht_online_key_load(datadir, online_seed, online_pub,
-                                       err, sizeof(err)) ||
-        !vcs_zcode_dht_delegation_load(datadir, &delegation, err,
-                                       sizeof(err)) ||
-        !vcs_zcode_dht_delegation_node_id(node_id, &delegation)) {
+    if (!load_identity(datadir, noise_priv, online_seed, online_pub,
+                       &delegation, node_id, err, sizeof(err))) {
         fprintf(stderr, "identity load failed: %s\n", err);
         return 2;
     }
@@ -324,101 +484,15 @@ static int attack_peer(const char *host, uint16_t port, const char *datadir)
     struct noise_transport_snapshot snapshot;
     ok = ok && noise_transport_snapshot(transport, &snapshot) &&
          snapshot.established;
-    uint8_t version[128];
-    size_t version_len = build_version(version);
-    ok = ok && send_p2p(fd, transport, "version", version, version_len);
-
-    bool saw_version = false, saw_verack = false, sent_verack = false;
     uint8_t peer_query[16] = {0};
-    bool saw_peer_query = false;
-    uint8_t payload[APP_CAP];
-    for (int i = 0; ok && (!saw_version || !saw_verack) && i < 30; i++) {
-        ok = feed_once(fd, transport, &app, 1000);
-        char command[13]; size_t payload_len = 0;
-        while (ok && pop_p2p(&app, command, payload, sizeof(payload),
-                             &payload_len)) {
-            if (strcmp(command, "version") == 0) {
-                saw_version = true;
-                if (!sent_verack) {
-                    ok = send_p2p(fd, transport, "verack", NULL, 0);
-                    sent_verack = ok;
-                }
-            } else if (strcmp(command, "verack") == 0) {
-                saw_verack = true;
-            }
-        }
-    }
-    ok = ok && saw_version && saw_verack;
-
-    /* Wait for the responder's bootstrap FIND_NODE and retain its query id
-     * for the deliberately late NODES response below. */
-    for (int i = 0; ok && !saw_peer_query && i < 30; i++) {
-        (void)feed_once(fd, transport, &app, 500);
-        char command[13]; size_t payload_len = 0;
-        while (pop_p2p(&app, command, payload, sizeof(payload), &payload_len))
-            if (strcmp(command, "zpkgswm") == 0 &&
-                payload_len >= VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES &&
-                payload[10] == VCS_ZCODE_DHT_MSG_FIND_NODE) {
-                memcpy(peer_query, payload + VCS_ZCODE_DHT_MSGS_HEADER_BYTES +
-                       8 + 32, 16);
-                saw_peer_query = true;
-            }
-    }
-    ok = ok && saw_peer_query;
-
-    uint8_t wire[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES + 1];
-    size_t wire_len = 0;
-    ok = ok && make_find(&delegation, node_id, snapshot.connection_generation,
-                         snapshot.transcript_hash, online_seed, 0x11,
-                         wire, &wire_len);
-    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len);
-    struct timespec short_pause = {.tv_nsec = 200000000};
-    nanosleep(&short_pause, NULL);
-    ok = ok && send_p2p(fd, transport, "zpkgswm",
-                        (const uint8_t *)"ZCDHTM", 6);
-    memset(wire, 0, sizeof(wire)); memcpy(wire, "ZCDHTM", 6);
-    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, sizeof(wire));
-
-    /* Put more than the old 16-entry replay-cache population through the
-     * real Noise session while staying beneath the 4/s admission rate. The
-     * first query must remain live in the full 30-second replay ledger. */
-    struct timespec replay_pace = {.tv_nsec = 350000000};
-    for (uint8_t i = 0; ok && i < 24; i++) {
-        ok = make_find(&delegation, node_id, snapshot.connection_generation,
-                       snapshot.transcript_hash, online_seed,
-                       (uint8_t)(0x40 + i), wire, &wire_len) &&
-             send_p2p(fd, transport, "zpkgswm", wire, wire_len);
-        nanosleep(&replay_pace, NULL);
-    }
-    ok = ok && make_find(&delegation, node_id, snapshot.connection_generation,
-                         snapshot.transcript_hash, online_seed, 0x11,
-                         wire, &wire_len);
-    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len); /* replay */
-    wire[VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 8] ^= 1; /* sender mismatch */
-    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len);
-
-    uint8_t arbitrary_query[16]; memset(arbitrary_query, 0x33, 16);
-    ok = ok && make_nodes(&delegation, node_id, snapshot.connection_generation,
-                          snapshot.transcript_hash, online_seed,
-                          arbitrary_query, false, wire, &wire_len);
-    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len);
-    ok = ok && make_nodes(&delegation, node_id, snapshot.connection_generation,
-                          snapshot.transcript_hash, online_seed,
-                          arbitrary_query, true, wire, &wire_len);
-    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len);
-
-    /* Cross the per-query deadline but stay inside the 30-second expired-ID
-     * tombstone so this is classified as an expired response, not merely an
-     * unknown unsolicited response. */
-    sleep(VCS_ZCODE_DHT_SERVICE_QUERY_TIMEOUT_S + 1);
-    ok = ok && make_nodes(&delegation, node_id, snapshot.connection_generation,
-                          snapshot.transcript_hash, online_seed, peer_query,
-                          false, wire, &wire_len);
-    ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len);
-    nanosleep(&short_pause, NULL);
+    ok = ok && exchange_version(fd, transport, &app);
+    ok = ok && await_peer_query(fd, transport, &app, peer_query);
+    ok = ok && send_find_attacks(fd, transport, &delegation, node_id,
+                                 &snapshot, online_seed);
+    ok = ok && send_nodes_attacks(fd, transport, &delegation, node_id,
+                                  &snapshot, online_seed, peer_query);
 
     memory_cleanse(online_seed, sizeof(online_seed));
-    memory_cleanse(version, sizeof(version));
     noise_transport_free(transport);
     close(fd);
     if (!ok) {
@@ -429,6 +503,7 @@ static int attack_peer(const char *host, uint16_t port, const char *datadir)
     return 0;
 }
 
+#ifndef ZCL_DHT_ACCEPTANCE_PEER_TEST
 int main(int argc, char **argv)
 {
     if (argc == 3 && strcmp(argv[1], "pubkey") == 0) {
@@ -458,3 +533,5 @@ int main(int argc, char **argv)
     }
     return usage(argv[0]);
 }
+
+#endif
