@@ -1,18 +1,8 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton - Apache License 2.0
-# Build the pinned embedded-Tor submodule explicitly. The default node build
-# remains offline-friendly and links the stub until an operator asks for this.
-#
-# HOST SEAM (macOS). Upstream Tor is macOS-capable on its own: configure.ac
-# carries darwin* arms and the vendored fork adds no Linux-only syscall. What a
-# Mac does not have is the SYSTEM OpenSSL, libevent, and zlib development trees
-# that Tor's configure discovers on Linux — macOS ships no /usr/include/openssl
-# and no libevent at all — so an unaided ./configure fails at "checking for
-# openssl directory" long before any Tor source is compiled. This repository
-# already vendors exactly those three as pinned static archives, so on Darwin we
-# point Tor's configure at vendor/ instead of admitting a new external
-# dependency (a Homebrew openssl/libevent would be one). Everything else here is
-# host-independent.
+# Build the pinned embedded-Tor submodule used by the default node build.
+# All hosts use the same pinned OpenSSL, libevent, and zlib dependencies as
+# the node, avoiding system development-package requirements and ABI skew.
 
 set -euo pipefail
 
@@ -139,12 +129,8 @@ fi
 # every host, and matches the repo rule that third-party input is an
 # exact pinned archive rather than whatever the host offers.
 #
-# libevent and zlib are NOT pinned the same way: vendor/include has no
-# event2/ headers, so Tor still resolves libevent from the host while
-# the node links vendor/lib/libevent.a. That is the same latent skew,
-# still open, and it needs the headers vendored before it can be closed.
+# The dependency setup below also pins libevent and zlib to this vendor tree.
 configure_opts=(
-    --with-openssl-dir="$VENDOR_ROOT_DIR"
     --disable-asciidoc
     --disable-systemd
     --disable-seccomp
@@ -222,17 +208,19 @@ fi
 # already be there rather than letting configure fall back to a system
 # library.
 #
-# Neither macOS nor an MSYS2/mingw Windows host has a system
-# OpenSSL/libevent/zlib that Tor should be linked against here, and a cross
-# build has no host libraries to discover at all. On Windows MSYS2 may well
-# HAVE those packages, which is worse than not having them: configure would
-# silently pick a different OpenSSL from the one the node links, and the skew
-# is invisible because both sides compile. Point Tor at the same vendor tree
-# the node links for this exact target, on every host/target that needs it.
-needs_vendored_deps=false
-case "$HOST_OS" in Darwin|MINGW*|MSYS*) needs_vendored_deps=true ;; esac
-case "$VENDOR_TARGET" in *mingw*|*windows*|*darwin*) needs_vendored_deps=true ;; esac
-if $needs_vendored_deps; then
+# Every host and cross target must use the same dependency tree as the node.
+vendor_missing=""
+for required in \
+    "$VENDOR_ROOT_DIR/lib/libcrypto.a" "$VENDOR_ROOT_DIR/lib/libssl.a" \
+    "$VENDOR_ROOT_DIR/lib/libevent.a" "$VENDOR_ROOT_DIR/lib/libz.a" \
+    "$VENDOR_ROOT_DIR/include/openssl/ssl.h" "$VENDOR_ROOT_DIR/include/event2/event.h" \
+    "$VENDOR_ROOT_DIR/include/zlib.h"
+do
+    [ -s "$required" ] || vendor_missing="$vendor_missing ${required#"$ROOT"/}"
+done
+if [ -n "$vendor_missing" ]; then
+    echo "tor-full: building the vendored Tor dependencies first (missing:$vendor_missing)"
+    VENDOR_TARGET="$VENDOR_TARGET" "$ROOT/tools/scripts/build_vendor.sh" libcrypto.a libssl.a libevent.a libz.a
     vendor_missing=""
     for required in \
         "$VENDOR_ROOT_DIR/lib/libcrypto.a" "$VENDOR_ROOT_DIR/lib/libssl.a" \
@@ -242,31 +230,18 @@ if $needs_vendored_deps; then
     do
         [ -s "$required" ] || vendor_missing="$vendor_missing ${required#"$ROOT"/}"
     done
-    if [ -n "$vendor_missing" ]; then
-        echo "tor-full: building the vendored Tor dependencies first (missing:$vendor_missing)"
-        VENDOR_TARGET="$VENDOR_TARGET" "$ROOT/tools/scripts/build_vendor.sh" libcrypto.a libssl.a libevent.a libz.a
-        vendor_missing=""
-        for required in \
-            "$VENDOR_ROOT_DIR/lib/libcrypto.a" "$VENDOR_ROOT_DIR/lib/libssl.a" \
-            "$VENDOR_ROOT_DIR/lib/libevent.a" "$VENDOR_ROOT_DIR/lib/libz.a" \
-            "$VENDOR_ROOT_DIR/include/openssl/ssl.h" "$VENDOR_ROOT_DIR/include/event2/event.h" \
-            "$VENDOR_ROOT_DIR/include/zlib.h"
-        do
-            [ -s "$required" ] || vendor_missing="$vendor_missing ${required#"$ROOT"/}"
-        done
-    fi
-    if [ -n "$vendor_missing" ]; then
-        echo "tor-full: ${VENDOR_TARGET:-$HOST_OS} must link the vendored OpenSSL/libevent/zlib," >&2
-        echo "tor-full: and they are still absent:$vendor_missing" >&2
-        echo "tor-full: run tools/scripts/build_vendor.sh and rerun." >&2
-        exit 5
-    fi
-    configure_opts+=(
-        "--with-openssl-dir=$VENDOR_ROOT_DIR"
-        "--with-libevent-dir=$VENDOR_ROOT_DIR"
-        "--with-zlib-dir=$VENDOR_ROOT_DIR"
-    )
 fi
+if [ -n "$vendor_missing" ]; then
+    echo "tor-full: ${VENDOR_TARGET:-$HOST_OS} must link the vendored OpenSSL/libevent/zlib," >&2
+    echo "tor-full: and they are still absent:$vendor_missing" >&2
+    echo "tor-full: run tools/scripts/build_vendor.sh and rerun." >&2
+    exit 5
+fi
+configure_opts+=(
+    "--with-openssl-dir=$VENDOR_ROOT_DIR"
+    "--with-libevent-dir=$VENDOR_ROOT_DIR"
+    "--with-zlib-dir=$VENDOR_ROOT_DIR"
+)
 
 mkdir -p "$TOR_BUILD_DIR"
 

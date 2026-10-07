@@ -13096,6 +13096,7 @@ check-mind-owns-rebuild: $(LINTC_TOOL)
 .PHONY: check-tor-full-default
 check-tor-full-default:
 	@echo "══ LINT: real Tor is the default link, a stub cannot be packaged ══"
+	@bash tools/scripts/tor_vendor_deps_selftest.sh
 	@./tools/lint/check_tor_full_default.sh --selftest
 	@./tools/lint/check_tor_full_default.sh
 
