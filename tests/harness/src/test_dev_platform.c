@@ -4430,6 +4430,98 @@ static bool run_hotswap_action_root_zcc_fixture(void)
     return ok;
 }
 
+static FILE *dp_unity_fixture(void)
+{
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof(path), "hotswap-unity");
+    if (fd < 0)
+        return NULL;
+    FILE *stream = fdopen(fd, "w+b");
+    if (!stream)
+        (void)close(fd);
+    if (unlink(path) != 0) {
+        if (stream)
+            (void)fclose(stream);
+        return NULL;
+    }
+    return stream;
+}
+
+static bool dp_unity_output_matches(FILE *f, size_t includes)
+{
+    const char line[] = "#include \"./tools/jsonq.c\"\n";
+    char actual[sizeof(line)];
+    if (fseek(f, 0, SEEK_SET) != 0)
+        return false;
+    for (size_t i = 0; i < includes; i++) {
+        if (!fgets(actual, sizeof(actual), f) || strcmp(actual, line) != 0)
+            return false;
+    }
+    return fgetc(f) == EOF && !ferror(f);
+}
+
+static bool dp_unity_text_result(const char *members, bool accepted,
+                                size_t includes)
+{
+    FILE *f = dp_unity_fixture();
+    if (!f)
+        return false;
+    bool parsed = zcl_devloop_hotswap_unity_members(
+        f, ".", members, "tools/jsonq.c");
+    bool matched = dp_unity_output_matches(f, includes);
+    int closed = fclose(f);
+    return closed == 0 && parsed == accepted && matched;
+}
+
+static bool dp_unity_member_extent(size_t count, bool accepted)
+{
+    /* Every token resolves to a regular C source; repeats are legal. */
+    const char member[] = "tools/jsonq.c ";
+    char members[2048] = {0};
+    if (count > (sizeof(members) - 1) / (sizeof(member) - 1))
+        return false;
+    for (size_t i = 0; i < count; i++)
+        memcpy(members + i * (sizeof(member) - 1), member, sizeof(member) - 1);
+    return dp_unity_text_result(members, accepted, accepted ? count + 1 : 0);
+}
+
+static bool dp_unity_byte_extent(size_t length, bool accepted)
+{
+    const char member[] = "tools/jsonq.c";
+    char members[2049];
+    if (length < sizeof(member) - 1 || length >= sizeof(members))
+        return false;
+    memset(members, ' ', length);
+    memcpy(members, member, sizeof(member) - 1);
+    members[length] = '\0';
+    return dp_unity_text_result(members, accepted, accepted ? 2 : 0);
+}
+
+static bool dp_unity_long_refused(void)
+{
+    const char member[] = "tools/jsonq.c";
+    char members[2048 + sizeof(member)];
+    memset(members, ' ', sizeof(members));
+    memcpy(members, member, sizeof(member) - 1);
+    memcpy(members + 2048, member, sizeof(member));
+    return dp_unity_text_result(members, false, 0);
+}
+
+static int test_hotswap_unity_extent(void)
+{
+    int failures = 0;
+    TEST("hotswap unity: no silent member or byte truncation") {
+        ASSERT(dp_unity_member_extent(1, true));
+        ASSERT(dp_unity_member_extent(63, true));
+        ASSERT(dp_unity_member_extent(64, false));
+        ASSERT(dp_unity_byte_extent(2047, true));
+        ASSERT(dp_unity_byte_extent(2048, false));
+        ASSERT(dp_unity_long_refused());
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_hotswap_artifact_cache(void)
 {
     int failures = 0;
@@ -9626,6 +9718,7 @@ static const struct dp_shard_case g_dp_cases[] = {
     DP_CASE(test_mirror_write_joins_ring, 5),
     DP_CASE(test_distill_first_error, 7),
     DP_CASE(test_hotswap_artifact_cache, 5),
+    DP_CASE(test_hotswap_unity_extent, 4),
     DP_CASE(test_hotfork_story_file_green_and_red, 5),
     DP_CASE(test_hotfork_shape_refusals, 5),
     DP_CASE(test_hotfork_shape_image_cache, 5),
@@ -9794,7 +9887,7 @@ static int test_dev_platform_platform_arm(void)
         owned += counts[i];
         nonempty &= counts[i] > 0;
     }
-    if (DP_CASE_COUNT != 68u + (unsigned)(
+    if (DP_CASE_COUNT != 69u + (unsigned)(
 #if defined(__APPLE__)
             1
 #else

@@ -393,6 +393,14 @@ bool zcl_devloop_hotswap_build(
     struct zcl_devloop_process_result *process,
     char *why, size_t why_len);
 
+/* Write member includes followed by the owner include to an open stream.
+ * All arguments must be non-NULL. Members use the plain whitespace split
+ * contract in util/spawn.h. Empty lists, text exceeding 2047 bytes, and
+ * lists exceeding 63 tokens return false without writing to the stream.
+ * Other failures may leave partial output; the caller must discard it. */
+bool zcl_devloop_hotswap_unity_members(
+    FILE *f, const char *root, const char *members, const char *owner);
+
 /* Pure fallback diagnosis for one resident hot-swap receipt. `why_not_live`
  * preserves the exact bounded refusal; `next_command` names one deterministic
  * action instead of the old generic "repair the refusal" instruction. */

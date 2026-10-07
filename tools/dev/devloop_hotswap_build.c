@@ -1584,14 +1584,27 @@ static bool hs_files_equal(const char *a, const char *b)
     return same;
 }
 
+static bool hs_unity_members_parse(const char *members, char member_text[2048],
+                                   const char *memberv[65], size_t *memberc)
+{
+    int written = snprintf(member_text, 2048, "%s", members);
+    if (written < 0 || written >= 2048)
+        return false;
+    /* zcl_argv_split reserves its last slot for NULL. The extra token
+     * detects exhaustion before any includes are emitted. */
+    *memberc = zcl_argv_split(member_text, memberv, 65);
+    return *memberc > 0 && *memberc < 64;
+}
+
 static bool hs_unity_source_write_members(
     FILE *f, const char *root, const char *members, const char *owner)
 {
     char member_text[2048];
-    (void)snprintf(member_text, sizeof(member_text), "%s", members);
-    const char *memberv[64];
-    size_t memberc = zcl_argv_split(member_text, memberv, 64);
-    bool ok = memberc > 0;
+    const char *memberv[65];
+    size_t memberc = 0;
+    if (!hs_unity_members_parse(members, member_text, memberv, &memberc))
+        return false;
+    bool ok = true;
     for (size_t i = 0; ok && i < memberc; i++) {
         char full[PATH_MAX];
         ok = memberv[i][0] != '/' && !strstr(memberv[i], "..") &&
@@ -1607,6 +1620,12 @@ static bool hs_unity_source_write_members(
     /* A compile input consumed at once; hs_unity_source_publish() replaces
      * any differing wrapper, so it needs no storage acknowledgement. */
     return ok && fflush(f) == 0;
+}
+
+bool zcl_devloop_hotswap_unity_members(FILE *f, const char *root,
+                                     const char *members, const char *owner)
+{
+    return hs_unity_source_write_members(f, root, members, owner);
 }
 
 static bool hs_unity_source_publish(const char *temp, char out[PATH_MAX],
