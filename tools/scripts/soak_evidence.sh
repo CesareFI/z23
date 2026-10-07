@@ -352,9 +352,9 @@ cmd_judge() {
             n++
             ts[n]   = t + 0
             okv[n]  = ($0 ~ /"ok":true(,|})/) ? 1 : (($0 ~ /"ok":false(,|})/) ? 0 : -1)
-            secok[n] = ($0 ~ /"security_posture_ok":true/) ? 1 : 0
-            secrev[n] = ($0 ~ /"security_review_required":true/) ? 1 : 0
-            secknown[n] = ($0 ~ /"security_review_required":(true|false)/ && $0 ~ /"security_posture_ok":(true|false)/) ? 1 : 0
+            secok[n] = ($0 ~ /"security_posture_ok":true(,|})/) ? 1 : 0
+            secrev[n] = ($0 ~ /"security_review_required":true(,|})/) ? 1 : 0
+            secknown[n] = ($0 ~ /"security_review_required":(true|false)(,|})/ && $0 ~ /"security_posture_ok":(true|false)(,|})/) ? 1 : 0
             shv[n]  = fld($0, "soak_height")
             zdv[n]  = fld($0, "zd_height")
             gapv[n] = fld($0, "gap")
