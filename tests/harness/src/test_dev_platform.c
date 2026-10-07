@@ -6186,6 +6186,135 @@ static bool dp_cancel_run_fixture(struct dp_cancel_fixture *fixture)
     return restored == 0;
 }
 
+/* Run from the exact dev_platform group: shard partition validation alone
+ * cannot distinguish an output-EOF regression. The child closes its output
+ * and stays alive until two bounded waits have excluded that descriptor. */
+struct dp_eof_fixture {
+    int report[2], gate[2];
+    unsigned stale, closed;
+    bool budgets, released;
+    char saved[2][4096];
+    bool present[2];
+    struct dp_cancel_fixture clock;
+    struct zcl_devloop_process_result result;
+};
+
+static const char *const dp_eof_env[] = {
+    "ZCL_DEVLOOP_TEST_PROCESS", "ZCL_DEVLOOP_TEST_WAIT_REPORT_FD"
+};
+
+static bool dp_eof_save_env(struct dp_eof_fixture *fixture)
+{
+    for (size_t i = 0; i < 2; i++) {
+        const char *value = getenv(dp_eof_env[i]);
+        fixture->present[i] = value != NULL;
+        if (!value) continue;
+        size_t len = strlen(value);
+        if (len >= sizeof(fixture->saved[i])) return false;
+        memcpy(fixture->saved[i], value, len + 1);
+    }
+    return true;
+}
+
+static bool dp_eof_restore_env(const struct dp_eof_fixture *fixture)
+{
+    bool ok = true;
+    for (size_t i = 0; i < 2; i++) {
+        int rc = fixture->present[i]
+            ? platform_environment_set(dp_eof_env[i], fixture->saved[i], 1)
+            : dp_environment_unset(dp_eof_env[i]);
+        if (rc != 0) ok = false;
+    }
+    return ok;
+}
+
+static bool dp_eof_wait_poll(void *opaque)
+{
+    struct dp_eof_fixture *fixture = opaque;
+    int observation[2];
+    ssize_t got = read(fixture->report[0], observation, sizeof(observation));
+    if (got == (ssize_t)sizeof(observation)) {
+        struct pollfd pending = {.fd = observation[0], .events = POLLIN};
+        if (poll(&pending, 1, 0) > 0 && (pending.revents & POLLHUP))
+            fixture->stale++;
+        fixture->budgets &= observation[1] > 0 && observation[1] <= 5;
+        if (observation[0] == -1 && ++fixture->closed == 2)
+            fixture->released = write(fixture->gate[1], "go\n", 3) == 3;
+    } else if (got >= 0 || (errno != EAGAIN && errno != EINTR)) {
+        fixture->budgets = false;
+        return true;
+    }
+    /* Missing EOF exclusion is an assertion failure after bounded observations,
+     * rather than a hung test or dependence on elapsed wall time. */
+    return fixture->stale >= 128;
+}
+
+static bool dp_eof_run(struct dp_eof_fixture *fixture)
+{
+    char target[32], command[160];
+    int n = snprintf(target, sizeof(target), "%d", fixture->report[1]);
+    int m = snprintf(command, sizeof(command),
+        "printf preserved; exec 1>&- 2>&-; read line </dev/fd/%d",
+        fixture->gate[0]);
+    if (n <= 0 || (size_t)n >= sizeof(target) ||
+        m <= 0 || (size_t)m >= sizeof(command)) return false;
+    if (platform_environment_set(dp_eof_env[0], "1", 1) != 0 ||
+        platform_environment_set(dp_eof_env[1], target, 1) != 0) return false;
+    const clock_iface_t *previous = clock_default();
+    clock_iface_t clock = {
+        dp_cancel_clock_ns, dp_cancel_clock_wall_ms, &fixture->clock
+    };
+    const char *argv[] = {"sh", "-c", command, NULL};
+    zcl_devloop_process_cancel_clear();
+    zcl_devloop_process_cancel_poll_set(dp_eof_wait_poll, fixture);
+    clock_set_default(&clock);
+    bool ran = zcl_devloop_process_run(".", argv, 60000, &fixture->result);
+    clock_set_default(previous);
+    zcl_devloop_process_cancel_poll_clear();
+    zcl_devloop_process_cancel_clear();
+    return ran;
+}
+
+static bool dp_eof_fixture_run(struct dp_eof_fixture *fixture)
+{
+    if (!dp_eof_save_env(fixture)) return false;
+    bool setup = pipe(fixture->report) == 0 && pipe(fixture->gate) == 0;
+    if (setup)
+        setup = fcntl(fixture->report[0], F_SETFL, O_NONBLOCK) == 0;
+    /* Only the gate reader is needed by the executed child. */
+    if (setup)
+        setup = fcntl(fixture->report[0], F_SETFD, FD_CLOEXEC) == 0 &&
+                fcntl(fixture->report[1], F_SETFD, FD_CLOEXEC) == 0 &&
+                fcntl(fixture->gate[1], F_SETFD, FD_CLOEXEC) == 0;
+    bool ran = setup && dp_eof_run(fixture);
+    bool restored = dp_eof_restore_env(fixture);
+    for (size_t i = 0; i < 2; i++) {
+        if (fixture->report[i] >= 0) close(fixture->report[i]);
+        if (fixture->gate[i] >= 0) close(fixture->gate[i]);
+    }
+    return ran && restored;
+}
+
+static int test_process_output_eof(void)
+{
+    int failures = 0;
+    TEST("dev platform: EOF excludes the drained output pipe while the child is alive") {
+        static struct dp_eof_fixture fixture;
+        fixture = (struct dp_eof_fixture){
+            .report = {-1, -1}, .gate = {-1, -1}, .budgets = true
+        };
+        ASSERT(dp_eof_fixture_run(&fixture));
+        ASSERT(fixture.closed >= 2 && fixture.released);
+        ASSERT(fixture.budgets);
+        const struct zcl_devloop_process_result *result = &fixture.result;
+        ASSERT(result->exit_code == 0 && !result->cancelled &&
+               !result->timed_out && !result->output_truncated);
+        ASSERT(strcmp(result->output, "preserved") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_resident_process_cancellation(void)
 {
     int failures = 0;
@@ -10607,5 +10736,9 @@ DP_SHARD_FN(08)
 
 int test_dev_platform(void)
 {
-    return test_dev_platform_platform_arm();
+    int failures = test_dev_platform_platform_arm();
+#if !defined(_WIN32)
+    failures += test_process_output_eof();
+#endif
+    return failures;
 }

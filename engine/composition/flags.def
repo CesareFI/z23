@@ -654,6 +654,8 @@ Z23_FLAG("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY", "env_test", "-", "-",
           "undocumented; first use tests/harness/src/test_dev_platform.c:auto")
 Z23_FLAG("ZCL_DEVLOOP_TEST_PROCESS", "env_test", "-", "-",
           "first use tests/harness/src/test_dev_platform.c:auto; documented at docs/work/HOTSWAP.md:311: ZCL_DEVLOOP_TEST_PROCESS=1 fixture opt-in; release builds retain the literal")
+Z23_FLAG("ZCL_DEVLOOP_TEST_WAIT_REPORT_FD", "env_test", "-", "-",
+          "test-only descriptor receiving output-wait descriptor and budget observations; first use tools/dev/devloop_process.c:auto")
 Z23_FLAG("ZCL_DEVLOOP_TEST_WATCH_STALL", "env_runtime", "-", "-",
           "dev-build seam for the watcher session selftest: with ZCL_DEVLOOP_TEST_PROCESS=1, the watcher dev begin forks stalls before taking its lock and writes its pid and a member pid to this file; first use tools/command/native_dev_command.c:auto")
 Z23_FLAG("ZCL_DEV_NATIVE_ACTIVATION", "env_test", "-", "-",

@@ -331,11 +331,12 @@ static void capture_tail(struct zcl_devloop_process_result *out,
     out->output[out->output_len] = 0;
 }
 
-static void drain_output(int fd, struct zcl_devloop_process_result *out)
+static void drain_output(int *fd, struct zcl_devloop_process_result *out)
 {
     char buf[4096];
+    if (*fd < 0) return;
     for (;;) {
-        ssize_t n = read(fd, buf, sizeof(buf));
+        ssize_t n = read(*fd, buf, sizeof(buf));
         if (n > 0) {
             if ((size_t)n > sizeof(buf))
                 break;
@@ -344,8 +345,28 @@ static void drain_output(int fd, struct zcl_devloop_process_result *out)
         }
         if (n < 0 && errno == EINTR)
             continue;
+        if (n == 0) {
+            close(*fd);
+            *fd = -1;
+        }
         break;
     }
+}
+
+static void process_output_wait(int fd, int budget_ms)
+{
+#ifdef ZCL_TESTING
+    const char *report = getenv("ZCL_DEVLOOP_TEST_WAIT_REPORT_FD");
+    if (report) {
+        char *end = NULL;
+        long target = strtol(report, &end, 10);
+        int observation[2] = {fd, budget_ms};
+        if (*report && !*end && target >= 0 && target <= INT_MAX)
+            (void)write((int)target, observation, sizeof(observation));
+    }
+#endif
+    struct pollfd pending = {.fd = fd, .events = POLLIN};
+    (void)poll(&pending, 1, budget_ms);
 }
 #endif
 
@@ -771,6 +792,229 @@ static bool process_run_admit(const char *cwd, const char *const argv[],
     return true;
 }
 
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+static void process_child_exec(const char *cwd, int exec_fd,
+                               const char *const argv[],
+                               const char *const envp[], bool raise_stack,
+                               int fds[2], int ready_fds[2])
+{
+    close(ready_fds[0]);
+    if (setsid() < 0)
+        _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
+    char ready = '1';
+    if (write(ready_fds[1], &ready, 1) != 1)
+        _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
+#ifdef ZCL_TESTING
+    process_test_stall_before_exec();
+#endif
+    /* Keep the CLOEXEC descriptor open through setup. The parent sees
+     * EOF exactly when exec succeeds (or the child exits), separating
+     * process startup from command body time without a wrapper. */
+    close(fds[0]);
+    if (raise_stack) {
+        struct rlimit limit;
+        if (getrlimit(RLIMIT_STACK, &limit) != 0)
+            _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
+        if (limit.rlim_cur != limit.rlim_max) {
+            limit.rlim_cur = limit.rlim_max;
+            if (setrlimit(RLIMIT_STACK, &limit) != 0)
+                _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
+        }
+    }
+    if (chdir(cwd) != 0)
+        _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
+    if (dup2(fds[1], STDOUT_FILENO) < 0 ||
+        dup2(fds[1], STDERR_FILENO) < 0)
+        _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
+    close(fds[1]);
+    extern char **environ;
+    environ = (char **)envp; /* the parent's own, or the bound set */
+    if (exec_fd >= 0) {
+        platform_execve_fd(exec_fd, (char *const *)argv, environ);
+    } else {
+        execvp(argv[0], (char *const *)argv);
+    }
+    _exit(127);
+}
+
+static bool process_pipes_open(int fds[2], int ready_fds[2])
+{
+    if (pipe(fds) != 0 || pipe(ready_fds) != 0) {
+        fprintf(stderr, "[devloop] process: pipe failed: %s\n",
+                strerror(errno));
+        if (fds[0] >= 0) close(fds[0]);
+        if (fds[1] >= 0) close(fds[1]);
+        if (ready_fds[0] >= 0) close(ready_fds[0]);
+        if (ready_fds[1] >= 0) close(ready_fds[1]);
+        return false;
+    }
+    (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(ready_fds[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(ready_fds[1], F_SETFD, FD_CLOEXEC);
+
+    return true;
+}
+
+static bool process_startup_finish(pid_t pid, bool darwin_attested_spawn,
+                                   int fds[2], int ready_fds[2],
+                                   int64_t started_us, int64_t deadline_us,
+                                   struct zcl_devloop_process_result *out)
+{
+#if defined(__APPLE__)
+    if (darwin_attested_spawn) {
+        close(ready_fds[0]);
+        out->startup_us = platform_time_monotonic_us() - started_us;
+        if (kill(pid, SIGCONT) != 0) {
+            int saved = errno;
+            darwin_reap_suspended(pid);
+            close(fds[0]);
+            if (g_process_active_leader == (sig_atomic_t)pid)
+                g_process_active_leader = 0;
+            fprintf(stderr,
+                    "[devloop] process: attested child resume failed: %s\n",
+                    strerror(saved));
+            errno = saved;
+            return false;
+        }
+    }
+#endif
+    char ready = 0;
+    ssize_t ready_got;
+    if (!darwin_attested_spawn) {
+        ready_got = process_startup_read(ready_fds[0], &ready, deadline_us,
+                                         out);
+        if (ready_got != 1 || ready != '1') {
+            close(ready_fds[0]);
+            (void)kill(pid, SIGKILL);
+            (void)waitpid(pid, NULL, 0);
+            close(fds[0]);
+            if (g_process_active_leader == (sig_atomic_t)pid)
+                g_process_active_leader = 0;
+            fprintf(stderr, "[devloop] process: child session setup failed\n");
+            return false;
+        }
+        ready_got = process_startup_read(ready_fds[0], &ready, deadline_us,
+                                         out);
+        out->startup_us = platform_time_monotonic_us() - started_us;
+        close(ready_fds[0]);
+        if (ready_got != 0) {
+            terminate_child_session(pid, SIGKILL);
+            (void)waitpid(pid, NULL, 0);
+            close(fds[0]);
+            if (g_process_active_leader == (sig_atomic_t)pid)
+                g_process_active_leader = 0;
+            fprintf(stderr, "[devloop] process: exec boundary failed\n");
+            return false;
+        }
+    }
+    return true;
+}
+
+static void process_cancel_poll(void)
+{
+    if (!zcl_devloop_process_cancel_requested()) {
+        pthread_mutex_lock(&g_process_cancel_poll_mu);
+        zcl_devloop_process_cancel_poll_fn poll_fn =
+            g_process_cancel_poll;
+        void *poll_opaque = g_process_cancel_poll_opaque;
+        bool requested = poll_fn && poll_fn(poll_opaque);
+        pthread_mutex_unlock(&g_process_cancel_poll_mu);
+        if (requested) zcl_devloop_process_cancel_request();
+    }
+}
+
+static void process_stop_wait(pid_t pid, int fd, int *status)
+{
+    bool finished = false;
+    terminate_child_session(pid, SIGTERM);
+    for (int i = 0; i < 20; i++) {
+        if (waitpid(pid, status, WNOHANG) == pid) {
+            finished = true;
+            break;
+        }
+        process_output_wait(fd, 1);
+    }
+    if (!finished) {
+        terminate_child_session(pid, SIGKILL);
+        while (waitpid(pid, status, 0) < 0 && errno == EINTR) {}
+        finished = true;
+    }
+}
+
+static bool process_observe(pid_t pid, int *fd, const char *image,
+                            int64_t started_us, int64_t deadline_us,
+                            struct zcl_devloop_process_result *out, int *status)
+{
+    bool finished = false;
+    while (!finished) {
+        process_cancel_poll();
+        size_t output_before = out->output_len;
+        drain_output(fd, out);
+        if (out->first_output_us == 0 && out->output_len > output_before)
+            out->first_output_us =
+                platform_time_monotonic_us() - started_us;
+        pid_t waited = waitpid(pid, status, WNOHANG);
+        if (waited == pid) {
+            finished = true;
+            /* Cancellation armed before this reap owns the child's death:
+             * cancel_request() signals the leader synchronously, so under
+             * CPU saturation waitpid can reap the terminated child in the
+             * SAME iteration, before the cancel/deadline branch below runs.
+             * Attribute the cancellation here or the receipt lies about why
+             * the child died. */
+            if (zcl_devloop_process_cancel_requested())
+                out->cancelled = true;
+            break;
+        }
+        if (waited < 0 && errno != EINTR) {
+            fprintf(stderr, "[devloop] process: waitpid failed for %s: %s\n",
+                    image, strerror(errno));
+            terminate_child_session(pid, SIGKILL);
+            (void)waitpid(pid, status, 0);
+            if (*fd >= 0) close(*fd);
+            if (g_process_active_leader == (sig_atomic_t)pid)
+                g_process_active_leader = 0;
+            return false;
+        }
+        bool cancelled = zcl_devloop_process_cancel_requested();
+        if (cancelled || platform_time_monotonic_us() >= deadline_us) {
+            out->cancelled = cancelled;
+            out->timed_out = !cancelled;
+            process_stop_wait(pid, *fd, status);
+            break;
+        }
+        process_output_wait(*fd, 5);
+    }
+    return true;
+}
+
+static void process_finish(pid_t pid, int fd, int status, int64_t started_us,
+                           struct zcl_devloop_process_result *out)
+{
+    /* A bounded command may not daemonize work past its receipt. Reap any
+     * descendant process group that stayed in the command's private session. */
+    (void)signal_session_members(pid, SIGTERM);
+    (void)signal_session_members(pid, SIGKILL);
+    size_t output_before = out->output_len;
+    drain_output(&fd, out);
+    if (out->first_output_us == 0 && out->output_len > output_before)
+        out->first_output_us = platform_time_monotonic_us() - started_us;
+    if (fd >= 0) close(fd);
+    if (g_process_active_leader == (sig_atomic_t)pid)
+        g_process_active_leader = 0;
+
+    if (WIFEXITED(status))
+        out->exit_code = WEXITSTATUS(status);
+    else if (WIFSIGNALED(status))
+        out->term_signal = WTERMSIG(status);
+    int64_t elapsed_us = platform_time_monotonic_us() - started_us;
+    out->elapsed_ms = elapsed_us / 1000;
+    out->body_us = elapsed_us > out->startup_us
+        ? elapsed_us - out->startup_us : 0;
+}
+#endif
+
 static bool process_run_impl(const char *cwd, int exec_fd,
                              const char *const argv[],
                              const char *const envp[], int timeout_ms,
@@ -798,19 +1042,8 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     }
 #endif
     int fds[2] = {-1, -1}, ready_fds[2] = {-1, -1};
-    if (pipe(fds) != 0 || pipe(ready_fds) != 0) {
-        fprintf(stderr, "[devloop] process: pipe failed: %s\n",
-                strerror(errno));
-        if (fds[0] >= 0) close(fds[0]);
-        if (fds[1] >= 0) close(fds[1]);
-        if (ready_fds[0] >= 0) close(ready_fds[0]);
-        if (ready_fds[1] >= 0) close(ready_fds[1]);
+    if (!process_pipes_open(fds, ready_fds))
         return false;
-    }
-    (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
-    (void)fcntl(fds[1], F_SETFD, FD_CLOEXEC);
-    (void)fcntl(ready_fds[0], F_SETFD, FD_CLOEXEC);
-    (void)fcntl(ready_fds[1], F_SETFD, FD_CLOEXEC);
 
     int64_t started_us = platform_time_monotonic_us();
     pid_t pid = -1;
@@ -840,186 +1073,26 @@ static bool process_run_impl(const char *cwd, int exec_fd,
         return false;
     }
     if (!darwin_attested_spawn && pid == 0) {
-        close(ready_fds[0]);
-        if (setsid() < 0)
-            _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
-        char ready = '1';
-        if (write(ready_fds[1], &ready, 1) != 1)
-            _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
-#ifdef ZCL_TESTING
-        process_test_stall_before_exec();
-#endif
-        /* Keep the CLOEXEC descriptor open through setup. The parent sees
-         * EOF exactly when exec succeeds (or the child exits), separating
-         * process startup from command body time without a wrapper. */
-        close(fds[0]);
-        if (raise_stack) {
-            struct rlimit limit;
-            if (getrlimit(RLIMIT_STACK, &limit) != 0)
-                _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
-            if (limit.rlim_cur != limit.rlim_max) {
-                limit.rlim_cur = limit.rlim_max;
-                if (setrlimit(RLIMIT_STACK, &limit) != 0)
-                    _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
-            }
-        }
-        if (chdir(cwd) != 0)
-            _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
-        if (dup2(fds[1], STDOUT_FILENO) < 0 ||
-            dup2(fds[1], STDERR_FILENO) < 0)
-            _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
-        close(fds[1]);
-        extern char **environ;
-        environ = (char **)envp; /* the parent's own, or the bound set */
-        if (exec_fd >= 0) {
-            platform_execve_fd(exec_fd, (char *const *)argv, environ);
-        } else {
-            execvp(argv[0], (char *const *)argv);
-        }
-        _exit(127);
+        process_child_exec(cwd, exec_fd, argv, envp, raise_stack,
+                           fds, ready_fds);
     }
     g_process_active_leader = (sig_atomic_t)pid;
 
     close(fds[1]);
     close(ready_fds[1]);
-#if defined(__APPLE__)
-    if (darwin_attested_spawn) {
-        close(ready_fds[0]);
-        out->startup_us = platform_time_monotonic_us() - started_us;
-        if (kill(pid, SIGCONT) != 0) {
-            int saved = errno;
-            darwin_reap_suspended(pid);
-            close(fds[0]);
-            if (g_process_active_leader == (sig_atomic_t)pid)
-                g_process_active_leader = 0;
-            fprintf(stderr,
-                    "[devloop] process: attested child resume failed: %s\n",
-                    strerror(saved));
-            errno = saved;
-            return false;
-        }
-    }
-#endif
-    char ready = 0;
-    ssize_t ready_got;
-    if (!darwin_attested_spawn) {
-        int64_t deadline_us = started_us + (int64_t)timeout_ms * 1000;
-        ready_got = process_startup_read(ready_fds[0], &ready, deadline_us,
-                                         out);
-        if (ready_got != 1 || ready != '1') {
-            close(ready_fds[0]);
-            (void)kill(pid, SIGKILL);
-            (void)waitpid(pid, NULL, 0);
-            close(fds[0]);
-            if (g_process_active_leader == (sig_atomic_t)pid)
-                g_process_active_leader = 0;
-            fprintf(stderr, "[devloop] process: child session setup failed\n");
-            return false;
-        }
-        ready_got = process_startup_read(ready_fds[0], &ready, deadline_us,
-                                         out);
-        out->startup_us = platform_time_monotonic_us() - started_us;
-        close(ready_fds[0]);
-        if (ready_got != 0) {
-            terminate_child_session(pid, SIGKILL);
-            (void)waitpid(pid, NULL, 0);
-            close(fds[0]);
-            if (g_process_active_leader == (sig_atomic_t)pid)
-                g_process_active_leader = 0;
-            fprintf(stderr, "[devloop] process: exec boundary failed\n");
-            return false;
-        }
-    }
+    int64_t deadline_us = started_us + (int64_t)timeout_ms * 1000;
+    if (!process_startup_finish(pid, darwin_attested_spawn, fds, ready_fds,
+                                started_us, deadline_us, out))
+        return false;
     int flags = fcntl(fds[0], F_GETFL, 0);
     if (flags >= 0)
         (void)fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
 
     int status = 0;
-    bool finished = false;
-    int64_t deadline_us = started_us + (int64_t)timeout_ms * 1000;
-    while (!finished) {
-        if (!zcl_devloop_process_cancel_requested()) {
-            pthread_mutex_lock(&g_process_cancel_poll_mu);
-            zcl_devloop_process_cancel_poll_fn poll_fn =
-                g_process_cancel_poll;
-            void *poll_opaque = g_process_cancel_poll_opaque;
-            bool requested = poll_fn && poll_fn(poll_opaque);
-            pthread_mutex_unlock(&g_process_cancel_poll_mu);
-            if (requested) zcl_devloop_process_cancel_request();
-        }
-        size_t output_before = out->output_len;
-        drain_output(fds[0], out);
-        if (out->first_output_us == 0 && out->output_len > output_before)
-            out->first_output_us =
-                platform_time_monotonic_us() - started_us;
-        pid_t waited = waitpid(pid, &status, WNOHANG);
-        if (waited == pid) {
-            finished = true;
-            /* Cancellation armed before this reap owns the child's death:
-             * cancel_request() signals the leader synchronously, so under
-             * CPU saturation waitpid can reap the terminated child in the
-             * SAME iteration, before the cancel/deadline branch below runs.
-             * Attribute the cancellation here or the receipt lies about why
-             * the child died. */
-            if (zcl_devloop_process_cancel_requested())
-                out->cancelled = true;
-            break;
-        }
-        if (waited < 0 && errno != EINTR) {
-            fprintf(stderr, "[devloop] process: waitpid failed for %s: %s\n",
-                    argv[0], strerror(errno));
-            terminate_child_session(pid, SIGKILL);
-            (void)waitpid(pid, &status, 0);
-            close(fds[0]);
-            if (g_process_active_leader == (sig_atomic_t)pid)
-                g_process_active_leader = 0;
-            return false;
-        }
-        bool cancelled = zcl_devloop_process_cancel_requested();
-        if (cancelled || platform_time_monotonic_us() >= deadline_us) {
-            out->cancelled = cancelled;
-            out->timed_out = !cancelled;
-            terminate_child_session(pid, SIGTERM);
-            for (int i = 0; i < 20; i++) {
-                if (waitpid(pid, &status, WNOHANG) == pid) {
-                    finished = true;
-                    break;
-                }
-                struct pollfd exit_event = {
-                    .fd = fds[0], .events = POLLIN | POLLHUP
-                };
-                (void)poll(&exit_event, 1, 1);
-            }
-            if (!finished) {
-                terminate_child_session(pid, SIGKILL);
-                while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-                finished = true;
-            }
-            break;
-        }
-        struct pollfd pfd = { .fd = fds[0], .events = POLLIN };
-        (void)poll(&pfd, 1, 5);
-    }
-    /* A bounded command may not daemonize work past its receipt. Reap any
-     * descendant process group that stayed in the command's private session. */
-    (void)signal_session_members(pid, SIGTERM);
-    (void)signal_session_members(pid, SIGKILL);
-    size_t output_before = out->output_len;
-    drain_output(fds[0], out);
-    if (out->first_output_us == 0 && out->output_len > output_before)
-        out->first_output_us = platform_time_monotonic_us() - started_us;
-    close(fds[0]);
-    if (g_process_active_leader == (sig_atomic_t)pid)
-        g_process_active_leader = 0;
-
-    if (WIFEXITED(status))
-        out->exit_code = WEXITSTATUS(status);
-    else if (WIFSIGNALED(status))
-        out->term_signal = WTERMSIG(status);
-    int64_t elapsed_us = platform_time_monotonic_us() - started_us;
-    out->elapsed_ms = elapsed_us / 1000;
-    out->body_us = elapsed_us > out->startup_us
-        ? elapsed_us - out->startup_us : 0;
+    if (!process_observe(pid, &fds[0], argv[0], started_us, deadline_us,
+                         out, &status))
+        return false;
+    process_finish(pid, fds[0], status, started_us, out);
     return true;
 #endif
 }
