@@ -98,11 +98,13 @@ static void emit_test_error(void)
 
 /* A call site whose free-text message already contains the literal
  * substring "origin=" (e.g. logging a field named that) — the appended
- * stamp must still land once, at the true end of the line. */
+ * stamp must still land once, at the true end of the line. Keep the macro
+ * invocation on one line so its __LINE__ is independent of how the
+ * preprocessor locates a multiline invocation. */
+enum { kEmitTestEmbeddedOriginLine = __LINE__ + 3 };
 static void emit_test_error_with_embedded_origin_text(void)
 {
-    LOG_ERROR("test_log_level",
-              "existing origin=user-supplied-value in the message body");
+    LOG_ERROR("test_log_level", "existing origin=user-supplied-value in the message body");
 }
 
 static int test_log_level_origin_checks(void);
@@ -288,7 +290,7 @@ static int test_log_level_origin_checks(void)
         }
         char want_tail[64];
         snprintf(want_tail, sizeof(want_tail), "origin=test_log_level.c:%d\n",
-                 (int)(kEmitTestErrorLine + 8));
+                 (int)kEmitTestEmbeddedOriginLine);
         size_t want_len = strlen(want_tail);
         bool real_stamp_at_end = buf_len >= want_len &&
             !memcmp(buf + buf_len - want_len, want_tail, want_len);
