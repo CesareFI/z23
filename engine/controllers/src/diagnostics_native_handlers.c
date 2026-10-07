@@ -56,6 +56,12 @@ char *zcl_native_node_log_body(const struct json_value *args,
     rpc_arg_builder_push_int(&p, json_get_int_or(args, "max_lines",   50));
     rpc_arg_builder_push_str(&p, level && level[0] ? level : "all");
     char *pjson = rpc_arg_builder_to_json(&p);
+    if (!pjson) {
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "could not serialize local getnodelog parameters");
+        LOG_NULL("native.diag", "%s", err->message);
+    }
 
     char *out = pjson ? node_rpc_call("getnodelog", pjson) : NULL;
     free(pjson);

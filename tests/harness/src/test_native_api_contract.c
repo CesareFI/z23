@@ -3136,9 +3136,111 @@ static int test_board_method_not_found_enveloped(void)
         board_method_not_found_enveloped_rpc);
 }
 
+static unsigned g_logs_rpc_calls;
+static bool g_logs_rpc_null;
+static bool g_logs_rpc_params_match;
+
+static char *logs_serialization_mock_rpc(const char *method, const char *params)
+{
+    ++g_logs_rpc_calls;
+    g_logs_rpc_params_match = strcmp(method, "getnodelog") == 0 &&
+        strcmp(params, "[\"blocker\",300,50,\"all\"]") == 0;
+    return g_logs_rpc_null ? NULL : zcl_strdup("{}", "logs RPC fixture");
+}
+
+/* Assertion helpers share the regression row's failure path and keep each
+ * phase's assertion count bounded. */
+static int logs_assert_internal(const struct zcl_command_reply *reply)
+{
+    int failures = 0;
+    ASSERT_EQ(g_logs_rpc_calls, 0);
+    ASSERT_EQ(reply->exit_code, ZCL_COMMAND_EXIT_INTERNAL);
+    ASSERT(reply->status == ZCL_COMMAND_STATUS_FAILED);
+    ASSERT(!reply->error.retryable);
+    ASSERT_STR_EQ(reply->error.code, "TOOL_ERROR");
+    ASSERT(strstr(reply->error.message, "serialize local getnodelog parameters"));
+    ASSERT(strstr(reply->error.message, "returned null") == NULL);
+_test_next:
+    return failures;
+}
+
+static int logs_assert_unavailable(const struct zcl_command_reply *reply)
+{
+    int failures = 0;
+    ASSERT_EQ(g_logs_rpc_calls, 1);
+    ASSERT(g_logs_rpc_params_match);
+    ASSERT_EQ(reply->exit_code, ZCL_COMMAND_EXIT_TRANSIENT);
+    ASSERT(reply->status == ZCL_COMMAND_STATUS_BLOCKED);
+    ASSERT(reply->error.retryable);
+    ASSERT_STR_EQ(reply->error.message, "RPC getnodelog returned null");
+_test_next:
+    return failures;
+}
+
+static int logs_assert_success(const struct zcl_command_reply *reply)
+{
+    int failures = 0;
+    ASSERT_EQ(g_logs_rpc_calls, 1);
+    ASSERT(g_logs_rpc_params_match);
+    ASSERT_EQ(reply->exit_code, ZCL_COMMAND_EXIT_OK);
+    ASSERT(reply->status == ZCL_COMMAND_STATUS_PASSED);
+_test_next:
+    return failures;
+}
+
+static int test_logs_local_serialization_failure(void)
+{
+    int failures = 0;
+    struct json_value input;
+    json_init(&input);
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, "zcl.ops_logs.v1");
+    TEST("ops.logs: local encoding failure is internal before RPC") {
+        const struct zcl_command_spec *spec =
+            find_spec(zcl_command_catalog(), "ops.logs");
+        ASSERT(spec != NULL);
+        ASSERT(json_read(&input, "{\"pattern\":\"blocker\"}",
+                         strlen("{\"pattern\":\"blocker\"}")));
+        struct zcl_command_request req = {
+            .spec = spec, .input = &input, .view = "normal"
+        };
+        g_logs_rpc_calls = 0;
+        g_logs_rpc_null = false;
+        g_logs_rpc_params_match = false;
+        node_rpc_client_set_test_hook(logs_serialization_mock_rpc);
+        zcl_alloc_fault_fail_next("rpc argument json");
+        zcl_native_bridge_command(&req, &reply);
+        zcl_alloc_fault_clear();
+        ASSERT_EQ(logs_assert_internal(&reply), 0);
+        zcl_command_reply_free(&reply);
+        zcl_command_reply_init(&reply, "zcl.ops_logs.v1");
+
+        g_logs_rpc_null = true;
+        zcl_native_bridge_command(&req, &reply);
+        ASSERT_EQ(logs_assert_unavailable(&reply), 0);
+        zcl_command_reply_free(&reply);
+        zcl_command_reply_init(&reply, "zcl.ops_logs.v1");
+
+        g_logs_rpc_calls = 0;
+        g_logs_rpc_null = false;
+        zcl_native_bridge_command(&req, &reply);
+        ASSERT_EQ(logs_assert_success(&reply), 0);
+        PASS();
+    } _test_next:;
+    zcl_alloc_fault_clear();
+    node_rpc_client_set_test_hook(NULL);
+    g_logs_rpc_calls = 0;
+    g_logs_rpc_null = false;
+    g_logs_rpc_params_match = false;
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+    return failures;
+}
+
 int test_native_api_contract(void)
 {
     int failures = 0;
+    failures += test_logs_local_serialization_failure();
     failures += test_board_unavailable_guides_instance_selection();
     failures += test_board_method_not_found_bare();
     failures += test_board_method_not_found_enveloped();
