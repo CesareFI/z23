@@ -3901,6 +3901,7 @@ $(TEST_TSAN_LINK_RSP): $(TEST_TSAN_OBJS)
 # runner exec. Each target is its own single-goal make, so it resolves its own
 # epoch profile the way a standalone `make <target>` does, and runs inside the
 # checkout lock this recipe already holds (checkout-lock.sh is re-entrant).
+# Independent targets overlap; join every child before returning any failure.
 # A target that fails, or leaves its path absent, fails the run by the same
 # name a landing proof uses. The runner never builds; a proof execs it too.
 # The call lines are `+` so the per-target makes share the jobserver; under
@@ -3908,12 +3909,13 @@ $(TEST_TSAN_LINK_RSP): $(TEST_TSAN_OBJS)
 # runner the dry run never built.
 ZCL_TEST_BUILD_NEEDS = $(if $(ZCL_MAKE_NO_EXEC),: test build needs not listed in a dry run,$(ZCL_TEST_BUILD_NEEDS_RUN))
 ZCL_TEST_BUILD_NEEDS_RUN = needs="$$($(1) --list-build-needs $(2))" || exit 2; \
-	printf '%s\n' "$$needs" | while read -r target path; do \
+	printf '%s\n' "$$needs" | { pids=; while read -r target path; do \
 	  [ -n "$$target" ] || continue; \
 	  { $(MAKE) --no-print-directory "$$target" </dev/null && [ -e "$$path" ]; } || { \
 	    echo "FAIL test_need_unbuildable_$$target: make $$target did not produce $$path" >&2; \
-	    exit 1; }; \
-	done
+	    exit 1; } & pids="$$pids $$!"; \
+	done; failed=0; for pid in $$pids; do wait "$$pid" || failed=1; done; \
+	exit "$$failed"; }
 
 # Both active runners need the fixed package verifier. The source-wide fast
 # runner also needs the gateway and dev node: its fleet group exits with an

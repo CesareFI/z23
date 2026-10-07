@@ -93,6 +93,119 @@ bool lint_gates_group_requires_quiet_pool(const char *group_name)
 #include "test/testcache.h"
 #include <fcntl.h>
 
+/* Builder shell identities distinguish background dispatch from the serial
+ * parent without a clock or a rendezvous that can deadlock on the mutation. */
+static const char build_needs_fixture_script[] =
+    "set -eu\n"
+    "stage=setup; mode=none\n"
+    "trap 'status=$?; if [ \"$status\" != 0 ]; then printf \"build-needs: mode=%s stage=%s exit=%s\\n\" \"$mode\" \"$stage\" \"$status\" >&2; fi' EXIT\n"
+    "for tool in make bash flock sed grep sort wc; do command -v \"$tool\" >/dev/null; done\n"
+    "cd \"$2\"\n"
+    "sed -n '/^ZCL_TEST_BUILD_NEEDS_RUN = /,/^$/p' \"$1/Makefile\" > Makefile\n"
+    "grep -q '^ZCL_TEST_BUILD_NEEDS_RUN = ' Makefile\n"
+    "cat >> Makefile <<'MAKE'\n"
+    "SHELL := bash\n"
+    "MAKE = build_need\n"
+    "profile = $(if $(filter fixture-a,$(MAKECMDGOALS)),a,$(if $(filter fixture-b,$(MAKECMDGOALS)),b,none))\n"
+    ".PHONY: run fixture-a fixture-b\n"
+    "run: shared\n"
+    "\t+@build_need() { printf '%s\\n' \"$$BASHPID\" >> dispatchers || return; command make \"$$@\"; }; $(call ZCL_TEST_BUILD_NEEDS_RUN,sh ./runner,--exact=fixture)\n"
+    "shared:\n\t@echo shared >> count && touch shared\n"
+    "fixture-a fixture-b: shared\n"
+    "\t@PROFILE=$(profile) sh ./helper $@\n"
+    "MAKE\n"
+    "cat > runner <<'RUNNER'\n"
+    "set -eu\n"
+    "[ \"$1\" = --list-build-needs ] && [ \"$2\" = --exact=fixture ] || exit 2\n"
+    "case $BUILD_NEEDS_FIXTURE_MODE in empty) exit 0;; selector) exit 2;; overlap|failed|absent) ;; *) exit 2;; esac\n"
+    "printf 'fixture-a path-a\\nfixture-b path-b\\n'\n"
+    "RUNNER\n"
+    "cat > helper <<'HELPER'\n"
+    "set -eu\n"
+    "[ \"${ZCL_CHECKOUT_LOCK_HELD:-}\" = 1 ]\n"
+    "case $MAKEFLAGS in *jobserver*) ;; *) echo missing-jobserver >&2; exit 3;; esac\n"
+    "case $1:$PROFILE in fixture-a:a) path=path-a;; fixture-b:b) path=path-b;; *) echo wrong-profile >&2; exit 3;; esac\n"
+    "echo \"$1\" >> count; touch \"$1\"\n"
+    "case $BUILD_NEEDS_FIXTURE_MODE:$1 in failed:fixture-a) exit 5;; absent:fixture-a) exit 0;; esac\n"
+    "touch \"$path\"\n"
+    "HELPER\n"
+    "for mode in overlap failed absent empty selector; do\n"
+    "  stage=reset\n"
+    "  rm -f count shared fixture-a fixture-b path-a path-b dispatchers\n"
+    "  rc=0; stage=dispatch\n"
+    "  BUILD_NEEDS_FIXTURE_MODE=\"$mode\" bash \"$1/tools/dev/checkout-lock.sh\" foreground \"$2/lock\" -- make -j2 --no-print-directory run > log 2>&1 || rc=$?\n"
+    "  cat log\n"
+    "  stage=outcome\n"
+    "  case $mode in\n"
+    "    overlap) [ \"$rc\" = 0 ]; [ -e path-a ] && [ -e path-b ];;\n"
+    "    failed|absent) [ \"$rc\" != 0 ]; grep -q 'FAIL test_need_unbuildable_fixture-a' log; [ -e path-b ];;\n"
+    "    empty) [ \"$rc\" = 0 ]; [ ! -e fixture-a ] && [ ! -e fixture-b ] && [ ! -e dispatchers ];;\n"
+    "    selector) [ \"$rc\" != 0 ]; [ ! -e fixture-a ] && [ ! -e fixture-b ] && [ ! -e dispatchers ];;\n"
+    "  esac\n"
+    "  stage=shared-once\n"
+    "  [ \"$(grep -c '^shared$' count)\" = 1 ]\n"
+    "  case $mode in overlap|failed|absent)\n"
+    "    stage=joined-builders; [ \"$(wc -l < count)\" -eq 3 ]\n"
+    "    [ \"$(wc -l < dispatchers)\" -eq 2 ]\n"
+    "    stage=independent-dispatch; [ \"$(sort -u dispatchers | wc -l)\" -eq 2 ];;\n"
+    "  esac\n"
+    "  stage=jobserver\n"
+    "  if grep -E 'jobserver unavailable|forced in submake' log; then exit 1; fi\n"
+    "  printf 'build-needs: %s OK\\n' \"$mode\"\n"
+    "done\n";
+
+static int build_needs_fixture_result(bool ran,
+    const struct zcl_devloop_process_result *run, int restored)
+{
+    int bad = !ran || run->timed_out || run->cancelled || run->output_truncated ||
+              run->term_signal != 0 || run->exit_code != 0 || restored != 0;
+    if (bad)
+        fprintf(stderr, "build-needs: ran=%d exit=%d signal=%d timeout=%d "
+            "cancelled=%d truncated=%d restored=%d output=%s\n",
+            ran, run->exit_code, run->term_signal, run->timed_out,
+            run->cancelled, run->output_truncated, restored, run->output);
+    return bad;
+}
+
+static int build_needs_fixture_run(const char *root, const char *fixture)
+{
+    char saved[4096];
+    const char *prior = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    bool had_prior = prior != NULL;
+    if (prior && strlen(prior) >= sizeof(saved)) {
+        fprintf(stderr, "build-needs: process opt-in too long\n");
+        return 1;
+    }
+    if (prior) memcpy(saved, prior, strlen(prior) + 1);
+    const char *argv[] = {"env", "-i",
+        "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "LC_ALL=C",
+        "bash", "-c", build_needs_fixture_script, "build-needs",
+        root, fixture, NULL};
+    struct zcl_devloop_process_result run = {0};
+    bool opted = setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0;
+    bool ran = opted && zcl_devloop_process_run(root, argv, 30000, &run);
+    int restored = had_prior ? setenv("ZCL_DEVLOOP_TEST_PROCESS", saved, 1)
+                         : unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    return build_needs_fixture_result(ran, &run, restored);
+}
+
+static int t_build_needs_overlap(void)
+{
+    char fixture[PATH_MAX] = {0};
+    struct stat st;
+    test_make_tmpdir(fixture, sizeof(fixture), "build_needs", "overlap");
+    int bad = 1;
+    if (stat(fixture, &st) == 0 && S_ISDIR(st.st_mode))
+        bad = build_needs_fixture_run(repo_root(), fixture);
+    else
+        fprintf(stderr, "build-needs: fixture directory setup failed: %s\n", fixture);
+    if (test_rm_rf_recursive(fixture) != 0) {
+        fprintf(stderr, "build-needs: fixture cleanup failed: %s\n", fixture);
+        bad = 1;
+    }
+    return bad;
+}
+
 #if defined(__linux__)
 static bool observation_child_complete(const struct zcl_devloop_process_result *run)
 {
@@ -829,6 +942,7 @@ int test_make_lint_gates(void)
 
     printf("\n=== make_lint_gates tests ===\n");
 
+    if (t_build_needs_overlap() != 0) return 1;
     /* Reap leaked sandbox bases; safe only here, before any shard exists. */
     lint_purge_stale_sandboxes(real_root);
 

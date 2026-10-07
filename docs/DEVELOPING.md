@@ -226,8 +226,10 @@ prerequisite builds: the fleet gateway shards need
 `build/bin/z23-clang-manifest`. Each is declared once, as a BUILD need, in
 `tools/dev/test_group_host_needs.def`. Before the run, the recipe asks the
 runner for exactly its own selection with `--list-build-needs`, which prints
-nothing for an ordinary selection, and runs `make <target>` for each line;
-a target that cannot be built stops the run with
+nothing for an ordinary selection, and starts a separate background
+`make <target>` for each line. The recipe joins all builders before tests
+start; a target that cannot be built or leaves its required output absent
+stops the run with
 `FAIL test_need_unbuildable_<target>`. A landing proof builds the same rows
 in its generation, except the ones it already provides (the admitted node,
 the prefork-built `fbsh`). Running the runner binary directly builds
