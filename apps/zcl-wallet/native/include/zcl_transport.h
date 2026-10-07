@@ -52,7 +52,9 @@ zcl_status zcl_net_limit_check(const zcl_net_limit *limit);
  * control characters, URLs, wildcards, numeric-only names or embedded NUL. Output
  * host is lowercase. OS getaddrinfo may block beyond the deadline: cancellation
  * and timeout are enforced again when it returns. The adapter must allow at
- * most one pending resolver and must never wait for it on the UI thread. */
+ * most one pending resolver and must never wait for it on the UI thread.
+ * Retain the first eight distinct supported addresses among the first 32 OS entries,
+ * preserving order; equal bytes in different address families remain distinct. */
 zcl_status zcl_endpoint_resolve(const uint8_t *host, size_t host_length, uint16_t port,
                                 const zcl_net_limit *limit, zcl_endpoint *endpoint);
 
