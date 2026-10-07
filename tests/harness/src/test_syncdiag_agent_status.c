@@ -5,6 +5,22 @@
 
 #include "test/syncdiag_rpc_fixture.h"
 
+static int test_operator_snapshot_unavailable_capture(void)
+{
+    int failures = 0;
+
+    printf("api: operator snapshot classifier handles unavailable capture... ");
+    struct operator_verdict verdict = operator_snapshot_classify(NULL);
+    bool ok = !verdict.healthy && !verdict.complete && !verdict.serving &&
+              strcmp(verdict.status, "unknown") == 0 &&
+              strcmp(verdict.primary, "unknown") == 0 &&
+              strcmp(verdict.next_command, "z23 ops snapshot") == 0;
+
+    if (ok) printf("OK\n");
+    else    { printf("FAIL\n"); failures++; }
+    return failures;
+}
+
 int syncdiag_cases_agent_status(void)
 {
     int failures = 0;
@@ -853,6 +869,8 @@ int syncdiag_cases_agent_status(void)
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
     }
+
+    failures += test_operator_snapshot_unavailable_capture();
 
     printf("api: operator snapshot classifier fails closed on edge states... ");
     {

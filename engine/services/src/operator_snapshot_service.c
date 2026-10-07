@@ -135,6 +135,13 @@ static bool operator_mirror_same_height_hash_gap(
            !mirror->tip_hashes_agree;
 }
 
+static bool operator_peer_snapshot_complete(
+    const struct operator_capture *capture)
+{
+    return capture->peers.available && !capture->peers.stale &&
+           capture->peers.direction_known && capture->peers.ready_known;
+}
+
 const struct blocker_snapshot *operator_snapshot_dominant_blocker(
     const struct operator_capture *capture)
 {
@@ -152,10 +159,13 @@ struct operator_verdict operator_snapshot_classify(
         .primary = "unknown",
         .next_action = "inspect operator snapshot components",
         .next_command = "z23 ops snapshot",
-        .chain_values_known = operator_chain_values_known(capture),
-        .frontier_order_ok = operator_frontier_order_ok(capture),
-        .chain_consistent = chain_frontier_snapshot_consistent(&capture->chain),
     };
+    if (!capture)
+        return verdict;
+    verdict.chain_values_known = operator_chain_values_known(capture);
+    verdict.frontier_order_ok = operator_frontier_order_ok(capture);
+    verdict.chain_consistent =
+        chain_frontier_snapshot_consistent(&capture->chain);
     verdict.serving = capture->chain.served.height_known &&
                       capture->chain.served.height > 0 &&
                       !capture->security_review_required;
@@ -167,9 +177,7 @@ struct operator_verdict operator_snapshot_classify(
         verdict.index_gap = capture->chain.header.height -
                             capture->chain.indexed.height;
     }
-    bool peer_complete = capture->peers.available && !capture->peers.stale &&
-                         capture->peers.direction_known &&
-                         capture->peers.ready_known;
+    bool peer_complete = operator_peer_snapshot_complete(capture);
     verdict.complete = capture->critical_frontier_stable &&
                        operator_snapshot_chain_bindings_known(capture) &&
                        verdict.chain_consistent && peer_complete &&
