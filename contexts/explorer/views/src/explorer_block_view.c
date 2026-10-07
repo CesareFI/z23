@@ -76,9 +76,16 @@ size_t explorer_view_block_rpc(const struct explorer_block_rpc_view_data *d,
 
         for (size_t i = 0; i < d->num_rows && off + 256 < max; i++) {
             const struct explorer_block_rpc_tx_row *row = &d->rows[i];
-            APPEND(off, r, max,
-                "<tr><td>%d</td><td class='hash'><a href='/explorer/tx/%s'>%s</a></td></tr>",
-                row->index, row->txid, row->short_txid);
+            char safe_label[sizeof(row->short_txid) * 6];
+            html_escape(safe_label, sizeof(safe_label), row->short_txid);
+            if (zcl_is_hex_string(row->txid, 64))
+                APPEND(off, r, max,
+                    "<tr><td>%d</td><td class='hash'><a href='/explorer/tx/%s'>%s</a></td></tr>",
+                    row->index, row->txid, safe_label);
+            else
+                APPEND(off, r, max,
+                    "<tr><td>%d</td><td class='hash'>%s</td></tr>",
+                    row->index, safe_label);
         }
         if (d->tx_count > 100)
             APPEND(off, r, max,

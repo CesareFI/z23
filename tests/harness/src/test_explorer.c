@@ -12,6 +12,7 @@
 #include "views/explorer_factoids_internal.h"
 #include "views/explorer_factoids_view.h"
 #include "views/explorer_dashboard_view.h"
+#include "views/explorer_block_view.h"
 #include "views/site_css.h"
 #include "views/explorer_pages_loading_view.h"
 #include "views/explorer_pages_view.h"
@@ -32,10 +33,53 @@ static int ex_environment_unset(const char *name)
 #endif
 }
 
+static int ex_rpc_tx_rows(void)
+{
+    const struct {
+        const char *txid, *label, *escaped;
+        bool linked;
+    } cases[] = {
+        {"x'><img src=x onerror=alert(1)>", "<b>", "&lt;b&gt;", false},
+        {"a?b#c", "a?b#c", "a?b#c", false},
+        {"a/b", "a/b", "a/b", false},
+        {"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+         "01234567...cdef", "01234567...cdef", true},
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct explorer_block_rpc_tx_row row = {.index = 0};
+        snprintf(row.txid, sizeof(row.txid), "%s", cases[i].txid);
+        snprintf(row.short_txid, sizeof(row.short_txid), "%s", cases[i].label);
+        struct explorer_block_rpc_view_data d = {
+            .tx_count = 1, .has_tx_array = true, .rows = &row, .num_rows = 1,
+        };
+        uint8_t out[32768];
+        size_t n = explorer_view_block_rpc(&d, out, sizeof(out));
+        bool complete = n > 0 && n < sizeof(out);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+        char expected[256];
+        if (cases[i].linked)
+            snprintf(expected, sizeof(expected),
+                "<tr><td>0</td><td class='hash'><a href='/explorer/tx/%s'>%s</a></td></tr>",
+                cases[i].txid, cases[i].escaped);
+        else
+            snprintf(expected, sizeof(expected),
+                "<tr><td>0</td><td class='hash'>%s</td></tr>", cases[i].escaped);
+        bool ok = complete && strstr((char *)out, expected) != NULL &&
+            strstr((char *)out, "</html>") != NULL &&
+            strstr((char *)out, "<img src=x") == NULL &&
+            strstr((char *)out, "<b>") == NULL;
+        printf("explorer: RPC transaction row %zu... %s\n", i, ok ? "OK" : "FAIL");
+        failures += !ok;
+    }
+    return failures;
+}
+
 int test_explorer(void)
 {
     int failures = 0;
     uint8_t resp[8192];
+    failures += ex_rpc_tx_rows();
 
     printf("explorer: NULL path returns 0... ");
     {
