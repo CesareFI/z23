@@ -116,7 +116,8 @@ static int zra_cmp(const void *a, const void *b)
  * collation-equal lines collapse the way sort -u drops them. */
 static void zra_sort_uniq(struct zra_list *l)
 {
-    qsort(l->v, l->n, sizeof l->v[0], zra_cmp);
+    if (l->n > 1)
+        qsort(l->v, l->n, sizeof l->v[0], zra_cmp);
     size_t w = 0;
     for (size_t i = 0; i < l->n; i++) {
         if (w > 0 && strcoll(l->v[w - 1], l->v[i]) == 0) {

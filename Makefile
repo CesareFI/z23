@@ -14225,6 +14225,12 @@ $(EQUIHASH_FACT_TOOL): $(EQUIHASH_FACT_SRCS)
 	    -Icore/modules/sapling/include -Icontexts/wallet/modules/keys/include -Iengine/modules/event/include \
 	    -o $@ $(EQUIHASH_FACT_SRCS)
 
+# These selftests use test_core.h's fixture helpers and its SQLite declarations.
+build/lintc-obj/gate_file_purpose.o build/lintc-obj/gate_framework_shape.o: \
+    LINTC_CFLAGS += -Ivendor/include
+build/lintc-obj/gate_file_purpose.o build/lintc-obj/gate_framework_shape.o: \
+    tests/harness/include/test/test_core.h vendor/include/sqlite3.h
+
 build/lintc-obj/%.o: tools/lint/lintc/%.c tools/lint/lintc/lintc.h
 	@mkdir -p $(dir $@)
 	$(CC) $(LINTC_CFLAGS) -c -o $@ $<

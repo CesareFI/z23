@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "lintc.h"
+#include "../../../tests/harness/include/test/test_core.h"
 
 /* ── check-framework-shape (Gate #18, port of framework_shape_check.sh) ────
  * Every .c file directly under an app authority (engine, cognition,
@@ -154,7 +155,8 @@ static int fsc_cmp(const void *a, const void *b)
  * this runs, and collation-equal lines collapse the way sort -u drops them. */
 static void fsc_sort_uniq(struct fsc_files *fs)
 {
-    qsort(fs->v, fs->n, sizeof fs->v[0], fsc_cmp);
+    if (fs->n > 1)
+        qsort(fs->v, fs->n, sizeof fs->v[0], fsc_cmp);
     size_t w = 0;
     for (size_t i = 0; i < fs->n; i++) {
         if (w > 0 && strcoll(fs->v[w - 1], fs->v[i]) == 0) {
@@ -331,12 +333,8 @@ static int fsc_st_case(const char *root, char auth[][RS_PATH], int n_auth,
 
 int check_framework_shape_selftest(void)
 {
-    const char *td = env_or("TMPDIR", "/tmp");
     char tmpl[4096];
-    if (ovf(snprintf(tmpl, sizeof tmpl, "%s/z23-lint-fsc-XXXXXX", td),
-            sizeof tmpl))
-        return 2;
-    char *root = mkdtemp(tmpl);
+    char *root = test_mkdtemp(tmpl, sizeof tmpl, "z23-lint-fsc");
     if (!root)
         return die("z23-lint: mkdtemp failed: %s\n", tmpl);
     static char st_auth[2][RS_PATH];
@@ -345,7 +343,11 @@ int check_framework_shape_selftest(void)
     memcpy(st_auth[1], "ctx/x", 6);
     memcpy(st_shapes[0], "services", 9);
     memcpy(st_shapes[1], "models", 7);
-    int bad = 0;
+    int bad = fsc_st_case(root, st_auth, 2, st_shapes, 2, 0, NULL,
+                          "RATCHET", 0,
+                          "scanned 0 application-shape .c files\n"
+                          "[framework_shape_check] 0 violation(s) found "
+                          "(mode: RATCHET)");
     char p[4096];
     if (ovf(snprintf(p, sizeof p, "%s/eng/services/src/ok.c", root), sizeof p)
         || csr_write(p, "int fsc_st_ok;\n")

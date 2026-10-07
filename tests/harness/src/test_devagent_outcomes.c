@@ -11,7 +11,9 @@
 #include "test/test_core.h"
 
 #include "command/native_command.h"
+#include "command/native_devagent_usage_internal.h"
 #include "config/command_catalog.h"
+#include "devloop.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 
@@ -27,6 +29,74 @@
 #define DVX_PATH "dev.agent.outcomes"
 #define DVX_CLOSING \
     "verdicts come from receipts; a model's own report is never evidence"
+
+/* Observe libc calls in the production reader without passing NULL to libc. */
+static size_t dvx_sort_calls, dvx_null_sorts;
+
+static void dvx_observe_sort(void *base, size_t count, size_t width,
+                              int (*compare)(const void *, const void *))
+{
+    dvx_sort_calls++;
+    if (base == NULL) {
+        dvx_null_sorts++;
+        return;
+    }
+    qsort(base, count, width, compare);
+}
+
+/* Inject insertion refusals and successful-but-incomplete JSON copies only
+ * in the linked production reader; fixture input construction is untouched. */
+static size_t dvx_json_calls, dvx_json_refuse;
+static bool dvx_json_damage;
+
+static bool dvx_json_tick(void)
+{
+    dvx_json_calls++;
+    return dvx_json_calls != dvx_json_refuse;
+}
+
+static bool dvx_json_kv(struct json_value *obj, const char *key,
+                         const struct json_value *value)
+{
+    if (!dvx_json_tick())
+        return false;
+    bool ok = json_push_kv(obj, key, value);
+    if (ok && dvx_json_damage) {
+        struct json_value *copy = &obj->children[obj->num_children - 1];
+        json_free(copy);
+        json_set_object(copy);
+    }
+    return ok;
+}
+
+static bool dvx_json_back(struct json_value *arr, const struct json_value *value)
+{
+    return dvx_json_tick() && json_push_back(arr, value);
+}
+
+static bool dvx_json_str(struct json_value *obj, const char *key, const char *text)
+{
+    return dvx_json_tick() && json_push_kv_str(obj, key, text);
+}
+
+static bool dvx_json_int(struct json_value *obj, const char *key, int64_t value)
+{
+    return dvx_json_tick() && json_push_kv_int(obj, key, value);
+}
+
+static bool dvx_json_bool(struct json_value *obj, const char *key, bool value)
+{
+    return dvx_json_tick() && json_push_kv_bool(obj, key, value);
+}
+
+static const struct dvu_test_ops dvx_usage_ops = {
+    .sort = dvx_observe_sort,
+    .kv = dvx_json_kv,
+    .back = dvx_json_back,
+    .str = dvx_json_str,
+    .integer = dvx_json_int,
+    .boolean = dvx_json_bool,
+};
 
 /* ── fixture helpers (deliberately local: this group owns its own rig) ──── */
 
@@ -79,6 +149,7 @@ static bool dvx_run(struct dvx_call *c)
 
 static void dvx_end(struct dvx_call *c)
 {
+    dvu_test_set_ops(NULL);
     zcl_command_reply_free(&c->reply);
     json_free(&c->input);
 }
@@ -214,6 +285,336 @@ static void dvx_usage_call(struct dvx_call *c, const char *ledger,
 {
     dvx_call_on(c, ledger, model, NULL);
     (void)json_push_kv_str(&c->input, "usage_log", usage_log);
+}
+
+static int dvx_sort_boundaries(const char *root, const char *ledger)
+{
+    int failures = 0;
+    static const char event[] =
+        "{\"type\":\"assistant\",\"timestamp\":\"2026-09-19T01:02:03Z\","
+        "\"message\":{\"id\":\"one\",\"model\":\"m1\",\"usage\":{\"input_tokens\":10}}}\n";
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/sort.jsonl", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: empty, singleton and filtered collections avoid empty sorts") {
+        ASSERT(n >= 0 && (size_t)n < sizeof(path));
+        for (size_t k = 0; k < 3; k++) {
+            ASSERT(dvx_write(root, "sort.jsonl", k == 0 ? "" : event));
+            dvx_sort_calls = dvx_null_sorts = 0;
+            if (k == 2)
+                ASSERT(json_push_kv_str(&c.input, "model", "absent"));
+            dvu_test_set_ops(&dvx_usage_ops);
+            ASSERT(dvx_run(&c));
+            dvu_test_set_ops(NULL);
+            ASSERT(dvx_ok(&c));
+            const struct json_value *u = dvx_usage(&c);
+            const struct json_value *models = u ? json_get(u, "by_model") : NULL;
+            const struct json_value *hours = u ? json_get(u, "by_hour") : NULL;
+            bool single = k == 1;
+            ASSERT(u != NULL);
+            ASSERT(models && models->type == JSON_ARR);
+            ASSERT(hours && hours->type == JSON_ARR);
+            ASSERT_EQ(dvx_entry_int(u, "events"), single);
+            ASSERT_EQ(models->num_children, single);
+            ASSERT_EQ(hours->num_children, single);
+            ASSERT_EQ(dvx_null_sorts, 0);
+            ASSERT_EQ(dvx_sort_calls, single);
+            dvx_end(&c);
+            dvx_usage_call(&c, ledger, path, NULL);
+        }
+        PASS();
+    }
+_test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+#define DVX_EVENT_PREFIX \
+    "{\"type\":\"assistant\",\"timestamp\":\"2026-09-19T01:02:03Z\"," \
+    "\"message\":{\"id\":\"boundary\",\"model\":\""
+#define DVX_EVENT_SUFFIX "\",\"usage\":{\"input_tokens\":10}}}"
+#define DVX_EVENT DVX_EVENT_PREFIX "m1" DVX_EVENT_SUFFIX
+
+struct dvx_boundary {
+    const char *name;
+    const char *bytes;
+    size_t length;
+    int64_t malformed;
+    int64_t events;
+};
+
+static int dvx_boundary_row(const char *path, const char *ledger,
+                            const struct dvx_boundary *row)
+{
+    int failures = 0;
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST(row->name) {
+        FILE *fp = fopen(path, "wb");
+        ASSERT(fp != NULL);
+        bool wrote = fwrite(row->bytes, 1, row->length, fp) == row->length;
+        bool closed = fclose(fp) == 0;
+        ASSERT(wrote && closed);
+        ASSERT(dvx_run(&c));
+        ASSERT(dvx_ok(&c));
+        const struct json_value *u = dvx_usage(&c);
+        ASSERT(u != NULL);
+        ASSERT_EQ(dvx_entry_int(u, "lines"), 1);
+        ASSERT_EQ(dvx_entry_int(u, "malformed"), row->malformed);
+        ASSERT_EQ(dvx_entry_int(u, "usage_lines"), row->events);
+        ASSERT_EQ(dvx_entry_int(u, "events"), row->events);
+        PASS();
+    }
+_test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_byte_boundaries(const char *root, const char *ledger)
+{
+    static const char ignored_bad_utf8[] =
+        "{\"type\":\"note\",\"text\":\"\xff\"}\n";
+    static const char ignored_nul[] =
+        "{\"type\":\"note\"}\0junk\n";
+    static const char metadata_bad_utf8[] =
+        "{\"type\":\"assistant\",\"timestamp\":\"2026-09-19T01:02:03Z\","
+        "\"metadata\":\"\xff\",\"message\":{\"id\":\"boundary\","
+        "\"model\":\"m1\",\"usage\":{\"input_tokens\":10}}}\n";
+    static const char nul_suffix[] = DVX_EVENT "\0junk\n";
+    static const char nul_eof[] = DVX_EVENT "\0junk";
+    static const char bad_utf8[] = DVX_EVENT_PREFIX "\xff" DVX_EVENT_SUFFIX "\n";
+    static const char short_utf8[] = DVX_EVENT_PREFIX "\xc2" DVX_EVENT_SUFFIX;
+    static const char overlong[] = DVX_EVENT_PREFIX "\xc0\xaf" DVX_EVENT_SUFFIX;
+    static const char junk[] = DVX_EVENT "junk\n";
+    static const char final[] = DVX_EVENT;
+    static const char unicode[] = DVX_EVENT_PREFIX "m\xc3\xa9" DVX_EVENT_SUFFIX;
+    static const struct dvx_boundary rows[] = {
+        {"usage: invalid UTF-8 in ignored records is counted", ignored_bad_utf8,
+         sizeof(ignored_bad_utf8) - 1, 1, 0},
+        {"usage: NUL in ignored records is counted", ignored_nul,
+         sizeof(ignored_nul) - 1, 1, 0},
+        {"usage: invalid metadata is refused before aggregation", metadata_bad_utf8,
+         sizeof(metadata_bad_utf8) - 1, 1, 0},
+        {"usage: NUL suffix is refused before aggregation", nul_suffix,
+         sizeof(nul_suffix) - 1, 1, 0},
+        {"usage: NUL suffix at EOF is refused", nul_eof, sizeof(nul_eof) - 1, 1, 0},
+        {"usage: raw invalid model UTF-8 is refused", bad_utf8,
+         sizeof(bad_utf8) - 1, 1, 0},
+        {"usage: incomplete model UTF-8 is refused", short_utf8,
+         sizeof(short_utf8) - 1, 1, 0},
+        {"usage: overlong model UTF-8 is refused", overlong,
+         sizeof(overlong) - 1, 1, 0},
+        {"usage: full JSON suffix is checked", junk, sizeof(junk) - 1, 1, 0},
+        {"usage: final complete record needs no newline", final,
+         sizeof(final) - 1, 0, 1},
+        {"usage: valid model UTF-8 remains accepted", unicode,
+         sizeof(unicode) - 1, 0, 1},
+    };
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/boundary.jsonl", root);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return 1;
+    int failures = 0;
+    for (size_t k = 0; k < sizeof(rows) / sizeof(rows[0]); k++)
+        failures += dvx_boundary_row(path, ledger, &rows[k]);
+    return failures;
+}
+
+static int dvx_json_failure(const char *path, const char *ledger,
+                            size_t ordinal, bool damage)
+{
+    int failures = 0;
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: construction refusal leaves no partial usage summary") {
+        dvx_json_calls = 0;
+        dvx_json_refuse = ordinal;
+        dvx_json_damage = damage;
+        dvu_test_set_ops(&dvx_usage_ops);
+        ASSERT(dvx_run(&c));
+        dvu_test_set_ops(NULL);
+        ASSERT_EQ(c.reply.status, ZCL_COMMAND_STATUS_FAILED);
+        ASSERT_EQ(c.reply.exit_code, ZCL_COMMAND_EXIT_INTERNAL);
+        ASSERT_STR_EQ(c.reply.error.code, "ALLOC");
+        ASSERT_STR_EQ(c.reply.error.message,
+                      "usage_log summary construction failed (allocation or invalid UTF-8)");
+        ASSERT(dvx_usage(&c) == NULL);
+        ASSERT_EQ(c.reply.data.type, JSON_OBJ);
+        ASSERT_EQ(c.reply.data.num_children, 0);
+        PASS();
+    }
+_test_next:;
+    dvx_json_refuse = 0;
+    dvx_json_damage = false;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_construction_boundaries(const char *root, const char *ledger)
+{
+    int failures = 0;
+    struct dvx_call c;
+    dvx_begin(&c);
+    size_t insertions = 0;
+    char path[1024] = {0};
+    TEST("usage: record baseline summary insertion count") {
+        int n = snprintf(path, sizeof(path), "%s/construction.jsonl", root);
+        ASSERT(n >= 0 && (size_t)n < sizeof(path));
+        ASSERT(dvx_write(root, "construction.jsonl", DVX_EVENT));
+        ASSERT(json_push_kv_str(&c.input, "ledger", ledger));
+        ASSERT(json_push_kv_str(&c.input, "usage_log", path));
+        dvx_json_calls = 0;
+        dvu_test_set_ops(&dvx_usage_ops);
+        ASSERT(dvx_run(&c));
+        dvu_test_set_ops(NULL);
+        ASSERT(dvx_ok(&c));
+        ASSERT(dvx_usage(&c) != NULL);
+        insertions = dvx_json_calls;
+        ASSERT(insertions > 0);
+        PASS();
+    }
+_test_next:;
+    dvx_end(&c);
+    for (size_t k = 1; k <= insertions; k++)
+        failures += dvx_json_failure(path, ledger, k, false);
+    if (insertions > 0)
+        failures += dvx_json_failure(path, ledger, 0, true);
+    return failures;
+}
+
+static int dvx_invalid_usage_path(const char *ledger)
+{
+    int failures = 0;
+    struct dvx_call c;
+    dvx_call_on(&c, ledger, NULL, NULL);
+    TEST("usage: invalid path UTF-8 is refused without filesystem access") {
+        ASSERT(json_push_kv_str(&c.input, "usage_log", "bad\xffpath"));
+        ASSERT(dvx_run(&c));
+        ASSERT_EQ(c.reply.status, ZCL_COMMAND_STATUS_FAILED);
+        ASSERT_STR_EQ(c.reply.error.code, "BAD_INPUT");
+        ASSERT(dvx_usage(&c) == NULL);
+        PASS();
+    }
+_test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_derived_utf8(const char *root, const char *ledger)
+{
+    int failures = 0;
+    struct dvx_call c;
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/derived.jsonl", root);
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: a multibyte timestamp split by the hour refuses the summary") {
+        ASSERT(n >= 0 && (size_t)n < sizeof(path));
+        ASSERT(dvx_write(root, "derived.jsonl",
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-09-19T\xe2\x82\xac\","
+            "\"message\":{\"id\":\"split\",\"model\":\"m1\","
+            "\"usage\":{\"input_tokens\":10}}}"));
+        ASSERT(json_push_kv_str(&c.reply.data, "unrelated", "seed"));
+        ASSERT(dvx_run(&c));
+        ASSERT_EQ(c.reply.status, ZCL_COMMAND_STATUS_FAILED);
+        ASSERT_EQ(c.reply.exit_code, ZCL_COMMAND_EXIT_INTERNAL);
+        ASSERT_STR_EQ(c.reply.error.code, "ALLOC");
+        ASSERT_EQ(c.reply.data.type, JSON_OBJ);
+        ASSERT_EQ(c.reply.data.num_children, 0);
+        PASS();
+    }
+_test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static bool dvx_counter_fixture(const char *root, const char *field, int second)
+{
+    char records[1024];
+    bool thinking = strcmp(field, "thinking_tokens") == 0;
+    const char *prefix = thinking ? "\"output_tokens_details\":{" : "";
+    const char *suffix = thinking ? "}" : "";
+    int n = snprintf(records, sizeof(records),
+        "{\"type\":\"assistant\",\"timestamp\":\"2026-09-19T01:02:03Z\","
+        "\"message\":{\"id\":\"a\",\"model\":\"m1\",\"usage\":{%s\"%s\":"
+        "9223372036854775806%s}}}\n"
+        "{\"type\":\"assistant\",\"timestamp\":\"2026-09-19T01:02:03Z\","
+        "\"message\":{\"id\":\"b\",\"model\":\"m1\",\"usage\":{%s\"%s\":%d%s}}}\n",
+        prefix, field, suffix, prefix, field, second, suffix);
+    return n >= 0 && (size_t)n < sizeof(records) &&
+           dvx_write(root, "counter.jsonl", records);
+}
+
+static int dvx_counter_limit(const char *root, const char *ledger,
+                              const char *field, const char *output)
+{
+    int failures = 0;
+    struct dvx_call c;
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/counter.jsonl", root);
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: an exact INT64_MAX total remains accepted in both groups") {
+        ASSERT(n >= 0 && (size_t)n < sizeof(path));
+        ASSERT(dvx_counter_fixture(root, field, 1));
+        ASSERT(dvx_run(&c));
+        ASSERT(dvx_ok(&c));
+        const struct json_value *model = dvx_usage_model(&c, "claude", "m1");
+        ASSERT(model != NULL);
+        ASSERT_EQ(dvx_entry_int(model, output), INT64_MAX);
+        const struct json_value *hours = json_get(dvx_usage(&c), "by_hour");
+        ASSERT(hours && hours->type == JSON_ARR && hours->num_children == 1);
+        ASSERT_EQ(dvx_entry_int(&hours->children[0], output), INT64_MAX);
+        PASS();
+    }
+_test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_counter_overflow(const char *root, const char *ledger,
+                                 const char *field)
+{
+    int failures = 0;
+    struct dvx_call c;
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/counter.jsonl", root);
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: INT64_MAX plus one refuses with empty reply data") {
+        ASSERT(n >= 0 && (size_t)n < sizeof(path));
+        ASSERT(dvx_counter_fixture(root, field, 2));
+        ASSERT(json_push_kv_str(&c.reply.data, "unrelated", "seed"));
+        ASSERT(dvx_run(&c));
+        ASSERT_EQ(c.reply.status, ZCL_COMMAND_STATUS_FAILED);
+        ASSERT_EQ(c.reply.exit_code, ZCL_COMMAND_EXIT_INTERNAL);
+        ASSERT_STR_EQ(c.reply.error.code, "USAGE_OVERFLOW");
+        ASSERT_STR_EQ(c.reply.error.message,
+                      "usage_log counter total exceeds INT64_MAX");
+        ASSERT_EQ(c.reply.data.type, JSON_OBJ);
+        ASSERT_EQ(c.reply.data.num_children, 0);
+        PASS();
+    }
+_test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_counter_boundaries(const char *root, const char *ledger)
+{
+    static const char *const fields[][2] = {
+        {"input_tokens", "input_tokens"},
+        {"output_tokens", "output_tokens"},
+        {"cache_read_input_tokens", "cache_read_tokens"},
+        {"cache_creation_input_tokens", "cache_write_tokens"},
+        {"thinking_tokens", "reasoning_tokens"},
+    };
+    int failures = 0;
+    for (size_t k = 0; k < sizeof(fields) / sizeof(fields[0]); k++) {
+        failures += dvx_counter_limit(root, ledger, fields[k][0], fields[k][1]);
+        failures += dvx_counter_overflow(root, ledger, fields[k][0]);
+    }
+    failures += dvx_counter_limit(root, ledger, "input_tokens",
+                                   "uncached_input_tokens");
+    return failures;
 }
 
 /* Muse host log: event ev-a twice (one event), ev-b without a cache_read
@@ -373,6 +774,37 @@ static int dvx_usage_checks(const char *root, const char *ledger)
     }
 
 _test_next:;
+    return failures;
+}
+
+static bool dvx_group_in(const char (*groups)[ZCL_DEVLOOP_GROUP_MAX],
+                          size_t len, const char *name)
+{
+    for (size_t i = 0; i < len; i++)
+        if (strcmp(groups[i], name) == 0)
+            return true;
+    return false;
+}
+
+static int dvx_usage_path_floor(void)
+{
+    int failures = 0;
+    TEST("usage: each production path selects the outcomes regression") {
+        static const char *const paths[] = {
+            "tools/command/native_devagent_usage.c",
+            "tools/command/native_devagent_usage_internal.h",
+        };
+        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            const char *files[] = {paths[i]};
+            struct zcl_devloop_plan plan;
+            ASSERT(zcl_devloop_plan_files(files, 1, &plan));
+            ASSERT(dvx_group_in(plan.path_groups, plan.path_groups_len,
+                                "devagent_outcomes"));
+            ASSERT(dvx_group_in(plan.path_groups, plan.path_groups_len,
+                                "make_lint_gates"));
+        }
+        PASS();
+    } _test_next:;
     return failures;
 }
 
@@ -564,6 +996,13 @@ int test_devagent_outcomes(void)
     }
 
     failures += dvx_usage_checks(root, ledger);
+    failures += dvx_usage_path_floor();
+    failures += dvx_sort_boundaries(root, ledger);
+    failures += dvx_byte_boundaries(root, ledger);
+    failures += dvx_construction_boundaries(root, ledger);
+    failures += dvx_invalid_usage_path(ledger);
+    failures += dvx_derived_utf8(root, ledger);
+    failures += dvx_counter_boundaries(root, ledger);
 
 _test_next:;
     (void)test_rm_rf_recursive(root);

@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "lintc.h"
+#include "../../../tests/harness/include/test/test_core.h"
 
 /* ── check-file-purpose (Gate P1, port of check_file_purpose.sh) ───────────
  * Every indexed .c/.h under the codeindex roots (the five source authorities
@@ -118,7 +119,8 @@ static int fp_cmp(const void *a, const void *b)
 /* LC_ALL=C sort -u: bytewise order, exact-duplicate collapse. */
 static void fp_sort_uniq(struct fp_files *fs)
 {
-    qsort(fs->v, fs->n, sizeof fs->v[0], fp_cmp);
+    if (fs->n > 1)
+        qsort(fs->v, fs->n, sizeof fs->v[0], fp_cmp);
     size_t w = 0;
     for (size_t i = 0; i < fs->n; i++) {
         if (w > 0 && strcmp(fs->v[w - 1], fs->v[i]) == 0) {
@@ -596,15 +598,18 @@ static int fp_st_gone_root(const char *root)
 
 int check_file_purpose_selftest(void)
 {
-    const char *td = env_or("TMPDIR", "/tmp");
     char tmpl[4096];
-    if (ovf(snprintf(tmpl, sizeof tmpl, "%s/z23-lint-fp-XXXXXX", td),
-            sizeof tmpl))
-        return 2;
-    char *root = mkdtemp(tmpl);
+    char *root = test_mkdtemp(tmpl, sizeof tmpl, "z23-lint-fp");
     if (!root)
         return die("z23-lint: mkdtemp failed: %s\n", tmpl);
-    int bad = fp_st_tree(root);
+    char empty_dir[4096];
+    int bad = ovf(snprintf(empty_dir, sizeof empty_dir,
+                           "%s/engine/services/src", root), sizeof empty_dir)
+              || csr_mkdirs(empty_dir);
+    if (!bad)
+        bad |= fp_st_case(root, "RATCHET", NULL, 2, NULL);
+    if (!bad)
+        bad |= fp_st_tree(root);
     if (!bad) {
         /* a clean fixture tree passes RATCHET and reports the scan count */
         bad |= fp_st_case(root, "RATCHET", NULL, 0,

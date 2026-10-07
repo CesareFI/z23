@@ -39,16 +39,21 @@
  * counted in `unkeyed` and not summed, since it cannot be deduplicated.
  *
  * OUTPUT. reply data gains "usage": {usage_log, files, lines, usage_lines,
- * malformed (a line mentioning usage that is not one JSON object),
+ * malformed (a physical line containing NUL or invalid UTF-8, or a line
+ * mentioning usage that is not one JSON object),
  * unreadable, unkeyed, events (distinct ids kept), duplicate_lines,
  * truncated, by_model:[{format, model, input_includes_cache_read, events,
  * <counters>, unreported:{...}}], hours_total, by_hour: newest
  * DVU_MAX_HOURS {hour, format, model, events, <counters>}}.
  *
- * FAILURE. usage_log present but not a nonempty string is BAD_INPUT; a path
+ * FAILURE. usage_log present but not a nonempty UTF-8 string is BAD_INPUT; a path
  * that does not exist is USAGE_LOG_NOT_FOUND; one that is neither a file
  * nor a directory is BAD_INPUT. Unreadable files inside a directory are
- * counted, never fatal. The reader runs no process and writes nothing.
+ * counted, never fatal. JSON construction failure is ALLOC and clears reply
+ * data rather than exposing a partial summary. Invalid derived UTF-8 also
+ * refuses summary construction. Counter-total overflow is USAGE_OVERFLOW
+ * and leaves reply data an empty object. The reader runs no process
+ * and writes nothing.
  *
  * Tests: tests/harness/src/test_devagent_outcomes.c, usage section.
  */
@@ -56,6 +61,7 @@
 #include "command/native_devagent_usage_internal.h"
 
 #include "base/safe_alloc.h"
+#include "zutf8/zutf8.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -65,6 +71,29 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
+
+#ifdef ZCL_TESTING
+static _Thread_local struct dvu_test_ops dvu_test_calls;
+
+void dvu_test_set_ops(const struct dvu_test_ops *ops)
+{
+    dvu_test_calls = ops ? *ops : (struct dvu_test_ops){0};
+}
+
+/* Defaults call the same JSON and sort functions as a non-test build. */
+#define qsort(...) \
+    (dvu_test_calls.sort ? dvu_test_calls.sort(__VA_ARGS__) : qsort(__VA_ARGS__))
+#define json_push_kv(...) \
+    (dvu_test_calls.kv ? dvu_test_calls.kv(__VA_ARGS__) : json_push_kv(__VA_ARGS__))
+#define json_push_back(...) \
+    (dvu_test_calls.back ? dvu_test_calls.back(__VA_ARGS__) : json_push_back(__VA_ARGS__))
+#define json_push_kv_str(...) \
+    (dvu_test_calls.str ? dvu_test_calls.str(__VA_ARGS__) : json_push_kv_str(__VA_ARGS__))
+#define json_push_kv_int(...) \
+    (dvu_test_calls.integer ? dvu_test_calls.integer(__VA_ARGS__) : json_push_kv_int(__VA_ARGS__))
+#define json_push_kv_bool(...) \
+    (dvu_test_calls.boolean ? dvu_test_calls.boolean(__VA_ARGS__) : json_push_kv_bool(__VA_ARGS__))
+#endif
 
 #define DVU_MAX_DEPTH 8
 #define DVU_MAX_FILES 50000
@@ -123,6 +152,7 @@ struct dvu_scan {
     int64_t unkeyed;
     bool truncated;
     bool alloc_failed;
+    bool sum_overflow;
     const char *model;
     const char *since;
 };
@@ -289,6 +319,10 @@ static void dvu_keep(struct dvu_scan *s, const struct dvu_fields *f)
 static void dvu_line(struct dvu_scan *s, const char *line, size_t len)
 {
     s->lines++;
+    if (memchr(line, 0, len) || !zutf8_validate_n(line, len)) {
+        s->malformed++;
+        return;
+    }
     if (!strstr(line, "\"usage\""))
         return;
     struct json_value row;
@@ -320,6 +354,10 @@ static bool dvu_next_line(FILE *fp, struct dvu_linebuf *lb, bool *oom)
     lb->len = 0;
     for (;;) {
         if (lb->cap - lb->len < 4096u) {
+            if (lb->cap > SIZE_MAX / 2u) {
+                *oom = true;
+                return false;
+            }
             size_t ncap = lb->cap ? lb->cap * 2u : 65536u;
             char *t = zcl_realloc(lb->buf, ncap, "devagent_usage_line");
             if (!t) {
@@ -329,10 +367,12 @@ static bool dvu_next_line(FILE *fp, struct dvu_linebuf *lb, bool *oom)
             lb->buf = t;
             lb->cap = ncap;
         }
-        if (!fgets(lb->buf + lb->len, (int)(lb->cap - lb->len), fp))
+        int c = fgetc(fp);
+        if (c == EOF)
             return lb->len > 0;
-        lb->len += strlen(lb->buf + lb->len);
-        if (lb->len > 0 && lb->buf[lb->len - 1] == '\n')
+        lb->buf[lb->len++] = (char)c;
+        lb->buf[lb->len] = 0;
+        if (c == '\n')
             return true;
     }
 }
@@ -450,95 +490,184 @@ static int dvu_cmp_hour(const void *a, const void *b)
     return c ? c : dvu_cmp_model(a, b);
 }
 
-static void dvu_sum_add(struct dvu_sum *t, const struct dvu_event *e)
+static bool dvu_sum_add(struct dvu_sum *t, const struct dvu_event *e)
 {
     t->events++;
     for (int f = 0; f < DVU_NF; f++) {
         if (e->v[f] < 0)
             t->unreported[f]++;
-        else
+        else {
+            if (t->v[f] > INT64_MAX - e->v[f])
+                return false;
             t->v[f] += e->v[f];
+        }
+    }
+    return true;
+}
+
+/* JSON insertion may report success after an incomplete recursive copy.
+ * Check the copied tree too; no partial summary is accepted on that path. */
+static bool dvu_json_equal(const struct json_value *a,
+                            const struct json_value *b);
+
+static bool dvu_json_children_equal(const struct json_value *a,
+                                     const struct json_value *b)
+{
+    if (a->num_children != b->num_children)
+        return false;
+    for (size_t k = 0; k < a->num_children; k++) {
+        if (a->type == JSON_OBJ) {
+            if (!b->keys[k] || strcmp(a->keys[k], b->keys[k]) != 0)
+                return false;
+        }
+        if (!dvu_json_equal(&a->children[k], &b->children[k]))
+            return false;
+    }
+    return true;
+}
+
+static bool dvu_json_equal(const struct json_value *a,
+                            const struct json_value *b)
+{
+    if (a->type != b->type)
+        return false;
+    switch (a->type) {
+    case JSON_STR:
+        return b->val.s && strcmp(a->val.s, b->val.s) == 0;
+    case JSON_INT:
+        return a->val.i == b->val.i;
+    case JSON_BOOL:
+        return a->val.b == b->val.b;
+    case JSON_OBJ:
+    case JSON_ARR:
+        return dvu_json_children_equal(a, b);
+    default:
+        return false;
     }
 }
 
-static void dvu_push_sum(struct json_value *row, const struct dvu_sum *t,
+static bool dvu_json_kv(struct json_value *obj, const char *key,
+                         const struct json_value *value)
+{
+    size_t n = obj->num_children;
+    return json_push_kv(obj, key, value) && obj->num_children > n &&
+           dvu_json_equal(value, &obj->children[n]);
+}
+
+static bool dvu_json_back(struct json_value *arr,
+                           const struct json_value *value)
+{
+    size_t n = arr->num_children;
+    return json_push_back(arr, value) && arr->num_children > n &&
+           dvu_json_equal(value, &arr->children[n]);
+}
+
+static bool dvu_json_str(struct json_value *obj, const char *key,
+                          const char *text)
+{
+    if (!text || !zutf8_validate(text))
+        return false;
+    size_t n = obj->num_children;
+    if (!json_push_kv_str(obj, key, text) || obj->num_children <= n)
+        return false;
+    const struct json_value *v = &obj->children[n];
+    return v->type == JSON_STR && v->val.s && strcmp(v->val.s, text) == 0;
+}
+
+static bool dvu_push_sum(struct json_value *row, const struct dvu_sum *t,
                          bool with_unreported)
 {
-    (void)json_push_kv_int(row, "events", t->events);
+    if (!json_push_kv_int(row, "events", t->events))
+        return false;
     for (int f = 0; f < DVU_NF; f++)
-        (void)json_push_kv_int(row, dvu_field_names[f], t->v[f]);
+        if (!json_push_kv_int(row, dvu_field_names[f], t->v[f]))
+            return false;
     if (!with_unreported)
-        return;
+        return true;
     struct json_value un;
     json_init(&un);
     json_set_object(&un);
-    for (int f = 0; f < DVU_NF; f++)
-        (void)json_push_kv_int(&un, dvu_field_names[f], t->unreported[f]);
-    (void)json_push_kv(row, "unreported", &un);
+    bool ok = true;
+    for (int f = 0; ok && f < DVU_NF; f++)
+        ok = json_push_kv_int(&un, dvu_field_names[f], t->unreported[f]);
+    ok = ok && dvu_json_kv(row, "unreported", &un);
     json_free(&un);
+    return ok;
 }
 
-static void dvu_push_group_head(struct json_value *row, const struct dvu_event *e)
+static bool dvu_push_group_head(struct json_value *row, const struct dvu_event *e)
 {
-    (void)json_push_kv_str(row, "format", dvu_format_names[e->format]);
-    (void)json_push_kv_str(row, "model", e->model);
+    return dvu_json_str(row, "format", dvu_format_names[e->format]) &&
+           dvu_json_str(row, "model", e->model);
 }
 
-static void dvu_push_by_model(struct json_value *usage, struct dvu_scan *s)
+static bool dvu_push_by_model(struct json_value *usage, struct dvu_scan *s)
 {
     struct json_value arr;
     json_init(&arr);
     json_set_array(&arr);
-    qsort(s->ev, s->n, sizeof(*s->ev), dvu_cmp_model);
-    for (size_t i = 0; i < s->n;) {
+    if (s->n > 1)
+        qsort(s->ev, s->n, sizeof(*s->ev), dvu_cmp_model);
+    bool ok = true;
+    for (size_t i = 0; ok && i < s->n;) {
         struct dvu_sum t;
         memset(&t, 0, sizeof(t));
         size_t j = i;
-        while (j < s->n && dvu_cmp_model(&s->ev[i], &s->ev[j]) == 0)
-            dvu_sum_add(&t, &s->ev[j++]);
+        while (ok && j < s->n && dvu_cmp_model(&s->ev[i], &s->ev[j]) == 0)
+            ok = dvu_sum_add(&t, &s->ev[j++]);
+        if (!ok) {
+            s->sum_overflow = true;
+            break;
+        }
         struct json_value row;
         json_init(&row);
         json_set_object(&row);
-        dvu_push_group_head(&row, &s->ev[i]);
-        (void)json_push_kv_bool(&row, "input_includes_cache_read",
-                                s->ev[i].format == DVU_MUSE);
-        dvu_push_sum(&row, &t, true);
-        (void)json_push_back(&arr, &row);
+        ok = dvu_push_group_head(&row, &s->ev[i]) &&
+             json_push_kv_bool(&row, "input_includes_cache_read",
+                               s->ev[i].format == DVU_MUSE) &&
+             dvu_push_sum(&row, &t, true) && dvu_json_back(&arr, &row);
         json_free(&row);
         i = j;
     }
-    (void)json_push_kv(usage, "by_model", &arr);
+    ok = ok && dvu_json_kv(usage, "by_model", &arr);
     json_free(&arr);
+    return ok;
 }
 
-static void dvu_push_by_hour(struct json_value *usage, struct dvu_scan *s)
+static bool dvu_push_by_hour(struct json_value *usage, struct dvu_scan *s)
 {
     struct json_value arr;
     json_init(&arr);
     json_set_array(&arr);
-    qsort(s->ev, s->n, sizeof(*s->ev), dvu_cmp_hour);
+    if (s->n > 1)
+        qsort(s->ev, s->n, sizeof(*s->ev), dvu_cmp_hour);
     int64_t groups = 0;
-    for (size_t i = 0; i < s->n;) {
+    bool ok = true;
+    for (size_t i = 0; ok && i < s->n;) {
         struct dvu_sum t;
         memset(&t, 0, sizeof(t));
         size_t j = i;
-        while (j < s->n && dvu_cmp_hour(&s->ev[i], &s->ev[j]) == 0)
-            dvu_sum_add(&t, &s->ev[j++]);
+        while (ok && j < s->n && dvu_cmp_hour(&s->ev[i], &s->ev[j]) == 0)
+            ok = dvu_sum_add(&t, &s->ev[j++]);
+        if (!ok) {
+            s->sum_overflow = true;
+            break;
+        }
         if ((size_t)groups++ < DVU_MAX_HOURS) {
             struct json_value row;
             json_init(&row);
             json_set_object(&row);
-            (void)json_push_kv_str(&row, "hour", s->ev[i].hour);
-            dvu_push_group_head(&row, &s->ev[i]);
-            dvu_push_sum(&row, &t, false);
-            (void)json_push_back(&arr, &row);
+            ok = dvu_json_str(&row, "hour", s->ev[i].hour) &&
+                 dvu_push_group_head(&row, &s->ev[i]) &&
+                 dvu_push_sum(&row, &t, false) && dvu_json_back(&arr, &row);
             json_free(&row);
         }
         i = j;
     }
-    (void)json_push_kv_int(usage, "hours_total", groups);
-    (void)json_push_kv(usage, "by_hour", &arr);
+    ok = ok && json_push_kv_int(usage, "hours_total", groups) &&
+         dvu_json_kv(usage, "by_hour", &arr);
     json_free(&arr);
+    return ok;
 }
 
 static void dvu_scan_free(struct dvu_scan *s)
@@ -550,18 +679,18 @@ static void dvu_scan_free(struct dvu_scan *s)
     free(s->ev);
 }
 
-static void dvu_push_counts(struct json_value *usage, const struct dvu_scan *s,
+static bool dvu_push_counts(struct json_value *usage, const struct dvu_scan *s,
                             int64_t duplicates)
 {
-    (void)json_push_kv_int(usage, "files", s->files);
-    (void)json_push_kv_int(usage, "lines", s->lines);
-    (void)json_push_kv_int(usage, "usage_lines", s->usage_lines);
-    (void)json_push_kv_int(usage, "malformed", s->malformed);
-    (void)json_push_kv_int(usage, "unreadable", s->unreadable);
-    (void)json_push_kv_int(usage, "unkeyed", s->unkeyed);
-    (void)json_push_kv_int(usage, "events", (int64_t)s->n);
-    (void)json_push_kv_int(usage, "duplicate_lines", duplicates);
-    (void)json_push_kv_bool(usage, "truncated", s->truncated);
+    return json_push_kv_int(usage, "files", s->files) &&
+           json_push_kv_int(usage, "lines", s->lines) &&
+           json_push_kv_int(usage, "usage_lines", s->usage_lines) &&
+           json_push_kv_int(usage, "malformed", s->malformed) &&
+           json_push_kv_int(usage, "unreadable", s->unreadable) &&
+           json_push_kv_int(usage, "unkeyed", s->unkeyed) &&
+           json_push_kv_int(usage, "events", (int64_t)s->n) &&
+           json_push_kv_int(usage, "duplicate_lines", duplicates) &&
+           json_push_kv_bool(usage, "truncated", s->truncated);
 }
 
 /* ── entry ───────────────────────────────────────────────────────────── */
@@ -575,9 +704,9 @@ static const char *dvu_path(const struct json_value *input,
     if (!v)
         return NULL;
     const char *path = v->type == JSON_STR ? json_get_str(v) : NULL;
-    if (!path || !path[0]) {
+    if (!path || !path[0] || !zutf8_validate(path)) {
         dvu_fail(reply, ZCL_COMMAND_EXIT_INVALID, "BAD_INPUT",
-                 "input key 'usage_log' must be a nonempty path");
+                 "input key 'usage_log' must be a nonempty UTF-8 path");
         return NULL;
     }
     char msg[DVU_PATH_MAX + 96];
@@ -623,11 +752,19 @@ void dvu_push_usage(const struct json_value *input, const char *model,
     struct json_value usage;
     json_init(&usage);
     json_set_object(&usage);
-    (void)json_push_kv_str(&usage, "usage_log", path);
-    dvu_push_counts(&usage, &s, duplicates);
-    dvu_push_by_model(&usage, &s);
-    dvu_push_by_hour(&usage, &s);
-    (void)json_push_kv(&reply->data, "usage", &usage);
+    bool ok = dvu_json_str(&usage, "usage_log", path) &&
+              dvu_push_counts(&usage, &s, duplicates) &&
+              dvu_push_by_model(&usage, &s) &&
+              dvu_push_by_hour(&usage, &s) &&
+              dvu_json_kv(&reply->data, "usage", &usage);
     json_free(&usage);
     dvu_scan_free(&s);
+    if (!ok) {
+        json_free(&reply->data);
+        json_set_object(&reply->data);
+        dvu_fail(reply, ZCL_COMMAND_EXIT_INTERNAL,
+                 s.sum_overflow ? "USAGE_OVERFLOW" : "ALLOC",
+                 s.sum_overflow ? "usage_log counter total exceeds INT64_MAX"
+                                : "usage_log summary construction failed (allocation or invalid UTF-8)");
+    }
 }
