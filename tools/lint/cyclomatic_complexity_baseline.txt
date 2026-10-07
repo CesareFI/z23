@@ -2734,7 +2734,6 @@ tests/harness/src/test_domain_consensus_sigops.c:test_domain_consensus_sigops:27
 tests/harness/src/test_domain_consensus_tx_structural.c:test_domain_consensus_tx_structural:51
 tests/harness/src/test_domain_consensus_upgrades.c:test_domain_consensus_upgrades:37
 tests/harness/src/test_domain_encoding_base58.c:test_domain_encoding_base58:26
-tests/harness/src/test_domain_wallet_key_derivation.c:test_domain_wallet_key_derivation:64
 tests/harness/src/test_domain_wallet_mnemonic.c:test_domain_wallet_mnemonic:68
 tests/harness/src/test_e2e_cold_start.c:test_e2e_cold_start:29
 tests/harness/src/test_ecosystem.c:test_ecosystem:90

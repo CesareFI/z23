@@ -88,12 +88,14 @@ void ext_key_encode(const struct ext_key *ek,
 void ext_key_decode(struct ext_key *ek,
                     const unsigned char code[BIP32_EXTKEY_SIZE]);
 /* Derive the nChild extended child of ek (incrementing depth and stamping the
- * parent fingerprint). Returns false if the underlying key derivation fails. */
+ * parent fingerprint). Returns false if the underlying key derivation fails,
+ * after wiping the complete extended-child output. */
 bool ext_key_derive(const struct ext_key *ek, struct ext_key *out,
                     unsigned int nChild);
 /* Build the BIP32 master extended key from a seed via HMAC-SHA512("Bitcoin
  * seed"). The key is marked compressed; depth/child/fingerprint are zeroed.
- * The intermediate HMAC output is wiped before return. */
+ * The intermediate HMAC output is wiped before return. An invalid derived
+ * scalar causes the complete extended-key output to be wiped. */
 void ext_key_set_master(struct ext_key *ek, const unsigned char *seed,
                         unsigned int nSeedLen);
 /* Neuter ek into its public-only extended counterpart (same metadata and

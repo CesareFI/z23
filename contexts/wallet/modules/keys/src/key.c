@@ -179,8 +179,11 @@ bool ext_key_derive(const struct ext_key *ek, struct ext_key *out,
     struct key_id id = pubkey_get_id(&pk);
     memcpy(out->vchFingerprint, id.id.data, 4);
     out->nChild = nChild;
-    return privkey_derive(&ek->key, &out->key, &out->chaincode,
-                          nChild, &ek->chaincode);
+    bool derived = privkey_derive(&ek->key, &out->key, &out->chaincode,
+                                  nChild, &ek->chaincode);
+    if (!derived)
+        memory_cleanse(out, sizeof(*out));
+    return derived;
 }
 
 void ext_key_set_master(struct ext_key *ek, const unsigned char *seed,
@@ -201,7 +204,9 @@ void ext_key_set_master(struct ext_key *ek, const unsigned char *seed,
     ek->nDepth = 0;
     ek->nChild = 0;
     memset(ek->vchFingerprint, 0, sizeof(ek->vchFingerprint));
-    memset(out, 0, sizeof(out));
+    memory_cleanse(out, sizeof(out));
+    if (!ek->key.fValid)
+        memory_cleanse(ek, sizeof(*ek));
 }
 
 void ext_key_neuter(const struct ext_key *ek, struct ext_pubkey *epk)

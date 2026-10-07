@@ -14,6 +14,7 @@
  */
 
 #include "test/test_core.h"
+#include "test/wallet_ext_key_failure_retirement.h"
 
 #include "domain/wallet/key_derivation.h"
 #include "wallet/bip44.h"
@@ -62,7 +63,7 @@ static bool ext_key_bytes_equal(const struct ext_key *a, const struct ext_key *b
     return true;
 }
 
-int test_domain_wallet_key_derivation(void)
+static int wallet_derivation_cases_1(void)
 {
     int failures = 0;
 
@@ -146,6 +147,13 @@ int test_domain_wallet_key_derivation(void)
                   !r.ok && r.code == DOMAIN_WALLET_KEY_DERIVATION_ERR_HARDENED_PUB);
     }
 
+    return failures;
+}
+
+static int wallet_derivation_cases_2(void)
+{
+    int failures = 0;
+
     /* parse_path: well-formed path. */
     {
         uint32_t indices[16];
@@ -207,6 +215,13 @@ int test_domain_wallet_key_derivation(void)
         DWK_CHECK("parse_path max_indices<=0 -> BAD_RANGE",
                   !r.ok && r.code == DOMAIN_WALLET_KEY_DERIVATION_ERR_BAD_RANGE);
     }
+
+    return failures;
+}
+
+static int wallet_derivation_cases_3(void)
+{
+    int failures = 0;
 
     /* bip44_format_path: round-trip and bounds. */
     {
@@ -280,6 +295,13 @@ int test_domain_wallet_key_derivation(void)
         memory_cleanse(&master, sizeof(master));
         memory_cleanse(&child, sizeof(child));
     }
+
+    return failures;
+}
+
+static int wallet_derivation_cases_4(void)
+{
+    int failures = 0;
 
     /* TV2: longer seed, walk m/0/2147483647'/1/2147483646'/2. */
     {
@@ -383,6 +405,13 @@ int test_domain_wallet_key_derivation(void)
                   all_match);
     }
 
+    return failures;
+}
+
+static int wallet_derivation_cases_5(void)
+{
+    int failures = 0;
+
     /* BIP44 wrapper vs domain: derive_account / derive_chain / derive_key
      * with explicit indices. */
     {
@@ -467,5 +496,16 @@ int test_domain_wallet_key_derivation(void)
         DWK_CHECK("bip44_format_path wrapper tiny buf -> -1", n == -1);
     }
 
+    return failures;
+}
+
+int test_domain_wallet_key_derivation(void)
+{
+    int failures = wallet_ext_key_failure_retirement_cases();
+    failures += wallet_derivation_cases_1();
+    failures += wallet_derivation_cases_2();
+    failures += wallet_derivation_cases_3();
+    failures += wallet_derivation_cases_4();
+    failures += wallet_derivation_cases_5();
     return failures + ZCL_TEST_SETUP_FAILURES();
 }
