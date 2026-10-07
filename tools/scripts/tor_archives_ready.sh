@@ -70,21 +70,26 @@ tor_ambient_compiler() {
     zcl_tor_effective_cc "$ROOT/$TOR_TREE" "$TRIPLE"
 }
 
+tor_compiler_id() {
+    # Readiness must observe current tool bytes even if the caller enabled
+    # build-session memoization before a compiler replacement.
+    ZCL_BUILD_EPOCH_KEY_CACHE_DIR= "$SCRIPT_ROOT/tools/dev/build-epoch-key.sh" compiler-id "$1" "$1"
+}
+
 have_all() {
     local a
     for a in "${ARCHIVES[@]}"; do
         [ -s "$ROOT/$a" ] || return 1
     done
-    # Existence is not enough: bind the archives to the vendor/tor commit,
-    # compiler, and configure flags that produced them (see
-    # tools/tor_provenance.c). A mismatch here -- a stale libtor.a left over
-    # from a different compiler, most concretely -- is treated exactly like
-    # a missing archive: fall through to a real rebuild.
+    # Existence is not enough: verify the recorded archive hashes and current
+    # compiler identity. The separate provenance gate supplies the expected
+    # Tor commit. A mismatch refuses readiness; do_ready decides whether
+    # missing inputs can be primed without replacing an existing manifest.
     zcl_tor_provenance_ensure_bin "$SCRIPT_ROOT" || return 1
     local cc cid
     cc="$(tor_ambient_compiler)"
     command -v "${cc%% *}" >/dev/null 2>&1 || return 1
-    cid="$("$SCRIPT_ROOT/tools/dev/build-epoch-key.sh" compiler-id "$cc" "$cc" 2>/dev/null)" || return 1
+    cid="$(tor_compiler_id "$cc" 2>/dev/null)" || return 1
     "$(zcl_tor_provenance_bin "$SCRIPT_ROOT")" check "$ROOT/$TOR_TREE" --compiler-id "$cid" >/dev/null 2>&1 || \
         tor_alias_check "$cc"
 }
@@ -101,20 +106,37 @@ have_all() {
 # with any other command name that resolves to the SAME binary as the
 # ambient guess -- never a different one, that would still be a real
 # mismatch -- before have_all() gives up.
+tor_versioned_alias() {
+    local name="${1##*/}"
+    # This only proposes a spelling (including target-prefixed GCC drivers).
+    # Neither the basename nor a version banner establishes equivalence.
+    if [[ "$name" =~ (^|-)(gcc-[0-9]+([.][0-9]+)*)$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[2]}"
+    fi
+}
+
+tor_alias_matches() {
+    local cand="$1" primary_path="$2" cand_path cid
+    cand_path="$(command -v "$cand" 2>/dev/null)" || return 1
+    cand_path="$(realpath -- "$cand_path" 2>/dev/null)" || return 1
+    [ "$cand_path" = "$primary_path" ] || return 1
+    cid="$(tor_compiler_id "$cand" 2>/dev/null)" || return 1
+    "$(zcl_tor_provenance_bin "$SCRIPT_ROOT")" check "$ROOT/$TOR_TREE" --compiler-id "$cid" >/dev/null 2>&1
+}
+
 tor_alias_check() {
-    local primary_cc="$1" primary_path cand cand_path tried cid
-    primary_path="$(command -v "${primary_cc%% *}" 2>/dev/null)" || return 1
+    local primary_cc="$1" primary_path cand tried versioned
+    # Retrying a bare alias must never discard flags or wrapper arguments.
+    [[ "$primary_cc" != *[[:space:]]* ]] || return 1
+    primary_path="$(command -v "$primary_cc" 2>/dev/null)" || return 1
     primary_path="$(realpath -- "$primary_path" 2>/dev/null)" || return 1
+    versioned="$(tor_versioned_alias "$primary_path")"
     tried=" $primary_cc "
-    for cand in gcc cc clang "${CC:-}" "${VENDOR_CC:-}"; do
+    for cand in gcc cc clang "${CC:-}" "${VENDOR_CC:-}" "$versioned"; do
         [ -n "$cand" ] || continue
         case "$tried" in *" $cand "*) continue ;; esac
         tried="$tried$cand "
-        cand_path="$(command -v "$cand" 2>/dev/null)" || continue
-        cand_path="$(realpath -- "$cand_path" 2>/dev/null)" || continue
-        [ "$cand_path" = "$primary_path" ] || continue
-        cid="$("$SCRIPT_ROOT/tools/dev/build-epoch-key.sh" compiler-id "$cand" "$cand" 2>/dev/null)" || continue
-        "$(zcl_tor_provenance_bin "$SCRIPT_ROOT")" check "$ROOT/$TOR_TREE" --compiler-id "$cid" >/dev/null 2>&1 && return 0
+        tor_alias_matches "$cand" "$primary_path" && return 0
     done
     return 1
 }
@@ -395,42 +417,144 @@ case "${1:-ready}" in
             echo "tor_archives_ready: selftest FAILED — link_from wrote a manifest of its own for a manifest-less donor" >&2
             exit 1
         fi
-        # have_all() must accept a manifest recorded under one alias for the
-        # compiler (e.g. "gcc", what vendor/tor's real configure picked) when
-        # the ambient guess in THIS tree resolves to a different alias for
-        # the very same binary (e.g. "cc", what tor_ambient_compiler() falls
-        # back to with no vendor/tor/Makefile and CC unset -- exactly the
-        # state a freshly linked worktree is in; see tor_alias_check() and
-        # the header comment on tor_ambient_compiler()). Skip cleanly if this
-        # host's gcc and cc are not the same binary, since the fix does not
-        # apply there.
-        gcc_path="$(command -v gcc 2>/dev/null || true)"
-        cc_path="$(command -v cc 2>/dev/null || true)"
-        if [ -n "$gcc_path" ] && [ -n "$cc_path" ] && \
-           [ "$(realpath -- "$gcc_path" 2>/dev/null)" = "$(realpath -- "$cc_path" 2>/dev/null)" ]; then
-            fake_wt3="$fixture/worktree3"
-            mkdir -p "$fake_wt3"
-            for a in "${ARCHIVES[@]}"; do
-                mkdir -p "$fake_wt3/${a%/*}"
-                printf 'fixture tor archive bytes\n' >"$fake_wt3/$a"
-            done
-            alias_cid="$("$SCRIPT_ROOT/tools/dev/build-epoch-key.sh" compiler-id gcc gcc 2>/dev/null)" || {
-                echo "tor_archives_ready: selftest FAILED — could not derive the gcc alias compiler id" >&2
-                exit 1
-            }
-            "$(zcl_tor_provenance_bin "$SCRIPT_ROOT")" write "$fake_wt3/$TOR_TREE" \
-                "$(printf '%040x' 1)" "$alias_cid" \
-                "$(printf 'selftest-configure-args' | sha256sum | awk '{print $1}')" >/dev/null || {
-                echo "tor_archives_ready: selftest FAILED — could not write the alias fixture manifest" >&2
-                exit 1
-            }
-            if ! (ROOT="$fake_wt3"; cd "$fake_wt3" && unset CC VENDOR_CC; have_all) >/dev/null 2>&1; then
-                echo "tor_archives_ready: selftest FAILED — have_all() rejected a manifest recorded under a same-binary compiler alias" >&2
-                exit 1
+        # Controlled aliases exercise the real fingerprint and manifest tools.
+        # Probe output is deliberately identical even for different executable
+        # targets: a version banner must never be the admission authority.
+        tor_test_fail() {
+            echo "tor_archives_ready: selftest FAILED — $*" >&2
+            exit 1
+        }
+        tor_test_snapshot() {
+            sha256sum "${ARCHIVES[@]/#/$ROOT/}"
+            if [ -f "$ROOT/$TOR_TREE/.provenance" ]; then
+                sha256sum "$ROOT/$TOR_TREE/.provenance"
+            else
+                printf 'manifest absent\n'
             fi
-        else
-            echo "tor_archives_ready: selftest SKIP — gcc and cc are not the same binary on this host, cannot exercise the alias path"
-        fi
+        }
+        tor_test_expect() {
+            local want="$1" label="$2" before rc=0
+            shift 2
+            before="$(tor_test_snapshot)"
+            "$@" >"$fixture/alias-result.log" 2>&1 || rc=$?
+            if [ "$rc" -ne "$want" ]; then
+                cat "$fixture/alias-result.log" >&2
+                tor_test_fail "$label: exit=$rc, want=$want"
+            fi
+            [ "$before" = "$(tor_test_snapshot)" ] || tor_test_fail "$label mutated artifacts"
+            printf 'tor_archives_ready: selftest PASS — %s\n' "$label"
+        }
+        tor_test_id() {
+            "$SCRIPT_ROOT/tools/dev/build-epoch-key.sh" compiler-id "$1" "$1"
+        }
+        tor_test_manifest() {
+            "$(zcl_tor_provenance_bin "$SCRIPT_ROOT")" write "$ROOT/$TOR_TREE" \
+                "$test_commit" "$1" "$test_config" >/dev/null
+        }
+        tor_test_with_cc() (
+            VENDOR_CC="$1"
+            have_all
+        )
+        tor_test_changed_env() (
+            export SOURCE_DATE_EPOCH=42
+            have_all
+        )
+        tor_test_aliases() (
+            unset CC VENDOR_CC SOURCE_DATE_EPOCH ZCL_BUILD_EPOCH_KEY_CACHE_DIR
+            TRIPLE=""
+            local bin="$fixture/bin" driver="$fixture/bin/fixture-gcc-999" a
+            local test_commit test_config alias_cid other_cid manifest
+            test_commit="$(printf '%040x' 1)"
+            test_config="$(printf 'selftest-configure-args' | sha256sum | awk '{print $1}')"
+            mkdir -p "$bin"
+            export TOR_ALIAS_TRACE="$fixture/compiler-trace"
+            cat >"$driver" <<'COMPILER'
+#!/bin/sh
+printf '%s\n' "$0" >> "$TOR_ALIAS_TRACE"
+printf 'fixture compiler\n'
+COMPILER
+            chmod +x "$driver"
+            cp -p "$driver" "$fixture/compiler.original"
+            for a in cc gcc clang gcc-999; do
+                ln -s fixture-gcc-999 "$bin/$a"
+            done
+            export PATH="$bin:$PATH"
+            ROOT="$fake_primary"
+            alias_cid="$(tor_test_id gcc-999)"
+            tor_test_manifest "$alias_cid"
+            printf 'CC = gcc-999\n' >"$ROOT/$TOR_TREE/Makefile"
+            tor_test_expect 0 configured-donor have_all
+            ROOT="$fixture/alias-receiver"
+            mkdir -p "$ROOT"
+            cd "$ROOT"
+            link_from "$fake_primary" >/dev/null || tor_test_fail 'versioned-alias copy refused'
+            manifest="$ROOT/$TOR_TREE/.provenance"
+            cmp -s "$manifest" "$fake_primary/$TOR_TREE/.provenance" || tor_test_fail 'copy changed provenance'
+            for a in "${ARCHIVES[@]}"; do
+                cmp -s "$ROOT/$a" "$fake_primary/$a" || tor_test_fail 'copy changed archive'
+                [ "$(ls -l "$ROOT/$a" | awk '{print $2}')" = 1 ] || tor_test_fail 'copy shared an inode'
+            done
+            tor_test_expect 0 direct-match tor_test_with_cc gcc-999
+            : >"$TOR_ALIAS_TRACE"
+            tor_test_expect 0 versioned-alias have_all
+            grep -F "$bin/gcc-999" "$TOR_ALIAS_TRACE" >/dev/null || tor_test_fail 'versioned alias never probed'
+            tor_test_expect 0 alias-path tor_alias_check cc
+            tor_test_manifest "$(tor_test_id gcc)"
+            tor_test_expect 0 unversioned-alias have_all
+            tor_test_manifest "$alias_cid"
+            tor_test_expect 1 compiler-arguments tor_test_with_cc 'cc -DFIXTURE=1'
+
+            # A manifest that exactly matches another target is still refused
+            # by this ambient compiler. Removing the equality check must make
+            # THIS assertion fail, rather than an unrelated setup assertion.
+            cp -p "$driver" "$bin/other-gcc-999"
+            rm "$bin/gcc-999"
+            ln -s other-gcc-999 "$bin/gcc-999"
+            other_cid="$(tor_test_id gcc-999)"
+            [ "$alias_cid" != "$other_cid" ] || tor_test_fail 'different target did not change identity'
+            tor_test_manifest "$other_cid"
+            tor_test_expect 0 different-target-control tor_test_with_cc gcc-999
+            tor_test_expect 1 different-executable have_all
+            rm "$bin/gcc-999"
+            ln -s fixture-gcc-999 "$bin/gcc-999"
+            tor_test_manifest "$alias_cid"
+
+            export ZCL_BUILD_EPOCH_KEY_CACHE_DIR="$fixture/compiler-cache"
+            tor_test_id gcc-999 >"$fixture/cached-id"
+            printf '# changed compiler bytes, identical probe output\n' >>"$driver"
+            # Prove the inherited cache really is stale, then require both
+            # readiness paths to fingerprint the changed bytes independently.
+            tor_test_expect 0 stale-cache-control test "$(tor_test_id gcc-999)" = "$alias_cid"
+            tor_test_expect 1 changed-compiler have_all
+            tor_test_expect 1 changed-compiler-direct tor_test_with_cc gcc-999
+            unset ZCL_BUILD_EPOCH_KEY_CACHE_DIR
+            cp -p "$fixture/compiler.original" "$driver"
+            tor_test_expect 0 restored-compiler have_all
+            tor_test_expect 1 changed-environment tor_test_changed_env
+            tor_test_manifest "$(printf '%064x' 0)"
+            tor_test_expect 1 incorrect-identity have_all
+            tor_test_manifest "$alias_cid"
+            for a in "${ARCHIVES[@]}"; do
+                cp -p "$ROOT/$a" "$fixture/archive.original"
+                printf 'corrupted\n' >>"$ROOT/$a"
+                tor_test_expect 1 "corrupted-${a##*/}" do_ready no-link
+                cp -p "$fixture/archive.original" "$ROOT/$a"
+            done
+            cp -p "$manifest" "$fixture/manifest.original"
+            rm "$manifest"
+            tor_test_expect 1 missing-manifest have_all
+            printf 'invalid manifest\n' >"$manifest"
+            tor_test_expect 1 corrupt-manifest do_ready no-link
+            cp -p "$fixture/manifest.original" "$manifest"
+            # Preserve the separate provenance authority: readiness checks
+            # compiler/archive identity; this gate checks the expected commit.
+            tor_test_expect 0 matching-tor-commit "$(zcl_tor_provenance_bin "$SCRIPT_ROOT")" \
+                check "$ROOT/$TOR_TREE" --tor-commit "$test_commit"
+            tor_test_expect 1 wrong-tor-commit "$(zcl_tor_provenance_bin "$SCRIPT_ROOT")" \
+                check "$ROOT/$TOR_TREE" --tor-commit "$(printf '%040x' 2)"
+            tor_test_expect 0 restored-artifacts have_all
+        )
+        tor_test_aliases
         cleanup_fixture
         trap - EXIT
         echo "tor_archives_ready: selftest PASS"
