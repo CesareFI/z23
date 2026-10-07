@@ -59,10 +59,10 @@ class NativeKeysInstrumentedTest {
     @Test fun freshTestEntropyRoundTripsWithoutConvertingSecretsToStrings() {
         val entropy = WalletKeys.createEntropy()
         try {
-            assertEquals(32, entropy.size)
+            assertEquals(16, entropy.size)
             val phrase = WalletKeys.recoveryPhrase(entropy)
             try {
-                assertEquals(23, phrase.count { it == ' ' })
+                assertEquals(11, phrase.count { it == ' ' })
                 val restored = WalletKeys.restoreEntropy(phrase)
                 try { assertTrue(entropy.contentEquals(restored)) } finally { restored.fill(0) }
                 assertTrue(WalletKeys.confirmRecoveryPhrase(entropy, phrase))
