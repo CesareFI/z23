@@ -652,6 +652,72 @@ static int test_app_sync_batch_bound(void)
     return failures;
 }
 
+static int test_app_sync_writer_byte_bound(void)
+{
+    int failures = 0;
+    struct sync_test_signer signer;
+    memset(&signer, 0, sizeof(signer));
+    TEST("app sync: writer refuses crossing the answer byte ceiling") {
+        struct zcl_app_event_scope_v1 scope =
+            sync_test_scope("social.events.v1");
+        ASSERT(sync_test_signer_open(&signer, &scope, 5));
+        static uint8_t payload[60000], answer[400000], snapshot[400000];
+        memset(payload, 0x61, sizeof(payload));
+        memset(answer, 0xa5, sizeof(answer));
+        struct zcl_app_sync_writer writer;
+        zcl_app_sync_writer_init(&writer, answer, sizeof(answer));
+        struct zcl_app_signed_event_v1 event;
+        uint8_t previous[32] = {0};
+        for (size_t i = 0; i < 4; i++) {
+            ASSERT(sync_test_sign(&signer, i + 1, previous, payload,
+                                  sizeof(payload), &event));
+            ASSERT_EQ(zcl_app_sync_writer_append(&writer, &event),
+                      ZCL_APP_SYNC_OK);
+            memcpy(previous, event.event_id, sizeof(previous));
+        }
+        ASSERT(sync_test_sign(&signer, 5, previous, payload,
+                              sizeof(payload), &event));
+        const size_t saved_len = writer.len, saved_rows = writer.rows;
+        ASSERT(saved_len <= ZCL_APP_SYNC_ANSWER_MAX);
+        const size_t frame_len = sync_test_frame(&event, snapshot,
+                                                 sizeof(snapshot));
+        ASSERT(frame_len > 0);
+        const size_t row_len = ZCL_APP_SYNC_ROW_HEAD_BYTES + frame_len;
+        ASSERT(row_len > ZCL_APP_SYNC_ANSWER_MAX - saved_len);
+        memcpy(snapshot, answer, sizeof(snapshot));
+        ASSERT_EQ(zcl_app_sync_writer_append(&writer, &event),
+                  ZCL_APP_SYNC_BATCH_FULL);
+        ASSERT_EQ(writer.len, saved_len);
+        ASSERT_EQ(writer.rows, saved_rows);
+        ASSERT_EQ(writer.cap, sizeof(answer));
+        ASSERT(writer.out == answer);
+        ASSERT(memcmp(answer, snapshot, sizeof(answer)) == 0);
+
+        /* Physical capacity below the policy ceiling still controls fit. */
+        zcl_app_sync_writer_init(&writer, answer, row_len);
+        ASSERT_EQ(zcl_app_sync_writer_append(&writer, &event), ZCL_APP_SYNC_OK);
+        ASSERT_EQ(writer.len, row_len);
+        ASSERT_EQ(writer.rows, 1u);
+        memcpy(snapshot, answer, sizeof(snapshot));
+        ASSERT_EQ(zcl_app_sync_writer_append(&writer, &event),
+                  ZCL_APP_SYNC_BATCH_FULL);
+        ASSERT_EQ(writer.len, row_len);
+        ASSERT_EQ(writer.rows, 1u);
+        ASSERT_EQ(writer.cap, row_len);
+        ASSERT(memcmp(answer, snapshot, sizeof(answer)) == 0);
+        zcl_app_sync_writer_init(&writer, answer, row_len - 1);
+        ASSERT_EQ(zcl_app_sync_writer_append(&writer, &event),
+                  ZCL_APP_SYNC_BATCH_FULL);
+        ASSERT_EQ(writer.len, 0u);
+        ASSERT_EQ(writer.rows, 0u);
+        ASSERT_EQ(writer.cap, row_len - 1);
+        ASSERT(memcmp(answer, snapshot, sizeof(answer)) == 0);
+        PASS();
+    } _test_next:;
+    sync_test_signer_close(&signer);
+    return failures;
+}
+
 static int test_app_sync_no_peer(void)
 {
     int failures = 0;
@@ -702,6 +768,7 @@ int test_app_event_sync(void)
     failures += test_app_sync_tampered_row();
     failures += test_app_sync_out_of_scope_row();
     failures += test_app_sync_batch_bound();
+    failures += test_app_sync_writer_byte_bound();
     failures += test_app_sync_no_peer();
     return failures;
 }

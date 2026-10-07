@@ -205,7 +205,9 @@ enum zcl_app_sync_status zcl_app_sync_writer_append(
     if (frame_len > ZCL_APP_SYNC_EVENT_MAX_BYTES)
         return ZCL_APP_SYNC_ROW_TOO_LARGE;
     size_t need = ZCL_APP_SYNC_ROW_HEAD_BYTES + frame_len;
-    if (w->rows >= ZCL_APP_SYNC_BATCH_MAX || need > w->cap - w->len)
+    if (w->rows >= ZCL_APP_SYNC_BATCH_MAX || need > w->cap - w->len ||
+        w->len > ZCL_APP_SYNC_ANSWER_MAX ||
+        need > ZCL_APP_SYNC_ANSWER_MAX - w->len)
         return ZCL_APP_SYNC_BATCH_FULL;
 
     uint8_t *row = w->out + w->len;
