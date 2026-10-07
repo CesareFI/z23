@@ -3483,8 +3483,6 @@ tools/command/native_code_guide_command.c:zcl_native_handle_code_guide:17
 tools/command/native_code_owner_command.c:zcl_native_handle_code_owner:16
 tools/command/native_code_relations_command.c:zcl_native_handle_code_relations:34
 tools/command/native_dev_activation_command.c:dac_authority_available:17
-tools/command/native_dev_activation_command.c:dac_commit:32
-tools/command/native_dev_activation_command.c:dac_plan:17
 tools/command/native_dev_activation_command.c:dac_read_current:29
 tools/command/native_dev_command.c:dev_drive_wait_cycle:32
 tools/command/native_dev_command.c:dev_emit_loop_status:17

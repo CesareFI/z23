@@ -322,20 +322,30 @@ static bool dac_request(const char *root, const char *source_id,
     return true;
 }
 
-static void dac_plan(const struct zcl_command_request *request,
-                     struct zcl_command_reply *reply, const char *key)
+static bool dac_plan_ttl(const struct zcl_command_request *request,
+                          struct zcl_command_reply *reply, int64_t *ttl)
 {
-    int64_t ttl = 900;
+    *ttl = 900;
     const struct json_value *ttl_value =
         json_get(request->input, "expires_in_seconds");
     if (ttl_value && !json_is_null(ttl_value))
-        ttl = json_get_int(ttl_value);
-    if (ttl < 60 || ttl > 3600) {
+        *ttl = json_get_int(ttl_value);
+    if (*ttl < 60 || *ttl > 3600) {
         dac_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
                  "INVALID_EXPIRY", "normalize",
                  "expires_in_seconds must be between 60 and 3600", "");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+static void dac_plan(const struct zcl_command_request *request,
+                     struct zcl_command_reply *reply, const char *key)
+{
+    int64_t ttl;
+    if (!dac_plan_ttl(request, reply, &ttl))
+        return;
 
     char root[PATH_MAX];
     if (!dac_resolve_root(request, root)) {
@@ -374,9 +384,10 @@ static void dac_plan(const struct zcl_command_request *request,
     struct dev_activation_result result = {0};
     int rc = dev_activation_run(&cycle.req, &ops, &result);
     if (rc != DEV_ACTIVATION_OK) {
+        dac_result_fields(reply, &result);
         dac_fail(reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
                  "ACTIVATION_PREFLIGHT_FAILED", "plan",
-                 "candidate staging or preflight failed closed",
+                 result.verify_detail,
                  result.failure_capsule);
         return;
     }
@@ -451,6 +462,71 @@ static void dac_plan(const struct zcl_command_request *request,
     reply->error.mutated = true; /* immutable staging + durable deploy state */
 }
 
+struct dac_commit_input {
+    const char *intent, *effect, *candidate, *source_id, *mutation, *cas, *expected;
+    int64_t expires;
+};
+
+static bool dac_commit_input_valid(const struct dac_commit_input *c)
+{
+    return dac_hex64(c->intent) && dac_hex64(c->effect) &&
+           dac_hex64(c->candidate) && dac_hex64(c->source_id) &&
+           dac_hex64(c->mutation) && dac_hex64(c->cas) && c->expected &&
+           (strcmp(c->expected, "-") == 0 || dac_generation(c->expected)) &&
+           c->expires > 0;
+}
+
+static bool dac_commit_authorize(const struct zcl_command_request *request,
+                                 struct zcl_command_reply *reply,
+                                 const char *key,
+                                 const struct dac_commit_input *c,
+                                 char root[PATH_MAX])
+{
+    struct dev_source_record planned = {0};
+    (void)snprintf(planned.source_id, sizeof(planned.source_id), "%s",
+                   c->source_id);
+    (void)snprintf(planned.mutation_id, sizeof(planned.mutation_id), "%s",
+                   c->mutation);
+    (void)snprintf(planned.cas_root_sha3, sizeof(planned.cas_root_sha3), "%s",
+                   c->cas);
+    planned.cas_present = true;
+    char want_intent[65], want_effect[65];
+    dac_effect(key, c->candidate, &planned, c->expected, c->expires, want_intent,
+               want_effect);
+    if (strcmp(c->intent, want_intent) != 0 || strcmp(c->effect, want_effect) != 0) {
+        dac_fail(reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_DENIED,
+                 "EFFECT_DIGEST_MISMATCH", "authorize",
+                 "activation plan fields changed after preflight", "");
+        return false;
+    }
+    if (platform_time_wall_unix() > c->expires) {
+        dac_fail(reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+                 "ACTIVATION_PLAN_EXPIRED", "authorize",
+                 "activation plan expired; create a fresh plan", "");
+        return false;
+    }
+
+    if (!dac_resolve_root(request, root)) {
+        dac_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                 "ROOT_RESOLVE_FAILED", "normalize",
+                 "could not resolve the checkout root", "");
+        return false;
+    }
+    struct dev_source_record current_source;
+    char why[192] = {0};
+    if (!dac_capture_source(root, &current_source, why) ||
+        strcmp(current_source.source_id, c->source_id) != 0 ||
+        strcmp(current_source.mutation_id, c->mutation) != 0 ||
+        strcmp(current_source.cas_root_sha3, c->cas) != 0) {
+        dac_fail(reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+                 "SOURCE_EPOCH_SUPERSEDED", "authorize",
+                 "source changed after activation planning",
+                 why[0] ? why : "source_epoch_mismatch");
+        return false;
+    }
+    return true;
+}
+
 static void dac_commit(const struct zcl_command_request *request,
                        struct zcl_command_reply *reply, const char *key)
 {
@@ -469,58 +545,18 @@ static void dac_commit(const struct zcl_command_request *request,
     const struct json_value *expires_value =
         json_get(request->input, "expires_unix");
     int64_t expires = expires_value ? json_get_int(expires_value) : 0;
-    if (!dac_hex64(intent) || !dac_hex64(effect) || !dac_hex64(candidate) ||
-        !dac_hex64(source_id) || !dac_hex64(mutation) || !dac_hex64(cas) ||
-        !expected || (strcmp(expected, "-") != 0 && !dac_generation(expected)) ||
-        expires <= 0) {
+    const struct dac_commit_input c = {
+        intent, effect, candidate, source_id, mutation, cas, expected, expires
+    };
+    if (!dac_commit_input_valid(&c)) {
         dac_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
                  "INVALID_COMMIT_INPUT", "normalize",
                  "commit requires the complete unmodified plan input", "");
         return;
     }
-    struct dev_source_record planned = {0};
-    (void)snprintf(planned.source_id, sizeof(planned.source_id), "%s",
-                   source_id);
-    (void)snprintf(planned.mutation_id, sizeof(planned.mutation_id), "%s",
-                   mutation);
-    (void)snprintf(planned.cas_root_sha3, sizeof(planned.cas_root_sha3), "%s",
-                   cas);
-    planned.cas_present = true;
-    char want_intent[65], want_effect[65];
-    dac_effect(key, candidate, &planned, expected, expires, want_intent,
-               want_effect);
-    if (strcmp(intent, want_intent) != 0 || strcmp(effect, want_effect) != 0) {
-        dac_fail(reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_DENIED,
-                 "EFFECT_DIGEST_MISMATCH", "authorize",
-                 "activation plan fields changed after preflight", "");
-        return;
-    }
-    if (platform_time_wall_unix() > expires) {
-        dac_fail(reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
-                 "ACTIVATION_PLAN_EXPIRED", "authorize",
-                 "activation plan expired; create a fresh plan", "");
-        return;
-    }
-
     char root[PATH_MAX];
-    if (!dac_resolve_root(request, root)) {
-        dac_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
-                 "ROOT_RESOLVE_FAILED", "normalize",
-                 "could not resolve the checkout root", "");
+    if (!dac_commit_authorize(request, reply, key, &c, root))
         return;
-    }
-    struct dev_source_record current_source;
-    char why[192] = {0};
-    if (!dac_capture_source(root, &current_source, why) ||
-        strcmp(current_source.source_id, source_id) != 0 ||
-        strcmp(current_source.mutation_id, mutation) != 0 ||
-        strcmp(current_source.cas_root_sha3, cas) != 0) {
-        dac_fail(reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
-                 "SOURCE_EPOCH_SUPERSEDED", "authorize",
-                 "source changed after activation planning",
-                 why[0] ? why : "source_epoch_mismatch");
-        return;
-    }
     struct dev_activation_cycle_request cycle;
     const char *expected_engine = strcmp(expected, "-") == 0 ? "" : expected;
     if (!dac_request(root, source_id, mutation, expected_engine,
@@ -576,9 +612,10 @@ static void dac_commit(const struct zcl_command_request *request,
     int rc = dev_activation_activate_generation(candidate_bytes, &cycle.req,
                                                 &ops, &result);
     if (rc != DEV_ACTIVATION_OK) {
+        dac_result_fields(reply, &result);
         dac_fail(reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
                  "ACTIVATION_COMMIT_FAILED", "commit",
-                 "dev activation failed closed and rollback was attempted",
+                 result.verify_detail,
                  result.failure_capsule);
         /* The engine may have stopped, flipped, restarted, and restored the
          * lane before reporting failure. Never describe that as untouched. */

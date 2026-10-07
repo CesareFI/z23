@@ -21,6 +21,10 @@
 #include "json/json.h"
 #include "platform/file_sync.h"
 #include "platform/clock.h"
+#include "command/native_command.h"
+#include "devloop.h"
+#include "util/authority_receipt.h"
+#include "platform/time_compat.h"
 #include <dirent.h>
 #include <errno.h>
 #if defined(_WIN32)
@@ -1649,9 +1653,263 @@ static int test_deploy_text(void)
     return failures;
 }
 
+static char persist_blocker[PATH_MAX];
+static int persist_close, persist_target, persist_blocked;
+static int persist_test_io(FILE *f, bool closing)
+{
+    if (!closing) return platform_file_sync(fileno(f));
+    int rc = fclose(f);
+    if (++persist_close == persist_target)
+        persist_blocked = unlink(persist_blocker) == 0 && mkdir(persist_blocker, 0700) == 0;
+    return rc;
+}
+
+static void persist_configure(int branch, struct dev_activation_request *req,
+                              struct fake_ctx *c, uint8_t sha[32])
+{
+    if (branch == 2) req->expected_current_generation = "gen-other";
+    if (branch == 3) req->artifact_path = "missing-artifact";
+    if (branch == 5) req->source_identity = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+    if (branch == 6) c->preflight_result = 1;
+    if (branch == 7) c->source_cas_result = 1;
+    if (branch == 8) req->mode = DEV_ACTIVATION_MODE_STAGE_ONLY;
+    if (branch == 9) memset(sha, 0, 32);
+}
+
+static int test_persistence_refusal(int branch)
+{
+    int failures = 0;
+    struct sandbox sb;
+    sandbox_enter(&sb, "persist_refusal");
+    struct platform_clock_source clock = {
+        .wall_unix = deploy_test_wall, .monotonic_us = deploy_test_wall };
+    platform_clock_set_source(&clock);
+    TEST("dev_activation: storage refusal retains the exact transaction outcome") {
+        char artifact[PATH_MAX], generation[96], current[96];
+        ASSERT_EQ(seed_generation(&sb, 'A', artifact, sizeof(artifact), generation, sizeof(generation)), 0);
+        struct fake_ctx c = { .service_up = true };
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artifact);
+        struct dev_activation_result r;
+        uint8_t sha[32];
+        ASSERT(hex_to_bytes32(generation + 4, sha));
+        if (branch == 1) ASSERT(write_in_progress_marker(&sb, generation));
+        persist_configure(branch, &req, &c, sha);
+        snprintf(persist_blocker, sizeof(persist_blocker), "%s/agent-deploy.json", sb.datadir);
+        persist_close = persist_blocked = 0;
+        const int targets[] = {2, 1, 1, 1, 1, 2, 2, 2, 2, 1};
+        persist_target = targets[branch];
+        dev_activation_deploy_test_set_io(persist_test_io);
+        int rc = branch == 5 || branch == 9 ? dev_activation_activate_generation(sha, &req, &ops, &r)
+                                            : dev_activation_run(&req, &ops, &r);
+        dev_activation_deploy_test_set_io(NULL);
+        const int codes[] = {6, 8, 4, 3, 6, 4, 4, 4, 6, 3};
+        const char *states[] = {"active", "refused", "superseded", "stage_failed", "preflighting",
+                               "preflight_failed", "preflight_failed", "superseded", "staged", "stage_failed"};
+        const char *verify[] = {"ready", "activation_in_progress", "resident_epoch_superseded", "stage_failed",
+                               "preflighting", "source_identity_mismatch", "preflight_failed", "source_epoch_superseded", "staged", "stage_failed"};
+        ASSERT(persist_blocked);
+        ASSERT_EQ(rc, codes[branch]);
+        ASSERT_EQ(r.status, rc);
+        ASSERT_STR_EQ(r.activation_status, states[branch]);
+        ASSERT_STR_EQ(r.verify_status, verify[branch]);
+        ASSERT(strstr(r.verify_detail, "deploy-state persistence failed") != NULL);
+        const char *causes[] = {"", "stale in-progress marker", "resident generation compare-and-swap", "candidate staging failed", "", "generation source_id_sha256 mismatch", "candidate preflight failed", "source epoch compare-and-swap", "", "not staged"};
+        ASSERT(strstr(r.failure_capsule, causes[branch]) != NULL);
+        ASSERT(fake_current_gen(&c, current, sizeof(current)));
+        ASSERT_STR_EQ(current, generation);
+        if (branch == 0) ASSERT_STR_EQ(r.running_generation, generation);
+        ASSERT(c.service_up);
+        ASSERT_EQ(c.stop_calls, branch == 0 ? 1 : 0);
+        struct stat st;
+        ASSERT_EQ(stat(persist_blocker, &st), 0);
+        ASSERT(S_ISDIR(st.st_mode));
+        PASS();
+    } _test_next:;
+    dev_activation_deploy_test_set_io(NULL);
+    platform_clock_clear_source();
+    sandbox_exit(&sb);
+    return failures;
+}
+
+/* The adapter runs unchanged; external source, service and receipt authorities
+ * are fixture inputs. Storage refusal still enters the real engine and writer. */
+
+static struct sandbox *persist_command_sb;
+static const char *persist_command_artifact;
+static struct fake_ctx *persist_command_ctx;
+static struct authority_receipt_header persist_command_authority;
+static char persist_command_authority_name[96];
+
+static bool persist_command_source(const char *root,
+                                   struct dev_source_record *out,
+                                   char *why, size_t capacity)
+{
+    (void)root; (void)why; (void)capacity;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->source_id, sizeof(out->source_id), "%s", TEST_SOURCE_ID);
+    snprintf(out->mutation_id, sizeof(out->mutation_id), "%s", TEST_SOURCE_ID);
+    snprintf(out->cas_root_sha3, sizeof(out->cas_root_sha3), "%s", TEST_SOURCE_ID);
+    out->cas_present = true;
+    return true;
+}
+
+static bool persist_command_request(const char *root, const char *commit,
+                                    struct dev_activation_cycle_request *out)
+{
+    (void)root; (void)commit;
+    memset(out, 0, sizeof(*out));
+    base_request(&out->req, persist_command_sb, persist_command_artifact);
+    snprintf(out->gen_root, sizeof(out->gen_root), "%s", persist_command_sb->gen_root);
+    snprintf(out->datadir, sizeof(out->datadir), "%s", persist_command_sb->datadir);
+    return true;
+}
+
+static void persist_command_ops(const struct dev_activation_request *req,
+                                struct dev_activation_ops *ops)
+{
+    (void)req;
+    fake_ops_init(ops, persist_command_ctx);
+}
+
+static bool persist_command_seal(struct authority_receipt_header *h,
+                                 const char *datadir, const char *name,
+                                 char *final_out, size_t final_cap)
+{
+    (void)datadir; (void)final_out; (void)final_cap;
+    persist_command_authority = *h;
+    snprintf(persist_command_authority_name,
+             sizeof(persist_command_authority_name), "%s", name);
+    return true;
+}
+
+static bool persist_command_available(int fd, const char *name,
+                                      const char *schema,
+                                      const uint8_t artifact[32],
+                                      const uint8_t anchor[32],
+                                      const uint8_t detail[32])
+{
+    return fd >= 0 && strcmp(name, persist_command_authority_name) == 0 &&
+           strcmp(schema, persist_command_authority.schema) == 0 &&
+           memcmp(artifact, persist_command_authority.artifact_digest, 32) == 0 &&
+           memcmp(anchor, persist_command_authority.context_anchor, 32) == 0 &&
+           memcmp(detail, persist_command_authority.detail_digest, 32) == 0;
+}
+
+static void persist_command_handle(const struct zcl_command_request *request,
+                                   struct zcl_command_reply *reply);
+
+#ifndef ZCL_DEV_BUILD
+#define ZCL_DEV_BUILD
+#define PERSIST_TEST_DEV_BUILD
+#endif
+#define zcl_dev_source_identity_capture persist_command_source
+#define dev_activation_request_from_cycle persist_command_request
+#define dev_activation_default_ops persist_command_ops
+#define authority_receipt_header_seal_and_write persist_command_seal
+#define authority_receipt_header_authority_available persist_command_available
+#define zcl_native_handle_dev_generation_activate persist_command_handle
+#include "../../../tools/command/native_dev_activation_command.c"
+#undef zcl_native_handle_dev_generation_activate
+#undef authority_receipt_header_authority_available
+#undef authority_receipt_header_seal_and_write
+#undef dev_activation_default_ops
+#undef dev_activation_request_from_cycle
+#undef zcl_dev_source_identity_capture
+#ifdef PERSIST_TEST_DEV_BUILD
+#undef ZCL_DEV_BUILD
+#undef PERSIST_TEST_DEV_BUILD
+#endif
+
+static int test_persistence_command(int branch)
+{
+    int failures = 0;
+    struct sandbox sb;
+    sandbox_enter(&sb, "persist_command");
+    struct platform_clock_source clock = {
+        .wall_unix = deploy_test_wall, .monotonic_us = deploy_test_wall };
+    platform_clock_set_source(&clock);
+    struct json_value input = {0};
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, "zcl.dev_generation_activate.v1");
+    TEST("dev_activation: command reports storage refusal and runtime fields") {
+        char artifact[PATH_MAX], generation[96], current[96];
+        ASSERT_EQ(seed_generation(&sb, 'A', artifact, sizeof(artifact),
+                                  generation, sizeof(generation)), 0);
+        struct fake_ctx c = { .service_up = true };
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        persist_command_sb = &sb;
+        persist_command_artifact = artifact;
+        persist_command_ctx = &c;
+        struct zcl_command_context context = { .source_root = sb.home };
+        json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "idempotency_key", "persist"));
+        struct zcl_command_request request = { .context = &context, .input = &input };
+        if (branch == 2) {
+            persist_command_handle(&request, &reply);
+            ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_PASSED);
+            json_free(&input);
+            ASSERT(json_read(&input, json_get_str(json_get(&reply.data, "commit_input")),
+                             strlen(json_get_str(json_get(&reply.data, "commit_input")))));
+            zcl_command_reply_free(&reply);
+            zcl_command_reply_init(&reply, "zcl.dev_generation_activate.v1");
+        }
+        if (branch == 3) c.preflight_result = 1;
+        snprintf(persist_blocker, sizeof(persist_blocker), "%s/agent-deploy.json", sb.datadir);
+        persist_close = persist_blocked = 0;
+        persist_target = branch == 0 ? 1 : 2;
+        dev_activation_deploy_test_set_io(persist_test_io);
+        persist_command_handle(&request, &reply);
+        dev_activation_deploy_test_set_io(NULL);
+        const char *states[] = {"preflighting", "staged", "active", "preflight_failed"};
+        const char *verify[] = {"preflighting", "staged", "ready", "preflight_failed"};
+        ASSERT(persist_blocked);
+        ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_BLOCKED);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_BLOCKED);
+        ASSERT_STR_EQ(reply.error.code, branch == 2 ? "ACTIVATION_COMMIT_FAILED" : "ACTIVATION_PREFLIGHT_FAILED");
+        ASSERT_STR_EQ(reply.error.phase, branch == 2 ? "commit" : "plan");
+        ASSERT(strstr(reply.error.message, "deploy-state persistence failed") != NULL);
+        const char *details[] = {
+            "candidate staged; running process untouched",
+            "candidate preflight passed; no service stop/restart",
+            "exact candidate generation is active and verified",
+            "candidate preflight failed"
+        };
+        ASSERT(strstr(reply.error.message, details[branch]) != NULL);
+        ASSERT_STR_EQ(reply.error.evidence, branch == 3 ? "candidate preflight failed" : "");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "activation_status")), states[branch]);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "verify_status")), verify[branch]);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "rollback_status")), "not_needed");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "candidate_generation")), generation);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "running_generation")), branch == 2 ? generation : "");
+        ASSERT(fake_current_gen(&c, current, sizeof(current)));
+        ASSERT_STR_EQ(current, generation);
+        ASSERT(c.service_up);
+        ASSERT_EQ(c.stop_calls, branch == 2 ? 1 : 0);
+        ASSERT_EQ(c.preflight_calls, branch == 0 ? 0 : branch == 2 ? 2 : 1);
+        PASS();
+    } _test_next:;
+    dev_activation_deploy_test_set_io(NULL);
+    platform_clock_clear_source();
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+    persist_command_sb = NULL;
+    persist_command_ctx = NULL;
+    persist_command_artifact = NULL;
+    sandbox_exit(&sb);
+    return failures;
+}
+
 int test_dev_activation(void)
 {
     int failures = 0;
+    for (int branch = 0; branch < 10; ++branch)
+        failures += test_persistence_refusal(branch);
+    for (int branch = 0; branch < 4; ++branch)
+        failures += test_persistence_command(branch);
     failures += test_deploy_text();
     failures += test_deploy_state_io(1);
     failures += test_deploy_state_io(2);

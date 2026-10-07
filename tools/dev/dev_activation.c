@@ -930,6 +930,19 @@ void dev_activation_clear_in_progress(const struct dev_activation_txn *txn)
     (void)platform_private_file_unlink_missing_ok(txn->inprogress_path);
 }
 
+static int dev_persist_state(struct dev_activation_txn *txn, int status)
+{
+    if (dev_activation_write_deploy_state(txn))
+        return status;
+    struct dev_activation_result *r = txn->result;
+    size_t used = strlen(r->verify_detail);
+    snprintf(r->verify_detail + used, sizeof(r->verify_detail) - used,
+             "; deploy-state persistence failed");
+    LOG_WARN("dev-activation", "deploy-state persistence failed: %s (%s)",
+             txn->deploy_state, r->activation_status);
+    return status == DEV_ACTIVATION_OK ? DEV_ACTIVATION_E_INTERNAL : status;
+}
+
 /* With the activation flock held, a surviving in-progress marker can only come
  * from a prior activation that died mid-transaction. Refuse and point at the
  * recovery command; never touch the mixed on-disk state. */
@@ -969,7 +982,7 @@ static int dev_check_stale_in_progress(struct dev_activation_txn *txn)
              "stale in-progress marker%s%s from a dead activation; the lane may "
              "be mixed — run `make agent-dev-recover`",
              stale_gen[0] ? " candidate=" : "", stale_gen);
-    (void)dev_activation_write_deploy_state(txn);
+    (void)dev_persist_state(txn, DEV_ACTIVATION_E_INTERNAL);
     LOG_RETURN(DEV_ACTIVATION_E_STALE_IN_PROGRESS, "dev-activation",
                "REFUSED: stale activation-in-progress marker %s (%s) from a "
                "crashed prior activation; the dev lane may be in a mixed state — "
@@ -1119,7 +1132,7 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
                            "running generation untouched");
             snprintf(r->failure_capsule, sizeof(r->failure_capsule),
                      "resident generation compare-and-swap refused publication");
-            (void)dev_activation_write_deploy_state(txn);
+            (void)dev_persist_state(txn, DEV_ACTIVATION_E_INTERNAL);
             return DEV_ACTIVATION_E_PREFLIGHT;
         }
     }
@@ -1131,7 +1144,7 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
                            "candidate staging failed");
             snprintf(r->failure_capsule, sizeof(r->failure_capsule),
                      "candidate staging failed");
-            (void)dev_activation_write_deploy_state(txn);
+            (void)dev_persist_state(txn, DEV_ACTIVATION_E_INTERNAL);
             return st;
         }
     }
@@ -1139,7 +1152,9 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
 
     dev_set_status(r, "preflighting", "preflighting",
                    "candidate staged; running process untouched");
-    (void)dev_activation_write_deploy_state(txn);
+    int persisted = dev_persist_state(txn, DEV_ACTIVATION_OK);
+    if (persisted != DEV_ACTIVATION_OK)
+        return persisted;
 
     char source_id[65];
     dev_activation_generation_source_id(
@@ -1150,7 +1165,7 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
                        "requested source epoch");
         snprintf(r->failure_capsule, sizeof(r->failure_capsule),
                  "generation source_id_sha256 mismatch");
-        (void)dev_activation_write_deploy_state(txn);
+        (void)dev_persist_state(txn, DEV_ACTIVATION_E_INTERNAL);
         return DEV_ACTIVATION_E_PREFLIGHT;
     }
     if (ops->preflight(ops->ctx, txn->candidate_bin, source_id) != 0) {
@@ -1159,7 +1174,7 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
         snprintf(r->failure_capsule, sizeof(r->failure_capsule),
                  "candidate preflight failed");
         dev_activation_quarantine(txn, "candidate preflight failed");
-        (void)dev_activation_write_deploy_state(txn);
+        (void)dev_persist_state(txn, DEV_ACTIVATION_E_INTERNAL);
         fprintf(stderr, "[dev-activation] REJECTED: preflight failed; "
                         "running process and current generation untouched\n");
         return DEV_ACTIVATION_E_PREFLIGHT;
@@ -1170,7 +1185,7 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
                        "source changed after candidate preflight; running generation untouched");
         snprintf(r->failure_capsule, sizeof(r->failure_capsule),
                  "source epoch compare-and-swap refused publication");
-        (void)dev_activation_write_deploy_state(txn);
+        (void)dev_persist_state(txn, DEV_ACTIVATION_E_INTERNAL);
         fprintf(stderr, "[dev-activation] REFUSED: source epoch superseded; "
                         "running process and current generation untouched\n");
         return DEV_ACTIVATION_E_PREFLIGHT;
@@ -1188,13 +1203,11 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
         }
         dev_set_status(r, "staged", "staged",
                        "candidate preflight passed; no service stop/restart");
-        (void)dev_activation_write_deploy_state(txn);
-        return DEV_ACTIVATION_OK;
+        return dev_persist_state(txn, DEV_ACTIVATION_OK);
     }
 
     int st = dev_activate_candidate(txn);
-    (void)dev_activation_write_deploy_state(txn);
-    return st;
+    return dev_persist_state(txn, st);
 }
 
 /* ── public entry points ─────────────────────────────────────────────── */
@@ -1359,7 +1372,7 @@ int dev_activation_activate_generation(const uint8_t gen_sha256[32],
                        "requested generation is not staged");
         snprintf(result->failure_capsule, sizeof(result->failure_capsule),
                  "generation %s not staged", txn.candidate_generation);
-        (void)dev_activation_write_deploy_state(&txn);
+        (void)dev_persist_state(&txn, DEV_ACTIVATION_E_STAGE);
         result->status = DEV_ACTIVATION_E_STAGE;
         return DEV_ACTIVATION_E_STAGE;
     }
