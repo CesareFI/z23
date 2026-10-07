@@ -29,6 +29,7 @@
 struct zcl_chainlog {
     struct platform_private_file file;
     bool read_only;
+    bool write_failed; /* uncertain disk state: only reopen may resolve it */
     uint8_t  stream[ZCL_CHAINLOG_STREAM_BYTES];
     uint8_t  seed[HASH]; /* chain value before frame 1 */
     uint8_t  head[HASH];
@@ -366,6 +367,32 @@ static bool chainlog_writable(const struct zcl_chainlog *log)
     return log && !log->read_only;
 }
 
+/* Keep the ordered two-phase I/O separate from publishing in-memory state. */
+static bool chainlog_write_frame(struct zcl_chainlog *log,
+    const uint8_t prefix[PRE], const void *payload, size_t len,
+    const uint8_t chain[HASH], uint64_t at)
+{
+    /* Phase 1: the frame, then fsync. Until the sentinel lands these bytes
+     * are not history and a reopen will discard them. */
+    if (!platform_private_file_write_at(&log->file, prefix, PRE, at))
+        return false;
+    if (len &&
+        !platform_private_file_write_at(&log->file, payload, len, at + PRE))
+        return false;
+    if (!platform_private_file_write_at(&log->file, chain, HASH, at + PRE + len))
+        return false;
+    if (!platform_private_file_flush(&log->file))
+        return false;
+
+    /* Phase 2: the commit sentinel, then fsync. */
+    uint8_t sent[SENT];
+    sentinel_build(sent, at);
+    if (!platform_private_file_write_at(&log->file, sent, SENT,
+                                        at + PRE + len + HASH))
+        return false;
+    return platform_private_file_flush(&log->file);
+}
+
 enum zcl_chainlog_status zcl_chainlog_append(struct zcl_chainlog *log,
                                              uint32_t kind,
                                              const void *payload, size_t len,
@@ -374,6 +401,8 @@ enum zcl_chainlog_status zcl_chainlog_append(struct zcl_chainlog *log,
 {
     if (!chainlog_writable(log) || (len && !payload) || len > ZCL_CHAINLOG_PAYLOAD_MAX)
         return ZCL_CHAINLOG_ARGUMENT;
+    if (log->write_failed)
+        LOG_RETURN(ZCL_CHAINLOG_IO, "chainlog", "append refused after failed write; close and reopen");
 
     uint64_t seq = log->count + 1;
     uint8_t prefix[PRE];
@@ -387,29 +416,13 @@ enum zcl_chainlog_status zcl_chainlog_append(struct zcl_chainlog *log,
     if (!offsets_reserve(&log->offset, &log->offset_cap, (size_t)seq))
         return ZCL_CHAINLOG_IO;
 
-    /* Phase 1: the frame, then fsync. Until the sentinel lands these bytes
-     * are not history and a reopen will discard them. */
     uint64_t at = log->size;
-    if (!platform_private_file_write_at(&log->file, prefix, PRE, at))
-        return ZCL_CHAINLOG_IO;
-    if (len &&
-        !platform_private_file_write_at(&log->file, payload, len, at + PRE))
-        return ZCL_CHAINLOG_IO;
-    if (!platform_private_file_write_at(&log->file, chain, HASH, at + PRE + len))
-        return ZCL_CHAINLOG_IO;
-    if (!platform_private_file_flush(&log->file))
-        return ZCL_CHAINLOG_IO;
-
-    /* Phase 2: the commit sentinel, then fsync. */
-    uint8_t sent[SENT];
-    sentinel_build(sent, at);
-    if (!platform_private_file_write_at(&log->file, sent, SENT,
-                                        at + PRE + len + HASH))
-        return ZCL_CHAINLOG_IO;
-    if (!platform_private_file_flush(&log->file))
+    log->write_failed = true;
+    if (!chainlog_write_frame(log, prefix, payload, len, chain, at))
         return ZCL_CHAINLOG_IO;
 
     log->offset[seq - 1] = at;
+    log->write_failed = false;
     log->size = at + PRE + len + HASH + SENT;
     log->count = seq;
     memcpy(log->head, chain, HASH);

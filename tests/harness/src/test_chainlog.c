@@ -39,7 +39,6 @@
 #include "test/test_core.h"
 
 #include "base/safe_alloc.h"
-#include "chainlog/chainlog.h"
 #include "platform/private_file.h"
 #if !defined(_WIN32)
 #include <sys/stat.h>
@@ -50,6 +49,38 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Compile the real module with local I/O interception, without global hooks. */
+static unsigned cl_fault_at, cl_io_calls;
+static bool cl_injection_ok;
+static bool cl_fault_write(struct platform_private_file *f, const void *p, size_t n, uint64_t at)
+{
+    if (++cl_io_calls == cl_fault_at) {
+        cl_injection_ok = platform_private_file_write_at(f, p, n / 2, at);
+        return false;
+    }
+    return platform_private_file_write_at(f, p, n, at);
+}
+static bool cl_fault_flush(struct platform_private_file *f)
+{
+    if (++cl_io_calls == cl_fault_at) return false;
+    return platform_private_file_flush(f);
+}
+#define zcl_chainlog_status_label cl_local_status_label
+#define zcl_chainlog_open cl_local_open
+#define zcl_chainlog_open_readonly cl_local_open_readonly
+#define zcl_chainlog_close cl_local_close
+#define zcl_chainlog_append cl_local_append
+#define zcl_chainlog_read cl_local_read
+#define zcl_chainlog_count cl_local_count
+#define zcl_chainlog_head cl_local_head
+#define zcl_chainlog_verify cl_local_verify
+#include "chainlog/chainlog.h"
+#define platform_private_file_write_at cl_fault_write
+#define platform_private_file_flush cl_fault_flush
+#include "../../../engine/modules/chainlog/src/chainlog.c"
+#undef platform_private_file_write_at
+#undef platform_private_file_flush
 
 #define CL_CHECK(name, expr)                                          \
     do {                                                              \
@@ -768,9 +799,68 @@ static int case_readonly_cleanup(void)
 }
 
 int test_chainlog(void);
+static bool append_snapshot(const char *path, uint8_t buf[256], long *size)
+{
+    *size = file_size(path);
+    if (*size <= 0 || *size > 256) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    bool ok = fread(buf, 1, (size_t)*size, f) == (size_t)*size;
+    return fclose(f) == 0 && ok;
+}
+
+static int failed_append_retry(struct zcl_chainlog *log, const char *path)
+{
+    int failures = 0;
+    uint8_t before[256], after[256], head[32], out[32], untouched[32];
+    long size = 0, after_size = 0;
+    bool saved = append_snapshot(path, before, &size);
+    CL_CHECK("failed append snapshot", saved);
+    unsigned calls = cl_io_calls;
+    uint64_t seq = 99;
+    memset(out, 0xCC, sizeof out); memcpy(untouched, out, sizeof out);
+    CL_CHECK("failed append retry refuses", zcl_chainlog_append(log, 2, NULL, 0, &seq, out) == ZCL_CHAINLOG_IO);
+    CL_CHECK("retry performs no I/O", cl_io_calls == calls);
+    CL_CHECK("retry outputs unchanged", seq == 99 && memcmp(out, untouched, 32) == 0);
+    bool same = append_snapshot(path, after, &after_size);
+    CL_CHECK("retry bytes unchanged", saved && same && after_size == size && memcmp(before, after, (size_t)size) == 0);
+    CL_CHECK("failed append RAM unchanged", zcl_chainlog_count(log) == 0 && zcl_chainlog_head(log, head) && memcmp(head, log->seed, 32) == 0);
+    return failures;
+}
+
+static int case_failed_append(void)
+{
+    int failures = 0;
+    for (unsigned step = 1; step <= 6; ++step) {
+        char dir[256], path[320];
+        test_make_tmpdir(dir, sizeof dir, "chainlog", "failed_append");
+        (void)snprintf(path, sizeof path, "%s/log", dir);
+        struct zcl_chainlog_report rep;
+        struct zcl_chainlog *log = zcl_chainlog_open(path, k_stream_a, &rep);
+        CL_CHECK("failed append fixture", log != NULL);
+        if (log) {
+            uint8_t payload[100]; memset(payload, 0x41, sizeof payload);
+            cl_io_calls = 0; cl_fault_at = step; cl_injection_ok = true;
+            CL_CHECK("injected append fails", zcl_chainlog_append(log, 1, payload, sizeof payload, NULL, NULL) == ZCL_CHAINLOG_IO);
+            cl_fault_at = 0;
+            CL_CHECK("partial write injection completed", cl_injection_ok);
+            failures += failed_append_retry(log, path);
+            zcl_chainlog_close(log);
+            log = zcl_chainlog_open(path, k_stream_a, &rep);
+            const uint64_t torn[] = {0, 8, 66, 132, 148, 156, 0};
+            CL_CHECK("reopen resolves uncertain append", log && rep.records == (step == 6 ? 1u : 0u) && rep.torn_bytes == torn[step]);
+            CL_CHECK("reopen preserves committed bytes", file_size(path) == (step == 6 ? 228 : 64));
+            zcl_chainlog_close(log);
+        }
+        test_cleanup_tmpdir(dir);
+    }
+    return failures;
+}
+
 int test_chainlog(void)
 {
     int failures = 0;
+    failures += case_failed_append();
     failures += case_observation_lock();
     char readonly_dir[256];
     failures += case_readonly(NULL, readonly_dir);
