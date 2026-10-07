@@ -1822,6 +1822,38 @@ static int test_runner_dispatches_longest_first(void)
     return failures;
 }
 
+static int test_runner_build_needs_selection(void)
+{
+    int failures = 0;
+    TEST("runner build needs distinguish invalid selection from no needs") {
+        char exe[PATH_MAX], command[PATH_MAX + 128], out[512];
+        ASSERT(os_proc_exe_path(exe, sizeof(exe)));
+        ASSERT(strpbrk(exe, "'\r\n") == NULL);
+        const struct {
+            const char *selector;
+            int status;
+            const char *stdout_text;
+        } cases[] = {
+            {"--only=test_jsonqq", 2, ""},
+            {"--only=", 2, ""},
+            {"--exact=test_jsonq,test_jsonqq", 2, ""},
+            {"--only=test_jsonq", 0, "jsonq build/bin/jsonq\n"},
+            {"--only=test_hex_codec", 0, ""},
+        };
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            int n = snprintf(command, sizeof(command),
+                             "'%s' --list-build-needs %s", exe,
+                             cases[i].selector);
+            ASSERT(n > 0 && (size_t)n < sizeof(command));
+            ASSERT_EQ(capture_command(command, out, sizeof(out)),
+                      cases[i].status);
+            ASSERT_STR_EQ(out, cases[i].stdout_text);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_compile_scope_proof(void)
 {
     int failures = 0;
@@ -1846,6 +1878,7 @@ int test_test_group_selector(void)
     int failures = 0;
     failures += test_exact_verifier_prerequisites();
     failures += test_compile_scope_proof();
+    failures += test_runner_build_needs_selection();
     failures += test_tmpdir_recursive_cleanup();
     failures += test_selector_predicate();
     failures += test_registry_exact_resolution();

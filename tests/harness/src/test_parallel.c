@@ -2068,6 +2068,20 @@ static bool exact_selection_valid(bool exact, const char *only)
 
 #define BUILD_NEEDS_MAX 18u
 
+/* A matched group may declare no BUILD needs; an unmatched selector is
+ * instead invalid, even when the collector returns an empty list. */
+static bool build_needs_selection_valid(const char *only, bool only_exact)
+{
+    if (!only) return true;
+    for (size_t i = 0; i < g_num_groups; i++) {
+        if (test_group_selector_selects(g_groups[i].name, only, only_exact))
+            return true;
+    }
+    fprintf(stderr, "test_parallel: --%s=%s matched no groups\n",
+            only_exact ? "exact" : "only", only);
+    return false;
+}
+
 /* --list-build-needs: print `<make-target> <path>` per BUILD need of the
  * groups this selector would dispatch (zcl_test_selection_build_needs, under
  * the same params gate), and nothing at all when they declare none. The
@@ -2081,6 +2095,7 @@ static int build_needs_list(const char *only, bool only_exact)
     struct zcl_test_group_host_need needs[BUILD_NEEDS_MAX];
     size_t n = 0;
     if (!exact_selection_valid(only_exact, only) ||
+        !build_needs_selection_valid(only, only_exact) ||
         !zcl_test_selection_build_needs(only, only_exact,
                                         only ? NULL : params_gated, needs,
                                         BUILD_NEEDS_MAX, &n)) {
