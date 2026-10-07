@@ -3550,13 +3550,10 @@ tools/command/native_devagent_mutate_command.c:zcl_native_handle_dev_agent_mutat
 tools/command/native_devagent_pace.c:dvp_strip_ansi:16
 tools/command/native_devagent_pace.c:zcl_native_handle_dev_agent_pace:35
 tools/command/native_devagent_queue.c:dvq_compose_task:21
-tools/command/native_devagent_queue.c:dvq_encode_row:17
-tools/command/native_devagent_queue.c:dvq_escape:17
 tools/command/native_devagent_queue.c:dvq_model_ok:16
 tools/command/native_devagent_queue.c:dvq_next:49
 tools/command/native_devagent_queue.c:dvq_path_ok:34
 tools/command/native_devagent_queue.c:dvq_post:34
-tools/command/native_devagent_queue.c:dvq_reap:46
 tools/command/native_devagent_queue.c:dvq_status:27
 tools/command/native_devagent_queue.c:dvq_task_prev:23
 tools/command/native_devagent_situation.c:zcl_native_handle_dev_agent_situation:16

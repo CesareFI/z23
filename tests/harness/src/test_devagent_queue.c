@@ -19,6 +19,7 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "platform/state_root.h"
+#include "zutf8/zutf8.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -901,6 +902,7 @@ _test_next:;
 #endif /* !defined(_WIN32) */
 
 #if !defined(_WIN32)
+static int dvx_encoding_cases(void);
 static int dvx_receipt_cost_cases(void)
 {
     int failures = 0;
@@ -1086,7 +1088,195 @@ static int dvx_receipt_cost_cases(void)
     }
 _test_next:;
     dvx_restore();
+    return failures + dvx_encoding_cases();
+}
+/* Seed private fixture directories explicitly: status is read-only. */
+static bool dvx_encoding_setup(char qd[1100])
+{
+    char root[1100], engine[1200];
+    if (!platform_state_root(root, sizeof(root)))
+        return false;
+    dvx_queuedir(qd, 1100);
+    (void)snprintf(engine, sizeof(engine), "%s/engine", root);
+    return mkdir(qd, 0700) == 0 && mkdir(engine, 0700) == 0;
+}
+
+/* A complete single JSONL row must preserve both syntax and decoded text. */
+static bool dvx_encoding_matches(const char *file, const char *key,
+                                  const char *expected)
+{
+    char text[16384], canonical[16384];
+    struct json_value doc;
+    FILE *f = fopen(file, "rb");
+    if (!f)
+        return false;
+    size_t n = fread(text, 1, sizeof(text), f);
+    bool read_ok = !ferror(f) && feof(f);
+    if (fclose(f) != 0 || !read_ok || n == 0 || text[n - 1] != '\n' ||
+        !zutf8_validate_n(text, n))
+        return false;
+    json_init(&doc);
+    bool ok = json_read(&doc, text, n);
+    if (ok) {
+        const char *value = json_get_str(json_get(&doc, key));
+        ok = json_write(&doc, canonical, sizeof(canonical)) == n - 1 &&
+             memcmp(text, canonical, n - 1) == 0 && value &&
+             strcmp(value, expected) == 0;
+    }
+    json_free(&doc);
+    return ok;
+}
+
+/* Compare the complete file, including its length, without decoding it. */
+static bool dvx_encoding_unchanged(const char *file, const char *expected)
+{
+    char text[2048];
+    FILE *f = fopen(file, "rb");
+    if (!f)
+        return false;
+    size_t n = fread(text, 1, sizeof(text), f);
+    bool ok = !ferror(f) && feof(f) && n == strlen(expected) &&
+              memcmp(text, expected, n) == 0;
+    return fclose(f) == 0 && ok;
+}
+
+static int dvx_encoding_rows(void)
+{
+    int failures = 0;
+    TEST("queue: rewrite refuses invalid UTF-8 and preserves escaped text") {
+        struct dvx_call c;
+        char qd[1100], file[1300], seed[2048];
+        const struct {
+            const char *fixture;
+            const char *key;
+            const char *text;
+            bool valid;
+        } cases[] = {
+            {"encoding-row-bad", "brief", "a\xff", false},
+            {"encoding-dependency-bad", "depends_on", "a\xff", false},
+            {"encoding-row-good", "brief", "a\xc3\xa9\\\"\\\\", true}
+        };
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            dvx_isolate(cases[i].fixture);
+            ASSERT(dvx_encoding_setup(qd));
+            (void)snprintf(file, sizeof(file), "%s/queue.jsonl", qd);
+            (void)snprintf(seed, sizeof(seed),
+                "{\"seq\":1,\"ts\":\"fixed\",\"kind\":\"leaf\","
+                "\"name\":\"keep\",\"attempt\":1,\"state\":\"queued\","
+                "\"%s\":\"%s\"}\n"
+                "{\"seq\":2,\"kind\":\"leaf\",\"name\":\"drop\","
+                "\"attempt\":1,\"state\":\"queued\"}\n",
+                cases[i].key, cases[i].text);
+            ASSERT(dvx_write(file, seed));
+            dvx_verb(&c, "cancel", false);
+            ASSERT(json_push_kv_str(&c.input, "name", "drop"));
+            ASSERT(dvx_run(&c));
+            ASSERT_EQ(dvx_ok(&c), cases[i].valid);
+            if (!cases[i].valid)
+                ASSERT_STR_EQ(c.reply.error.code, "QUEUE_WRITE_FAILED");
+            dvx_end(&c);
+            if (cases[i].valid)
+                ASSERT(dvx_encoding_matches(file, "brief", "a\xc3\xa9\"\\"));
+            else
+                ASSERT(dvx_encoding_unchanged(file, seed));
+            dvx_restore();
+        }
+        PASS();
+    }
+_test_next:;
+    dvx_restore();
     return failures;
+}
+
+static int dvx_encoding_receipts(void)
+{
+    int failures = 0;
+    TEST("queue: bound receipt refuses invalid UTF-8 and preserves escaped text") {
+        struct dvx_call c;
+        char qd[1100], file[1300], dir[1200];
+        const char *body[] = {"{\"verdict\":\"a\xff\"}",
+                              "{\"verdict\":\"a\xc3\xa9\\\"\\\\\\n\"}"};
+        for (size_t i = 0; i < 2; i++) {
+            dvx_isolate(i ? "encoding-receipt-good" : "encoding-receipt-bad");
+            ASSERT(dvx_encoding_setup(qd));
+            (void)snprintf(file, sizeof(file), "%s/queue.jsonl", qd);
+            ASSERT(dvx_write(file, "{\"seq\":1,\"ts\":\"fixed\",\"kind\":\"leaf\","
+                "\"name\":\"encoding\",\"attempt\":1,\"state\":\"running\"}\n"));
+            (void)snprintf(dir, sizeof(dir), "%s/../engine/encoding", qd);
+            ASSERT_EQ(mkdir(dir, 0700), 0);
+            (void)snprintf(dir, sizeof(dir), "%s/../engine/encoding/a1", qd);
+            ASSERT_EQ(mkdir(dir, 0700), 0);
+            (void)snprintf(file, sizeof(file), "%s/receipt.json", dir);
+            ASSERT(dvx_write(file, body[i]));
+            dvx_verb(&c, "reap", false);
+            ASSERT(dvx_run(&c));
+            ASSERT_EQ(dvx_ok(&c), i == 1);
+            if (i == 0)
+                ASSERT_STR_EQ(c.reply.error.code, "QUEUE_WRITE_FAILED");
+            dvx_end(&c);
+            (void)snprintf(file, sizeof(file), "%s/outcomes.jsonl", qd);
+            if (i == 0)
+                ASSERT(dvx_file_absent(file));
+            else
+                ASSERT(dvx_encoding_matches(file, "verdict", "a\xc3\xa9\"\\\n"));
+            dvx_restore();
+        }
+        PASS();
+    }
+_test_next:;
+    dvx_restore();
+    return failures;
+}
+
+static int dvx_encoding_retry(void)
+{
+    int failures = 0;
+    TEST("queue: invalid retry row refuses before any reaping side effect") {
+        struct dvx_call c;
+        char qd[1100], file[1300], dir[1200];
+        const char seed[] = "{\"seq\":1,\"ts\":\"fixed\",\"kind\":\"leaf\","
+            "\"name\":\"retry\",\"attempt\":1,\"state\":\"running\","
+            "\"brief\":\"a\xff\"}\n";
+        dvx_isolate("encoding-retry-bad");
+        ASSERT(dvx_encoding_setup(qd));
+        (void)snprintf(file, sizeof(file), "%s/queue.jsonl", qd);
+        ASSERT(dvx_write(file, seed));
+        (void)snprintf(dir, sizeof(dir), "%s/../engine/retry", qd);
+        ASSERT_EQ(mkdir(dir, 0700), 0);
+        (void)snprintf(dir, sizeof(dir), "%s/../engine/retry/a1", qd);
+        ASSERT_EQ(mkdir(dir, 0700), 0);
+        (void)snprintf(file, sizeof(file), "%s/run.out", dir);
+        ASSERT(dvx_write(file, "rate_limited\nrc=1\n"));
+        (void)snprintf(file, sizeof(file), "%s/receipt.json", dir);
+        ASSERT(dvx_file_absent(file));
+        (void)snprintf(file, sizeof(file), "%s/.seen", dir);
+        ASSERT(dvx_file_absent(file));
+        dvx_verb(&c, "reap", false);
+        ASSERT(dvx_run(&c));
+        ASSERT(!dvx_ok(&c));
+        ASSERT_STR_EQ(c.reply.error.code, "QUEUE_WRITE_FAILED");
+        dvx_end(&c);
+        (void)snprintf(file, sizeof(file), "%s/queue.jsonl", qd);
+        ASSERT(dvx_encoding_unchanged(file, seed));
+        (void)snprintf(file, sizeof(file), "%s/outcomes.jsonl", qd);
+        ASSERT(dvx_file_absent(file));
+        (void)snprintf(file, sizeof(file), "%s/.seen", dir);
+        ASSERT(dvx_file_absent(file));
+        (void)snprintf(file, sizeof(file), "%s/.reap_stamp", qd);
+        ASSERT(dvx_file_absent(file));
+        dvx_restore();
+        PASS();
+    }
+_test_next:;
+    dvx_restore();
+    return failures;
+}
+
+static int dvx_encoding_cases(void)
+{
+    int rows = dvx_encoding_rows();
+    int receipts = dvx_encoding_receipts();
+    return rows + receipts + dvx_encoding_retry();
 }
 #endif /* !defined(_WIN32) */
 

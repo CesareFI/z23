@@ -124,6 +124,7 @@
 #include "platform/state_root.h"
 #include "platform/time_compat.h"
 #include "util/spawn.h"
+#include "zutf8/zutf8.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -351,32 +352,28 @@ static void dvq_now_iso(char out[64])
 static bool dvq_escape(const char *in, char *out, size_t cap)
 {
     size_t used = 0;
-    if (!in || !out || cap == 0)
+    if (!out || cap == 0)
+        return false;
+    out[0] = '\0';
+    if (!in || !zutf8_validate_n(in, strlen(in)))
         return false;
     for (const unsigned char *p = (const unsigned char *)in; *p; p++) {
-        const char *rep = NULL;
+        static const char specials[] = "\"\\\n\r\t";
+        const char *special = strchr(specials, *p);
         char tmp[8];
-        switch (*p) {
-        case '"': rep = "\\\""; break;
-        case '\\': rep = "\\\\"; break;
-        case '\n': rep = "\\n"; break;
-        case '\r': rep = "\\r"; break;
-        case '\t': rep = "\\t"; break;
-        default: break;
-        }
-        if (rep) {
-            if (used + 2 >= cap)
+        if (special) {
+            if (cap - used <= 2)
                 return false;
-            out[used++] = rep[0];
-            out[used++] = rep[1];
+            out[used++] = '\\';
+            out[used++] = "\"\\nrt"[special - specials];
         } else if (*p < 0x20) {
             int w = snprintf(tmp, sizeof(tmp), "\\u%04x", *p);
-            if (w != 6 || used + 6 >= cap)
+            if (w != 6 || cap - used <= 6)
                 return false;
             memcpy(out + used, tmp, 6);
             used += 6;
         } else {
-            if (used + 1 >= cap)
+            if (cap - used <= 1)
                 return false;
             out[used++] = (char)*p;
         }
@@ -680,19 +677,28 @@ static bool dvq_encode_row(const struct dvq_row *r, char *out, size_t cap,
     int w;
     if (!r || !out || cap == 0)
         return false;
-    if (!dvq_escape(r->kind, esc_kind, sizeof(esc_kind)) ||
-        !dvq_escape(r->name, esc_name, sizeof(esc_name)) ||
-        !dvq_escape(r->group, esc_group, sizeof(esc_group)) ||
-        !dvq_escape(r->path, esc_path, sizeof(esc_path)) ||
-        !dvq_escape(r->brief, esc_brief, sizeof(esc_brief)) ||
-        !dvq_escape(r->model, esc_model, sizeof(esc_model)) ||
-        !dvq_escape(r->ts, esc_ts, sizeof(esc_ts)) ||
-        !dvq_escape(r->state, esc_state, sizeof(esc_state)) ||
-        !dvq_escape(r->worktree, esc_wt, sizeof(esc_wt)) ||
-        !dvq_escape(r->pid_or_unit, esc_unit, sizeof(esc_unit)))
-        return false;
-    /* At most 79 bytes, 6x worst-case escaping: always fits esc_dep. */
-    (void)dvq_escape(r->depends_on, esc_dep, sizeof(esc_dep));
+    const struct {
+        const char *input;
+        char *output;
+        size_t capacity;
+    } fields[] = {
+        {r->kind, esc_kind, sizeof(esc_kind)},
+        {r->name, esc_name, sizeof(esc_name)},
+        {r->group, esc_group, sizeof(esc_group)},
+        {r->path, esc_path, sizeof(esc_path)},
+        {r->brief, esc_brief, sizeof(esc_brief)},
+        {r->model, esc_model, sizeof(esc_model)},
+        {r->ts, esc_ts, sizeof(esc_ts)},
+        {r->state, esc_state, sizeof(esc_state)},
+        {r->worktree, esc_wt, sizeof(esc_wt)},
+        {r->pid_or_unit, esc_unit, sizeof(esc_unit)},
+        {r->depends_on, esc_dep, sizeof(esc_dep)}
+    };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        if (!dvq_escape(fields[i].input, fields[i].output,
+                        fields[i].capacity))
+            return false;
+    }
     w = snprintf(out, cap,
                  "{\"seq\":%lld,\"ts\":\"%s\",\"kind\":\"%s\",\"name\":\"%s\","
                  "\"group\":\"%s\",\"path\":\"%s\",\"brief\":\"%s\","
@@ -3353,272 +3359,301 @@ static bool dvq_receipt_since(const char *path, time_t stamp)
            (stamp == 0 || st.st_mtime >= stamp);
 }
 
+/* Check every retained field before outcomes, .seen, or retries are written. */
+static bool dvq_rows_encodable(const struct dvq_row *rows, size_t n)
+{
+    char line[DVQ_LINE_CAP];
+    for (size_t i = 0; i < n; i++) {
+        if (!dvq_encode_row(&rows[i], line, sizeof(line), NULL))
+            return false;
+    }
+    return true;
+}
+
+struct dvq_reap_scan {
+    struct dvq_dirs dirs;
+    struct dvq_row *rows;
+    size_t nrows, caprows;
+    char qpath[4096 + 32], opath[4096 + 32], stampp[4096 + 32];
+    struct json_value outcomes;
+    long long requeued, reclaimed, maxseq;
+    time_t stamp;
+    const char *error, *error_path;
+};
+
+struct dvq_reap_result {
+    char verdict[128], ots[64];
+    long long rc;
+    struct dvq_usage usage;
+    struct dvq_artifact_roots roots;
+    struct dvq_outcome_timing timing;
+};
+
+static bool dvq_reap_append(struct dvq_reap_scan *s,
+                            const struct dvq_row *r,
+                            const struct dvq_reap_result *x)
+{
+    char line[DVQ_LINE_CAP], esc_verdict[256], esc_queued_ts[128];
+    char receipt_field[70], candidate_field[70];
+    int w;
+    if (!dvq_escape(x->verdict, esc_verdict, sizeof(esc_verdict)) ||
+        !dvq_escape(r->ts, esc_queued_ts, sizeof(esc_queued_ts))) {
+        s->error = "cannot encode the outcome row";
+        return false;
+    }
+    if (x->roots.receipt_sha256[0])
+        (void)snprintf(receipt_field, sizeof(receipt_field),
+                       "\"%s\"", x->roots.receipt_sha256);
+    else
+        (void)snprintf(receipt_field, sizeof(receipt_field), "null");
+    if (x->roots.candidate_sha256[0])
+        (void)snprintf(candidate_field, sizeof(candidate_field),
+                       "\"%s\"", x->roots.candidate_sha256);
+    else
+        (void)snprintf(candidate_field, sizeof(candidate_field), "null");
+    w = snprintf(line, sizeof(line),
+                 "{\"ts\":\"%s\",\"name\":\"%s\",\"attempt\":"
+                 "%lld,\"verdict\":\"%s\",\"rc\":%lld,"
+                 "\"seq\":%lld,\"queued_ts\":\"%s\","
+                 "\"started_unix\":%lld,"
+                 "\"tokens_used\":%lld,\"wall_ms\":%lld,"
+                 "\"receipt_sha256\":%s,\"candidate_sha256\":%s}\n",
+                 x->ots, r->name, r->attempt, esc_verdict, x->rc,
+                 r->seq, esc_queued_ts, r->started,
+                 x->usage.tokens, x->usage.wall_ms,
+                 receipt_field, candidate_field);
+    if (w <= 0 || (size_t)w >= sizeof(line) ||
+        !dvq_append_row(s->opath, line, (size_t)w)) {
+        s->error = "cannot append the outcome row";
+        return false;
+    }
+    return true;
+}
+
+static void dvq_reap_retry(struct dvq_reap_scan *s,
+                           const struct dvq_row *r)
+{
+    /* Copy before realloc: r points into rows and can dangle after growth. */
+    struct dvq_row back = *r;
+    char line[DVQ_LINE_CAP], nts[64];
+    struct dvq_row *grow;
+    if (s->nrows == s->caprows) {
+        size_t ncap = s->caprows == 0 ? 16 : s->caprows * 2;
+        if (ncap > 65536)
+            return;
+        grow = (struct dvq_row *)zcl_realloc(
+            s->rows, ncap * sizeof(*s->rows), "devagent.queue.rows");
+        if (!grow)
+            return;
+        s->rows = grow;
+        s->caprows = ncap;
+    }
+    dvq_now_iso(nts);
+    back.seq = ++s->maxseq;
+    back.attempt++;
+    back.state[0] = '\0';
+    (void)snprintf(back.state, sizeof(back.state), "queued");
+    back.worktree[0] = '\0';
+    back.pid_or_unit[0] = '\0';
+    back.started = 0;
+    dvq_clear_owner(&back);
+    (void)snprintf(back.ts, sizeof(back.ts), "%s", nts);
+    if (dvq_encode_row(&back, line, sizeof(line), NULL)) {
+        s->rows[s->nrows++] = back;
+        s->requeued++;
+    } else {
+        s->maxseq--;
+    }
+}
+
+static bool dvq_reap_record(struct dvq_reap_scan *s, struct dvq_row *r,
+                            struct dvq_reap_result *x, bool have_receipt,
+                            const char *seen, const char *runtext,
+                            size_t runlen)
+{
+    char now[32];
+    if (have_receipt) {
+        if (!dvq_receipt_verdict(s->dirs.engine, r->name, r->attempt,
+                                 x->verdict, sizeof(x->verdict),
+                                 &x->usage, &x->roots))
+            (void)snprintf(x->verdict, sizeof(x->verdict), "unknown");
+    } else {
+        (void)snprintf(x->verdict, sizeof(x->verdict), "no-receipt");
+    }
+    dvq_now_iso(x->ots);
+    if (!dvq_push_outcome(&s->outcomes, r->name, r->attempt, x->verdict,
+                          x->rc, x->ots, &x->usage, &x->roots, &x->timing)) {
+        s->error = "cannot encode the outcome reply";
+        return false;
+    }
+    if (!dvq_reap_append(s, r, x))
+        return false;
+    /* Mark seen before retrying, so a retry never double-records. */
+    (void)snprintf(now, sizeof(now), "%lld", (long long)platform_time_wall_unix());
+    (void)dvq_write_file(seen, now, strlen(now));
+    if (runlen > 0 && dvq_rate_limited(runtext) &&
+        r->attempt < 3) {
+        dvq_reap_retry(s, r);
+    }
+    return true;
+}
+
+/* Read and record one completed run; unfinished or already-seen runs skip. */
+static bool dvq_reap_run(struct dvq_reap_scan *s, size_t i)
+{
+    struct dvq_row *r = &s->rows[i];
+    char dir[4096 + 128], receipt[4096 + 160], runout[4096 + 160];
+    char seen[4096 + 160];
+    char *runtext;
+    size_t runlen = 0;
+    FILE *probe;
+    bool have_receipt, ok = true;
+    struct dvq_reap_result x = {.rc = -1,
+        .timing = {.seq = r->seq, .started_unix = r->started}};
+    dvq_usage_unknown(&x.usage);
+    (void)snprintf(x.timing.queued_ts, sizeof(x.timing.queued_ts), "%s", r->ts);
+    if (snprintf(dir, sizeof(dir), "%s/%s/a%lld", s->dirs.engine, r->name,
+                 r->attempt) >= (int)sizeof(dir) ||
+        snprintf(receipt, sizeof(receipt), "%s/receipt.json", dir) >=
+            (int)sizeof(receipt) ||
+        snprintf(runout, sizeof(runout), "%s/run.out", dir) >=
+            (int)sizeof(runout) ||
+        snprintf(seen, sizeof(seen), "%s/.seen", dir) >= (int)sizeof(seen))
+        return true;
+    probe = fopen(seen, "rb");
+    if (probe) {
+        (void)fclose(probe);
+        return true;
+    }
+    /* >= includes a receipt written in the stamp's second. .seen excludes
+     * already-recorded receipts, so this cannot double-record a run. */
+    have_receipt = dvq_receipt_since(receipt, s->stamp);
+    runtext = (char *)zcl_malloc(DVQ_FILE_CAP, "devagent.queue.runout");
+    if (!runtext)
+        return true;
+    if (dvq_read_file(runout, runtext, DVQ_FILE_CAP, &runlen))
+        x.rc = dvq_runout_rc(runtext);
+    else
+        runlen = 0;
+    if (have_receipt || x.rc >= 0)
+        ok = dvq_reap_record(s, r, &x, have_receipt, seen, runtext, runlen);
+    free(runtext);
+    return ok;
+}
+
+static bool dvq_reap_seen(const struct dvq_reap_scan *s,
+                          const struct dvq_row *r)
+{
+    char dir[4096 + 128], seen[4096 + 160];
+    FILE *probe;
+    if (strcmp(r->state, "running") != 0)
+        return false;
+    if (snprintf(dir, sizeof(dir), "%s/%s/a%lld", s->dirs.engine,
+                 r->name, r->attempt) >= (int)sizeof(dir) ||
+        snprintf(seen, sizeof(seen), "%s/.seen", dir) >= (int)sizeof(seen))
+        return false;
+    probe = fopen(seen, "rb");
+    if (!probe)
+        return false;
+    (void)fclose(probe);
+    return true;
+}
+
+static bool dvq_reap_rows(struct dvq_reap_scan *s)
+{
+    size_t kept = 0;
+    s->caprows = s->nrows;
+    s->reclaimed = dvq_reclaim_orphans(s->dirs.engine, s->rows, s->nrows);
+    for (size_t i = 0; i < s->nrows; i++) {
+        if (s->rows[i].seq > s->maxseq)
+            s->maxseq = s->rows[i].seq;
+    }
+    for (size_t i = 0; i < s->nrows; i++) {
+        if (strcmp(s->rows[i].state, "running") != 0)
+            continue;
+        if (!dvq_reap_run(s, i))
+            return false;
+    }
+    /* Drop seen running rows; queued retries survive. */
+    for (size_t i = 0; i < s->nrows; i++) {
+        if (!dvq_reap_seen(s, &s->rows[i]))
+            s->rows[kept++] = s->rows[i];
+    }
+    s->nrows = kept;
+    if (!dvq_rewrite_rows(s->dirs.queue, s->qpath, s->rows, s->nrows)) {
+        s->error = "cannot rewrite the queue file";
+        s->error_path = s->qpath;
+        return false;
+    }
+    return true;
+}
+
 static void dvq_reap(const struct zcl_command_request *req,
                      struct zcl_command_reply *reply)
 {
-    struct dvq_dirs d;
-    struct dvq_row *rows = NULL;
-    size_t nrows = 0, caprows = 0;
-    char qpath[4096 + 32], opath[4096 + 32], stampp[4096 + 32];
-    char line[DVQ_LINE_CAP];
-    struct json_value outcomes;
-    long long requeued = 0;
-    long long reclaimed = 0;
-    long long maxseq = 0;
-    time_t stamp = 0;
+    struct dvq_reap_scan s = {0};
     struct stat st;
-    int lock = -1;
-    size_t len = 0;
+    int lock;
+    bool ok;
     (void)req;
-    if (!dvq_dirs_resolve(&d, true)) {
+    if (!dvq_dirs_resolve(&s.dirs, true)) {
         dvq_fail(reply, "STATE_DIR_FAILED", "reap",
                  "cannot resolve the owner-private state root",
                  "platform_state_root");
         return;
     }
-    if (snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", d.queue) >=
-            (int)sizeof(qpath) ||
-        snprintf(opath, sizeof(opath), "%s/outcomes.jsonl", d.queue) >=
-            (int)sizeof(opath) ||
-        snprintf(stampp, sizeof(stampp), "%s/.reap_stamp", d.queue) >=
-            (int)sizeof(stampp)) {
+    if (snprintf(s.qpath, sizeof(s.qpath), "%s/queue.jsonl", s.dirs.queue) >=
+            (int)sizeof(s.qpath) ||
+        snprintf(s.opath, sizeof(s.opath), "%s/outcomes.jsonl", s.dirs.queue) >=
+            (int)sizeof(s.opath) ||
+        snprintf(s.stampp, sizeof(s.stampp), "%s/.reap_stamp", s.dirs.queue) >=
+            (int)sizeof(s.stampp)) {
         dvq_fail(reply, "QUEUE_READ_FAILED", "reap",
                  "the queue paths do not fit their buffers",
                  "platform_state_root too long");
         return;
     }
-    if (stat(stampp, &st) == 0)
-        stamp = st.st_mtime;
-    lock = dvq_lock(d.queue);
+    if (stat(s.stampp, &st) == 0)
+        s.stamp = st.st_mtime;
+    lock = dvq_lock(s.dirs.queue);
     if (lock < 0) {
         dvq_fail(reply, "QUEUE_READ_FAILED", "reap",
-                 "cannot take the queue lock", qpath);
+                 "cannot take the queue lock", s.qpath);
         return;
     }
-    if (!dvq_load_rows(qpath, &rows, &nrows)) {
+    if (!dvq_load_rows(s.qpath, &s.rows, &s.nrows)) {
         dvq_unlock(lock);
         dvq_fail(reply, "QUEUE_READ_FAILED", "reap",
-                 "cannot read the queue file", qpath);
+                 "cannot read the queue file", s.qpath);
         return;
     }
-    caprows = nrows;
-    reclaimed = dvq_reclaim_orphans(d.engine, rows, nrows);
-    for (size_t i = 0; i < nrows; i++) {
-        if (rows[i].seq > maxseq)
-            maxseq = rows[i].seq;
-    }
-    json_init(&outcomes);
-    json_set_array(&outcomes);
-    for (size_t i = 0; i < nrows; i++) {
-        struct dvq_row *r = &rows[i];
-        char dir[4096 + 128], receipt[4096 + 160], runout[4096 + 160];
-        char seen[4096 + 160];
-        char verdict[128], ots[64], oline[DVQ_LINE_CAP];
-        char *runtext = NULL;
-        size_t runlen = 0;
-        FILE *probe;
-        long long rc = -1;
-        bool have_receipt = false;
-        struct dvq_usage usage;
-        struct dvq_artifact_roots roots = {0};
-        struct dvq_outcome_timing timing = {.seq = r->seq,
-                                            .started_unix = r->started};
-        dvq_usage_unknown(&usage);
-        (void)snprintf(timing.queued_ts, sizeof(timing.queued_ts), "%s",
-                       r->ts);
-        if (strcmp(r->state, "running") != 0)
-            continue;
-        if (snprintf(dir, sizeof(dir), "%s/%s/a%lld", d.engine, r->name,
-                     r->attempt) >= (int)sizeof(dir) ||
-            snprintf(receipt, sizeof(receipt), "%s/receipt.json", dir) >=
-                (int)sizeof(receipt) ||
-            snprintf(runout, sizeof(runout), "%s/run.out", dir) >=
-                (int)sizeof(runout) ||
-            snprintf(seen, sizeof(seen), "%s/.seen", dir) >=
-                (int)sizeof(seen))
-            continue;
-        probe = fopen(seen, "rb");
-        if (probe) {
-            (void)fclose(probe);
-            continue;
-        }
-        /* >=, not >: a receipt written in the same second as the stamp
-         * is still new. Already-recorded receipts are excluded by the
-         * .seen check above, so widening the comparison cannot
-         * double-record. */
-        have_receipt = dvq_receipt_since(receipt, stamp);
-        runtext = (char *)zcl_malloc(DVQ_FILE_CAP, "devagent.queue.runout");
-        if (!runtext)
-            continue;
-        if (dvq_read_file(runout, runtext, DVQ_FILE_CAP, &runlen))
-            rc = dvq_runout_rc(runtext);
-        else
-            runlen = 0;
-        if (!have_receipt && rc < 0) {
-            free(runtext);
-            continue;
-        }
-        if (have_receipt) {
-            if (!dvq_receipt_verdict(d.engine, r->name, r->attempt,
-                                     verdict, sizeof(verdict), &usage, &roots))
-                (void)snprintf(verdict, sizeof(verdict), "unknown");
-        } else {
-            (void)snprintf(verdict, sizeof(verdict), "no-receipt");
-        }
-        dvq_now_iso(ots);
-        if (!dvq_push_outcome(&outcomes, r->name, r->attempt, verdict, rc,
-                              ots, &usage, &roots, &timing)) {
-            free(runtext);
-            json_free(&outcomes);
-            free(rows);
-            dvq_unlock(lock);
-            dvq_fail(reply, "QUEUE_WRITE_FAILED", "reap",
-                     "cannot encode the outcome reply", opath);
-            return;
-        }
-        {
-            char esc_verdict[256], esc_queued_ts[128];
-            char receipt_field[70], candidate_field[70];
-            int w;
-            if (!dvq_escape(verdict, esc_verdict, sizeof(esc_verdict)) ||
-                !dvq_escape(r->ts, esc_queued_ts,
-                            sizeof(esc_queued_ts))) {
-                free(runtext);
-                json_free(&outcomes);
-                free(rows);
-                dvq_unlock(lock);
-                dvq_fail(reply, "QUEUE_WRITE_FAILED", "reap",
-                         "cannot encode the outcome row", opath);
-                return;
-            }
-            if (roots.receipt_sha256[0])
-                (void)snprintf(receipt_field, sizeof(receipt_field),
-                               "\"%s\"", roots.receipt_sha256);
-            else
-                (void)snprintf(receipt_field, sizeof(receipt_field), "null");
-            if (roots.candidate_sha256[0])
-                (void)snprintf(candidate_field, sizeof(candidate_field),
-                               "\"%s\"", roots.candidate_sha256);
-            else
-                (void)snprintf(candidate_field, sizeof(candidate_field), "null");
-            w = snprintf(oline, sizeof(oline),
-                         "{\"ts\":\"%s\",\"name\":\"%s\",\"attempt\":"
-                         "%lld,\"verdict\":\"%s\",\"rc\":%lld,"
-                         "\"seq\":%lld,\"queued_ts\":\"%s\","
-                         "\"started_unix\":%lld,"
-                         "\"tokens_used\":%lld,\"wall_ms\":%lld,"
-                         "\"receipt_sha256\":%s,\"candidate_sha256\":%s}\n",
-                         ots, r->name, r->attempt, esc_verdict, rc,
-                         r->seq, esc_queued_ts, r->started,
-                         usage.tokens, usage.wall_ms,
-                         receipt_field, candidate_field);
-            if (w <= 0 || (size_t)w >= sizeof(oline) ||
-                !dvq_append_row(opath, oline, (size_t)w)) {
-                free(runtext);
-                json_free(&outcomes);
-                free(rows);
-                dvq_unlock(lock);
-                dvq_fail(reply, "QUEUE_WRITE_FAILED", "reap",
-                         "cannot append the outcome row", opath);
-                return;
-            }
-        }
-        /* Mark seen before any requeue, so a retry never double-records. */
-        {
-            char now[32];
-            (void)snprintf(now, sizeof(now), "%lld",
-                           (long long)platform_time_wall_unix());
-            (void)dvq_write_file(seen, now, strlen(now));
-        }
-        if (runlen > 0 && dvq_rate_limited(runtext) &&
-            r->attempt < 3) {
-            /* Copy the row BEFORE any realloc: r points into rows and
-             * would dangle across the grow below. */
-            struct dvq_row back = *r;
-            long long back_attempt = back.attempt + 1;
-            char nts[64];
-            struct dvq_row *grow;
-            if (nrows == caprows) {
-                size_t ncap = caprows == 0 ? 16 : caprows * 2;
-                if (ncap > 65536) {
-                    free(runtext);
-                    continue;
-                }
-                grow = (struct dvq_row *)zcl_realloc(
-                    rows, ncap * sizeof(*rows), "devagent.queue.rows");
-                if (!grow) {
-                    free(runtext);
-                    continue;
-                }
-                rows = grow;
-                caprows = ncap;
-            }
-            dvq_now_iso(nts);
-            back.seq = ++maxseq;
-            back.attempt = back_attempt;
-            back.state[0] = '\0';
-            (void)snprintf(back.state, sizeof(back.state), "queued");
-            back.worktree[0] = '\0';
-            back.pid_or_unit[0] = '\0';
-            back.started = 0;
-            dvq_clear_owner(&back);
-            (void)snprintf(back.ts, sizeof(back.ts), "%s", nts);
-            if (dvq_encode_row(&back, line, sizeof(line), &len)) {
-                rows[nrows++] = back;
-                requeued++;
-            } else {
-                maxseq--;
-            }
-        }
-        free(runtext);
-    }
-    /* Drop every running row the scan just marked seen; the requeued rows
-     * appended above survive because they are queued, not seen. */
-    {
-        size_t kept = 0;
-        for (size_t i = 0; i < nrows; i++) {
-            bool drop = false;
-            if (strcmp(rows[i].state, "running") == 0) {
-                char dir[4096 + 128], seen[4096 + 160];
-                FILE *probe;
-                if (snprintf(dir, sizeof(dir), "%s/%s/a%lld", d.engine,
-                             rows[i].name,
-                             rows[i].attempt) < (int)sizeof(dir) &&
-                    snprintf(seen, sizeof(seen), "%s/.seen", dir) <
-                        (int)sizeof(seen)) {
-                    probe = fopen(seen, "rb");
-                    if (probe) {
-                        (void)fclose(probe);
-                        drop = true;
-                    }
-                }
-            }
-            if (!drop)
-                rows[kept++] = rows[i];
-        }
-        nrows = kept;
-        if (!dvq_rewrite_rows(d.queue, qpath, rows, nrows)) {
-            json_free(&outcomes);
-            free(rows);
-            dvq_unlock(lock);
-            dvq_fail(reply, "QUEUE_WRITE_FAILED", "reap",
-                     "cannot rewrite the queue file", qpath);
-            return;
-        }
-    }
-    {
+    json_init(&s.outcomes);
+    json_set_array(&s.outcomes);
+    s.error_path = s.opath;
+    ok = dvq_rows_encodable(s.rows, s.nrows);
+    if (!ok) {
+        s.error = "cannot encode the queue rows";
+        s.error_path = s.qpath;
+    } else
+        ok = dvq_reap_rows(&s);
+    if (ok) {
         char now[32];
         (void)snprintf(now, sizeof(now), "%lld", (long long)platform_time_wall_unix());
-        (void)dvq_write_file(stampp, now, strlen(now));
+        (void)dvq_write_file(s.stampp, now, strlen(now));
     }
-    free(rows);
+    free(s.rows);
     dvq_unlock(lock);
+    if (!ok) {
+        json_free(&s.outcomes);
+        dvq_fail(reply, "QUEUE_WRITE_FAILED", "reap", s.error, s.error_path);
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "leaf", DVQ_LEAF);
     (void)json_push_kv_str(&reply->data, "state", "reaped");
-    (void)json_push_kv(&reply->data, "outcomes", &outcomes);
-    json_free(&outcomes);
-    (void)json_push_kv_int(&reply->data, "requeued", requeued);
-    (void)json_push_kv_int(&reply->data, "reclaimed", reclaimed);
+    (void)json_push_kv(&reply->data, "outcomes", &s.outcomes);
+    json_free(&s.outcomes);
+    (void)json_push_kv_int(&reply->data, "requeued", s.requeued);
+    (void)json_push_kv_int(&reply->data, "reclaimed", s.reclaimed);
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = 0;
 }
