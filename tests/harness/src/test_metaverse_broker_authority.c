@@ -142,7 +142,7 @@ static bool ba_bind(struct agent_broker_session *s, char *why, size_t why_cap)
     return agent_broker_session_bind(s, &g_authority, why, why_cap);
 }
 
-/* Read a tracked source file; an unreadable file is a failure, never a skip. */
+/* Read source text; unreadable or NUL-bearing input is a failure, never a skip. */
 static size_t ba_slurp(const char *path, char *out, size_t cap)
 {
     FILE *fp = fopen(path, "re");
@@ -151,7 +151,47 @@ static size_t ba_slurp(const char *path, char *out, size_t cap)
     size_t n = fread(out, 1, cap - 1, fp);
     (void)fclose(fp);
     out[n] = '\0';
+    if (memchr(out, '\0', n) != NULL)
+        return 0;
     return n;
+}
+
+static int t2_source_text_refuses_nul(void)
+{
+    int failures = 0;
+    static const char nul_source[] =
+        "/* clean */\n\0agent_broker_fixture_ops\n";
+    static const char ascii_source[] = "/* clean */\n";
+    const char *const sources[] = { nul_source, ascii_source };
+    const size_t lengths[] = { sizeof(nul_source) - 1,
+                               sizeof(ascii_source) - 1 };
+    char dd[256], path[512], out[64];
+    test_make_tmpdir(dd, sizeof(dd), "broker_authority", "t2_source_text");
+    snprintf(path, sizeof(path), "%s/source.c", dd);
+    for (size_t i = 0; i < 2; i++) {
+        FILE *fp = fopen(path, "wb");
+        BA_CHECK("T2: source-text fixture opens", fp != NULL);
+        if (!fp)
+            break;
+        bool written = fwrite(sources[i], 1, lengths[i], fp) == lengths[i];
+        int closed = fclose(fp);
+        BA_CHECK("T2: source-text fixture writes and closes",
+                 written && closed == 0);
+        if (!written || closed != 0)
+            break;
+        size_t n = ba_slurp(path, out, sizeof(out));
+        if (i == 0) {
+            BA_CHECK("T2: embedded NUL refuses before substring decisions",
+                     n == 0);
+        } else {
+            BA_CHECK("T2: ordinary ASCII source remains readable",
+                     n == lengths[i] &&
+                     memcmp(out, ascii_source, sizeof(ascii_source)) == 0);
+        }
+    }
+    BA_CHECK("T2: source-text fixture cleanup succeeds",
+             test_rm_rf_recursive(dd) == 0);
+    return failures;
 }
 
 /* ── T1 ─────────────────────────────────────────────────────────────────────*/
@@ -952,6 +992,7 @@ int test_metaverse_broker_authority(void)
     printf("=== metaverse_broker_authority: the broker's LIVE authority ===\n");
 
     failures += t1_real_property_inspect();
+    failures += t2_source_text_refuses_nul();
     failures += t2_no_fixture_on_the_production_path();
     failures += t3_no_grant_source_fails_closed();
     failures += t4_revoke_lands_on_a_running_session();
