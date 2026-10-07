@@ -765,6 +765,46 @@ static bool wb_write_blob(const char *path, const uint8_t *buf, size_t n)
     return ok;
 }
 
+static const char *wb_enc_ensure_scratch(void);
+
+/* A prefix-matching filename is untrusted directory data.  If its timestamp
+ * cannot be represented in the microsecond sort key, listing must use mtime
+ * instead of overflowing signed arithmetic and treating it as a valid key. */
+static int t_rotation_timestamp_overflow_falls_back(void)
+{
+    int failures = 0;
+    const char *scratch = wb_enc_ensure_scratch();
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s/wb_overflow_%d", scratch,
+             (int)getpid());
+    bool ready = platform_private_directory_ensure(dir);
+
+    char ordinary[384], overflow[384];
+    snprintf(ordinary, sizeof(ordinary), "%s/%s1_000000%s", dir,
+             WALLET_BACKUP_FILENAME_PREFIX, WALLET_BACKUP_FILENAME_SUFFIX);
+    snprintf(overflow, sizeof(overflow),
+             "%s/%s9223372036854775807_999999%s", dir,
+             WALLET_BACKUP_FILENAME_PREFIX, WALLET_BACKUP_FILENAME_SUFFIX);
+    const uint8_t byte = 0;
+    bool wrote = ready && wb_write_blob(ordinary, &byte, sizeof(byte)) &&
+                 wb_write_blob(overflow, &byte, sizeof(byte));
+    struct utimbuf ordinary_time = { .actime = 1, .modtime = 1 };
+    struct utimbuf overflow_time = { .actime = 2, .modtime = 2 };
+    wrote = wrote && utime(ordinary, &ordinary_time) == 0 &&
+            utime(overflow, &overflow_time) == 0;
+
+    char listing[2][512];
+    int n = wrote ? wallet_backup_list(dir, listing, 2) : 0;
+    WB_RUN("wb: overflowing filename timestamp falls back to mtime",
+           wrote && n == 2 && strcmp(listing[0], overflow) == 0 &&
+           strcmp(listing[1], ordinary) == 0);
+
+    (void)unlink(ordinary);
+    (void)unlink(overflow);
+    (void)rmdir(dir);
+    return failures;
+}
+
 static bool wb_read_blob(const char *path, uint8_t **out, size_t *outlen)
 {
     *out = NULL; *outlen = 0;
@@ -1222,6 +1262,7 @@ int test_wallet_backup(void)
     failures += t_encrypt_roundtrip();
     failures += t_encrypt_wrong_password();
     failures += t_encrypt_tamper_detected();
+    failures += t_rotation_timestamp_overflow_falls_back();
     failures += t_encrypted_service_run();
     failures += t_encrypt_requires_password();
     failures += t_rotation_counts_enc();

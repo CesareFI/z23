@@ -25,6 +25,7 @@
 #include "services/wallet_backup_service.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,21 +50,29 @@ static int wbs_cmp_key_desc(const void *a, const void *b)
 }
 
 /* Parse "wallet_backup_<unix_ts>_<usec>{.sqlite,.sqlite.enc}" into a single
- * microsecond key. Returns false (leaving *out_us untouched) if the name
- * doesn't have the expected "<digits>_<digits>" body — the caller falls
+ * microsecond key. Returns false (zeroing *out_us) if the name
+ * cannot represent a non-negative microsecond key — the caller falls
  * back to mtime so an unrecognized-but-prefix-matching name still sorts. */
 static bool wbs_parse_filename_us(const char *name, int64_t *out_us)
 {
+    *out_us = 0;
     const char *body = name + strlen(WALLET_BACKUP_FILENAME_PREFIX);
     char *after_ts = NULL;
+    errno = 0;
     long long ts = strtoll(body, &after_ts, 10);
-    if (after_ts == body || *after_ts != '_') return false;
+    if (errno == ERANGE || after_ts == body || *after_ts != '_' || ts < 0)
+        return false;
     const char *usec_start = after_ts + 1;
     char *after_usec = NULL;
+    errno = 0;
     long usec = strtol(usec_start, &after_usec, 10);
-    if (after_usec == usec_start || usec < 0 || usec > 999999) return false;
+    if (errno == ERANGE || after_usec == usec_start ||
+        usec < 0 || usec > 999999)
+        return false;
     /* Whatever follows (".sqlite" or ".sqlite.enc") is already validated
      * by the caller's suffix check; no need to re-check it here. */
+    if (ts > (INT64_MAX - usec) / 1000000LL)
+        return false;
     *out_us = ts * 1000000LL + usec;
     return true;
 }
