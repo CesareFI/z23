@@ -5867,6 +5867,66 @@ static int test_dev_land_malformed_priority_refusal(void)
     return failures;
 }
 
+static int dlx_outcome_nul_refusal(void)
+{
+    int failures = 0;
+    TEST("land: hidden terminal history refuses sequence assignment") {
+        static const char history[] =
+            "{\"seq\":1,\"tip\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+            "\"state\":\"failed\",\"attempt\":1}\n"
+            "\0"
+            "{\"seq\":2,\"tip\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+            "\"state\":\"failed\",\"attempt\":1}\n";
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char landdir[1024], opath[1200], qpath[1200], after[1024], queue[8192];
+        size_t after_len = 0, queue_len = 0;
+        dlx_isolate("outcome_nul");
+        ASSERT(dlx_rig_make(&rig, "outcome_nul_rig"));
+        ASSERT(setenv("ZCL_LAND_PROOF_STUB", "manual", 1) == 0);
+        ASSERT(setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1) == 0);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+        dlx_landdir(landdir, sizeof(landdir));
+        ASSERT(snprintf(opath, sizeof(opath), "%s/outcomes.jsonl", landdir) <
+               (int)sizeof(opath));
+        ASSERT(snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", landdir) <
+               (int)sizeof(qpath));
+        ASSERT(dlx_write(qpath, ""));
+        FILE *f = fopen(opath, "wb");
+        ASSERT(f != NULL);
+        bool wrote = fwrite(history, 1, sizeof(history) - 1, f) ==
+                     sizeof(history) - 1;
+        ASSERT(fclose(f) == 0 && wrote);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "QUEUE_READ_FAILED");
+        ASSERT_STR_EQ(dlx_err_evidence(&c),
+                      "outcomes.jsonl unreadable, malformed, or exhausted");
+        ASSERT(!c.reply.error.mutated);
+        dlx_end(&c);
+        ASSERT(dlx_slurp(opath, after, sizeof(after), &after_len));
+        ASSERT_EQ(after_len, sizeof(history) - 1);
+        ASSERT(memcmp(after, history, after_len) == 0);
+        ASSERT(dlx_queue_bytes(queue, sizeof(queue), &queue_len));
+        ASSERT_EQ(queue_len, 0);
+        f = fopen(opath, "wb");
+        ASSERT(f != NULL);
+        const char *second = history + strlen(history) + 1;
+        wrote = fwrite(history, 1, strlen(history), f) == strlen(history) &&
+                fwrite(second, 1, strlen(second), f) == strlen(second);
+        ASSERT(fclose(f) == 0 && wrote);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_EQ(dlx_int(&c, "seq"), 3);
+        dlx_end(&c);
+        PASS();
+    } _test_next:;
+    dlx_restore();
+    return failures;
+}
+
 static int test_dev_land_malformed_outcome_refusal(void)
 {
     int failures = 0;
@@ -5892,6 +5952,7 @@ static int test_dev_land_malformed_outcome_refusal(void)
         dlx_restore();
         PASS();
     } _test_next:;
+    failures += dlx_outcome_nul_refusal();
     return failures;
 }
 

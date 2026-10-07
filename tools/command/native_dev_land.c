@@ -1693,7 +1693,7 @@ static bool dl_scan_outcomes(const struct dl_dirs *d, const struct dl_row *want,
         free(data);
         return read_errno == ENOENT;
     }
-    if (len && data[len - 1] != '\n') {
+    if (memchr(data, '\0', len) || (len && data[len - 1] != '\n')) {
         free(data);
         return false;
     }
