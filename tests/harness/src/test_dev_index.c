@@ -512,6 +512,55 @@ int test_dev_index(void)
         PASS();
     }
 
+    TEST("index: byte framing skips NUL and oversized prefixes, keeps next row") {
+        char path[800];
+        (void)snprintf(path, sizeof(path), "%s/framing.jsonl", board_dir);
+        const char a[] = "{\"id\":\"framing-a\",\"text\":\"framinghidden\"}";
+        const char b[] = "{\"id\":\"framing-b\",\"text\":\"framingkept\"}\n";
+        FILE *fp = fopen(path, "wb");
+        ASSERT(fp != NULL);
+        ASSERT(fwrite(a, 1, sizeof(a) - 1, fp) == sizeof(a) - 1);
+        ASSERT(fwrite("\0junk\n", 1, 6, fp) == 6);
+        ASSERT(fputs(b, fp) >= 0);
+        ASSERT(fclose(fp) == 0);
+        struct dev_index_ingest_result r;
+        ASSERT(dev_index_ingest_source(db, board_src, root, &r, err, sizeof(err)));
+        ASSERT(r.rows_added == 1 && r.rows_skipped == 1);
+        struct dev_index_search_result res;
+        ASSERT(dev_index_search(db, "framinghidden", "board", 10, &res,
+                                err, sizeof(err)));
+        ASSERT(res.count == 0);
+        ASSERT(dev_index_search(db, "framingkept", "board", 10, &res,
+                                err, sizeof(err)));
+        ASSERT(res.count == 1);
+        struct dev_index_source_status st;
+        ASSERT(dev_index_source_status(db, board_src, root, 0, &st,
+                                       err, sizeof(err)));
+        ASSERT(st.bytes_behind == 0);
+        ASSERT(dev_index_ingest_source(db, board_src, root, &r, err, sizeof(err)));
+        ASSERT(r.rows_added == 0 && r.rows_skipped == 0);
+        fp = fopen(path, "ab");
+        ASSERT(fp != NULL);
+        ASSERT(fputs(a, fp) >= 0);
+        for (size_t i = sizeof(a) - 1; i < DEV_INDEX_LINE_MAX - 1; i++)
+            ASSERT(fputc(' ', fp) != EOF);
+        ASSERT(fputs("junk\n{\"id\":\"framing-partial\"", fp) >= 0);
+        ASSERT(fclose(fp) == 0);
+        ASSERT(dev_index_ingest_source(db, board_src, root, &r, err, sizeof(err)));
+        ASSERT(r.rows_added == 0 && r.rows_skipped == 1);
+        ASSERT(dev_index_source_status(db, board_src, root, 0, &st,
+                                       err, sizeof(err)));
+        ASSERT(st.bytes_behind == (int64_t)strlen("{\"id\":\"framing-partial\""));
+        ASSERT(dvi_append(path, ",\"text\":\"framingcompleted\"}\n"));
+        ASSERT(dev_index_ingest_source(db, board_src, root, &r, err, sizeof(err)));
+        ASSERT(r.rows_added == 1 && r.rows_skipped == 0);
+        ASSERT(dvi_append(path, "{\"id\":\"framing-positive-a\"}\n"
+                                "{\"id\":\"framing-positive-b\"}\n"));
+        ASSERT(dev_index_ingest_source(db, board_src, root, &r, err, sizeof(err)));
+        ASSERT(r.rows_added == 2 && r.rows_skipped == 0);
+        PASS();
+    }
+
 _test_next:;
     dev_index_db_close(db);
     (void)test_rm_rf_recursive(parent);

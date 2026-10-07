@@ -325,8 +325,20 @@ static int dev_index_insert_row(sqlite3 *db, const char *source_id,
 
 /* ── line reader: complete lines only, offset-precise ─────────────────
  * Returns 1 with a whole line in buf, 2 when the line continued past
- * buf (the cursor still advances; the caller must not store the prefix),
+ * buf or contains NUL (the cursor advances; never store the prefix),
  * 0 when the file ends mid-line, and -1 on a read error. */
+
+static int dev_index_drain_line(FILE *fp)
+{
+    int result = 1;
+    int c;
+    while ((c = fgetc(fp)) != EOF) {
+        if (c == '\n')
+            return result;
+        result = 2;
+    }
+    return ferror(fp) ? -1 : 0;
+}
 
 static int dev_index_read_line(FILE *fp, char *buf, size_t buf_cap,
                                long *end_offset)
@@ -341,33 +353,29 @@ static int dev_index_read_line(FILE *fp, char *buf, size_t buf_cap,
         }
         return -1;
     }
-    size_t len = strlen(buf);
+    long chunk_end = ftell(fp);
+    if (chunk_end < start)
+        return -1;
+    size_t len = (size_t)(chunk_end - start);
+    bool malformed = memchr(buf, '\0', len) != NULL;
     bool got_newline = len > 0 && buf[len - 1] == '\n';
-    bool overlong = false;
+    int result = 1;
     if (got_newline) {
         buf[--len] = '\0';
         if (len > 0 && buf[len - 1] == '\r')
             buf[len - 1] = '\0';
     } else {
-        bool found = false;
-        int c;
-        while ((c = fgetc(fp)) != EOF) {
-            if (c == '\n') {
-                found = true;
-                break;
-            }
-            overlong = true;
-        }
-        if (!found) {
+        result = dev_index_drain_line(fp);
+        if (result <= 0) {
             (void)fseek(fp, start, SEEK_SET);
-            return 0;
+            return result;
         }
     }
     long end = ftell(fp);
     if (end < 0)
         return -1;
     *end_offset = end;
-    return overlong ? 2 : 1;
+    return malformed ? 2 : result;
 }
 
 static bool dev_index_stat_file(const char *path, int64_t *inode,
