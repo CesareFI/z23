@@ -304,6 +304,27 @@ static bool inv_ev_cap_exposes_body(const struct ci_inventory_report *report,
     return false;
 }
 
+/* Visibility belongs to the caller, not each same-name body. Check it once
+ * per capability; several headers exposing one body are still one target. */
+static int inv_ev_visible_body(const struct inv_ev_body_order *order,
+                               int begin, int end,
+                               const struct ci_inventory_report *report,
+                               const uint8_t *cap_files, size_t stride,
+                               const char *name, int caller_file)
+{
+    int found = -1;
+    for (int cap = 0; cap < report->capability_count; cap++) {
+        if (!inv_ev_bit_get(cap_files, stride, cap, caller_file)) continue;
+        for (int i = begin; i < end; i++) {
+            if (!inv_ev_cap_exposes_body(report, cap, name, order[i].body))
+                continue;
+            if (found >= 0 && found != order[i].index) return -1;
+            found = order[i].index;
+        }
+    }
+    return found;
+}
+
 static int inv_ev_resolve_body(const struct inv_ev_body_order *order,
                                int body_count, const struct inv_scan *scan,
                                const struct ci_inventory_report *report,
@@ -317,18 +338,9 @@ static int inv_ev_resolve_body(const struct inv_ev_body_order *order,
     if (local >= 0) return local;
     if (end == begin + 1) return order[begin].index;
     if (caller_file < 0) return -1;
-    int found = -1;
-    for (int i = begin; i < end; i++) {
-        bool visible = false;
-        for (int cap = 0; cap < report->capability_count && !visible; cap++)
-            visible = inv_ev_bit_get(cap_files, stride, cap, caller_file) &&
-                inv_ev_cap_exposes_body(report, cap, name, order[i].body);
-        if (!visible) continue;
-        if (found >= 0 && found != order[i].index) return -1;
-        found = order[i].index;
-    }
     (void)scan;
-    return found;
+    return inv_ev_visible_body(order, begin, end, report, cap_files, stride,
+                                name, caller_file);
 }
 
 /* Body lookup depends only on the frozen scan and include visibility.
