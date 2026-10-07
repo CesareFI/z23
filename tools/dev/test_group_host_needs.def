@@ -92,6 +92,16 @@ ZCL_PACKAGE_VERIFIER_NEED("test_zcode_swarm_net_shard_01")
 #undef ZCL_PACKAGE_VERIFIER_NEED
 #endif
 
+/* tests/harness/src/test_onion_persistence.c drives -tor argv paths that
+ * fail-closed Tor admission refuses at parse time unless the binary linked
+ * real Tor, so the group cannot pass in a stub-linked tree by design. The
+ * keccak archive is the sentinel: it is one of the four archives the link
+ * consumes and it never exists in a stub-linked tree, while a lone stale
+ * libtor.a left over from an aborted build must NOT satisfy the gate. */
+ZCL_TEST_GROUP_NEED("test_onion_persistence",
+                    ZCL_HOST_NEED_FILE,
+                    "vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a")
+
 /* tests/harness/src/test_onion_pair_watch_live.c reports
  * PAIR_PROBE=ENV_MISSING_BINARY (UNOBSERVED) when the tree it runs in has no
  * z23/zclassic23/zcl-rpc runtime binary to pair. A proof generation never
