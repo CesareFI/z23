@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "bip32_oracle.h"
 #include "zcl_wallet_record.h"
+#include "zcl_recovery.h"
 
 #include <openssl/bn.h>
 #include <openssl/evp.h>
@@ -135,6 +136,11 @@ static int check_fixture(size_t fixture_index, zcl_network network, uint32_t cha
     CHECK(status == ZCL_OK);
     CHECK(actual_len == 35 && actual[0] == 0xa5 && actual[36] == 0xa5);
     CHECK(memcmp(actual + 1, expected, sizeof(expected)) == 0);
+    memset(actual, 0xa5, sizeof(actual));
+    CHECK(zcl_recovery_address_batch(entropy, item->entropy_len, network, chain, index, 1,
+        blinding, sizeof(blinding), actual + 1, 35) == ZCL_OK);
+    CHECK(actual[0] == 0xa5 && actual[36] == 0xa5);
+    CHECK(memcmp(actual + 1, expected, sizeof(expected)) == 0);
     if (chain == 1) CHECK(recovered_change(entropy, item->entropy_len, network, index, expected) == 0);
     OPENSSL_cleanse(entropy, sizeof(entropy));
     OPENSSL_cleanse(seed, sizeof(seed));
@@ -154,6 +160,6 @@ int main(void)
             }
         }
     }
-    puts("receive/change: 96 independent OpenSSL comparisons and 48 recovered change bindings passed");
+    puts("receive/change: 96 independent single and batch comparisons, 48 recovered change bindings passed");
     return 0;
 }

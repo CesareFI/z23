@@ -4,6 +4,7 @@
 #include "zcl_change_reservation.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -78,6 +79,17 @@ static void verify_file(bool present, size_t size, const uint8_t *original, zcl_
     else if (status != ZCL_IO_UNCERTAIN) require(info.st_size == (off_t)size);
 }
 
+static void verify_control(uint8_t selector, zcl_status status)
+{
+    /* Selector 0 disables every mutation: the correct wallet/entropy/path and
+     * an authenticated predecessor plus a 40-byte supported successor must recover.
+     * A fuzzer that accepts refusal here can silently lose all success coverage. */
+    if (selector == 0 && status != ZCL_OK) {
+        fputs("Known recoverable journal was refused\n", stderr);
+        abort();
+    }
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *bytes, size_t length)
 {
     if (length < 6 || length > 246) return 0;
@@ -94,6 +106,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *bytes, size_t length)
     size_t path_len = (bytes[0] & 128U) != 0 ? SIZE_MAX : fixture_path_len();
     zcl_status status = zcl_wallet_change_recover((const uint8_t *)fixture.path, path_len,
         wallet, wallet_len, secret, entropy_len);
+    verify_control(bytes[0], status);
     verify_file(present, size, original, status);
     return 0;
 }

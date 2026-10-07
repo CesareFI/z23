@@ -4,6 +4,7 @@
 #include "zcl_change_reservation.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -107,6 +108,32 @@ static void verify_file(bool present, size_t initial_size, const uint8_t *origin
 #endif
 }
 
+static bool success_control(const uint8_t *bytes, size_t length)
+{
+#ifndef ZCL_CHANGE_RECONSTRUCT
+    /* No selectors: authentic initial state, correct wallet/entropy/output. */
+    if (bytes[0] == 0) return true;
+#endif
+    /* Raw authentic records0,1: reserve index1 or reconstruct consumed index0.
+     * Match exact recorded fixture bytes, not just a plausible header/counter. */
+    if (bytes[0] != 4 || length != 166) return false;
+    if (memcmp(bytes + 6, data.state[0], 80) != 0 ||
+        memcmp(bytes + 86, data.state[1], 80) != 0) return false;
+#ifdef ZCL_CHANGE_RECONSTRUCT
+    return bytes[1] == 0 && bytes[2] == 0 && bytes[4] != 255;
+#else
+    return true;
+#endif
+}
+
+static void verify_control(const uint8_t *bytes, size_t length, zcl_status status)
+{
+    if (success_control(bytes, length) && status != ZCL_OK) {
+        fputs("Known valid change-address operation was refused\n", stderr);
+        abort();
+    }
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *bytes, size_t length)
 {
     if (length < 6 || length > 246) return 0;
@@ -132,6 +159,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *bytes, size_t length)
     if (status == ZCL_OK) verify_success(&result, size);
     else require(memcmp(&result, &before, sizeof(result)) == 0);
 #endif
+    verify_control(bytes, length, status);
     verify_file(present, size, original, status);
     return 0;
 }

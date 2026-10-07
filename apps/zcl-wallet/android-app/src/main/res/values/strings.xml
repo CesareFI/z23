@@ -27,7 +27,7 @@
     <string name="wallet_title">Zclassic wallet</string>
     <string name="wallet_working">Checking wallet protection…</string>
     <string name="wallet_welcome">Your Zclassic wallet</string>
-    <string name="wallet_setup_description">Create a wallet on this device or restore an English recovery phrase. Choose the same network when restoring.</string>
+    <string name="wallet_setup_description">Create a wallet with a 12-word English recovery phrase, or restore an existing English BIP39 phrase. Choose the same network when restoring.</string>
     <string name="network_mainnet">Zclassic mainnet</string>
     <string name="network_testnet">Zclassic testnet</string>
     <string name="create_wallet">Create wallet</string>
