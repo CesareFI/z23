@@ -1641,6 +1641,21 @@ static bool ic_acc_has_group(const struct agent_impact_acc *acc,
     return false;
 }
 
+static int test_ic_wallet_recovery_status_proof_mapping(void)
+{
+    int failures = 0;
+    TEST("impact composition: recovery status source selects recovery safety") {
+        const char *files[] = {
+            "contexts/wallet/controllers/src/wallet_recovery_native_handlers.c"
+        };
+        struct zcl_devloop_plan plan;
+        ASSERT(zcl_devloop_plan_files(files, 1, &plan));
+        ASSERT(ic_planned(&plan, "wallet_recovery_safety"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_sqlq_proof_mapping(void)
 {
     int failures = 0;
@@ -11614,6 +11629,7 @@ int test_impact_composition(void)
     failures += test_ic_snapshot_overlays_current_symbols();
     failures += test_ic_pr72_rpc_routes();
     failures += test_ic_sqlq_proof_mapping();
+    failures += test_ic_wallet_recovery_status_proof_mapping();
     failures += test_ic_fleet_triggers_proof_mapping();
     failures += test_ic_code_capsule_stays_with_code_owner();
     failures += test_ic_generated_inventory_stays_focused();

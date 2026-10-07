@@ -162,6 +162,12 @@ void zcl_native_handle_wallet_recovery_status(
     wrp_select_chain_params_if_standalone();
     char datadir[1024];
     const char *dd = json_get_str(json_get(request->input, "datadir"));
+    if (dd && strlen(dd) >= sizeof(datadir)) {
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "DATADIR_TOO_LONG",
+                 "datadir is too long to use without changing its path",
+                 "core.wallet.recovery.status");
+        return;
+    }
     if (dd && dd[0])
         snprintf(datadir, sizeof(datadir), "%s", dd);
     else
