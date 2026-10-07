@@ -10,6 +10,13 @@
  *
  * This is the definitive test: if the bot passes, the app works. */
 
+#include "json/json.h"
+#include "zutf8/zutf8.h"
+#include <errno.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+#ifndef Z23_BOT_RPC_ONLY
 #include "platform/time_compat.h"
 #include "controllers/wallet_view_controller.h"
 #include "controllers/wallet_view_internal.h"
@@ -92,27 +99,70 @@ static double elapsed_ms(void) {
 
 #define SECTION(name) printf("\n── %s ──\n", name)
 
+#endif /* Z23_BOT_RPC_ONLY */
+
 /* ── RPC queries ───────────────────────────────────────── */
 
 static double rpc_t, rpc_z, rpc_total;
 static int rpc_height, rpc_peers;
 
-static int query_rpc(void) {
-    char buf[4096] = "";
-    if (wv_rpc_call("z_gettotalbalance", "[]", buf, sizeof(buf)) <= 0)
-        return 0;
-    const char *t = strstr(buf, "\"transparent\"");
-    const char *z = strstr(buf, "\"private\"");
-    const char *tot = strstr(buf, "\"total\"");
-    if (!t || !z || !tot) return 0;
-    t = strchr(t + 13, '"'); if (t) t++;
-    z = strchr(z + 9, '"'); if (z) z++;
-    tot = strchr(tot + 7, '"'); if (tot) tot++;
-    if (!t || !z || !tot) return 0;
-    rpc_t = strtod(t, NULL);
-    rpc_z = strtod(z, NULL);
-    rpc_total = strtod(tot, NULL);
+static int rpc_decimal_exponent(const char *p, const char *end)
+{
+    if (p < end && (*p == 'e' || *p == 'E')) {
+        p++;
+        if (p < end && (*p == '+' || *p == '-')) p++;
+        const char *first = p;
+        while (p < end && *p >= '0' && *p <= '9') p++;
+        if (p == first) return 0;
+    }
+    return p == end;
+}
 
+static int rpc_decimal_span(const char *value, const char *end)
+{
+    const char *p = value;
+    if (p < end && *p == '-') p++;
+    if (p == end) return 0;
+    if (*p == '0') p++;
+    else {
+        const char *first = p;
+        while (p < end && *p >= '0' && *p <= '9') p++;
+        if (p == first) return 0;
+    }
+    if (p < end && *p == '.') {
+        const char *first = ++p;
+        while (p < end && *p >= '0' && *p <= '9') p++;
+        if (p == first) return 0;
+    }
+    return rpc_decimal_exponent(p, end);
+}
+
+static int rpc_balance_number(const struct json_value *obj,
+                              const char *key, double *out)
+{
+    *out = 0.0;
+    const struct json_value *v = json_get(obj, key);
+    if (!v) return 0;
+    if (v->type == JSON_INT || v->type == JSON_REAL) {
+        double number = json_get_real(v);
+        if (!isfinite(number)) return 0;
+        *out = number;
+        return 1;
+    }
+    if (v->type != JSON_STR) return 0;
+    const char *value = json_get_str(v);
+    const char *end = value + strlen(value);
+    if (!rpc_decimal_span(value, end)) return 0;
+    char *converted_end = NULL;
+    errno = 0;
+    double number = strtod(value, &converted_end);
+    if (converted_end != end || errno == ERANGE || !isfinite(number)) return 0;
+    *out = number;
+    return 1;
+}
+
+static void rpc_query_info(void)
+{
     char info[4096] = "";
     if (wv_rpc_call("getinfo", "[]", info, sizeof(info)) > 0) {
         const char *h = strstr(info, "\"blocks\"");
@@ -120,9 +170,36 @@ static int query_rpc(void) {
         if (h) rpc_height = (int)strtol(h + 9, NULL, 10);
         if (p) rpc_peers = (int)strtol(p + 14, NULL, 10);
     }
+}
+
+static int query_rpc(void)
+{
+    char buf[4096] = "";
+    int reply_len = wv_rpc_call("z_gettotalbalance", "[]", buf, sizeof(buf));
+    if (reply_len <= 0 || (size_t)reply_len >= sizeof(buf)) return 0;
+    size_t n = (size_t)reply_len;
+    if (memchr(buf, '\0', n) || !zutf8_validate_n(buf, n) ||
+        !json_valid(buf, n)) return 0;
+    buf[n] = '\0';
+    struct json_value reply = {0};
+    if (!json_read(&reply, buf, n)) return 0;
+    const struct json_value *balances = json_get(&reply, "result");
+    if (!balances) balances = &reply;
+    double t, z, total;
+    int valid = balances->type == JSON_OBJ &&
+        rpc_balance_number(balances, "transparent", &t) &&
+        rpc_balance_number(balances, "private", &z) &&
+        rpc_balance_number(balances, "total", &total);
+    json_free(&reply);
+    if (!valid) return 0;
+    rpc_t = t;
+    rpc_z = z;
+    rpc_total = total;
+    rpc_query_info();
     return 1;
 }
 
+#ifndef Z23_BOT_RPC_ONLY
 /* ═══════════════════════════════════════════════════════ */
 
 int main(int argc, char **argv)
@@ -360,3 +437,4 @@ int main(int argc, char **argv)
     ecc_stop();
     return _fail > 0 ? 1 : 0;
 }
+#endif /* Z23_BOT_RPC_ONLY */

@@ -32,6 +32,8 @@
 #include <sys/stat.h>
 #include <time.h>
 #include "test/test_wallet_view_priv.h"
+#include "command/native_command.h"
+#include "controllers/agent_impact_rules.h"
 
 /* ── Hermetic fixture DB ──────────────────────────────────────
  * The data-driven render tests must never touch the live node's
@@ -228,9 +230,148 @@ double wv_scan_coins_page_total(void)
     return coins_bal;
 }
 
-int test_wallet_view(void)
+/* Compile the real bot RPC caller with fixture transport only. Exclude its
+ * rendering driver and entry point so this cannot initialize a live wallet. */
+static const char *bot_balance_fixture;
+static size_t bot_balance_fixture_len;
+static int bot_balance_reported_len;
+static int bot_fixture_rpc_call(const char *method, const char *params,
+                                char *out, size_t outmax)
+{
+    (void)params;
+    if (outmax > 0)
+        out[0] = '\0';
+    if (strcmp(method, "getinfo") == 0)
+        return snprintf(out, outmax, "%s", "{\"blocks\":42,\"connections\":3}");
+    if (!bot_balance_fixture) return 0;
+    size_t copied = bot_balance_fixture_len;
+    if (copied > outmax) copied = outmax;
+    memcpy(out, bot_balance_fixture, copied);
+    return bot_balance_reported_len;
+}
+
+#define Z23_BOT_RPC_ONLY
+#define wv_rpc_call bot_fixture_rpc_call
+#include "../../../tools/bot.c"
+#undef wv_rpc_call
+#undef Z23_BOT_RPC_ONLY
+
+static int check_bot_rpc_impact_route(void)
+{
+    struct agent_impact_acc acc = {0};
+    bool consensus_risk = false;
+    const char *route = zcl_native_code_route_for_path(
+        "tools/bot.c", &acc, &consensus_risk);
+    bool wallet_view = false;
+    bool lint_gates = false;
+    for (size_t i = 0; i < acc.groups_len; i++) {
+        wallet_view |= strcmp(acc.groups[i], "wallet_view") == 0;
+        lint_gates |= strcmp(acc.groups[i], "make_lint_gates") == 0;
+    }
+    if (!route || !wallet_view || !lint_gates || consensus_risk ||
+        acc.groups_lost || acc.shared_rule_hits == 0) {
+        printf("wallet_view: bot-only native impact route FAILED\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int check_bot_rpc_balance_values(void)
 {
     int failures = 0;
+    static const char *const replies[] = {
+        "{\"x\":{\"transparent\":\"9\",\"private\":\"8\",\"total\":\"7\"},\"transparent\":\"1.25\",\"private\":\"2.5\",\"total\":\"3.75\"}",
+        "{\"result\":{\"transparent\":\"1.25\",\"private\":\"2.5\",\"total\":\"3.75\"},\"error\":null,\"id\":1}",
+        "{\"transparent\":1.25,\"private\":2.5,\"total\":3.75}",
+        "{\"transparent\":\"1.25\",\"private\":\"2.5\",\"total\":\"3.75\"}",
+        "{\"total\" :\t3.75,\"private\": \"2.5\",\"transparent\" : 1.25}",
+        "{\"transparent\":\n\"1.25\",\"private\":\r\"2.5\",\"total\":\r\n\"3.75\"}",
+        "{\"transparent\":\n1.25,\"private\":\r2.5,\"total\":\r\n3.75}"
+    };
+    for (size_t i = 0; i < sizeof(replies) / sizeof(replies[0]); i++) {
+        bot_balance_fixture = replies[i];
+        bot_balance_fixture_len = strlen(replies[i]);
+        bot_balance_reported_len = (int)bot_balance_fixture_len;
+        rpc_t = rpc_z = rpc_total = -1.0;
+        rpc_height = rpc_peers = -1;
+        if (!query_rpc() || rpc_t != 1.25 || rpc_z != 2.5 ||
+            rpc_total != 3.75 || rpc_height != 42 || rpc_peers != 3) {
+            printf("wallet_view: bot balance fixture %zu FAILED\n", i);
+            failures++;
+        }
+    }
+    bot_balance_fixture = NULL;
+    return failures;
+}
+
+static int check_bot_rpc_long_decimal(void)
+{
+    static const char reply[] =
+        "{\"transparent\":\"1.25\",\"private\":\"2.5\",\"total\":\"1."
+        "00000000000000000000000000000000"
+        "00000000000000000000000000000000\"}";
+    bot_balance_fixture = reply;
+    bot_balance_fixture_len = sizeof(reply) - 1;
+    bot_balance_reported_len = (int)bot_balance_fixture_len;
+    rpc_t = rpc_z = rpc_total = -1.0;
+    rpc_height = rpc_peers = -1;
+    int failed = !query_rpc() || rpc_t != 1.25 || rpc_z != 2.5 ||
+        rpc_total != 1.0 || rpc_height != 42 || rpc_peers != 3;
+    if (failed) printf("wallet_view: bot 66-byte quoted decimal FAILED\n");
+    bot_balance_fixture = NULL;
+    return failed;
+}
+
+static int check_bot_rpc_balance_refusals(void)
+{
+    static const struct { const char *bytes; size_t len; int reported; } rows[] = {
+#define BOT_BAD(s) {s, sizeof(s) - 1, (int)(sizeof(s) - 1)}
+        BOT_BAD("{\"transparent\":\"1.25\",\"private\":\"2.5\",\"total\":\"3.75\"}junk"),
+        BOT_BAD("{\"x\":{\"transparent\":\"9\",\"private\":\"8\",\"total\":\"7\"}}"),
+        BOT_BAD("[{\"transparent\":\"1.25\",\"private\":\"2.5\",\"total\":\"3.75\"}]"),
+        BOT_BAD("{\"transparent\":true,\"private\":\"2.5\",\"total\":\"3.75\"}"),
+        BOT_BAD("{\"transparent\":\"1.25\",\"private\":{},\"total\":\"3.75\"}"),
+        BOT_BAD("{\"transparent\":\"1.25\",\"private\":\"2.5\",\"total\":null}"),
+        BOT_BAD("{\"result\":[],\"transparent\":\"1.25\",\"private\":\"2.5\",\"total\":\"3.75\"}"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":3.75"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":3.75}junk"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":3.75}\0junk"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":3.75,\"x\":\"\xff\"}"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":1e9999}"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":\"1e9999\"}"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":\"1.25bad\"}"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":\"1.25 bad\"}"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":\"NaN\"}"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":\"Infinity\"}"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":\"1e-9999\"}"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5,\"total\":\"\"}"),
+        BOT_BAD("{\"transparent\":1.25,\"private\":2.5}"),
+        {"{}", 2, 4096}, {"{}", 2, 4097}, {"", 0, 0}, {"", 0, -1}
+#undef BOT_BAD
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        bot_balance_fixture = rows[i].bytes;
+        bot_balance_fixture_len = rows[i].len;
+        bot_balance_reported_len = rows[i].reported;
+        rpc_t = rpc_z = rpc_total = -1.0;
+        rpc_height = rpc_peers = -1;
+        if (query_rpc() || rpc_t != -1.0 || rpc_z != -1.0 ||
+            rpc_total != -1.0 || rpc_height != -1 || rpc_peers != -1) {
+            printf("wallet_view: bot balance refusal %zu FAILED\n", i);
+            failures++;
+        }
+    }
+    bot_balance_fixture = NULL;
+    return failures;
+}
+
+int test_wallet_view(void)
+{
+    int failures = check_bot_rpc_balance_values();
+    failures += check_bot_rpc_long_decimal();
+    failures += check_bot_rpc_balance_refusals();
+    failures += check_bot_rpc_impact_route();
 
     /* Initialize with no datadir — tests DB-unavailable paths.
      * This is intentional: we want to verify graceful degradation. */
