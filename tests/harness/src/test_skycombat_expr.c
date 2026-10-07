@@ -5,7 +5,7 @@
 static unsigned use_diag_events;
 static int use_diagnostic(FILE *stream,const char *format,...)
 {
- if(stream==stderr)++use_diag_events;va_list args;va_start(args,format);
+ if(stream==stderr){++use_diag_events;}va_list args;va_start(args,format);
  int result=vfprintf(stream,format,args);va_end(args);return result;
 }
 #define fprintf use_diagnostic
@@ -734,7 +734,7 @@ static int use_file_cases(void)
  /* A frame does not reopen the path or re-admit; captured recipe remains. */
  unlink(path);use_trace_at=0;use_trace[0]=0;sky_expr_render(&hud,use_builtin,"BUILTIN\n");
  failures+=strcmp(use_trace,"T HUD10 10.0 20.0 12.0\n")!=0;
- if(!admit_fixture_write(path,b,n,pin))return 1;option.pin[0]^=1;sky_expr_start(&option,fields,&hud);failures+=hud.active;
+ if(!admit_fixture_write(path,b,n,pin)){return 1;}option.pin[0]^=1;sky_expr_start(&option,fields,&hud);failures+=hud.active;
  use_trace_at=0;use_trace[0]=0;sky_expr_render(&hud,use_builtin,"BUILTIN\n");
  failures+=strcmp(use_trace,"BUILTIN\n")!=0;unlink(path);
  return failures;
@@ -762,10 +762,10 @@ static int use_refusal_cases(void)
  int failures=0;uint8_t b[2048]={0},pin[32];
  for(unsigned mode=0;mode<5;mode++) {
   size_t n=draw_fixture(b,3,1);double fields[XF_COUNT]={0};fields[XF_SHIELD]=mode==2?2:1;
-  if(mode==1)b[0]=0;if(mode==3)zcl_write_u32_le(b+32+16*7+8,0);
+  if(mode==1){b[0]=0;}if(mode==3){zcl_write_u32_le(b+32+16*7+8,0);}
   if(!admit_fixture_write(path,b,n,pin)){unlink(path);return 1;}
   struct sky_expr_option option={.path=path};memcpy(option.pin,pin,32);
-  if(mode==0)option.pin[0]^=1;if(mode==4)unlink(path);
+  if(mode==0){option.pin[0]^=1;}if(mode==4){unlink(path);}
   struct sky_expr_hud hud={0};unsigned before=use_diag_events;sky_expr_start(&option,fields,&hud);
   failures+=hud.active || use_diag_events!=before+1;
   use_trace_at=0;use_trace[0]=0;sky_expr_render(&hud,use_builtin,"BUILTIN\n");
@@ -868,7 +868,7 @@ static int reload_bad_pin(const char *path,unsigned mode)
 static int reload_refusal_prepare(const char *path,const char *pin_path,unsigned mode)
 {
  uint8_t bytes[2048]={0},pin[32];size_t n=draw_fixture(bytes,3,1);
- if(mode==5)bytes[0]=0;if(mode==7)zcl_write_u32_le(bytes+32+16*7+8,0);
+ if(mode==5){bytes[0]=0;}if(mode==7){zcl_write_u32_le(bytes+32+16*7+8,0);}
  if(!admit_fixture_write(path,bytes,n,pin))return 1;
  int failures=reload_write_pin(pin_path,pin,false);
  if(mode==0)unlink(pin_path);
