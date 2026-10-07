@@ -84,9 +84,9 @@ void boot_register_worker_supervisor(
  * it); a still-wedged worker never reaches the call and leaves the blocker up. */
 void boot_worker_clear_stall_blocker(const struct liveness_contract *c);
 
-/* Mark a registered worker complete after its thread exits. This does not clear
- * the slot or unregister the child, so sibling cached child ids remain stable
- * and the register helper remains idempotent. */
+/* Mark a registered worker complete after its thread exits, retire its stable
+ * registry slot, and clear the owner slot so a later in-process boot can
+ * register a fresh liveness contract. */
 void boot_complete_worker_supervisor(_Atomic supervisor_child_id *slot);
 
 /* Store payment processor (store profile). Its runtime-kernel start/stop

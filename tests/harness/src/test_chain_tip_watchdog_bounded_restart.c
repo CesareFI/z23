@@ -49,6 +49,8 @@
 } while (0)
 
 static _Atomic int g_operator_events;
+static _Atomic supervisor_child_id g_restart_worker_id = SUPERVISOR_INVALID_ID;
+static struct liveness_contract g_restart_worker_contract;
 
 static void wd_operator_observer(enum event_type type, uint32_t peer_id,
                                  const void *payload, uint32_t payload_len,
@@ -101,6 +103,33 @@ static void wd_free_idx(struct block_index *bi)
     free(bi);
 }
 
+static int wd_check_boot_worker_supervisor_restart(void)
+{
+    int failures = 0;
+
+    atomic_store(&g_restart_worker_id, SUPERVISOR_INVALID_ID);
+    boot_register_worker_supervisor(&g_restart_worker_id,
+                                    &g_restart_worker_contract, &g_op_sup,
+                                    "op.test_restart_worker", 30, 0);
+    supervisor_child_id first = atomic_load(&g_restart_worker_id);
+    WD_CHECK("boot worker supervisor registers first run",
+             first != SUPERVISOR_INVALID_ID);
+
+    boot_complete_worker_supervisor(&g_restart_worker_id);
+    WD_CHECK("completed boot worker releases supervisor slot",
+             atomic_load(&g_restart_worker_id) == SUPERVISOR_INVALID_ID);
+
+    boot_register_worker_supervisor(&g_restart_worker_id,
+                                    &g_restart_worker_contract, &g_op_sup,
+                                    "op.test_restart_worker", 30, 0);
+    supervisor_child_id second = atomic_load(&g_restart_worker_id);
+    WD_CHECK("boot worker supervisor re-arms after restart",
+             second != SUPERVISOR_INVALID_ID &&
+             !atomic_load(&g_restart_worker_contract.completed));
+    boot_complete_worker_supervisor(&g_restart_worker_id);
+    return failures;
+}
+
 int test_chain_tip_watchdog_bounded_restart(void)
 {
     printf("\n=== chain_tip_watchdog bounded-restart tests ===\n");
@@ -112,6 +141,10 @@ int test_chain_tip_watchdog_bounded_restart(void)
     event_clear_all_observers();
     atomic_store(&g_operator_events, 0);
     event_observe(EV_OPERATOR_NEEDED, wd_operator_observer, NULL);
+
+    /* A completed one-shot boot worker must release its registration slot so
+     * a later in-process app_init can arm a fresh liveness contract. */
+    failures += wd_check_boot_worker_supervisor_restart();
 
     /* Worker stalls are worker-scoped blockers, not chain-tip wedge causes. */
     {
