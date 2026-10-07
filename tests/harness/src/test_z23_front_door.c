@@ -143,6 +143,59 @@ static void answered(struct fd_attestation *a, const char *origin,
     fd_attestation_answered(a, origin, &pin);
 }
 
+static int case_attestation_oversized(void)
+{
+    int failures = 0;
+    struct fd_attestation a;
+    answered(&a, "abcdefghijklmnop", k_pin_a);
+    FD_CHECK("oversized answered origin refuses without a pin",
+             !a.answered && a.origin[0] == '\0' && a.pin.text[0] == '\0' &&
+             strcmp(a.reason, "input-too-long") == 0);
+    fd_attestation_unreachable(&a, "repo", "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr");
+    FD_CHECK("oversized unreachable reason has an explicit refusal",
+             !a.answered && a.origin[0] == '\0' &&
+             strcmp(a.reason, "input-too-long") == 0);
+    fd_attestation_unreachable(&a, "abcdefghijklmnop", "fetch-failed");
+    FD_CHECK("oversized unreachable origin has an explicit refusal",
+             !a.answered && a.origin[0] == '\0' &&
+             strcmp(a.reason, "input-too-long") == 0);
+    return failures;
+}
+
+static int case_attestation_controls(void)
+{
+    int failures = 0;
+    struct fd_attestation a;
+    const char *origin = "abcdefghijklmno";
+    const char *reason = "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr";
+
+    answered(&a, origin, k_pin_a);
+    FD_CHECK("maximum answered origin remains exact",
+             a.answered && strcmp(a.origin, origin) == 0 &&
+             strcmp(a.pin.text, k_pin_a) == 0 && a.reason[0] == '\0');
+    fd_attestation_unreachable(&a, origin, reason);
+    FD_CHECK("maximum unreachable origin and reason remain exact",
+             !a.answered && strcmp(a.origin, origin) == 0 &&
+             strcmp(a.reason, reason) == 0);
+    answered(&a, NULL, k_pin_a);
+    FD_CHECK("NULL answered origin remains empty",
+             a.answered && a.origin[0] == '\0');
+    answered(&a, "", k_pin_a);
+    FD_CHECK("empty answered origin remains empty",
+             a.answered && a.origin[0] == '\0');
+    fd_attestation_answered(&a, "repo", NULL);
+    FD_CHECK("NULL pin retains no-answer",
+             !a.answered && strcmp(a.origin, "repo") == 0 &&
+             strcmp(a.reason, "no-answer") == 0);
+    fd_attestation_unreachable(&a, NULL, NULL);
+    FD_CHECK("NULL unreachable fields remain empty",
+             !a.answered && a.origin[0] == '\0' && a.reason[0] == '\0');
+    fd_attestation_unreachable(&a, "", "");
+    FD_CHECK("empty unreachable fields remain empty",
+             !a.answered && a.origin[0] == '\0' && a.reason[0] == '\0');
+    return failures;
+}
+
 static int case_agreement(void)
 {
     int failures = 0;
@@ -548,6 +601,8 @@ int test_z23_front_door(void)
     int failures = 0;
     failures += case_pin_parse();
     failures += case_pin_from_lines();
+    failures += case_attestation_oversized();
+    failures += case_attestation_controls();
     failures += case_agreement();
     failures += case_attest_arg();
     failures += case_platform();

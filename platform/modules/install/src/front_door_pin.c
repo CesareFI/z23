@@ -179,19 +179,22 @@ bool fd_pin_from_lines(const char *blob, struct fd_pin *out)
     return false;
 }
 
-static void copy_bounded(char *dst, size_t dst_len, const char *src)
+static bool copy_bounded(char *dst, size_t dst_len, const char *src)
 {
     if (dst_len == 0)
-        return;
+        return false;
     if (!src) {
         dst[0] = '\0';
-        return;
+        return true;
     }
-    size_t n = strlen(src);
-    if (n >= dst_len)
-        n = dst_len - 1;
+    const size_t n = strlen(src);
+    if (n >= dst_len) {
+        dst[0] = '\0';
+        return false;
+    }
     memcpy(dst, src, n);
     dst[n] = '\0';
+    return true;
 }
 
 void fd_attestation_answered(struct fd_attestation *a, const char *origin,
@@ -200,7 +203,10 @@ void fd_attestation_answered(struct fd_attestation *a, const char *origin,
     if (!a)
         return;
     memset(a, 0, sizeof *a);
-    copy_bounded(a->origin, sizeof a->origin, origin);
+    if (!copy_bounded(a->origin, sizeof a->origin, origin)) {
+        copy_bounded(a->reason, sizeof a->reason, "input-too-long");
+        return;
+    }
     if (pin)
         a->pin = *pin;
     a->answered = pin != NULL;
@@ -214,8 +220,11 @@ void fd_attestation_unreachable(struct fd_attestation *a, const char *origin,
     if (!a)
         return;
     memset(a, 0, sizeof *a);
-    copy_bounded(a->origin, sizeof a->origin, origin);
-    copy_bounded(a->reason, sizeof a->reason, reason);
+    if (!copy_bounded(a->origin, sizeof a->origin, origin) ||
+        !copy_bounded(a->reason, sizeof a->reason, reason)) {
+        memset(a, 0, sizeof *a);
+        copy_bounded(a->reason, sizeof a->reason, "input-too-long");
+    }
     a->answered = false;
 }
 
