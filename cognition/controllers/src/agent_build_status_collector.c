@@ -21,11 +21,18 @@ void agent_collect_optional_status(struct json_value *out,
     if (snprintf(cmdcopy, sizeof(cmdcopy), "%s", command ? command : "")
             < (int)sizeof(cmdcopy))
         argc = zcl_argv_split(cmdcopy, argv, 64);
-    int rc = argc ? zcl_spawn_capture(argv, buf, sizeof(buf), 30000) : -1;
-    size_t used = strlen(buf);
+    struct zcl_spawn_binary_observation observed = { .exit_code = -1 };
+    bool captured = false;
+    if (argc) {
+        struct zcl_result capture = zcl_spawn_capture_binary(
+            argv, buf, sizeof(buf) - 1, 30000, &observed);
+        captured = capture.ok;
+    }
+    int rc = observed.exit_code;
+    size_t used = observed.output_len;
 
     struct json_value parsed = {0};
-    if (argc && json_read(&parsed, buf, used) && parsed.type == JSON_OBJ &&
+    if (captured && json_read(&parsed, buf, used) && parsed.type == JSON_OBJ &&
         strcmp(json_get_str(json_get(&parsed, "schema")), schema) == 0) {
         *out = parsed;
         json_push_kv_int(out, "collector_status", rc);

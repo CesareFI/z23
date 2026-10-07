@@ -789,6 +789,62 @@ bool sd_build_deferred_scenario(struct sd_agent_ops_ctx *ctx,
     return ok;
 }
 
+static bool sd_devstatus_capture_case(struct sd_agent_ops_ctx *ctx,
+                                     const char *bytes, size_t size,
+                                     const char *program, bool complete)
+{
+    char path[PATH_MAX], command[PATH_MAX + 8];
+    if (!test_ensure_tmproot()) return false;
+    test_fmt_tmpdir(path, sizeof(path), "zcl_devstatus_framing", "fixture");
+    FILE *file = fopen(path, "wb");
+    if (!file) return false;
+    bool ok = fwrite(bytes, 1, size, file) == size;
+    ok = fclose(file) == 0 && ok;
+    int n = snprintf(command, sizeof(command), "%s %s", program, path);
+    ok = n >= 0 && (size_t)n < sizeof(command) && ok;
+    ok = setenv("ZCL_AGENT_DEV_STATUS_CMD", command, 1) == 0 && ok;
+    struct json_value result;
+    json_init(&result);
+    if (ok) {
+        ok = rpc_table_execute(&ctx->tbl, "agentdevstatus", &ctx->params,
+                               &result);
+        ok &= json_get_bool(json_get(&result, "collector_complete")) == complete;
+        ok &= json_get_bool(json_get(&result, "collector_deferred")) == !complete;
+        ok &= strcmp(json_get_str(json_get(&result, "status")),
+                     complete ? "ok" : "unavailable") == 0;
+        ok &= strcmp(json_get_str(json_get(&result, "schema")),
+                     "zcl.agent_dev_status.v2") == 0;
+        ok &= (json_get(&result, "witness") != NULL) == complete;
+    }
+    json_free(&result);
+    if (!ok)
+        fprintf(stderr, "devstatus capture: program=%s bytes=%zu complete=%d\n",
+                program, size, complete);
+    return unlink(path) == 0 && ok;
+}
+
+static bool sd_devstatus_capture_framing(struct sd_agent_ops_ctx *ctx)
+{
+    static const char valid[] =
+        "{\"schema\":\"zcl.agent_dev_status.v2\",\"witness\":true}";
+    static const char hidden[] =
+        "{\"schema\":\"zcl.agent_dev_status.v2\",\"witness\":true}\0X";
+    static const char failed[] =
+        "printf '%s' '{\"schema\":\"zcl.agent_dev_status.v2\",\"witness\":true}'\nexit 7\n";
+    char overflow[65536];
+    memset(overflow, ' ', sizeof(overflow));
+    memcpy(overflow, valid, sizeof(valid) - 1);
+    overflow[sizeof(overflow) - 1] = 'X';
+    bool ok = sd_devstatus_capture_case(ctx, valid, sizeof(valid) - 1, "cat", true);
+    ok = sd_devstatus_capture_case(ctx, hidden, sizeof(hidden) - 1, "cat", false) && ok;
+    ok = sd_devstatus_capture_case(ctx, overflow, sizeof(overflow) - 1, "cat", true) && ok;
+    ok = sd_devstatus_capture_case(ctx, overflow, sizeof(overflow), "cat", false) && ok;
+    ok = sd_devstatus_capture_case(ctx, failed, sizeof(failed) - 1, "sh", false) && ok;
+    ok = sd_devstatus_capture_case(ctx, valid, sizeof(valid) - 1,
+                                  "/nonexistent/zcl-devstatus-framing", false) && ok;
+    return ok;
+}
+
 /* case: agentdevstatus reflects a mocked dev-status-cmd worker_lane and
  * next_action payload. */
 bool sd_devstatus_scenario(struct sd_agent_ops_ctx *ctx)
@@ -819,6 +875,7 @@ bool sd_devstatus_scenario(struct sd_agent_ops_ctx *ctx)
     json_init(&dev_status);
     ok = rpc_table_execute(&ctx->tbl, "agentdevstatus", &ctx->params,
                            &dev_status) && ok;
+    ok = sd_devstatus_capture_framing(ctx) && ok;
     if (old_dev_status_cmd_set)
         setenv("ZCL_AGENT_DEV_STATUS_CMD",
                old_dev_status_cmd_buf, 1);
