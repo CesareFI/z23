@@ -11,7 +11,7 @@
 // needs a richer failure reason: boot_services.c's callers already just
 // branch on true/false (see boot_start_catchup_service /
 // boot_reap_catchup_service). Every failure path that has a reason
-// (bounded-join timeout/error) already logs it via LOG_WARN before
+// (join diagnostic timeout/error) already logs it via LOG_WARN before
 // returning false, so the reason still travels with the failure.
 
 #define _GNU_SOURCE  /* pthread_timedjoin_np */
@@ -19,8 +19,10 @@
 /* catchup_lifecycle_service — see the header doc comment for the
  * boot_services.c origin + contract. catchup_lifecycle_join_thread_bounded/
  * catchup_lifecycle_join_deadline_from_now mirror
- * engine/composition/src/boot_background_workers.c's boot_join_thread_bounded (bounded
- * pthread_timedjoin_np, log + detach on timeout/error) — kept local
+ * engine/composition/src/boot_background_workers.c's ownership-preserving join:
+ * pthread_timedjoin_np provides a diagnostic deadline, then pthread_join
+ * retains ownership until the worker exits rather than detaching a thread that
+ * still borrows the job, database, chain, and wallet. This copy is kept local
  * instead of shared so this service does not depend on a
  * engine/composition/src-internal header ("Not for use outside engine/composition/src/"). The
  * engine/composition/src original uses a raw fprintf (boot/shutdown code avoids the
@@ -74,8 +76,14 @@ static bool catchup_lifecycle_join_thread_bounded(pthread_t thread,
                  "%s join failed rc=%d (%s); retaining ownership",
                  name ? name : "thread", rc, strerror(rc));
     }
-    pthread_join(thread, NULL);
-    return false;
+    int join_rc = pthread_join(thread, NULL);
+    if (join_rc != 0) {
+        LOG_WARN("catchup_lifecycle",
+                 "%s ownership join failed rc=%d (%s)",
+                 name ? name : "thread", join_rc, strerror(join_rc));
+        return false;
+    }
+    return true;
 #else
     (void)timeout_sec;
     int rc = pthread_join(thread, NULL);

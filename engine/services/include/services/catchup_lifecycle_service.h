@@ -45,20 +45,20 @@ bool catchup_lifecycle_start(struct node_db_sync_catchup_job *job,
                              struct wallet *w,
                              const char *datadir);
 
-/* Bounded join for shutdown: waits up to timeout_sec for the catchup
- * thread, then detaches instead of blocking (never lets a stuck catchup
- * thread hang shutdown). No-op if the job is not started. Clears
- * job->started unconditionally on return — matches the former
- * boot_join_catchup_service contract. */
+/* Ownership-preserving join for shutdown. timeout_sec bounds the initial
+ * diagnostic wait; if it expires, the timeout is logged and the join keeps
+ * waiting. The worker borrows the job, database, chain, and wallet, so it must
+ * never be detached while shutdown frees those objects. No-op if the job is
+ * not started. Clears job->started after the thread has been reclaimed. */
 void catchup_lifecycle_join(struct node_db_sync_catchup_job *job,
                             int timeout_sec);
 
 /* Poll-style reap for the background backfill watcher: if the job is
  * running but not yet finished, no-op (returns true — "nothing to reap
- * yet"). Once finished, joins it (bounded 1s) and clears job->started.
- * Returns false only if that bounded join itself times out, leaving the
- * job thread detached and job->started still true — matches the former
- * boot_reap_catchup_service contract. */
+ * yet"). Once finished, gives the join a one-second diagnostic deadline; if
+ * the thread is still in its epilogue, the timeout is logged and ownership is
+ * retained until it exits. A successful eventual join clears job->started.
+ * Returns false only when ownership could not be reclaimed. */
 bool catchup_lifecycle_reap(struct node_db_sync_catchup_job *job);
 
 #endif /* ZCL_SERVICES_CATCHUP_LIFECYCLE_SERVICE_H */

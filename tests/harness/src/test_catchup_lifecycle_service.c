@@ -3,8 +3,8 @@
  * catchup_lifecycle_service — start/join/reap policy lifted out of
  * engine/composition/src/boot_services.c (boot_start_catchup_service /
  * boot_join_catchup_service / boot_reap_catchup_service). Exercises the
- * double-start guard, the NULL-safety of every entry point, the bounded
- * join clearing job->started, and the poll-only reap contract (no-op
+ * double-start guard, the NULL-safety of every entry point, the
+ * ownership-preserving join clearing job->started, and the poll-only reap contract (no-op
  * while running, joins + clears once finished). */
 
 #include "platform/time_compat.h"
@@ -17,6 +17,39 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+
+#if defined(__linux__)
+static void *catchup_lifecycle_delayed_epilogue(void *arg)
+{
+    (void)arg;
+    platform_sleep_ms(1200); /* real-clock: deliberately exceeds the 1s reap diagnostic deadline */
+    return NULL;
+}
+
+static int catchup_lifecycle_test_delayed_reap(void)
+{
+    int failures = 0;
+    printf("catchup_lifecycle_service: delayed epilogue is joined and reaped... ");
+
+    struct node_db_sync_catchup_job job;
+    node_db_sync_catchup_job_init(&job);
+    bool started = pthread_create(&job.thread, NULL,
+                                  catchup_lifecycle_delayed_epilogue,
+                                  NULL) == 0;
+    job.started = started;
+    atomic_store(&job.finished, true);
+
+    bool reaped = started && catchup_lifecycle_reap(&job);
+    bool ok = started && reaped && !job.started;
+
+    /* The production helper retains ownership and completes the join even
+     * when its one-second diagnostic deadline expires. */
+    job.started = false;
+    if (ok) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    return failures;
+}
+#endif
 
 int test_catchup_lifecycle_service(void)
 {
@@ -115,6 +148,10 @@ int test_catchup_lifecycle_service(void)
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+#if defined(__linux__)
+    failures += catchup_lifecycle_test_delayed_reap();
+#endif
 
     {
         /* Lifetime: catchup_lifecycle_start() resolves the network datadir
