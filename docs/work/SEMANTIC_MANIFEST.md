@@ -2108,6 +2108,15 @@ vs plain that occurs naturally (a recompiled, byte-identical TU); and a
 planted over-selection reports the exact false-wide count for facts without
 stopping the run.
 
+The replay utility selects `_DARWIN_C_SOURCE=1` before its headers when
+`__APPLE__` is defined and the caller has not selected `_DARWIN_C_SOURCE`
+(`tools/dev/sem_replay_util.c:5`). The self-test also observes the default,
+preservation of a caller-selected value, and absence of this default outside
+the Apple branch through child exit statuses from `sr_run`
+(`tests/harness/src/test_sem_replay.c:924`). These macro-contract fixtures
+use the host libc and explicit declarations; they do not establish Darwin
+SDK declaration coverage.
+
 ## A future native C23 compiler
 
 A native front end emits the same contract by linking the same core and

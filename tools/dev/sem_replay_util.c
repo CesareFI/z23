@@ -2,6 +2,9 @@
  *
  * z23-sem-replay helpers: string lists, child processes with their
  * resource use, files, hashing, sh word splitting and JSON flattening. */
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1 /* wait4 even with caller-defined _POSIX_C_SOURCE */
+#endif
 #define _GNU_SOURCE /* wait4, putenv */
 
 #include "sem_replay.h"

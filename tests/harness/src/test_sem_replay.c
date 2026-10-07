@@ -1269,6 +1269,90 @@ static bool srt_replay_probe(const struct srt_fx *fx, const char *text)
     return rc == 0;
 }
 
+/* Observe feature selection as a child exit through the real sr_run caller.
+ * The explicit wait4 prototype keeps a missing feature macro a runtime failure
+ * on Darwin too, rather than using a compiler error as the mutation verdict.
+ * These are macro-contract cases on the host libc, not a Darwin SDK emulation. */
+static bool srt_darwin_probe(const struct srt_fx *fx, const char *selection)
+{
+    static const char driver[] =
+        "#include <sys/types.h>\n#include <sys/resource.h>\n"
+        "extern pid_t wait4(pid_t, int *, int, struct rusage *);\n"
+        "extern int putenv(char *);\n"
+        "%s\n"
+        "#include \"tools/dev/sem_replay_util.c\"\n"
+        "int64_t clock_now_monotonic_ns(void) { return 0; }\n"
+        "static int feature_status(void) {\n"
+        "#if defined(__APPLE__)\n"
+        "#if !defined(_DARWIN_C_SOURCE)\n"
+        " return 41;\n"
+        "#elif _DARWIN_C_SOURCE != EXPECT_FEATURE\n"
+        " return 42;\n"
+        "#else\n return 0;\n#endif\n"
+        "#elif defined(_DARWIN_C_SOURCE)\n return 43;\n"
+        "#else\n return 0;\n#endif\n}\n"
+        "int main(int argc, char **argv) {\n"
+        " if (argc == 2) return feature_status();\n"
+        " char *child[] = {argv[0], \"child\", NULL};\n"
+        " struct sr_cost cost = {0};\n"
+        " int rc = sr_run(child, NULL, NULL, NULL, &cost);\n"
+        " printf(\"feature child exit=%%d wall=%%.0f\\n\", rc, cost.wall_s);\n"
+        " return rc == 0 && cost.wall_s == 0 ? 0 : 1;\n}\n";
+    char code[4096], source[PATH_MAX + 32], bin[PATH_MAX + 32];
+    int n = snprintf(code, sizeof code, driver, selection);
+    if (n < 0 || (size_t)n >= sizeof code ||
+        !srt_write(fx->tools, "darwin-feature.c", code)) {
+        printf("(Darwin feature fixture setup failed) ");
+        return false;
+    }
+    snprintf(source, sizeof source, "%s/darwin-feature.c", fx->tools);
+    snprintf(bin, sizeof bin, "%s/darwin-feature", fx->tools);
+    const char *cc[] = {"cc", "-std=c23", "-O1", "-D_DEFAULT_SOURCE",
+        "-D_POSIX_C_SOURCE=200809L", "-I.", "-Iplatform/modules/base/include",
+        "-Iplatform/modules/platform/include", "-Iplatform/modules/sha3/include",
+        "-Icontexts/commons/packages/zjsonp/include", "-Icontexts/commons/packages/zutf8/include",
+        "-o", bin, source, "platform/modules/base/src/safe_alloc.c",
+        "platform/modules/sha3/src/sha3.c", "contexts/commons/packages/zjsonp/src/zjsonp.c",
+        "contexts/commons/packages/zutf8/src/zutf8.c", NULL};
+    int rc = srt_run(cc);
+    if (rc != 0)
+        printf("(Darwin feature probe compile exit %d: %s) ", rc, g_srt_out);
+    return rc == 0;
+}
+
+static int test_srt_darwin_feature(void)
+{
+    static const char *const selections[] = {
+        "#undef __APPLE__\n#define __APPLE__ 1\n#undef _DARWIN_C_SOURCE\n#define EXPECT_FEATURE 1",
+        "#undef __APPLE__\n#define __APPLE__ 1\n#undef _DARWIN_C_SOURCE\n#define _DARWIN_C_SOURCE 7\n#define EXPECT_FEATURE 7",
+        "#undef __APPLE__\n#undef _DARWIN_C_SOURCE",
+    };
+    int failures = 0;
+    struct srt_fx fx = {0};
+    char probe[PATH_MAX + 32];
+    test_make_tmpdir(fx.root, sizeof fx.root, "sem_replay", "darwin_feature");
+    snprintf(fx.tools, sizeof fx.tools, "%s", fx.root);
+    snprintf(probe, sizeof probe, "%s/darwin-feature", fx.root);
+    const char *run[] = {probe, NULL};
+    TEST("replay: Darwin feature default, caller selection and non-Apple scope") {
+        for (size_t i = 0; i < sizeof selections / sizeof selections[0]; i++) {
+            ASSERT(srt_darwin_probe(&fx, selections[i]));
+            int rc = srt_run(run);
+            if (rc != 0)
+                printf("(feature case %zu: %s) ", i, g_srt_out);
+            ASSERT_EQ(rc, 0);
+            ASSERT_STR_EQ(g_srt_out, "feature child exit=0 wall=0\n");
+        }
+        PASS();
+    }
+_test_next:;
+    if (test_rm_rf_recursive(fx.root) != 0) {
+        printf("(Darwin feature fixture cleanup failed: %s) ", fx.root);
+        failures++;
+    }
+    return failures;
+}
+
 static int test_srt_oid_extent(void)
 {
     int failures = 0;
@@ -1322,7 +1406,7 @@ _test_next:;
         printf("(object ID fixture cleanup failed: %s) ", fx.root);
         failures++;
     }
-    return failures;
+    return failures + test_srt_darwin_feature();
 }
 
 #endif /* !_WIN32 */
