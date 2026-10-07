@@ -10,6 +10,32 @@ static bool printable_ascii(const uint8_t *text, size_t length)
     return true;
 }
 
+static bool plain_ascii(const uint8_t *text, size_t length)
+{
+    for (size_t i = 0; i < length; ++i) {
+        if (text[i] < 0x20 || text[i] > 0x7e || text[i] == '\\') return false;
+    }
+    return true;
+}
+
+static size_t decode_text(const zcl_rpc_json *doc, const zcl_rpc_token *token,
+                           uint8_t *output, size_t capacity)
+{
+    if (doc->text == NULL || token->offset > doc->length ||
+        token->length > doc->length - token->offset) return SIZE_MAX;
+    const uint8_t *text = doc->text + token->offset;
+    /* Borrow only this validated span. Do not write until the entire token is
+     * known to need no decoding. Preserve the provider's partial-copy contract
+     * when capacity is short; escaped/non-ASCII input keeps its original path. */
+    if (plain_ascii(text, token->length)) {
+        const size_t copied = token->length < capacity ? token->length : capacity;
+        memcpy(output, text, copied);
+        return token->length;
+    }
+    const zjsonp_event event = {(zjsonp_event_kind)token->kind, token->offset, token->length};
+    return zjsonp_str_decode((const char *)doc->text, &event, (char *)output, capacity);
+}
+
 zcl_status zcl_rpc_ascii(const zcl_rpc_json *doc, const zcl_rpc_token *token,
                           uint8_t *output, size_t capacity, size_t *length)
 {
@@ -17,8 +43,7 @@ zcl_status zcl_rpc_ascii(const zcl_rpc_json *doc, const zcl_rpc_token *token,
         return ZCL_INVALID_ARGUMENT;
     if (token->kind != ZJRP_KEY && token->kind != ZJRP_STR)
         return ZCL_INVALID_ENCODING;
-    const zjsonp_event event = {(zjsonp_event_kind)token->kind, token->offset, token->length};
-    const size_t decoded = zjsonp_str_decode((const char *)doc->text, &event, (char *)output, capacity);
+    const size_t decoded = decode_text(doc, token, output, capacity);
     if (decoded == SIZE_MAX) return ZCL_INVALID_ENCODING;
     if (decoded > capacity) return ZCL_BUFFER_TOO_SMALL;
     if (!printable_ascii(output, decoded)) return ZCL_INVALID_ENCODING;
