@@ -136,11 +136,14 @@ bool db_utxo_insert_raw(struct node_db *ndb, const struct db_utxo *u);
 
 /* Serialize all UTXOs to a binary snapshot file in wire format.
  * File format: sequence of chunks, each: entry_count(4LE) + entries.
- * Each entry: txid(32) + vout(4) + value(8) + height(4) + compact_size + script.
- * Uses db_utxo_each() internally. Returns total UTXOs written.
+ * Each entry: txid(32) + vout(4) + value(8) + height(4) + coinbase(1) +
+ * compact_size + script (capped at 520 bytes).
+ * Uses db_utxo_each() internally. Returns total UTXOs written, or -1 when
+ * opening, writing, seeking, or closing the output fails.
  * chunk_size = UTXOs per chunk (default 500).
- * If sha3_out is non-NULL, computes SHA3-256 commitment during the same pass
- * to guarantee the hash matches the serialized file contents. */
+ * If sha3_out is non-NULL, computes the canonical UTXO SHA3-256 commitment
+ * during the same pass. On failure sha3_out is zeroed; partial output may
+ * remain at path and must not be used as a snapshot. */
 int64_t db_utxo_serialize_snapshot(struct node_db *ndb,
                                     const char *path, uint32_t chunk_size,
                                     uint8_t sha3_out[32]);

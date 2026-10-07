@@ -561,30 +561,133 @@ struct snapshot_writer {
     long chunk_start_pos;      /* file offset of current chunk's entry_count */
     int64_t total_written;
     struct sha3_256_ctx *sha3; /* optional SHA3 context for commitment */
+    bool failed;
 };
 
-static void snap_flush_chunk_header(struct snapshot_writer *w)
+static bool snap_write(struct snapshot_writer *w, const void *data, size_t len)
 {
-    if (w->entries_in_chunk == 0) return;
+    if (w->failed)
+        LOG_FAIL("utxo", "snapshot output operation failed");
+    if (fwrite(data, 1, len, w->fp) != len) {
+        w->failed = true;
+        LOG_FAIL("utxo", "snapshot output operation failed");
+    }
+    return true;
+}
+
+static bool snap_flush_chunk_header(struct snapshot_writer *w)
+{
+    if (w->entries_in_chunk == 0)
+        return true;
     /* Seek back and patch the entry count at chunk start */
     long cur = ftell(w->fp);
-    fseek(w->fp, w->chunk_start_pos, SEEK_SET);
+    if (cur < 0 || fseek(w->fp, w->chunk_start_pos, SEEK_SET) != 0) {
+        w->failed = true;
+        LOG_FAIL("utxo", "snapshot output operation failed");
+    }
     uint8_t hdr[4] = {
         (uint8_t)(w->entries_in_chunk & 0xFF),
         (uint8_t)((w->entries_in_chunk >> 8) & 0xFF),
         (uint8_t)((w->entries_in_chunk >> 16) & 0xFF),
         (uint8_t)((w->entries_in_chunk >> 24) & 0xFF)
     };
-    fwrite(hdr, 1, 4, w->fp);
-    fseek(w->fp, cur, SEEK_SET);
+    if (!snap_write(w, hdr, sizeof(hdr)) || fseek(w->fp, cur, SEEK_SET) != 0) {
+        w->failed = true;
+        LOG_FAIL("utxo", "snapshot output operation failed");
+    }
+    return true;
 }
 
-static void snap_begin_chunk(struct snapshot_writer *w)
+static bool snap_begin_chunk(struct snapshot_writer *w)
 {
     w->chunk_start_pos = ftell(w->fp);
+    if (w->chunk_start_pos < 0) {
+        w->failed = true;
+        LOG_FAIL("utxo", "snapshot output operation failed");
+    }
     uint8_t placeholder[4] = {0};
-    fwrite(placeholder, 1, 4, w->fp);
+    if (!snap_write(w, placeholder, sizeof(placeholder)))
+        LOG_FAIL("utxo", "snapshot output operation failed");
     w->entries_in_chunk = 0;
+    return true;
+}
+
+static void snap_feed_sha3(struct snapshot_writer *w, const struct db_utxo *u)
+{
+    /* Feed to SHA3 commitment (must match utxo_commitment_sha3_compute format):
+     * txid(32) || vout_le(4) || value_le(8) || script_len_le(4) || script ||
+     * height_le(4) || is_coinbase(1) */
+    sha3_256_write(w->sha3, u->txid, 32);
+    uint8_t le4[4];
+    le4[0] = (uint8_t)(u->vout); le4[1] = (uint8_t)(u->vout >> 8);
+    le4[2] = (uint8_t)(u->vout >> 16); le4[3] = (uint8_t)(u->vout >> 24);
+    sha3_256_write(w->sha3, le4, 4);
+    uint8_t le8[8];
+    uint64_t value = (uint64_t)u->value;
+    for (int i = 0; i < 8; i++) le8[i] = (uint8_t)(value >> (8 * i));
+    sha3_256_write(w->sha3, le8, 8);
+    uint32_t slen32 = (uint32_t)u->script_len;
+    le4[0] = (uint8_t)(slen32); le4[1] = (uint8_t)(slen32 >> 8);
+    le4[2] = (uint8_t)(slen32 >> 16); le4[3] = (uint8_t)(slen32 >> 24);
+    sha3_256_write(w->sha3, le4, 4);
+    if (u->script && u->script_len > 0)
+        sha3_256_write(w->sha3, u->script, u->script_len);
+    uint32_t height = (uint32_t)u->height;
+    le4[0] = (uint8_t)(height); le4[1] = (uint8_t)(height >> 8);
+    le4[2] = (uint8_t)(height >> 16); le4[3] = (uint8_t)(height >> 24);
+    sha3_256_write(w->sha3, le4, 4);
+    uint8_t coinbase = u->is_coinbase ? 1 : 0;
+    sha3_256_write(w->sha3, &coinbase, 1);
+}
+
+static bool snap_write_fixed_fields(struct snapshot_writer *w,
+                                    const struct db_utxo *u)
+{
+    /* Fixed prefix: txid(32) + vout(4) + value(8) + height(4) +
+     * coinbase(1). */
+    uint8_t buf[49];
+    memcpy(buf, u->txid, 32);
+    buf[32] = (uint8_t)(u->vout & 0xFF);
+    buf[33] = (uint8_t)((u->vout >> 8) & 0xFF);
+    buf[34] = (uint8_t)((u->vout >> 16) & 0xFF);
+    buf[35] = (uint8_t)((u->vout >> 24) & 0xFF);
+
+    uint64_t v = (uint64_t)u->value;
+    for (int i = 0; i < 8; i++)
+        buf[36 + i] = (uint8_t)((v >> (i * 8)) & 0xFF);
+
+    uint32_t h = (uint32_t)u->height;
+    buf[44] = (uint8_t)(h & 0xFF);
+    buf[45] = (uint8_t)((h >> 8) & 0xFF);
+    buf[46] = (uint8_t)((h >> 16) & 0xFF);
+    buf[47] = (uint8_t)((h >> 24) & 0xFF);
+    buf[48] = u->is_coinbase ? 1 : 0;
+    return snap_write(w, buf, sizeof(buf));
+}
+
+static bool snap_write_script(struct snapshot_writer *w,
+                              const struct db_utxo *u)
+{
+    /* Compact size for script length */
+    uint8_t buf[2];
+    size_t slen = u->script_len;
+    if (slen > 520) slen = 520;
+    if (slen < 253) {
+        uint8_t b = (uint8_t)slen;
+        if (!snap_write(w, &b, 1))
+            LOG_FAIL("utxo", "snapshot output operation failed");
+    } else {
+        uint8_t b = 253;
+        if (!snap_write(w, &b, 1))
+            LOG_FAIL("utxo", "snapshot output operation failed");
+        buf[0] = (uint8_t)(slen & 0xFF);
+        buf[1] = (uint8_t)((slen >> 8) & 0xFF);
+        if (!snap_write(w, buf, 2))
+            LOG_FAIL("utxo", "snapshot output operation failed");
+    }
+    if (u->script && slen > 0 && !snap_write(w, u->script, slen))
+        LOG_FAIL("utxo", "snapshot output operation failed");
+    return true;
 }
 
 static bool snap_write_utxo(const struct db_utxo *u, void *ctx)
@@ -592,85 +695,21 @@ static bool snap_write_utxo(const struct db_utxo *u, void *ctx)
     struct snapshot_writer *w = ctx;
 
     /* Start a new chunk if needed */
-    if (w->entries_in_chunk == 0 && w->chunk_start_pos < 0) {
-        snap_begin_chunk(w);
-    }
+    if (w->entries_in_chunk == 0 && w->chunk_start_pos < 0 &&
+        !snap_begin_chunk(w))
+        LOG_FAIL("utxo", "snapshot output operation failed");
 
-    /* Feed to SHA3 commitment (must match utxo_commitment_sha3_compute format):
-     * txid(32) || vout_le(4) || value_le(8) || script_len_le(4) || script ||
-     * height_le(4) || is_coinbase(1) */
-    if (w->sha3) {
-        sha3_256_write(w->sha3, u->txid, 32);
-        uint8_t le4[4];
-        le4[0] = (uint8_t)(u->vout); le4[1] = (uint8_t)(u->vout >> 8);
-        le4[2] = (uint8_t)(u->vout >> 16); le4[3] = (uint8_t)(u->vout >> 24);
-        sha3_256_write(w->sha3, le4, 4);
-        uint8_t le8[8];
-        uint64_t v = (uint64_t)u->value;
-        for (int i = 0; i < 8; i++) le8[i] = (uint8_t)(v >> (8 * i));
-        sha3_256_write(w->sha3, le8, 8);
-        uint32_t slen32 = (uint32_t)u->script_len;
-        le4[0] = (uint8_t)(slen32); le4[1] = (uint8_t)(slen32 >> 8);
-        le4[2] = (uint8_t)(slen32 >> 16); le4[3] = (uint8_t)(slen32 >> 24);
-        sha3_256_write(w->sha3, le4, 4);
-        if (u->script && u->script_len > 0)
-            sha3_256_write(w->sha3, u->script, u->script_len);
-        uint32_t ht = (uint32_t)u->height;
-        le4[0] = (uint8_t)(ht); le4[1] = (uint8_t)(ht >> 8);
-        le4[2] = (uint8_t)(ht >> 16); le4[3] = (uint8_t)(ht >> 24);
-        sha3_256_write(w->sha3, le4, 4);
-        uint8_t cb = u->is_coinbase ? 1 : 0;
-        sha3_256_write(w->sha3, &cb, 1);
-    }
-
-    /* Write entry: txid(32) + vout(4) + value(8) + height(4) + compact + script */
-    fwrite(u->txid, 1, 32, w->fp);
-
-    uint8_t buf[16];
-    buf[0] = (uint8_t)(u->vout & 0xFF);
-    buf[1] = (uint8_t)((u->vout >> 8) & 0xFF);
-    buf[2] = (uint8_t)((u->vout >> 16) & 0xFF);
-    buf[3] = (uint8_t)((u->vout >> 24) & 0xFF);
-    fwrite(buf, 1, 4, w->fp);
-
-    uint64_t v = (uint64_t)u->value;
-    for (int i = 0; i < 8; i++)
-        buf[i] = (uint8_t)((v >> (i * 8)) & 0xFF);
-    fwrite(buf, 1, 8, w->fp);
-
-    uint32_t h = (uint32_t)u->height;
-    buf[0] = (uint8_t)(h & 0xFF);
-    buf[1] = (uint8_t)((h >> 8) & 0xFF);
-    buf[2] = (uint8_t)((h >> 16) & 0xFF);
-    buf[3] = (uint8_t)((h >> 24) & 0xFF);
-    fwrite(buf, 1, 4, w->fp);
-
-    /* is_coinbase (1 byte) — needed for SHA3 match */
-    uint8_t cb = u->is_coinbase ? 1 : 0;
-    fwrite(&cb, 1, 1, w->fp);
-
-    /* Compact size for script length */
-    size_t slen = u->script_len;
-    if (slen > 520) slen = 520;
-    if (slen < 253) {
-        uint8_t b = (uint8_t)slen;
-        fwrite(&b, 1, 1, w->fp);
-    } else {
-        uint8_t b = 253;
-        fwrite(&b, 1, 1, w->fp);
-        buf[0] = (uint8_t)(slen & 0xFF);
-        buf[1] = (uint8_t)((slen >> 8) & 0xFF);
-        fwrite(buf, 1, 2, w->fp);
-    }
-    if (u->script && slen > 0)
-        fwrite(u->script, 1, slen, w->fp);
+    if (w->sha3)
+        snap_feed_sha3(w, u);
+    if (!snap_write_fixed_fields(w, u) || !snap_write_script(w, u))
+        LOG_FAIL("utxo", "snapshot output operation failed");
 
     w->entries_in_chunk++;
     w->total_written++;
 
     if (w->entries_in_chunk >= w->chunk_size) {
-        snap_flush_chunk_header(w);
-        snap_begin_chunk(w);
+        if (!snap_flush_chunk_header(w) || !snap_begin_chunk(w))
+            LOG_FAIL("utxo", "snapshot output operation failed");
     }
     return true;
 }
@@ -679,11 +718,15 @@ int64_t db_utxo_serialize_snapshot(struct node_db *ndb,
                                     const char *path, uint32_t chunk_size,
                                     uint8_t sha3_out[32])
 {
-    if (!ndb || !ndb->open || !path) return -1;
+    if (sha3_out)
+        memset(sha3_out, 0, 32);
+    if (!ndb || !ndb->open || !path)
+        LOG_ERR("utxo", "snapshot serialize missing open db or path");
     if (chunk_size == 0) chunk_size = 500;
 
     FILE *fp = fopen(path, "wb");
-    if (!fp) return -1;
+    if (!fp)
+        LOG_ERR("utxo", "snapshot serialize could not open %s", path);
 
     struct sha3_256_ctx sha3_ctx;
     struct sha3_256_ctx *sha3_ptr = NULL;
@@ -698,17 +741,22 @@ int64_t db_utxo_serialize_snapshot(struct node_db *ndb,
         .entries_in_chunk = 0,
         .chunk_start_pos = -1,
         .total_written = 0,
-        .sha3 = sha3_ptr
+        .sha3 = sha3_ptr,
+        .failed = false
     };
 
-    snap_begin_chunk(&w);
-    db_utxo_each(ndb, snap_write_utxo, &w);
+    if (snap_begin_chunk(&w))
+        db_utxo_each(ndb, snap_write_utxo, &w);
 
     /* Flush final partial chunk */
-    if (w.entries_in_chunk > 0)
-        snap_flush_chunk_header(&w);
+    if (!w.failed && w.entries_in_chunk > 0)
+        (void)snap_flush_chunk_header(&w);
 
-    fclose(fp);
+    if (fclose(fp) != 0)
+        w.failed = true;
+
+    if (w.failed)
+        LOG_ERR("utxo", "snapshot serialize write failed for %s", path);
 
     if (sha3_out)
         sha3_256_finalize(&sha3_ctx, sha3_out);

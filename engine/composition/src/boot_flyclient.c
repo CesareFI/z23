@@ -14,6 +14,7 @@
 #include "util/log_macros.h"
 
 #include <stdio.h>
+#include <string.h>
 
 struct mmb_leaf_store g_mmb_leaf_store = {0};
 
@@ -106,6 +107,8 @@ int64_t boot_serialize_utxo_snapshot(void *ctx,
 {
     struct node_db *ndb = ctx;
 
+    if (sha3_out)
+        memset(sha3_out, 0, 32);
     if (!ndb || !ndb->open || !path || !sha3_out) {
         LOG_WARN("boot",
                  "UTXO snapshot serialize missing ndb=%p path=%p sha3=%p",

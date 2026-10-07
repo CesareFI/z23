@@ -1671,6 +1671,33 @@ static int test_ic_sqlq_proof_mapping(void)
     return failures;
 }
 
+static int test_ic_utxo_snapshot_proof_mapping(void)
+{
+    int failures = 0;
+    TEST("impact composition: UTXO snapshot paths select output regression") {
+        static const char *const paths[] = {
+            "engine/models/src/utxo.c",
+            "engine/models/include/models/utxo.h",
+            "engine/composition/src/boot_flyclient.c",
+            "engine/composition/include/config/boot_flyclient.h",
+            "tests/harness/src/test_boot_flyclient.c",
+        };
+        for (size_t i = 0; i < sizeof paths / sizeof paths[0]; i++) {
+            struct agent_impact_acc impact = {0};
+            ASSERT(agent_impact_apply_shared_rules(paths[i], &impact));
+            ASSERT(ic_acc_has_group(&impact, "boot_flyclient"));
+            ASSERT(ic_acc_has_group(&impact, "models"));
+            ASSERT(ic_acc_has_group(&impact, "make_lint_gates"));
+            struct zcl_devloop_plan plan;
+            ASSERT(zcl_devloop_plan_files(&paths[i], 1, &plan));
+            ASSERT(ic_group_in(plan.path_groups, plan.path_groups_len,
+                               "boot_flyclient"));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_fleet_triggers_proof_mapping(void)
 {
     int failures = 0;
@@ -11631,6 +11658,7 @@ int test_impact_composition(void)
     failures += test_ic_sqlq_proof_mapping();
     failures += test_ic_wallet_recovery_status_proof_mapping();
     failures += test_ic_fleet_triggers_proof_mapping();
+    failures += test_ic_utxo_snapshot_proof_mapping();
     failures += test_ic_code_capsule_stays_with_code_owner();
     failures += test_ic_generated_inventory_stays_focused();
     failures += test_ic_fleet_task_projection_keeps_proof_owner();

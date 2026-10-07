@@ -40,6 +40,9 @@ bool boot_compute_utxo_sha3(uint8_t out[32],
                             uint64_t *utxo_count,
                             void *ctx);
 
+/* Returns the serialized UTXO count or -1 on invalid arguments or output
+ * failure. sha3_out is required and is zeroed on failure; partial files must
+ * not be used as snapshots. */
 int64_t boot_serialize_utxo_snapshot(void *ctx,
                                      const char *path,
                                      uint32_t chunk_size,
