@@ -46,16 +46,8 @@ static bool line_eq(const char *a_text, const zdiff_line *a,
                                     a->len) == 0;
 }
 
-zdiff_status zdiff_run(const char *old_text, const zdiff_line *old_lines,
-                       size_t old_count, const char *new_text,
-                       const zdiff_line *new_lines, size_t new_count,
-                       uint32_t *dp, size_t dp_cells, zdiff_op *ops,
-                       size_t ops_cap, size_t *ops_out) {
-  if (ops_out)
-    *ops_out = 0;
-  if ((old_count && (!old_text || !old_lines)) ||
-      (new_count && (!new_text || !new_lines)))
-    return ZDIFF_ARG;
+static zdiff_status workspace_status(size_t old_count, size_t new_count,
+                                     const uint32_t *dp, size_t dp_cells) {
   size_t need = zdiff_cells(old_count, new_count);
   if (need == 0)
     return ZDIFF_BOUND;
@@ -65,6 +57,30 @@ zdiff_status zdiff_run(const char *old_text, const zdiff_line *old_lines,
     return ZDIFF_SPACE;
   if (old_count + 1 > SIZE_MAX / (new_count + 1))
     return ZDIFF_BOUND; /* unreachable given zdiff_cells, but total */
+  return ZDIFF_OK;
+}
+
+static bool lines_valid(const char *text, const zdiff_line *lines,
+                         size_t count) {
+  return count == 0 || (text && lines);
+}
+
+/* Borrowed slices are compared exactly as in the general LCS path. */
+static bool lines_equal(const char *old_text, const zdiff_line *old_lines,
+                         size_t old_count, const char *new_text,
+                         const zdiff_line *new_lines, size_t new_count) {
+  if (old_count != new_count)
+    return false;
+  for (size_t i = 0; i < old_count; i++)
+    if (!line_eq(old_text, &old_lines[i], new_text, &new_lines[i]))
+      return false;
+  return true;
+}
+
+static void fill_lcs(const char *old_text, const zdiff_line *old_lines,
+                      size_t old_count, const char *new_text,
+                      const zdiff_line *new_lines, size_t new_count,
+                      uint32_t *dp) {
   const size_t stride = new_count + 1;
 
   /* dp[i * stride + j] = LCS length of old[i..] and new[j..]. */
@@ -82,15 +98,13 @@ zdiff_status zdiff_run(const char *old_text, const zdiff_line *old_lines,
       dp[i * stride + j] = best;
     }
   }
+}
 
-  size_t script_len = old_count + new_count - (size_t)dp[0];
-  if (ops_out)
-    *ops_out = script_len;
-  if (!ops && ops_cap)
-    return ZDIFF_ARG;
-  if (ops_cap < script_len)
-    return ZDIFF_SPACE;
-
+static void fill_script(const char *old_text, const zdiff_line *old_lines,
+                         size_t old_count, const char *new_text,
+                         const zdiff_line *new_lines, size_t new_count,
+                         const uint32_t *dp, zdiff_op *ops) {
+  const size_t stride = new_count + 1;
   size_t i = 0, j = 0, k = 0;
   while (i < old_count || j < new_count) {
     if (i < old_count && j < new_count &&
@@ -108,6 +122,47 @@ zdiff_status zdiff_run(const char *old_text, const zdiff_line *old_lines,
       j++;
     }
   }
+}
+
+static void fill_keeps(size_t count, zdiff_op *ops) {
+  for (size_t i = 0; i < count; i++)
+    ops[i] = (zdiff_op){ZDIFF_KEEP, (uint32_t)i, (uint32_t)i};
+}
+
+zdiff_status zdiff_run(const char *old_text, const zdiff_line *old_lines,
+                       size_t old_count, const char *new_text,
+                       const zdiff_line *new_lines, size_t new_count,
+                       uint32_t *dp, size_t dp_cells, zdiff_op *ops,
+                       size_t ops_cap, size_t *ops_out) {
+  if (ops_out)
+    *ops_out = 0;
+  if (!lines_valid(old_text, old_lines, old_count) ||
+      !lines_valid(new_text, new_lines, new_count))
+    return ZDIFF_ARG;
+  zdiff_status st = workspace_status(old_count, new_count, dp, dp_cells);
+  if (st != ZDIFF_OK)
+    return st;
+
+  bool same = lines_equal(old_text, old_lines, old_count,
+                          new_text, new_lines, new_count);
+  size_t lcs = old_count;
+  if (!same) {
+    fill_lcs(old_text, old_lines, old_count,
+              new_text, new_lines, new_count, dp);
+    lcs = dp[0];
+  }
+  size_t script_len = old_count + new_count - lcs;
+  if (ops_out)
+    *ops_out = script_len;
+  if (!ops && ops_cap)
+    return ZDIFF_ARG;
+  if (ops_cap < script_len)
+    return ZDIFF_SPACE;
+  if (same)
+    fill_keeps(old_count, ops);
+  else
+    fill_script(old_text, old_lines, old_count,
+                 new_text, new_lines, new_count, dp, ops);
   return ZDIFF_OK;
 }
 
