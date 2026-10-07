@@ -280,13 +280,23 @@ void agent_broker_write_status(const char *dir,
     (void)broker_write_document(dir, "broker.json", (const uint8_t *)buf, n);
 }
 
+static bool broker_status_inputs(const char *dir, const char *out,
+                                 size_t out_cap)
+{
+    return dir && out && out_cap > 0;
+}
+
 size_t agent_broker_render_status_json(const char *dir, char *out,
                                        size_t out_cap)
 {
-    if (!dir || !out || out_cap == 0)
+    if (!broker_status_inputs(dir, out, out_cap))
         return 0;
     char path[512];
-    snprintf(path, sizeof(path), "%s/broker.json", dir);
+    int pn = snprintf(path, sizeof(path), "%s/broker.json", dir);
+    if (pn < 0 || (size_t)pn >= sizeof(path)) {
+        LOG_WARN(BROKER_TAG, "cannot render status: broker.json path exceeds capacity");
+        return 0;
+    }
 
     struct json_value doc;
     json_init(&doc);

@@ -665,6 +665,69 @@ static int mb_audit(void)
     return failures;
 }
 
+static bool mb_status_dir(char out[512], size_t target)
+{
+    size_t used = strlen(g_dir);
+    if (used >= target || target >= 512)
+        return false;
+    memcpy(out, g_dir, used + 1);
+    while (used < target) {
+        size_t remaining = target - used;
+        if (remaining < 2)
+            return false;
+        size_t part = remaining - 1;
+        if (part > 200)
+            part = remaining == 202 ? 199 : 200;
+        out[used++] = '/';
+        memset(out + used, 'a', part);
+        used += part;
+        out[used] = '\0';
+        if (mkdir(out, 0700) != 0 && errno != EEXIST)
+            return false;
+    }
+    return true;
+}
+
+static int mb_status_path_bounds(void)
+{
+    int failures = 0;
+    char dir[512], path[520], doc[512];
+    for (size_t length = 499; length <= 500; ++length) {
+        if (!mb_status_dir(dir, length)) {
+            printf("agent_broker: status path fixture setup failed\n");
+            return failures + 1;
+        }
+        snprintf(path, sizeof(path), "%s/%s", dir,
+                 length == 499 ? "broker.json" : "broker.jso");
+        FILE *f = fopen(path, "wb");
+        if (!f)
+            return failures + 1;
+        bool written = fwrite("{}", 1, 2, f) == 2;
+        int closed = fclose(f);
+        if (!written || closed != 0)
+            return failures + 1;
+        memset(doc, 'Z', sizeof(doc));
+        size_t n = agent_broker_render_status_json(dir, doc, sizeof(doc));
+        if (length == 499) {
+            MB_CHECK("499-byte directory reads the complete broker.json path",
+                     n > 0 && n < sizeof(doc) &&
+                     strstr(doc, "\"broker_state_present\":true") != NULL);
+            char tiny = 'Z';
+            MB_CHECK("zero output capacity returns zero without writing",
+                     agent_broker_render_status_json(dir, &tiny, 0) == 0 &&
+                     tiny == 'Z');
+            MB_CHECK("one-byte output preserves the would-be length",
+                     agent_broker_render_status_json(dir, &tiny, 1) == n &&
+                     tiny == '\0');
+        } else {
+            MB_CHECK("500-byte directory refuses the broker.jso decoy",
+                     n == 0 && doc[0] == 'Z');
+        }
+        MB_CHECK("status path fixture file cleanup succeeds", unlink(path) == 0);
+    }
+    return failures;
+}
+
 /* ── (d) SO_PEERCRED as a predicate ─────────────────────────────────────── */
 
 #if !defined(_WIN32)
@@ -1271,6 +1334,7 @@ int test_metaverse_agent_broker(void)
     failures += mb_grant();
     failures += mb_audit();
     failures += mb_money_portfolio();
+    failures += mb_status_path_bounds();
     failures += mb_peercred();
     failures += mb_sender_cred();
     failures += mb_socket_identity();
