@@ -805,6 +805,39 @@ static bool zpd_enlarge_context_source(const char *workspace,
         vcs_tree_capture_path(workspace, task->source_root) == VCS_OK;
 }
 
+static bool zpd_capture_large_complete(const char *workspace,
+    struct vcs_zcode_task_v1 *task)
+{
+    enum { SOURCE_BYTES = 75 * 1024 };
+    static const char prefix[] =
+        "static int fixture_parse_options(void) { return 0; }\n/*";
+    char path[600];
+    int n = snprintf(path, sizeof(path), "%s/app/main.c", workspace);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return false;
+    char *source = malloc(SOURCE_BYTES + 1u);
+    if (!source) return false;
+    memset(source, ' ', SOURCE_BYTES);
+    memcpy(source, prefix, sizeof(prefix) - 1u);
+    memcpy(source + SOURCE_BYTES - 3u, "*/\n", 3u);
+    source[SOURCE_BYTES] = '\0';
+    bool ok = zpd_write(path, source) &&
+        vcs_tree_capture_path(workspace, task->source_root) == VCS_OK;
+    free(source);
+    if (!ok) return false;
+    task->max_context_bytes = 256u * 1024u;
+    uint8_t task_root[32];
+    if (vcs_zcode_task_root(task, task_root) != VCS_ZCODE_DEV_OK)
+        return false;
+    struct zcode_agent_context_status captured;
+    struct zcl_result result = zcode_agent_context_capture_complete(
+        workspace, task, task_root, "fixture_parse_options", &captured);
+    if (!result.ok)
+        printf("large complete context: %s\n", result.message);
+    return result.ok && !captured.truncated &&
+        captured.excerpt_bytes >= SOURCE_BYTES &&
+        captured.wire_bytes <= task->max_context_bytes;
+}
+
 static bool zpd_capture_truncation_refuses(const char *workspace,
     const char *task_workspace, const char *task_hex)
 {
@@ -842,6 +875,7 @@ static bool zpd_capture_truncation_refuses(const char *workspace,
         if (!ok) printf("legacy context truncation: ok=%d truncated=%d detail=%s\n",
                          legacy.ok, captured.truncated, legacy.message);
     }
+    if (ok) ok = zpd_capture_large_complete(workspace, &task);
     return ok;
 }
 
