@@ -38,7 +38,7 @@
 #             --window-hours N (default 168) window anchored at the LAST
 #             sample: coverage, sampling holes, NRestarts delta (with the
 #             autonomous-recycle note), operator-intervention detection,
-#             soak/oracle reachability, gap==0 rate, rss_first/rss_last,
+#             soak/oracle reachability, gap==0 rate, RSS growth,
 #             evidence freshness. Verdict line:
 #               soak-evidence: VERDICT=MET|NOT_MET|INSUFFICIENT reason=...
 #             MET ONLY if ALL of:
@@ -61,6 +61,8 @@
 #                 samples — thinner gap evidence cannot prove the gap==0
 #                 claim => INSUFFICIENT oracle_coverage_thin_*;
 #               - gap==0 in >= GAP0_MIN_PCT% of ok samples;
+#               - every sample carries RSS evidence and window RSS growth
+#                 stays within the soak runner's 512 MiB leak threshold;
 #               - the LAST sample is FRESH: now - last_ts <=
 #                 HOLE_THRESHOLD. A green week whose collector then died
 #                 (timer disabled, box rebuilt, script path broken — none
@@ -139,6 +141,10 @@ CADENCE_SEC=3600
 HOLE_THRESHOLD_SEC=8100   # 2*3600 + 900
 WINDOW_SLACK_SEC=900      # window-start tolerance for timer jitter
 GAP0_MIN_PCT=99           # gap==0 required in >= this % of ok samples
+# Keep the live evidence judge aligned with soak_harness.c's default C6
+# threshold. The hourly ledger has no run-start warmup boundary, so its
+# conservative equivalent uses the minimum observed RSS in the judged window.
+RSS_GROWTH_MAX_KB=$((512 * 1024))
 
 # ── helpers ────────────────────────────────────────────────────────
 
@@ -318,6 +324,7 @@ cmd_judge() {
     local out
     out="$(awk -v wh="$window_hours" -v hole_thr="$HOLE_THRESHOLD_SEC" \
                -v slack="$WINDOW_SLACK_SEC" -v gap0_min="$GAP0_MIN_PCT" \
+               -v rss_growth_max="$RSS_GROWTH_MAX_KB" \
                -v now="$now_ts" -v allow_stale="$allow_stale" \
                -v file="$EVIDENCE_FILE" '
         # fld(line,key) -> "" (missing) | "null" | numeric string
@@ -353,7 +360,12 @@ cmd_judge() {
             gapv[n] = fld($0, "gap")
             nrv[n]  = fld($0, "nrestarts")
             aetv[n] = fld($0, "active_enter_ts")
-            rssv[n] = fld($0, "rss_kb")
+            # A numeric prefix followed by garbage is not a number. fld()
+            # deliberately extracts numeric fields broadly for legacy rows;
+            # RSS is a C6 acceptance predicate, so require its value to end
+            # at a JSON field delimiter before trusting it.
+            rssv[n] = ($0 ~ /"rss_kb":(-?[0-9]+|null)(,|})/) ?
+                fld($0, "rss_kb") : ""
             binv[n] = fldhex($0, "binary_sha256")
         }
         END {
@@ -376,7 +388,7 @@ cmd_judge() {
             security_review = 0; security_unknown = 0; security_gap = 0
             eligible_cnt = 0
             max_gap = ""; nr_first = ""; nr_last = ""
-            rss_first = ""; rss_last = ""
+            rss_first = ""; rss_last = ""; rss_min = ""; rss_max = ""; rss_unknown = 0
             bin_id1 = ""; bin_ids = 0; bin_known = 0
             prev_t = ""; prev_nr = ""; prev_aet = ""
             for (i = i0; i <= n; i++) {
@@ -426,7 +438,9 @@ cmd_judge() {
                 if (isnum(rssv[i])) {
                     if (rss_first == "") rss_first = rssv[i] + 0
                     rss_last = rssv[i] + 0
-                }
+                    if (rss_min == "" || rssv[i] + 0 < rss_min) rss_min = rssv[i] + 0
+                    if (rss_max == "" || rssv[i] + 0 > rss_max) rss_max = rssv[i] + 0
+                } else rss_unknown++
                 # Binary identity continuity: every sample that names a
                 # binary must name the SAME binary. A second distinct
                 # identity is a mid-window swap — the window judged on
@@ -446,7 +460,7 @@ cmd_judge() {
             printf "soak-evidence: restarts_in_window=%s ambiguous_restarts=%d operator_interventions=%d (NRestarts delta; in-binary watchdog self-recycles count as AUTONOMOUS recovery — count reported, the criterion text decides; ambiguous = restarts in AET-jump intervals where a manual reset-then-climb is indistinguishable at hourly sampling resolution; strict soak_harness math counts ANY observed downtime as FAIL_CRASH)\n", restarts, ambiguous, op
             printf "soak-evidence: ok_samples=%d/%d soak_null_samples=%d zd_null_samples=%d samples_with_gap_gt0=%d max_gap=%s gap0_pct=%.2f\n", ok_cnt, cnt, soak_null, zd_null, gapgt0, (max_gap == "" ? "null" : max_gap ""), gap0_pct
             printf "soak-evidence: window_eligible_samples=%d/%d security_review_required_samples=%d security_posture_unknown_samples=%d security_posture_gap_samples=%d\n", eligible_cnt, cnt, security_review, security_unknown, security_gap
-            printf "soak-evidence: rss_first_kb=%s rss_last_kb=%s\n", (rss_first == "" ? "null" : rss_first ""), (rss_last == "" ? "null" : rss_last "")
+            printf "soak-evidence: rss_first_kb=%s rss_last_kb=%s rss_min_kb=%s rss_max_kb=%s rss_unknown_samples=%d rss_growth_max_kb=%d\n", (rss_first == "" ? "null" : rss_first ""), (rss_last == "" ? "null" : rss_last ""), (rss_min == "" ? "null" : rss_min ""), (rss_max == "" ? "null" : rss_max ""), rss_unknown, rss_growth_max
             printf "soak-evidence: binary_identity_samples=%d/%d distinct_beyond_first=%d identity=%s\n", bin_known, cnt, bin_ids, (bin_id1 == "" ? "null" : bin_id1)
 
             # Verdict ladder — deterministic priority, parsed data only.
@@ -483,6 +497,10 @@ cmd_judge() {
                 v = "INSUFFICIENT"; reason = sprintf("security_posture_unknown_in_%d_of_%d_samples", security_unknown, cnt)
             } else if (security_gap > 0) {
                 v = "NOT_MET"; reason = sprintf("security_posture_gap_in_%d_of_%d_samples", security_gap, cnt)
+            } else if (rss_unknown > 0) {
+                v = "INSUFFICIENT"; reason = sprintf("rss_unknown_in_%d_of_%d_samples", rss_unknown, cnt)
+            } else if (rss_max - rss_min > rss_growth_max) {
+                v = "NOT_MET"; reason = sprintf("rss_growth_%dkb_gt_%dkb", rss_max - rss_min, rss_growth_max)
             } else if (bin_known != cnt) {
                 v = "INSUFFICIENT"; reason = sprintf("binary_identity_unknown_in_%d_of_%d_samples", cnt - bin_known, cnt)
             } else {
@@ -762,6 +780,52 @@ cmd_selftest() {
     #    judges the historical window => MET again.
     st_judge "$tmp/green" 168 $((last_ts + 2592000)) INSUFFICIENT "stale_evidence_age_2592000s" 2 stale-green
     st_judge "$tmp/green" 168 $((last_ts + 2592000)) MET "" 0 stale-green-allow-stale --allow-stale
+
+    # O) RSS is part of C6's plateau claim. A week whose process grows by
+    # more than the soak runner's 512 MiB leak threshold must not be able to
+    # earn MET merely because height, parity, cadence, and restart evidence
+    # remain green.
+    f="$tmp/rss-walk"; mkdir -p "$f"
+    for ((i = 0; i <= 168; i++)); do
+        st_line "$f/evidence.jsonl" $((base + i * 3600)) 0 1 "$aet" \
+            $((1500000 + i * 4096))
+    done
+    st_judge "$f" 168 "$fresh" NOT_MET "rss_growth_" 1 rss-walk-breaks-window
+
+    # Missing process memory evidence is not proof of a plateau.
+    sed '81s/"rss_kb":[0-9]*,//' "$tmp/green/evidence.jsonl" > "$f/missing-rss.jsonl"
+    mkdir -p "$tmp/rss-unknown"
+    mv "$f/missing-rss.jsonl" "$tmp/rss-unknown/evidence.jsonl"
+    st_judge "$tmp/rss-unknown" 168 "$fresh" INSUFFICIENT \
+        "rss_unknown_in_1_of_169_samples" 2 rss-unknown-breaks-window
+
+    # The intended 512 MiB ceiling is strict: exactly at or one KiB below it
+    # remains a plateau, while the preceding walk fixture is over it.
+    for growth in $((512 * 1024)) $((512 * 1024 - 1)); do
+        f="$tmp/rss-boundary-$growth"; mkdir -p "$f"
+        for ((i = 0; i <= 168; i++)); do
+            rss=1500000
+            [ "$i" -eq 168 ] && rss=$((rss + growth))
+            st_line "$f/evidence.jsonl" $((base + i * 3600)) 0 1 "$aet" "$rss"
+        done
+        st_judge "$f" 168 "$fresh" MET "" 0 "rss-boundary-$growth"
+    done
+
+    # A string and a decimal prefix with trailing garbage are both corrupt
+    # RSS evidence. Neither may be treated as a valid numeric plateau sample.
+    for kind in string trailing; do
+        f="$tmp/rss-$kind"; mkdir -p "$f"
+        case "$kind" in
+            string)
+                sed '81s/"rss_kb":[0-9]*/"rss_kb":"not-a-number"/' \
+                    "$tmp/green/evidence.jsonl" > "$f/evidence.jsonl" ;;
+            trailing)
+                sed '81s/"rss_kb":[0-9]*/"rss_kb":1500000truncated/' \
+                    "$tmp/green/evidence.jsonl" > "$f/evidence.jsonl" ;;
+        esac
+        st_judge "$f" 168 "$fresh" INSUFFICIENT \
+            "rss_unknown_in_1_of_169_samples" 2 "rss-$kind-breaks-window"
+    done
 
     # M) One explicit review-required sample breaks the clean window even
     #    though every height, gap, cadence, and restart fact is green.
