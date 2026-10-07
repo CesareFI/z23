@@ -694,6 +694,7 @@ int test_hw_bench(void);
 int test_log_level(void);
 int test_operator_ux(void);
 int test_cli_render(void);
+int cli_render_bounds_cases(void);
 int test_service_state(void);
 int test_service_state_driver(void);
 int test_clock(void);

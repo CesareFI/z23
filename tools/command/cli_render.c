@@ -16,6 +16,7 @@
 #include "json/json.h"
 
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -190,6 +191,25 @@ static size_t dwidth(const char *s)
     return n;
 }
 
+static size_t trunc_sequence_bytes(const unsigned char *p)
+{
+    size_t seqlen = 1;
+    if ((*p & 0xE0) == 0xC0)
+        seqlen = 2;
+    else if ((*p & 0xF0) == 0xE0)
+        seqlen = 3;
+    else if ((*p & 0xF8) == 0xF0)
+        seqlen = 4;
+    /* A partial sequence at the string end emits only its lead byte.
+     * Inspect bytes in order so no read or copy crosses the NUL. */
+    for (size_t k = 1; k < seqlen; k++)
+        if (p[k] == '\0') {
+            seqlen = 1;
+            break;
+        }
+    return seqlen;
+}
+
 /* Emit at most `cols` display columns of s, never splitting a UTF-8
  * sequence; if the string did not fit, end it with a one-column ellipsis.
  * Returns the columns emitted. */
@@ -207,15 +227,7 @@ static size_t buf_puts_trunc(struct buf *b, const char *s, size_t cols)
     size_t emitted = 0;
     const unsigned char *p = (const unsigned char *)s;
     while (*p && emitted < budget) {
-        size_t seqlen = 1;
-        if ((*p & 0x80) != 0) {
-            if ((*p & 0xE0) == 0xC0)
-                seqlen = 2;
-            else if ((*p & 0xF0) == 0xE0)
-                seqlen = 3;
-            else if ((*p & 0xF8) == 0xF0)
-                seqlen = 4;
-        }
+        size_t seqlen = trunc_sequence_bytes(p);
         buf_putn(b, (const char *)p, seqlen);
         p += seqlen;
         emitted++;
@@ -298,6 +310,8 @@ static void emit_kv_command_n(struct buf *b,
     buf_puts(b, "  ");
     size_t klen = strlen(key);
     char kpadded[64];
+    if (klen >= sizeof(kpadded))
+        klen = sizeof(kpadded) - 1; /* snprintf truncated; pad within it */
     (void)snprintf(kpadded, sizeof(kpadded), "%s", key);
     while (klen < kw && klen < sizeof(kpadded) - 1)
         kpadded[klen++] = ' ';
@@ -337,31 +351,49 @@ static void emit_kv_command(struct buf *b,
                       value ? strlen(value) : 0);
 }
 
-/* A table: headers[ncols], cells row-major rows*ncols (borrowed pointers).
- * When the natural widths exceed the terminal, the widest column yields one
- * column at a time (floor 6) until everything fits — the long
- * summary/description columns absorb most of the slack by construction.
- * Caller caps rows and prints the "... (N more, ...)" footer itself. */
-static void emit_table(struct buf *b, const struct zcl_cli_render_env *e,
-                       int ncols, const char *const *headers,
-                       const char *const *cells, size_t rows)
+/* One non-final header cell: truncated to the 64-byte buffer, padded to the
+ * column width, bold. */
+static void emit_table_header_cell(struct buf *b,
+                                   const struct zcl_cli_render_env *e,
+                                   const char *header, size_t wcol)
 {
-    size_t w[8] = {0};
-    for (int c = 0; c < ncols && c < 8; c++) {
+    char hdr[64];
+    size_t hn = strlen(header);
+    if (hn >= sizeof(hdr))
+        hn = sizeof(hdr) - 1;
+    memcpy(hdr, header, hn);
+    size_t pad = wcol > hn ? wcol - hn : 0;
+    if (hn + pad >= sizeof(hdr))
+        pad = sizeof(hdr) - 1 - hn;
+    memset(hdr + hn, ' ', pad);
+    hdr[hn + pad] = '\0';
+    ansi_bold(b, e, hdr);
+    buf_puts(b, "  ");
+}
+
+static void table_natural_widths(size_t *w, int ncols, size_t stride,
+                                 const char *const *headers,
+                                 const char *const *cells, size_t rows)
+{
+    for (int c = 0; c < ncols; c++) {
         w[c] = dwidth(headers[c]);
         for (size_t r = 0; r < rows; r++) {
-            size_t cw = dwidth(cells[r * (size_t)ncols + (size_t)c]);
+            size_t cw = dwidth(cells[r * stride + (size_t)c]);
             if (cw > w[c])
                 w[c] = cw;
         }
         if (w[c] > 48)
             w[c] = 48;
     }
+}
+
+static void table_fit_widths(size_t *w, int ncols, size_t width)
+{
     size_t total = 2; /* leading indent */
     for (int c = 0; c < ncols; c++)
         total += w[c];
     total += 2 * (size_t)(ncols - 1);
-    while (total > (size_t)e->width) {
+    while (total > width) {
         int widest = -1;
         for (int c = 0; c < ncols; c++)
             if (w[c] > 6 && (widest < 0 || w[c] > w[widest]))
@@ -371,29 +403,16 @@ static void emit_table(struct buf *b, const struct zcl_cli_render_env *e,
         w[widest]--;
         total--;
     }
+}
 
-    buf_puts(b, "  ");
-    for (int c = 0; c < ncols; c++) {
-        if (c + 1 == ncols) {
-            ansi_bold(b, e, headers[c]);
-            break;
-        }
-        char hdr[64];
-        size_t hn = snprintf(hdr, sizeof(hdr), "%s", headers[c]);
-        size_t pad = w[c] > hn ? w[c] - hn : 0;
-        if (hn + pad >= sizeof(hdr))
-            pad = sizeof(hdr) - 1 - hn;
-        memset(hdr + hn, ' ', pad);
-        hdr[hn + pad] = '\0';
-        ansi_bold(b, e, hdr);
-        buf_puts(b, "  ");
-    }
-    buf_putc(b, '\n');
-
+static void emit_table_rows(struct buf *b, int ncols, size_t stride,
+                             const size_t *w, const char *const *cells,
+                             size_t rows)
+{
     for (size_t r = 0; r < rows; r++) {
         buf_puts(b, "  ");
         for (int c = 0; c < ncols; c++) {
-            const char *cell = cells[r * (size_t)ncols + (size_t)c];
+            const char *cell = cells[r * stride + (size_t)c];
             size_t used = buf_puts_trunc(b, cell ? cell : "", w[c]);
             for (size_t pad = used; c + 1 < ncols && pad < w[c]; pad++)
                 buf_putc(b, ' ');
@@ -402,6 +421,34 @@ static void emit_table(struct buf *b, const struct zcl_cli_render_env *e,
         }
         buf_putc(b, '\n');
     }
+}
+
+/* Render at most eight columns, retaining the caller's row-major stride.
+ * Caller caps rows and prints the "... (N more, ...)" footer itself. */
+static void emit_table(struct buf *b, const struct zcl_cli_render_env *e,
+                       int ncols, const char *const *headers,
+                       const char *const *cells, size_t rows)
+{
+    size_t w[8] = {0};
+    if (ncols <= 0)
+        return;
+    size_t stride = (size_t)ncols;
+    if (rows > SIZE_MAX / stride / sizeof(*cells))
+        return;
+    if (ncols > 8)
+        ncols = 8; /* w[] extent; callers pass <= 8 by contract */
+    table_natural_widths(w, ncols, stride, headers, cells, rows);
+    table_fit_widths(w, ncols, (size_t)e->width);
+    buf_puts(b, "  ");
+    for (int c = 0; c < ncols; c++) {
+        if (c + 1 == ncols) {
+            ansi_bold(b, e, headers[c]);
+            break;
+        }
+        emit_table_header_cell(b, e, headers[c], w[c]);
+    }
+    buf_putc(b, '\n');
+    emit_table_rows(b, ncols, stride, w, cells, rows);
 }
 
 static void emit_more_footer(struct buf *b, size_t more)

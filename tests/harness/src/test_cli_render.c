@@ -114,6 +114,8 @@ static struct zcl_cli_render_env cr_env(int width, bool ansi)
 static bool cr_recover_command(const char *rendered, const char *prefix,
                                char *out, size_t out_cap)
 {
+    if (out && out_cap > 0)
+        out[0] = '\0';
     const char *p = strstr(rendered, prefix);
     if (!p || !out || out_cap == 0)
         return false;
@@ -900,7 +902,7 @@ static int test_next_input_cleanup(const char *name, const char *input)
 
 int test_cli_render(void)
 {
-    int failures = 0;
+    int failures = cli_render_bounds_cases();
     failures += test_next_input_cleanup(
         "next action: absent input initializes storage before cleanup", NULL);
     failures += test_next_input_cleanup(
