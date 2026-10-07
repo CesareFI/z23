@@ -501,10 +501,13 @@ static int xck_nf_cmp(const void *a, const void *b)
 
 static size_t xck_nf_sort_dedup(struct xck_nf *v, size_t n)
 {
-    if (n < 2) {
-        qsort(v, n, sizeof(*v), xck_nf_cmp);
+    /* n < 2 covers two live shapes: n == 0 with v == NULL (a checkpoint
+     * range with zero shielded nullifiers, or a producer table with no
+     * rows at or below the checkpoint) and n == 1. Both are already
+     * sorted and deduplicated, and qsort's base is declared nonnull, so
+     * sorting here was UB on the empty shape for a literal no-op. */
+    if (n < 2)
         return n;
-    }
     qsort(v, n, sizeof(*v), xck_nf_cmp);
     size_t w = 1;
     for (size_t i = 1; i < n; i++)
