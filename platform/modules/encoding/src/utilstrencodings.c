@@ -152,6 +152,7 @@ static const char base32_chars[] = "abcdefghijklmnopqrstuvwxyz234567";
 
 size_t EncodeBase32(const unsigned char *data, size_t len, char *out, size_t out_size)
 {
+    if (out_size == 0) return 0;
     size_t j = 0, acc = 0, bits = 0;
     for (size_t i = 0; i < len; i++) {
         acc = (acc << 8) | data[i];

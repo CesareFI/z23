@@ -344,6 +344,19 @@ int test_test_str_money_codecs(void)
 
     /* ───────────────────────── EncodeBase32 ───────────────────────── */
 
+    TEST("EncodeBase32: zero capacity leaves the output untouched") {
+        char sentinel = 'X';
+        const unsigned char in[] = {0xff};
+        ASSERT_EQ(EncodeBase32(NULL, 0, &sentinel, 0), (size_t)0);
+        ASSERT_EQ(sentinel, 'X');
+        ASSERT_EQ(EncodeBase32(in, sizeof(in), &sentinel, 0), (size_t)0);
+        ASSERT_EQ(sentinel, 'X');
+        ASSERT_EQ(EncodeBase32(NULL, 0, NULL, 0), (size_t)0);
+        ASSERT_EQ(EncodeBase32(NULL, 1, &sentinel, 0), (size_t)0);
+        ASSERT_EQ(sentinel, 'X');
+        PASS();
+    }
+
     TEST("EncodeBase32: empty input yields the empty string") {
         char out[16];
         size_t n = EncodeBase32((const unsigned char *)"", 0, out, sizeof(out));
