@@ -76,10 +76,13 @@
  *        - the body parses as a well-formed Muse task direction (below).
  *      Anything else is refused with a typed reason and executes nothing.
  *   3. TO WORK. The directive body is written verbatim to
- *      <state>/receive/brief/<ref>.brief and posted through dev.agent.queue
- *      with name=<ref>, so the QUEUE ROW is the record. The queue requires
+ *      <state>/receive/brief/<ref>.received; its workspace-resolved .brief
+ *      is posted through dev.agent.queue with name=<ref>, so the QUEUE ROW
+ *      is the record. The queue requires
  *      `brief` to be an existing file for kind=doc|file, which is why the
  *      file is written first.
+ *      Receiver files are staged privately, flushed and closed before
+ *      replacement; a failed file or parent barrier prevents queue posting.
  *   4. IDEMPOTENCE AND CONFLICT, with no work ledger of its own. A ref is
  *      "known" when a queue row, a run directory, or an outcome names it.
  *      For a known ref the stored brief bytes decide: byte-identical body
@@ -565,19 +568,46 @@ static bool rcv_read_file(const char *path, char *out, size_t cap)
     return true;
 }
 
-static int (*g_rcv_sync)(int) = platform_file_sync;
-static int (*g_rcv_close)(FILE *) = fclose;
-void zcl_devagent_receive_test_file_ops(int (*sync)(int), int (*close)(FILE *));
-void zcl_devagent_receive_test_file_ops(int (*sync)(int), int (*close)(FILE *))
+#ifdef ZCL_TESTING
+static int (*g_rcv_test_io)(const char *, int);
+void zcl_devagent_receive_test_io(int (*hook)(const char *, int))
 {
-    g_rcv_sync = sync ? sync : platform_file_sync;
-    g_rcv_close = close ? close : fclose;
+    g_rcv_test_io = hook;
 }
-static bool rcv_stream_finish(FILE *f)
+#endif
+
+/* Test phases: 0 = file sync, 1 = close, 2 = parent sync. */
+static int rcv_io_fault(const char *path, int phase)
 {
-    bool ok = fflush(f) == 0 && g_rcv_sync(fileno(f)) == 0;
-    int closed = g_rcv_close(f);
-    return ok && closed == 0;
+    (void)path;
+    (void)phase;
+#ifdef ZCL_TESTING
+    if (g_rcv_test_io)
+        return g_rcv_test_io(path, phase);
+#endif
+    return 0;
+}
+
+static bool rcv_stream_finish(FILE *f, const char *path)
+{
+    bool ok = fflush(f) == 0 && rcv_io_fault(path, 0) == 0 &&
+              platform_file_sync(fileno(f)) == 0;
+    int closed = fclose(f);
+    int fault = rcv_io_fault(path, 1);
+    return ok && closed == 0 && fault == 0;
+}
+
+static FILE *rcv_stage_open(const char *tmp)
+{
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (fd < 0)
+        return NULL;
+    FILE *f = fdopen(fd, "wb");
+    if (!f) {
+        (void)close(fd);
+        (void)remove(tmp);
+    }
+    return f;
 }
 /* Publish whole flushed bytes, then acknowledge the parent-directory barrier. */
 static bool rcv_write_atomic(const char *path, const char *text, size_t len)
@@ -593,7 +623,7 @@ static bool rcv_write_atomic(const char *path, const char *text, size_t len)
                      (unsigned long long)nonce);
     if (n < 0 || (size_t)n >= sizeof(tmp))
         return false;
-    f = fopen(tmp, "wbx");
+    f = rcv_stage_open(tmp);
     if (!f)
         return false;
     if (len > 0 && fwrite(text, 1, len, f) != len) {
@@ -601,7 +631,7 @@ static bool rcv_write_atomic(const char *path, const char *text, size_t len)
         (void)remove(tmp);
         return false;
     }
-    if (!rcv_stream_finish(f)) {
+    if (!rcv_stream_finish(f, path)) {
         (void)remove(tmp);
         return false;
     }
@@ -609,12 +639,7 @@ static bool rcv_write_atomic(const char *path, const char *text, size_t len)
         (void)remove(tmp);
         return false;
     }
-    return platform_private_parent_flush(parent);
-}
-bool zcl_devagent_receive_test_write(const char *path, const char *text);
-bool zcl_devagent_receive_test_write(const char *path, const char *text)
-{
-    return rcv_write_atomic(path, text, strlen(text));
+    return rcv_io_fault(path, 2) == 0 && platform_private_parent_flush(parent);
 }
 
 /* JSON string escape for the small sibling inputs this leaf builds. */

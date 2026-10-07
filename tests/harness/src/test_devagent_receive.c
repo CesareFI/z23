@@ -1376,62 +1376,120 @@ _test_next:;
 #endif /* !defined(_WIN32) */
 
 #if !defined(_WIN32)
-void zcl_devagent_receive_test_file_ops(int (*sync)(int), int (*close)(FILE *));
-bool zcl_devagent_receive_test_write(const char *, const char *);
-static int rtx_sync_eio(int fd) { (void)fd; errno = EIO; return -1; }
-static int rtx_close_short(FILE *f)
+static const char *g_rtx_install_tail;
+static int g_rtx_install_phase;
+static int g_rtx_install_hits;
+
+static int rtx_install_fault(const char *path, int phase)
 {
-    int rc = fclose(f);
-    errno = ENOSPC;
-    return rc == 0 ? EOF : rc;
+    const char *ext = strrchr(path, '.');
+    if (!ext || strcmp(ext + 1, g_rtx_install_tail) ||
+        phase != g_rtx_install_phase)
+        return 0;
+    g_rtx_install_hits++;
+    errno = phase == 1 ? ENOSPC : EIO;
+    return -1;
 }
-static int test_receive_install_failure(bool short_close)
+
+static int rtx_install_retry(const char *body, const struct rcv_drive_opts *o)
 {
     int failures = 0;
-    TEST(short_close ? "short close retains intake files without queueing"
-                     : "sync refusal retains intake files without queueing") {
-        struct rcv_drive_opts o;
-        struct rcv_beat_stats st = {0};
-        char body[4096], old[8192], got[8192];
-        const char *tails[] = {"received", "brief", "evidence"};
-        rtx_isolate(short_close ? "close-failure" : "sync-failure");
-        ASSERT(rtx_mint("chatgpt", "send", 3600, NULL, 0));
-        rtx_direction(body, sizeof(body), "hex_codec", "Install whole files.");
-        ASSERT(rtx_deliver("chatgpt", "box-a", "job-atomic", body, 1));
-        rtx_opts(&o, 1);
+    struct rcv_beat_stats st = {0};
+    struct stat mode;
+    char got[4096], expected[4096], path[1600];
+    ASSERT(rtx_deliver("sender", "box-a", "job-atomic", body, 2));
+    ASSERT_EQ(zcl_devagent_receive_drive(o, &st), 1);
+    ASSERT_EQ(st.admitted, 1);
+    ASSERT_EQ(st.refused, 0);
+    ASSERT_EQ(rtx_queue_count("queued", "job-atomic"), 1);
+    ASSERT_EQ(rtx_answers("job-atomic", "state=accepted"), 1);
+    ASSERT_EQ(rtx_count_dir("receive/brief"), 3);
+    ASSERT(rtx_read("receive/brief/job-atomic.received", got, sizeof(got)));
+    ASSERT_STR_EQ(got, body);
+    rtx_direction_sel(expected, sizeof(expected), g_rtx_ws, "", "Atomic intake.");
+    ASSERT(rtx_read("receive/brief/job-atomic.brief", got, sizeof(got)));
+    ASSERT_STR_EQ(got, expected);
+    ASSERT(rtx_read("receive/brief/job-atomic.evidence", got, sizeof(got)));
+    ASSERT(strstr(got, "workspace_head=1111111111111111111111111111111111111111"));
+    const char *const tails[] = {"received", "brief", "evidence"};
+    for (size_t i = 0; i < sizeof(tails) / sizeof(tails[0]); i++) {
+        (void)snprintf(path, sizeof(path), "%s/z23/dev/receive/brief/job-atomic.%s",
+                       g_rtx_state, tails[i]);
+        ASSERT_EQ(stat(path, &mode), 0);
+        ASSERT_EQ(mode.st_mode & 0777, 0600);
+    }
+_test_next:;
+    return failures;
+}
+
+static int rtx_install_refusal(const char *tail, int phase, size_t files)
+{
+    int failures = 0;
+    struct rcv_drive_opts o;
+    struct rcv_beat_stats st = {0};
+    char body[4096], got[4096], path[1600], name[128];
+    const char *const phases[] = {"file sync", "close", "parent sync"};
+    mode_t saved_umask = umask(0);
+    (void)snprintf(name, sizeof(name), "%s %s refusal publishes no queue row or acceptance",
+                   tail, phases[phase]);
+    TEST(name) {
+        rtx_isolate(tail);
+        ASSERT(rtx_checkout(g_rtx_ws, "1111111111111111111111111111111111111111"));
+        ASSERT(rtx_mint("sender", "send", 3600, NULL, 0));
+        rtx_direction_sel(body, sizeof(body), "receiver", "", "Atomic intake.");
+        ASSERT(rtx_deliver("sender", "box-a", "job-atomic", body, 1));
+        rtx_opts_ws(&o, g_rtx_ws);
+        (void)snprintf(path, sizeof(path), "%s/z23/dev/receive", g_rtx_state);
+        ASSERT_EQ(mkdir(path, 0700), 0);
+        (void)snprintf(path, sizeof(path), "%s/z23/dev/receive/brief", g_rtx_state);
+        ASSERT_EQ(mkdir(path, 0700), 0);
+        (void)snprintf(path, sizeof(path), "receive/brief/job-atomic.%s", tail);
+        (void)snprintf(got, sizeof(got), "z23/dev/%s", path);
+        ASSERT(rtx_put(g_rtx_state, got, "OLD\n"));
+        g_rtx_install_tail = tail;
+        g_rtx_install_phase = phase;
+        g_rtx_install_hits = 0;
+        zcl_devagent_receive_test_io(rtx_install_fault);
         ASSERT_EQ(zcl_devagent_receive_drive(&o, &st), 1);
-        int files = rtx_count_dir("receive/brief");
-        for (size_t i = 0; i < 3; ++i) {
-            char tail[128];
-            snprintf(tail, sizeof(tail), "receive/brief/job-atomic.%s", tails[i]);
-            ASSERT(rtx_read(tail, old, sizeof(old)));
-            zcl_devagent_receive_test_file_ops(short_close ? NULL : rtx_sync_eio,
-                                               short_close ? rtx_close_short : NULL);
-            /* Exercise the same writer directly, retaining exact prior bytes. */
-            char path[1600];
-            rtx_path(path, sizeof(path), tail);
-            ASSERT(!zcl_devagent_receive_test_write(path, "NEW\n"));
-            ASSERT(rtx_read(tail, got, sizeof(got)));
-            ASSERT_STR_EQ(got, old);
-            ASSERT_EQ(rtx_count_dir("receive/brief"), files);
-        }
-        ASSERT(rtx_deliver("chatgpt", "box-a", "job-failed", body, 2));
-        memset(&st, 0, sizeof(st));
-        ASSERT_EQ(zcl_devagent_receive_drive(&o, &st), 1);
+        zcl_devagent_receive_test_io(NULL);
         ASSERT_EQ(st.admitted, 0);
-        ASSERT_EQ(rtx_queue_count("queued", "job-failed"), 0);
-        ASSERT_EQ(rtx_answers("job-failed", "RECEIVE_STATE_UNWRITABLE"), 1);
-        zcl_devagent_receive_test_file_ops(NULL, NULL);
-        char path[1600];
-        rtx_path(path, sizeof(path), "receive/brief/job-atomic.received");
-        ASSERT(zcl_devagent_receive_test_write(path, "NEW\n"));
-        ASSERT(rtx_read("receive/brief/job-atomic.received", got, sizeof(got)));
-        ASSERT_STR_EQ(got, "NEW\n");
+        ASSERT_EQ(st.refused, 1);
+        ASSERT_EQ(g_rtx_install_hits, 1);
+        ASSERT_EQ(rtx_queue_count("queued", "job-atomic"), 0);
+        ASSERT_EQ(rtx_answers("job-atomic", "state=accepted"), 0);
+        ASSERT_EQ(rtx_answers("job-atomic", "RECEIVE_STATE_UNWRITABLE"), 1);
+        ASSERT(rtx_read(path, got, sizeof(got)));
+        if (phase < 2) {
+            ASSERT_STR_EQ(got, "OLD\n");
+        } else {
+            /* Parent refusal occurs after replacement; there is no rollback. */
+            ASSERT(strcmp(got, "OLD\n") != 0);
+        }
+        ASSERT_EQ(rtx_count_dir("receive/brief"), (long long)files);
+        failures += rtx_install_retry(body, &o);
+        if (failures)
+            goto _test_next;
         PASS();
     }
 _test_next:;
-    zcl_devagent_receive_test_file_ops(NULL, NULL);
+    zcl_devagent_receive_test_io(NULL);
     rtx_restore();
+    (void)umask(saved_umask);
+    return failures;
+}
+
+static int test_receive_install_failure(bool short_close)
+{
+    int failures = 0;
+    const char *const tails[] = {"received", "brief", "evidence"};
+    /* Keep the group's existing two entry calls: file sync, then close and
+     * parent sync. Each call below is a separately reported refusal row. */
+    int first = short_close ? 1 : 0;
+    int end = short_close ? 3 : 1;
+    for (int phase = first; phase < end; phase++) {
+        for (size_t i = 0; i < sizeof(tails) / sizeof(tails[0]); i++)
+            failures += rtx_install_refusal(tails[i], phase, i + 1);
+    }
     return failures;
 }
 #endif

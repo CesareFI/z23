@@ -512,6 +512,13 @@ void zcl_devagent_boardmail_admit(const struct zcl_boardmail_row *row,
                                   const char *receiver,
                                   struct zcl_boardmail_decision *d);
 
+#ifdef ZCL_TESTING
+/* Isolated receiver fixtures only. Nonzero refuses the named file's barrier:
+ * 0 = file sync, 1 = close (stream consumed), 2 = parent sync (after rename).
+ * NULL restores real I/O. A refusal must prevent queue admission. */
+void zcl_devagent_receive_test_io(int (*hook)(const char *, int));
+#endif
+
 /* Drive the resident loop until SIGTERM, the deadline, or the beat cap.
  * Returns beats completed (>= 0), or -1 when the singleton lock or the
  * state root refuses. Single instance: a second concurrent drive refuses
