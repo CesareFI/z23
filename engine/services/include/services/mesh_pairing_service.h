@@ -95,6 +95,8 @@ bool mesh_pairing_service_list(
     struct node_db *ndb, int64_t now, struct mesh_pairing_public_view *out,
     size_t max, size_t *count, struct db_mesh_pairing_counts *counts);
 /* Same redacted view, starting `skip` rows into paired_at,pairing_id order.
+ * Refuse skip > INT64_MAX with *count zero and out unchanged.
+ * Counts also remain unchanged on this range refusal.
  * Returns false on membership read failure, with *count zero and out
  * unchanged. A successfully read empty page returns true with zero count. */
 bool mesh_pairing_service_list_after(

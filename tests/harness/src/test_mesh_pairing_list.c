@@ -19,6 +19,30 @@
 
 #define MPL_NOW 1000000LL
 
+struct mpl_fixture {
+    struct node_db db;
+    char dir[512];
+};
+
+static bool mpl_open(struct mpl_fixture *fixture)
+{
+    char path[544];
+    if (!test_mkdtemp(fixture->dir, sizeof(fixture->dir), "mesh_pairing_list"))
+        return false;
+    int length = snprintf(path, sizeof(path), "%s/node.db", fixture->dir);
+    if (length < 0 || (size_t)length >= sizeof(path))
+        return false;
+    return node_db_open(&fixture->db, path);
+}
+
+static void mpl_close(struct mpl_fixture *fixture)
+{
+    if (fixture->db.open)
+        node_db_close(&fixture->db);
+    if (fixture->dir[0])
+        test_cleanup_tmpdir(fixture->dir);
+}
+
 static bool mpl_insert(struct node_db *ndb, uint8_t identity,
                        int64_t expires_at, int64_t revoked_at,
                        uint8_t noise_fill, struct db_mesh_pairing *out)
@@ -81,12 +105,14 @@ static bool mpl_list(bool paged, struct node_db *ndb, int64_t now,
 static int test_mpl_refusal_matrix(bool paged)
 {
     int failures = 0;
-    struct node_db ndb = {0};
+    struct mpl_fixture fixture = {0};
+    struct node_db *ndb = &fixture.db;
     struct node_db closed = {0};
     TEST(paged ? "mesh pairing list_after: each refusal resets count" :
                  "mesh pairing list: each refusal resets count") {
-        ASSERT(node_db_open(&ndb, ":memory:"));
+        ASSERT(mpl_open(&fixture));
         struct mesh_pairing_public_view view[1];
+        struct mesh_pairing_public_view sentinel;
         struct db_mesh_pairing_counts counts;
         size_t count = 77;
         const struct {
@@ -99,69 +125,72 @@ static int test_mpl_refusal_matrix(bool paged)
         } cases[] = {
             {NULL, MPL_NOW, view, 1, &count, &counts},
             {&closed, MPL_NOW, view, 1, &count, &counts},
-            {&ndb, 0, view, 1, &count, &counts},
-            {&ndb, -1, view, 1, &count, &counts},
-            {&ndb, MPL_NOW, NULL, 1, &count, &counts},
-            {&ndb, MPL_NOW, view, 0, &count, &counts},
-            {&ndb, MPL_NOW, view, 1, NULL, &counts},
-            {&ndb, MPL_NOW, view, 1, &count, NULL},
+            {ndb, 0, view, 1, &count, &counts},
+            {ndb, -1, view, 1, &count, &counts},
+            {ndb, MPL_NOW, NULL, 1, &count, &counts},
+            {ndb, MPL_NOW, view, 0, &count, &counts},
+            {ndb, MPL_NOW, view, 1, NULL, &counts},
+            {ndb, MPL_NOW, view, 1, &count, NULL},
         };
         for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
             count = 77;
+            memset(view, 0xA5, sizeof(view));
+            memcpy(&sentinel, view, sizeof(sentinel));
             ASSERT(!mpl_list(paged, cases[i].db, cases[i].now,
                              cases[i].out, cases[i].max, cases[i].count,
                              cases[i].counts));
             if (cases[i].count)
                 ASSERT_EQ(count, 0);
+            ASSERT(memcmp(view, &sentinel, sizeof(sentinel)) == 0);
         }
         PASS();
     } _test_next:;
-    if (ndb.open)
-        node_db_close(&ndb);
+    mpl_close(&fixture);
     return failures;
 }
 
 static int test_mpl_empty_store(void)
 {
     int failures = 0;
-    struct node_db ndb = {0};
+    struct mpl_fixture fixture = {0};
+    struct node_db *ndb = &fixture.db;
     TEST("mesh pairing list: an empty store lists cleanly") {
-        ASSERT(node_db_open(&ndb, ":memory:"));
+        ASSERT(mpl_open(&fixture));
         struct mesh_pairing_public_view view[1];
         struct db_mesh_pairing_counts counts;
         memset(&counts, 0xA5, sizeof(counts));
         size_t count = 99;
-        ASSERT(mesh_pairing_service_list(&ndb, MPL_NOW, view, 1, &count,
+        ASSERT(mesh_pairing_service_list(ndb, MPL_NOW, view, 1, &count,
                                          &counts));
         ASSERT(count == 0 && counts.total == 0 && counts.active == 0);
         ASSERT(counts.expired == 0 && counts.revoked == 0);
         count = 99;
         memset(&counts, 0xA5, sizeof(counts));
-        ASSERT(mesh_pairing_service_list_after(&ndb, MPL_NOW, 0, view, 1,
+        ASSERT(mesh_pairing_service_list_after(ndb, MPL_NOW, 0, view, 1,
                                                &count, &counts));
         ASSERT_EQ(count, 0);
         ASSERT(counts.total == 0 && counts.active == 0 &&
                counts.expired == 0 && counts.revoked == 0);
         PASS();
     } _test_next:;
-    if (ndb.open)
-        node_db_close(&ndb);
+    mpl_close(&fixture);
     return failures;
 }
 
 static int test_mpl_redaction_fingerprints(bool paged)
 {
     int failures = 0;
-    struct node_db ndb = {0};
+    struct mpl_fixture fixture = {0};
+    struct node_db *ndb = &fixture.db;
     TEST(paged ? "mesh pairing list_after: raw keys never leave; fingerprints match" :
                  "mesh pairing list: raw keys never leave; fingerprints match") {
-        ASSERT(node_db_open(&ndb, ":memory:"));
+        ASSERT(mpl_open(&fixture));
         struct db_mesh_pairing row;
-        ASSERT(mpl_insert(&ndb, 0x42, MPL_NOW + 5000, 0, 0x43, &row));
+        ASSERT(mpl_insert(ndb, 0x42, MPL_NOW + 5000, 0, 0x43, &row));
         struct mesh_pairing_public_view view[1];
         struct db_mesh_pairing_counts counts;
         size_t count = 0;
-        ASSERT(mpl_list(paged, &ndb, MPL_NOW, view, 1, &count,
+        ASSERT(mpl_list(paged, ndb, MPL_NOW, view, 1, &count,
                                          &counts));
         ASSERT(count == 1);
         ASSERT(strcmp(view[0].pairing_id, row.pairing_id) == 0);
@@ -181,27 +210,27 @@ static int test_mpl_redaction_fingerprints(bool paged)
         ASSERT(strcmp(view[0].state, "active") == 0);
         PASS();
     } _test_next:;
-    if (ndb.open)
-        node_db_close(&ndb);
+    mpl_close(&fixture);
     return failures;
 }
 
 static int test_mpl_state_classification_and_counts(bool paged)
 {
     int failures = 0;
-    struct node_db ndb = {0};
+    struct mpl_fixture fixture = {0};
+    struct node_db *ndb = &fixture.db;
     TEST(paged ? "mesh pairing list_after: revoked beats expired beats active" :
                  "mesh pairing list: revoked beats expired beats active") {
-        ASSERT(node_db_open(&ndb, ":memory:"));
+        ASSERT(mpl_open(&fixture));
         struct db_mesh_pairing row;
-        ASSERT(mpl_insert(&ndb, 0x21, MPL_NOW + 5000, 0, 0x22, &row));
-        ASSERT(mpl_insert(&ndb, 0x22, MPL_NOW, 0, 0x23, &row));
+        ASSERT(mpl_insert(ndb, 0x21, MPL_NOW + 5000, 0, 0x22, &row));
+        ASSERT(mpl_insert(ndb, 0x22, MPL_NOW, 0, 0x23, &row));
         /* revoked AND past expiry: revocation must win */
-        ASSERT(mpl_insert(&ndb, 0x23, MPL_NOW - 10, MPL_NOW - 5, 0x24, &row));
+        ASSERT(mpl_insert(ndb, 0x23, MPL_NOW - 10, MPL_NOW - 5, 0x24, &row));
         struct mesh_pairing_public_view view[4];
         struct db_mesh_pairing_counts counts;
         size_t count = 0;
-        ASSERT(mpl_list(paged, &ndb, MPL_NOW, view, 4, &count,
+        ASSERT(mpl_list(paged, ndb, MPL_NOW, view, 4, &count,
                                          &counts));
         ASSERT(count == 3);
         ASSERT(counts.total == 3 && counts.active == 1 &&
@@ -215,29 +244,29 @@ static int test_mpl_state_classification_and_counts(bool paged)
         ASSERT(seen_active == 1 && seen_expired == 1 && seen_revoked == 1);
         PASS();
     } _test_next:;
-    if (ndb.open)
-        node_db_close(&ndb);
+    mpl_close(&fixture);
     return failures;
 }
 
 static int test_mpl_paging(void)
 {
     int failures = 0;
-    struct node_db ndb = {0};
+    struct mpl_fixture fixture = {0};
+    struct node_db *ndb = &fixture.db;
     TEST("mesh pairing list: max page and skip paging") {
-        ASSERT(node_db_open(&ndb, ":memory:"));
+        ASSERT(mpl_open(&fixture));
         struct db_mesh_pairing r1, r2;
-        ASSERT(mpl_insert(&ndb, 0x31, MPL_NOW + 5000, 0, 0x32, &r1));
-        ASSERT(mpl_insert(&ndb, 0x32, MPL_NOW + 5000, 0, 0x33, &r2));
+        ASSERT(mpl_insert(ndb, 0x31, MPL_NOW + 5000, 0, 0x32, &r1));
+        ASSERT(mpl_insert(ndb, 0x32, MPL_NOW + 5000, 0, 0x33, &r2));
         struct mesh_pairing_public_view view[4];
         struct db_mesh_pairing_counts counts;
         size_t count = 0;
-        ASSERT(mesh_pairing_service_list(&ndb, MPL_NOW, view, 1, &count,
+        ASSERT(mesh_pairing_service_list(ndb, MPL_NOW, view, 1, &count,
                                          &counts));
         ASSERT(count == 1);
         char first_id[MESH_PAIRING_ID_HEX + 1];
         memcpy(first_id, view[0].pairing_id, sizeof(first_id));
-        ASSERT(mesh_pairing_service_list_after(&ndb, MPL_NOW, 1, view, 4,
+        ASSERT(mesh_pairing_service_list_after(ndb, MPL_NOW, 1, view, 4,
                                                &count, &counts));
         ASSERT(count == 1);
         ASSERT(strcmp(view[0].pairing_id, first_id) > 0);
@@ -251,14 +280,13 @@ static int test_mpl_paging(void)
         ASSERT_STR_EQ(view[0].pairing_id, high);
         ASSERT_EQ(counts.total, 2);
         count = 99;
-        ASSERT(mesh_pairing_service_list_after(&ndb, MPL_NOW, 2, view, 4,
+        ASSERT(mesh_pairing_service_list_after(ndb, MPL_NOW, 2, view, 4,
                                                &count, &counts));
         ASSERT_EQ(count, 0);
         ASSERT_EQ(counts.total, 2);
         PASS();
     } _test_next:;
-    if (ndb.open)
-        node_db_close(&ndb);
+    mpl_close(&fixture);
     return failures;
 }
 
@@ -266,13 +294,14 @@ static int test_mpl_paging(void)
 static int test_mpl_max_clamp(bool paged)
 {
     int failures = 0;
-    struct node_db ndb = {0};
+    struct mpl_fixture fixture = {0};
+    struct node_db *ndb = &fixture.db;
     TEST(paged ? "mesh pairing list_after: clamps max and preserves tail" :
                  "mesh pairing list: clamps max and preserves tail") {
-        ASSERT(node_db_open(&ndb, ":memory:"));
+        ASSERT(mpl_open(&fixture));
         struct db_mesh_pairing row;
         for (size_t i = 0; i <= MESH_PAIRING_LIST_MAX; i++)
-            ASSERT(mpl_insert(&ndb, (uint8_t)(i + 1), MPL_NOW + 5000,
+            ASSERT(mpl_insert(ndb, (uint8_t)(i + 1), MPL_NOW + 5000,
                               0, 0x76, &row));
         struct mesh_pairing_public_view view[MESH_PAIRING_LIST_MAX + 1];
         struct mesh_pairing_public_view sentinel;
@@ -280,7 +309,7 @@ static int test_mpl_max_clamp(bool paged)
         memcpy(&sentinel, &view[MESH_PAIRING_LIST_MAX], sizeof(sentinel));
         struct db_mesh_pairing_counts counts;
         size_t count = 99;
-        ASSERT(mpl_list(paged, &ndb, MPL_NOW, view,
+        ASSERT(mpl_list(paged, ndb, MPL_NOW, view,
                         MESH_PAIRING_LIST_MAX + 1, &count, &counts));
         ASSERT_EQ(count, MESH_PAIRING_LIST_MAX);
         ASSERT_EQ(counts.total, MESH_PAIRING_LIST_MAX + 1);
@@ -292,8 +321,50 @@ static int test_mpl_max_clamp(bool paged)
             ASSERT(strcmp(view[i - 1].pairing_id, view[i].pairing_id) < 0);
         PASS();
     } _test_next:;
-    if (ndb.open)
-        node_db_close(&ndb);
+    mpl_close(&fixture);
+    return failures;
+}
+
+static int test_mpl_offset_range(void)
+{
+    int failures = 0;
+    struct mpl_fixture fixture = {0};
+    TEST("mesh pairing list_after: refuses an unrepresentable SQLite offset") {
+        ASSERT(mpl_open(&fixture));
+        struct db_mesh_pairing row;
+        ASSERT(mpl_insert(&fixture.db, 0x51, MPL_NOW + 5000, 0, 0x52, &row));
+        struct mesh_pairing_public_view view[1], sentinel;
+        struct db_mesh_pairing_counts counts;
+        memset(view, 0xA5, sizeof(view));
+        memcpy(&sentinel, view, sizeof(sentinel));
+        size_t count = 99;
+        if (SIZE_MAX > INT64_MAX) {
+            ASSERT(mesh_pairing_service_list_after(&fixture.db, MPL_NOW,
+                    (size_t)INT64_MAX, view, 1, &count, &counts));
+            ASSERT_EQ(count, 0);
+            ASSERT_EQ(counts.total, 1);
+            ASSERT(memcmp(view, &sentinel, sizeof(sentinel)) == 0);
+            const size_t offsets[] = {(size_t)INT64_MAX + 1u, SIZE_MAX};
+            for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+                count = 99;
+                counts = (struct db_mesh_pairing_counts){
+                    .total = 77, .active = 31, .expired = 29, .revoked = 17
+                };
+                ASSERT(!mesh_pairing_service_list_after(&fixture.db, MPL_NOW,
+                        offsets[i], view, 1, &count, &counts));
+                ASSERT_EQ(count, 0);
+                ASSERT(memcmp(view, &sentinel, sizeof(sentinel)) == 0);
+                /* The checked reader also refuses these offsets, but only
+                 * after the service has overwritten counts. Pin early refusal. */
+                ASSERT_EQ(counts.total, 77);
+                ASSERT_EQ(counts.active, 31);
+                ASSERT_EQ(counts.expired, 29);
+                ASSERT_EQ(counts.revoked, 17);
+            }
+        }
+        PASS();
+    } _test_next:;
+    mpl_close(&fixture);
     return failures;
 }
 
@@ -310,6 +381,7 @@ int test_mesh_pairing_list(void)
     failures += test_mpl_paging();
     failures += test_mpl_max_clamp(false);
     failures += test_mpl_max_clamp(true);
+    failures += test_mpl_offset_range();
     printf("=== mesh_pairing_list: %d failures ===\n", failures);
     return failures;
 }

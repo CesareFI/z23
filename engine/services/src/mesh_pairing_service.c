@@ -251,6 +251,14 @@ bool mesh_pairing_service_list(
     return true;
 }
 
+static bool mesh_pairing_list_arguments_valid(
+    const struct node_db *ndb, int64_t now,
+    const struct mesh_pairing_public_view *out, size_t max,
+    const size_t *count, const struct db_mesh_pairing_counts *counts)
+{
+    return ndb && ndb->open && now > 0 && out && max != 0 && count && counts;
+}
+
 bool mesh_pairing_service_list_after(
     struct node_db *ndb, int64_t now, size_t skip,
     struct mesh_pairing_public_view *out, size_t max, size_t *count,
@@ -258,9 +266,10 @@ bool mesh_pairing_service_list_after(
 {
     if (count)
         *count = 0;
-    if (!ndb || !ndb->open || now <= 0 || !out || max == 0 || !count ||
-        !counts)
-        return false;
+    if (!mesh_pairing_list_arguments_valid(ndb, now, out, max, count, counts))
+        LOG_FAIL("mesh_pairing", "list_after: invalid list arguments");
+    if (skip > INT64_MAX)
+        LOG_FAIL("mesh_pairing", "list_after: skip exceeds SQLite offset range");
     if (max > MESH_PAIRING_LIST_MAX)
         max = MESH_PAIRING_LIST_MAX;
     if (!db_mesh_pairing_count_states(ndb, now, counts))
