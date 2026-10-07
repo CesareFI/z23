@@ -893,6 +893,20 @@ static int cm_usage(void)
     return 2;
 }
 
+static bool cm_max_records(const char *v, uint32_t *out)
+{
+    char *end;
+    errno = 0;
+    unsigned long long n = strtoull(v, &end, 10);
+    if (v[0] < '0' || v[0] > '9' || *end != '\0' || errno != 0 ||
+        n > UINT32_MAX) {
+        fprintf(stderr, "clang-manifest: invalid --max-records: %s\n", v);
+        return false;
+    }
+    *out = (uint32_t)n;
+    return true;
+}
+
 static bool cm_opt_value(struct cm_opts *o, const char *key, const char *v)
 {
     if (strcmp(key, "--root") == 0)
@@ -908,7 +922,7 @@ static bool cm_opt_value(struct cm_opts *o, const char *key, const char *v)
     else if (strcmp(key, "--toolchain-id") == 0)
         o->toolchain_id = v;
     else if (strcmp(key, "--max-records") == 0)
-        o->max_records = (uint32_t)strtoul(v, NULL, 10);
+        return cm_max_records(v, &o->max_records);
     else if (strcmp(key, "--max-section-bytes") == 0)
         o->max_section_bytes = strtoull(v, NULL, 10);
     else

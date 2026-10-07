@@ -1916,6 +1916,57 @@ int semantic_sensor_identity_tests(void);
 /* semantic_sensor_probe.c: probes the conditional-lookup scan must see. */
 int semantic_sensor_probe_tests(void);
 
+static int smt_t_max_records(void)
+{
+    int failures = 0;
+    char dir[1024] = {0}, out[PATH_MAX], message[4096];
+    static const char *const bad[] = {
+        "1x", "4294967296", "184467440737095516160", "", "-1", " 1", "+1"
+    };
+    const char *argv[] = {SMT_SENSOR, "emit", "--root", dir, "--source",
+                          "limit.c", "--out", out, "--max-records", NULL,
+                          "--", "-std=c23", NULL};
+    struct stat sb;
+    bool timed_out = false;
+    TEST_CASE("semantic_sensor: max-records refuses malformed bounds before emit") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_records") != NULL);
+        ASSERT(smt_write(dir, "limit.c", "int limit(void) { return 1; }\n"));
+        int n = snprintf(out, sizeof(out), "%s/limit.bin", dir);
+        ASSERT(n > 0 && (size_t)n < sizeof(out));
+        for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++) {
+            argv[9] = bad[k];
+            int rc = zcl_spawn_capture_merged_observed(argv, message,
+                         sizeof(message), 60000, &timed_out);
+            ASSERT(!timed_out);
+            ASSERT_EQ(rc, 2);
+            ASSERT(strstr(message, "invalid --max-records:") != NULL);
+            ASSERT(strstr(message, "usage:") != NULL);
+            ASSERT(stat(out, &sb) != 0 && errno == ENOENT);
+        }
+        argv[9] = "1";
+        int rc = zcl_spawn_capture_merged_observed(argv, message,
+                     sizeof(message), 60000, &timed_out);
+        ASSERT(!timed_out);
+        ASSERT_EQ(rc, 0);
+        ASSERT(stat(out, &sb) == 0 && sb.st_size > 0);
+        ASSERT(unlink(out) == 0);
+        /* UINT32_MAX parses; the existing facts builder has a tighter cap. */
+        argv[9] = "4294967295";
+        rc = zcl_spawn_capture_merged_observed(argv, message,
+                 sizeof(message), 60000, &timed_out);
+        ASSERT(!timed_out);
+        ASSERT_EQ(rc, 3);
+        ASSERT(strstr(message, "refused: facts caps out of range") != NULL);
+        ASSERT(strstr(message, "usage:") == NULL);
+        ASSERT(stat(out, &sb) != 0 && errno == ENOENT);
+    } TEST_END
+    if (dir[0] != '\0' && test_rm_rf_recursive(dir) != 0) {
+        printf("FAIL max-records fixture cleanup: %s\n", dir);
+        failures++;
+    }
+    return failures;
+}
+
 static int smt_t_root_failed_read(void)
 {
     int failures = 0;
@@ -1950,6 +2001,7 @@ int test_semantic_sensor(void)
         return 0;
     }
     failures += smt_t_root_failed_read();
+    failures += smt_t_max_records();
     failures += smt_t_sensor_invariance(&r);
     failures += smt_t_sensor_seeds(&r);
     failures += smt_t_sensor_home_guard();
