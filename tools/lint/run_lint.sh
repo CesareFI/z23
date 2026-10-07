@@ -40,6 +40,7 @@
 # Usage:
 #   tools/lint/run_lint.sh [--jobs N] [--bin-dir DIR] [--list] GATE...
 #   tools/lint/run_lint.sh --print-command GATE   (one gate's exact command)
+#   tools/lint/run_lint.sh --print-commands      (name TAB command, one row/gate)
 #   tools/lint/run_lint.sh --cache GATE...       (opt in to the result cache)
 #   tools/lint/run_lint.sh --cold-audit GATE...  (run all fresh, verify hits)
 #   tools/lint/run_lint.sh --worker GATE         (internal: xargs child)
@@ -458,6 +459,17 @@ usage() {
     sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
 }
 
+# Read-only catalog query: no commands are executed. Keep gate_command as
+# the authority, and amortize driver startup across the complete sorted list.
+print_commands() {
+    local names gate
+    names=$("$0" --list) || return 2
+    while IFS= read -r gate; do
+        printf '%s\t' "$gate" || return 2
+        gate_command "$gate" || return 2
+    done <<< "$names"
+}
+
 main() {
     local -a gates=()
     # Cache mode precedence, mirroring test_parallel's: --cold-audit beats
@@ -499,12 +511,15 @@ main() {
                     | grep -oE 'check-[a-z0-9-]+'
                 exit 0 ;;
             --print-command)
-                # The one supported reader of gate_command() from outside this
-                # file (check_lint_gate_wiring.sh audits the paths the table
-                # names). Exits 1 on an unknown gate — same polarity as
+                # Retain the single-gate query for diagnostics. The wiring
+                # checker uses the complete batch below. Unknown gates keep
+                # exit 1 — same polarity as
                 # gate_command itself, so a caller cannot mistake "no entry"
                 # for "empty command".
                 gate_command "${2:?--print-command needs a gate}"
+                exit $? ;;
+            --print-commands)
+                print_commands
                 exit $? ;;
             --help|-h) usage; exit 0 ;;
             check-*)   gates+=("$1"); shift ;;

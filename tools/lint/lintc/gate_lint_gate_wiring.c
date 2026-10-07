@@ -11,7 +11,7 @@
  * backslash-continued LINT_GATES/LINT_FAST_GATES blocks (read directly,
  * same shape tools/scripts/check_doc_accuracy.sh and
  * tools/dev/agent-baseline.sh already assume), and run_lint.sh's own
- * `--list` / `--print-command <gate>` outputs (spawned via capture_cmd,
+ * `--list` / `--print-commands` outputs (captured from the driver,
  * the same producer the shell original invoked — this gate never
  * re-implements gate_command()'s case table).
  *
@@ -167,15 +167,25 @@ static int lgw_driver_list(const char *driver, struct sr_set *out)
     }
     return 0;
 }
-static int lgw_print_command(const char *driver, const char *gate, char *out, size_t cap)
+/* Own the pipe until pclose, even on malformed/oversized output. Unlike a
+ * text-only capture, reject embedded NULs before interpreting batch framing. */
+static int lgw_print_commands(const char *driver, char *out, size_t cap)
 {
-    char qd[8192], qg[SR_NAME + 8], cmd[8192];
-    int code = 0;
-    if (sh_single_quote(driver, qd, sizeof qd) || sh_single_quote(gate, qg, sizeof qg)
-        || ovf(snprintf(cmd, sizeof cmd, "%s --print-command %s 2>/dev/null", qd, qg),
+    char qd[8192], cmd[8192];
+    if (sh_single_quote(driver, qd, sizeof qd)
+        || ovf(snprintf(cmd, sizeof cmd, "%s --print-commands", qd),
               sizeof cmd))
         return 2;
-    return capture_cmd(cmd, out, cap, &code);
+    FILE *pipe = popen(cmd, "r");
+    if (!pipe)
+        return die("z23-lint: cannot read command batch: %s\n", driver);
+    size_t n = fread(out, 1, cap, pipe);
+    int bad = ferror(pipe);
+    int status = pclose(pipe);
+    if (bad || status != 0 || n == cap || memchr(out, '\0', n))
+        return die("z23-lint: invalid or failed command batch: %s\n", driver);
+    out[n] = '\0';
+    return 0;
 }
 
 /* ── set arithmetic + report accumulation ───────────────────────────────── */
@@ -384,22 +394,49 @@ static int lgw_check_one_command(const char *root, const char *gate, const char 
     }
     return 0;
 }
+/* Return a borrowed command view, only after its complete row and expected
+ * name match. The caller owns the batch and does not retain these views. */
+static char *lgw_next_command(char **next, const char *gate)
+{
+    char *row = *next, *end = strchr(row, '\n');
+    if (!end)
+        return NULL;
+    *end = '\0';
+    *next = end + 1;
+    char *tab = strchr(row, '\t');
+    if (!tab)
+        return NULL;
+    *tab = '\0';
+    return strcmp(row, gate) == 0 ? tab + 1 : NULL;
+}
+
+static int lgw_check_commands(const char *root, const char *driver,
+                               const struct sr_set *table, char *body,
+                               size_t cap, size_t *used)
+{
+    char batch[LGW_BUF];
+    if (lgw_print_commands(driver, batch, sizeof batch))
+        return 2;
+    char *next = batch;
+    for (int i = 0; i < table->count; i++) {
+        char *cmd = lgw_next_command(&next, table->n[i]);
+        if (!cmd)
+            return die("z23-lint: command batch row mismatch: %s\n", table->n[i]);
+        int local_fail = 0;
+        if (lgw_check_one_command(root, table->n[i], cmd, body, cap, used,
+                                  &local_fail))
+            return 2;
+    }
+    return *next ? die("z23-lint: extra command batch rows: %s\n", driver) : 0;
+}
+
 static int lgw_check_d(const char *root, const char *driver, const struct sr_set *table,
                        char *out, size_t cap, size_t *used, int *fail)
 {
     static char body[LGW_BUF];
     size_t bused = 0;
-    for (int i = 0; i < table->count; i++) {
-        char cmd[LGW_BUF];
-        if (lgw_print_command(driver, table->n[i], cmd, sizeof cmd))
-            return 2;
-        if (cmd[0] == '\0')
-            continue;
-        int local_fail = 0;
-        if (lgw_check_one_command(root, table->n[i], cmd, body, sizeof body, &bused,
-                                  &local_fail))
-            return 2;
-    }
+    if (lgw_check_commands(root, driver, table, body, sizeof body, &bused))
+        return 2;
     if (bused == 0)
         return 0;
     *fail = 1;
