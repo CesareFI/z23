@@ -5,6 +5,7 @@
  * HTTPS handler threads only serve from cache (api_rpc_call crashes
  * when called from HTTPS handler threads). */
 
+#include "net/marketplace.h"
 #include "platform/time_compat.h"
 #include "platform/socket_compat.h"
 #include "rpc/zclassicd_port.h" /* ZCLASSICD_RPC_DEFAULT_PORT */
@@ -723,12 +724,17 @@ size_t api_route_factoids(uint8_t *response, size_t response_max)
  * The onion service exposes no /api; wallet_gui calls in-process and
  * is trusted. */
 
+
 size_t api_handle_request(const char *method, const char *path,
                            const uint8_t *body, size_t body_len,
                            uint8_t *response, size_t response_max)
 {
     (void)body; (void)body_len;
     if (!method || !path || !response || response_max == 0) return 0;
+    if (marketplace_path_disabled(path))
+        return api_json_error(response, response_max,
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\n"
+            "Connection: close\r\n\r\n", "Marketplace participation is disabled");
 
     /* Start background cache thread on first request */
     if (!ensure_cache_thread()) {

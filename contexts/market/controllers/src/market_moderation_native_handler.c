@@ -3,9 +3,9 @@
  *
  * The active profile decides which locally-ingested offers this node
  * lists AND which ones it hands to another party. There are no
- * network-wide bans and no deletion authority — a hidden offer stays
- * stored, keeps its signed wire, and stays reachable from any node that
- * does host it — and protocol validity is never filtered: moderation
+ * network-wide bans. View-hidden offers remain stored; explicit refusal
+ * separately removes local listing projections and prevents re-ingestion.
+ * Protocol validity is never filtered: moderation
  * never reaches block or transaction acceptance. Each handler proxies one
  * zmarket_* RPC so the policy file and node.db stay single-writer in the
  * node process. */
@@ -342,6 +342,27 @@ void zcl_native_handle_market_moderation_profile_show(
     mmn_copy_str(&reply->data, &body, "leg");
     mmn_copy_str(&reply->data, &body, "active_relay_rule");
     mmn_copy_str(&reply->data, &body, "policy_file");
+    json_free(&body);
+}
+
+void zcl_native_handle_market_refuse(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    const char *root = mmn_str(request->input, "root");
+    const char *mode = mmn_str(request->input, "mode");
+    const char *token = mmn_str(request->input, "plan_token");
+    if (!root || !mode) {
+        mmn_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                 "MISSING_INPUT", "normalize", "root and mode are required",
+                 "zmarket_refuse");
+        return;
+    }
+    const char *const args[] = {root, mode, token ? token : ""};
+    struct json_value body;
+    if (!mmn_call("zmarket_refuse", args, 3, &body, reply)) return;
+    json_copy(&reply->data, &body);
+    reply->error.mutated = json_get_bool_or(&body, "committed", false);
     json_free(&body);
 }
 

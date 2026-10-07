@@ -171,6 +171,7 @@ enum file_market_offer_ingest {
     FILE_MARKET_INGEST_RATE_LIMITED,
     FILE_MARKET_INGEST_CONFLICT,
     FILE_MARKET_INGEST_PERSIST_FAILED,
+    FILE_MARKET_INGEST_REFUSED,
 };
 
 typedef bool (*file_market_offer_persist_fn)(
@@ -351,6 +352,8 @@ int file_market_get_offers(struct file_offer *out, size_t max);
 /* Find offers by root hash. Returns true if found. */
 bool file_market_find_offer(const uint8_t root_hash[32],
                             struct file_offer *out);
+/* Remove cached advertising after recording a durable operator refusal. */
+void file_market_forget(const uint8_t root_hash[32]);
 
 /* Remove expired offers (older than max_age seconds). */
 int file_market_prune(int64_t max_age);

@@ -30,6 +30,7 @@
 
 #include "platform/time_compat.h"
 #include "net/onion_service.h"
+#include "net/marketplace.h"
 #include "net/onion_peer_merge.h"
 #include "net/site_routes.h"
 #include "net/tor_integration.h"
@@ -582,13 +583,9 @@ static uint16_t self_clearnet_snapshot(char *out, size_t out_len)
     return port;
 }
 
-/* Our own app advertisement: the mounted app-catalog Apps, read off the
- * ONE registry of app web mounts (net/site_routes.def — a row carries an
- * app_id only when it mounts that App, and test_site_routes cross-checks
- * the column against apps/<id>/app.def's ZCL_APP_ONION(true) declaration,
- * so this list cannot drift from what the catalog declares onion-enabled).
- * Compile-time static, so no cache and no publisher is needed — unlike the
- * clearnet endpoint above, nothing here can change at runtime. */
+/* Advertise enabled app mounts from site_routes.def. test_site_routes
+ * cross-checks app_id against each App's ZCL_APP_ONION declaration.
+ * The startup marketplace switch filters optional mounts and extras. */
 static size_t self_apps_csv(char *out, size_t out_len)
 {
     if (!out || out_len == 0) return 0;
@@ -596,7 +593,7 @@ static size_t self_apps_csv(char *out, size_t out_len)
     size_t cur = 0;
     for (size_t i = 0; i < g_zcl_site_routes_count; i++) {
         const char *id = g_zcl_site_routes[i].app_id;
-        if (!id)
+        if (!id || marketplace_path_disabled(g_zcl_site_routes[i].prefix))
             continue;
         cur = odir_apps_csv_add(out, out_len, cur, id, strlen(id));
     }
@@ -614,7 +611,8 @@ static size_t self_apps_csv(char *out, size_t out_len)
         while (*p) {
             const char *comma = strchr(p, ',');
             size_t tl = comma ? (size_t)(comma - p) : strlen(p);
-            cur = odir_apps_csv_add(out, out_len, cur, p, tl);
+            if (!marketplace_app_disabled(p, tl))
+                cur = odir_apps_csv_add(out, out_len, cur, p, tl);
             p += tl + (comma ? 1 : 0);
         }
     }

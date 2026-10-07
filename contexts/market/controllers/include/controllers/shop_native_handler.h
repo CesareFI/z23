@@ -27,6 +27,7 @@
 
 struct zcl_command_request;
 struct zcl_command_reply;
+bool shop_marketplace_required(struct zcl_command_reply *reply);
 
 /* The app id a shop announces on the node's /directory.json apps row. */
 #define SHOP_DIRECTORY_APP_ID "shop"

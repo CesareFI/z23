@@ -29,6 +29,8 @@
 #include "net/file_market.h"
 #include "rpc/server.h"
 #include "services/market_moderation_service.h"
+#include "services/market_participation_service.h"
+#include "net/marketplace.h"
 #include "services/market_moderation_view_service.h"
 #include "util/log_macros.h"
 
@@ -86,6 +88,7 @@ static bool rpc_zmarket_moderation_status(const struct json_value *params,
     enum market_moderation_relay_rule active_relay =
         market_moderation_active_relay_rule();
     json_set_object(result);
+    json_push_kv_bool(result, "marketplace_enabled", marketplace_enabled());
     json_push_kv_str(result, "active_profile",
                      market_moderation_profile_string(active));
     /* The two legs, named side by side and separately valued, so an
@@ -362,10 +365,9 @@ static bool rpc_zmarket_moderation_relay_set(
             "target; \"commit\" requires that token (STALE_PLAN if the rule\n"
             "moved in between). Plan tokens are not interchangeable\n"
             "between the setters.\n"
-            "\nBoot default is relay-all.v1: forward every valid offer.\n"
-            "Relaying passes on a POINTER, not content — gating it by\n"
-            "default would cut an honest seller's reach to one hop and hand\n"
-            "discovery to whoever has operators awake. relay-reviewed-only\n"
+            "\nMarketplace participation is disabled by default. After\n"
+            "explicit marketplace=1 opt-in, relay-all.v1 forwards valid\n"
+            "offers that have not been locally refused. relay-reviewed-only\n"
             ".v1 is the opt-in that forwards only offers this node marked\n"
             "reviewed_ok; refusals are counted in offer_relay_hidden_by_\n"
             "profile, never silently dropped.\n"
@@ -598,6 +600,59 @@ static bool rpc_zmarket_review_set(const struct json_value *params, bool help,
     return true;
 }
 
+static bool market_refusal_commit(const uint8_t root[32],
+                                  const char *supplied, const char *token,
+                                  struct json_value *result)
+{
+    if (!supplied || strcmp(supplied, token) != 0) {
+        json_set_str(result, "The exact refusal plan_token is required");
+        return false;
+    }
+    struct zcl_result refused = market_participation_refuse(root);
+    if (!refused.ok) {
+        json_set_str(result, refused.message);
+        return false;
+    }
+    return true;
+}
+
+static bool rpc_zmarket_refuse(const struct json_value *params, bool help,
+                               struct json_value *result)
+{
+    if (help) {
+        json_set_str(result, "zmarket_refuse \"root\" \"plan|commit\" \"plan_token\"\n"
+            "Refuse one optional content/quote root locally and remove its listing "
+            "projections. The refusal survives re-ingestion and restart. No content "
+            "file, wallet record, or blockchain data is deleted.");
+        return true;
+    }
+    const char *hex = json_get_str(json_at(params, 0));
+    const char *mode = json_get_str(json_at(params, 1));
+    uint8_t root[32], digest[32];
+    if (!hex || !zcl_hex_decode_lower(hex, root, 32) || !mode) {
+        json_set_str(result, "A lowercase 32-byte root and plan|commit mode are required");
+        return false;
+    }
+    bool commit = strcmp(mode, "commit") == 0;
+    if (!commit && strcmp(mode, "plan") != 0) {
+        json_set_str(result, "Mode must be plan or commit");
+        return false;
+    }
+    static const char domain[] = "zcl.market.refusal.plan.v1";
+    market_plan_token(domain, sizeof(domain), "refuse", hex, digest);
+    char token[65];
+    zcl_hex_encode(digest, 32, token);
+    if (commit && !market_refusal_commit(root,
+            json_get_str(json_at(params, 2)), token, result)) return false;
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.market_refusal.v1");
+    json_push_kv_str(result, "root", hex);
+    json_push_kv_str(result, "plan_token", token);
+    json_push_kv_bool(result, "committed", commit);
+    json_push_kv_bool(result, "local_only", true);
+    return true;
+}
+
 /* ── Registration ───────────────────────────────────────────────── */
 
 /* Called from register_market_rpc_commands so the market RPC table stays
@@ -605,6 +660,7 @@ static bool rpc_zmarket_review_set(const struct json_value *params, bool help,
 void register_market_moderation_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
+        { "market", "zmarket_refuse", rpc_zmarket_refuse, false },
         { "market", "zmarket_moderation_status",
           rpc_zmarket_moderation_status, true },
         { "market", "zmarket_moderation_profile_show",

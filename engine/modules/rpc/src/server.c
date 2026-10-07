@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "rpc/server.h"
+#include "net/marketplace.h"
 #include "util/sync.h"
 #include "util/util.h"
 #include "core/utiltime.h"
@@ -149,6 +150,11 @@ bool rpc_table_execute(const struct rpc_table *t, const char *method,
         return false;
     }
     const struct rpc_command *cmd = rpc_table_find(t, method);
+    if (marketplace_rpc(method) && !marketplace_enabled()) {
+        json_rpc_error_full(result, RPC_MISC_ERROR,
+                            "MARKETPLACE_DISABLED: requires -marketplace=1", method);
+        return false;
+    }
     if (!cmd) {
         json_rpc_error_full(result, RPC_METHOD_NOT_FOUND,
                             "Method not found", method);

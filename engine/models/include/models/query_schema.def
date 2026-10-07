@@ -18,6 +18,11 @@
  * will compare against the CREATE TABLE in engine/models/src/database_*.c.
  */
 
+/* node_state — durable optional-marketplace refusal roots */
+QB_TABLE(node_state)
+QB_COLUMN(node_state, key)
+QB_COLUMN(node_state, value)
+
 /* peers — engine/models/src/database_schema.c */
 QB_TABLE(peers)
 QB_COLUMN(peers, id)

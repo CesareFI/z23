@@ -42,6 +42,7 @@
 #define _DEFAULT_SOURCE
 #endif
 
+#include "test/marketplace_fixture.h"
 #include "test/test_core.h"
 
 #include "command/native_command.h"
@@ -643,6 +644,7 @@ static int shop_wallet_probe_states(void)
 
 int test_shop(void)
 {
+    test_marketplace_opt_in();
     int failures = 0;
     failures += shop_status_fresh_datadir();
     failures += shop_init_refuses_plaintext_wallet();

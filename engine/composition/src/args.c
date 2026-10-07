@@ -80,6 +80,8 @@ void print_usage(const char *prog)
     printf("                      clearnet explorer (optional; defaults to the\n");
     printf("                      request Host header with a single cert)\n");
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
+    printf("  -marketplace=0|1   Participate in marketplace/Yardsale (default 0)\n");
+    printf("                      Independent of blockchain, file service and Tor\n");
     printf("  -operator-lane=<name>  Operator lane: canonical, soak, dev, test,\n");
     printf("                      copy, standby. canonical, soak and standby\n");
     printf("                      serve the network, so the Tor escape\n");
@@ -196,6 +198,7 @@ void apply_argv_loglevel(void)
  * grepping `Get(Bool)?Arg\("-[a-zA-Z0-9_-]+"` across the tree and excluding
  * test-only fixture keys (test_encoding.c's "-foo"/"-noexist"/"-debug"). */
 static const char *const k_extra_getarg_flags[] = {
+    "-marketplace", "-nomarketplace",
     "-pin-reducer", "-nopin-reducer",
     "-rombundlereplicadir",
     "-romseed", "-noromseed",

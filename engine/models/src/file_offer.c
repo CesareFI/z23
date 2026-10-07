@@ -11,6 +11,7 @@
  * the on-the-wire / at-rest representation. */
 
 #include "models/file_offer.h"
+#include "net/marketplace.h"
 #include "platform/time_compat.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
@@ -83,11 +84,13 @@ bool db_file_offer_validate(const struct file_offer *offer,
     return !ar_errors_any(errors);
 }
 
-bool db_file_offer_save(struct node_db *ndb,
+static bool file_offer_save_admitted(struct node_db *ndb,
                         const struct file_offer *offer)
 {
     if (!ndb || !ndb->open) LOG_FAIL("market", "db_file_offer_save: db not open");
     if (!offer) LOG_FAIL("market", "db_file_offer_save: offer is NULL");
+    if (!marketplace_root_allowed(offer->root_hash))
+        LOG_FAIL("market", "file-offer save refused by operator policy");
 
     /* file_offers is keyed by content root, so an upsert that ignored the
      * signer would let any peer who holds the same bytes re-key someone
@@ -174,6 +177,14 @@ bool db_file_offer_save(struct node_db *ndb,
         LOG_WARN("market",
                  "file_offers listing update refused by atomic root policy");
     AR_FINISH_SAVE(cbs, offer, saved);
+}
+
+bool db_file_offer_save(struct node_db *ndb, const struct file_offer *offer)
+{
+    marketplace_lock();
+    bool saved = file_offer_save_admitted(ndb, offer);
+    marketplace_unlock();
+    return saved;
 }
 
 static bool row_to_file_offer(sqlite3_stmt *s, struct file_offer *out)

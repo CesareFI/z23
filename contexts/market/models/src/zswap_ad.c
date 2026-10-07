@@ -16,6 +16,7 @@
  * at-rest representation. */
 
 #include "models/zswap_ad.h"
+#include "net/marketplace.h"
 #include "base/bytes.h"
 #include "models/query_builder.h"
 #include "util/ar_step_readonly.h"
@@ -72,11 +73,13 @@ bool db_zswap_ad_validate(const struct zswap_yardsale_ad *ad,
     return !ar_errors_any(errors);
 }
 
-bool db_zswap_ad_save(struct node_db *ndb,
+static bool zswap_ad_save_admitted(struct node_db *ndb,
                       const struct zswap_yardsale_ad *ad)
 {
     if (!ndb || !ndb->open) LOG_FAIL("zswap", "db_zswap_ad_save: db not open");
     if (!ad) LOG_FAIL("zswap", "db_zswap_ad_save: ad is NULL");
+    if (!marketplace_root_allowed(ad->quote_root))
+        LOG_FAIL("market", "Yardsale save refused by operator policy");
 
     /* The stored wire is the exact 210 bytes the seller signed — re-encoded
      * from the verified struct (Ed25519 sealing + the codec are byte
@@ -111,6 +114,14 @@ bool db_zswap_ad_save(struct node_db *ndb,
     qb_conflict_set_increment(&q, QB_C_zswap_ads_seen_count, 1);
     /* ar-lifecycle-ok:qb-adhoc-save-expands-to-AR_BEGIN_SAVE-and-AR_FINISH_SAVE */
     QB_ADHOC_SAVE(ndb, &q, s, cbs, "zswap_ad", ad, db_zswap_ad_validate);
+}
+
+bool db_zswap_ad_save(struct node_db *ndb, const struct zswap_yardsale_ad *ad)
+{
+    marketplace_lock();
+    bool saved = zswap_ad_save_admitted(ndb, ad);
+    marketplace_unlock();
+    return saved;
 }
 
 /* Rebuild the record from the stored wire (single source of truth for the
@@ -165,6 +176,18 @@ int db_zswap_ad_prune_expired(struct node_db *ndb, int64_t now_unix)
     bool ok = false;
     AR_FINALIZE_STEP_DONE(s, ok);
     return ok ? sqlite3_changes(ndb->db) : 0;
+}
+
+bool db_zswap_ad_delete(struct node_db *ndb, const uint8_t quote_root[32])
+{
+    if (!ndb || !ndb->open || !quote_root)
+        LOG_FAIL("market", "Yardsale deletion requires a database and root");
+    struct qb q;
+    qb_delete(&q, QB_T_zswap_ads);
+    qb_where_blob(&q, QB_C_zswap_ads_quote_root, QB_EQ, quote_root, 32);
+    struct zswap_yardsale_ad ad = {0};
+    memcpy(ad.quote_root, quote_root, sizeof(ad.quote_root));
+    QB_ADHOC_DESTROY(ndb, &q, stmt, db_zswap_ad_callbacks(), &ad);
 }
 
 /* qsort comparator: ascending unit price, then zcl_amount, then root —

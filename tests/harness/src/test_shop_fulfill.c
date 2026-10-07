@@ -4,6 +4,7 @@
  * The listing's total_matching is the uncapped match count (the fetch
  * window only bounds what renders), with window_capped set past it. */
 
+#include "test/marketplace_fixture.h"
 #include "test/test_core.h"
 
 #include "base/cleanse.h"
@@ -816,6 +817,7 @@ static int sf_list_total_honesty(void)
 
 int test_shop_fulfill(void)
 {
+    test_marketplace_opt_in();
     int failures = 0;
     failures += sf_codec();
     failures += sf_registry_whitelist();

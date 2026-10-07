@@ -12,6 +12,7 @@
 #if !defined(_WIN32)
 #define _XOPEN_SOURCE 700
 #endif
+#include "net/marketplace.h"
 #include "net/acme_challenge.h"
 #include "net/acme_selfsigned.h"
 #include "net/https_frontdoor.h"
@@ -778,6 +779,24 @@ bool https_root_wants_install_script_for_testing(const char *user_agent,
 
 /* ── HTTPS handler ────────────────────────────────────────── */
 
+
+static bool https_response_admitted(SSL *ssl, platform_socket_t fd,
+                                     const char *path)
+{
+    if (!platform_socket_set_nonblocking(fd, false))
+        return false;
+
+    if (marketplace_path_disabled(path)) {
+        const char *refusal =
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n"
+            "Connection: close\r\n\r\nMarketplace participation is disabled.\n";
+        SSL_write(ssl, refusal, (int)strlen(refusal));
+        return false;
+    }
+
+    return true;
+}
+
 static void handle_https_client(SSL *ssl, platform_socket_t fd,
                                 int64_t deadline_ms)
 {
@@ -819,8 +838,7 @@ static void handle_https_client(SSL *ssl, platform_socket_t fd,
     }
     if (!headers_complete)
         return;
-    if (!platform_socket_set_nonblocking(fd, false))
-        return;
+    if (!https_response_admitted(ssl, fd, path)) return;
 
     /* Only serve GET requests to explorer routes */
     if (strcmp(method, "GET") != 0 && strcmp(method, "HEAD") != 0) {

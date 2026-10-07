@@ -7,15 +7,15 @@
  *      Moderation NEVER reaches block or transaction acceptance: a
  *      consensus-affecting content rule is a chain-split mechanism and
  *      is forbidden. A node may refuse to SERVE; it always VALIDATES.
- *   2. Local hosting policy — the node still STORES every valid offer
- *      it ingested and moderation never deletes. What it will hand to
- *      another party is gated: see the two legs below.
+ *   2. Participation — marketplace=1 is required for admission. Durable
+ *      root refusals prevent storage, serving and forwarding, and remove
+ *      local listing projections. Content files and chain data are retained.
  *   3. View filtering — this module: each node applies its OWN local
  *      listing-visibility policy to its own listing surfaces
  *      (zmarket_list / app market list / GET /api/market).
  *
- * TWO LEGS, TWO SEPARATE SETTINGS, TWO DIFFERENT DEFAULTS. They protect
- * different things and are deliberately not one switch:
+ * WITHIN AN OPTED-IN MARKETPLACE, view and relay preferences remain
+ * separate. Neither can override a durable root refusal:
  *
  *   SERVE — handing over the actual content bytes. The default profile
  *   general-audience.v1 requires the node's own reviewed_ok mark. This
@@ -23,12 +23,8 @@
  *
  *   RELAY — forwarding a POINTER to somebody else's content (an offer
  *   announcement carrying a filename). The default is relay-all.v1:
- *   relay everything valid. Gating relay by default would collapse
- *   offer gossip to one hop from the seller on every node until a human
- *   acted, which breaks permissionless discovery for honest sellers and
- *   concentrates reach on whoever has operators awake. That is a
- *   centralization pressure, and it is refused. An operator who wants
- *   strict relay opts in to relay-reviewed-only.v1.
+ *   relay valid, admitted listings between participating nodes. An
+ *   operator who wants stricter relay selects relay-reviewed-only.v1.
  *
  * ONE RULE COVERS BOTH LEGS AND BOTH FAILURE MODES:
  *
@@ -206,9 +202,9 @@ bool market_moderation_may_serve_offer_id(const uint8_t offer_id[32]);
 /* ── The relay gate (RELAY leg) ──────────────────────────────────────
  * May this node rebroadcast somebody else's offer announcement? A
  * SEPARATE question from may_serve with a SEPARATE setting and the
- * opposite default: under the boot default relay-all.v1 this answers
- * true for every well-formed id, because refusing to forward a pointer
- * would shrink an honest seller's reach to this node's own peers.
+ * opposite preference: within an opted-in marketplace, relay-all.v1
+ * accepts admitted roots regardless of their local view classification.
+ * Disabled participation and durable refusals override both preferences.
  *
  * Under the operator's explicit relay-reviewed-only.v1 opt-in it asks
  * exactly the same profile + decide() the serve leg asks, so a strict

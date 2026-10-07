@@ -111,6 +111,11 @@ instead of rebuilding.
 operator lane — those serve the network, and a node quietly off the onion
 network there is the failure this default exists to prevent.
 
+Embedded Tor is explicitly client/onion-service only: `ClientOnly 1`,
+`ORPort 0`, `DirPort 0`, `ExitRelay 0`, and a reject-all exit policy.
+The loopback SOCKS listener needed for bootstrap rejects every client;
+Z23 onion requests use the existing in-process transport, not a public proxy.
+
 `make tor-full` still exists and forces the Tor rebuild. `make tor-ready`
 is the cheap front door (present → nothing, else hardlink, else build).
 
@@ -126,6 +131,31 @@ compiles before a full build):
 ```bash
 make -j"$(getconf _NPROCESSORS_ONLN)" build-only
 ```
+
+**Optional marketplace participation:** ordinary nodes default to
+`-marketplace=0`. Set `marketplace=1` in the node's `z23.conf`, or start with
+`-marketplace=1`, to enable the file marketplace, Yardsale listing traffic
+and storefront. Other values do not opt in. Restart with `marketplace=0`
+to disable participation; existing listing records are retained but not
+served or forwarded. Blockchain validation, synchronization, transaction
+relay, RPC, mining, the verified file service and fast-sync remain independent.
+Tor/onion privacy also remains available with marketplace disabled.
+
+To remove and durably refuse one optional listing, use
+`z23 app market refuse --input='{"root":"<64hex>","mode":"plan"}'`, then
+repeat with `mode:"commit"` and the returned `plan_token`. Use a file
+content root or Yardsale quote root, not an offer ID. This owner-only action
+removes its listing rows and cache entries, and refuses subsequent ingestion,
+serving and forwarding of that exact root, including after restart. It works
+while marketplace participation is off. It does not delete content files,
+wallet/payment records, or blockchain data. Pending marketplace sends are
+invalidated; a connection carrying a stale frame is retired to preserve
+framing and encryption sequencing. Bytes already sent cannot be recalled;
+other operators retain their own policy. A different quote root is
+a different listing; no semantic content classifier or consensus ban is implied.
+
+An authenticated local listing view may select an alternate moderation
+profile. Public HTTP clients cannot override the operator's serving profile.
 
 **Where the binaries land:** `build/bin/z23` (the node),
 `build/bin/zclassic-cli` (RPC client), `build/bin/zcl-rpc` (RPC helper).

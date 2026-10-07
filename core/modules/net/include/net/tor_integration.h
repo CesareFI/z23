@@ -10,7 +10,8 @@
  * callbacks, not through a SOCKS proxy or app-owned TCP listener.
  *
  * Current Tor bootstrap workaround: torrc opens a localhost-only SocksPort
- * that nothing in zclassic23 connects to. It exists only because the embedded
+ * with a reject-all SocksPolicy; it grants no application proxy service.
+ * It exists only because the embedded
  * Tor fork currently refuses to bootstrap with no listener. Once dynhost can
  * satisfy that bootstrap check directly, torrc should move to SocksPort 0.
  *

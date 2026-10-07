@@ -651,4 +651,9 @@ bool msgprocessor_test_snap_pow_admit_at(uint8_t request_kind,
 int msgprocessor_test_snap_pow_bits_at(int64_t at_time);
 void msgprocessor_test_snap_pow_reset(void);
 
+/* Optional-data admission after ordinary framing, handshake and service checks. */
+bool marketplace_dispatch(const struct msg_dispatch_entry *entry,
+                            struct msg_processor *mp, struct p2p_node *node,
+                            struct byte_stream *stream);
+
 #endif

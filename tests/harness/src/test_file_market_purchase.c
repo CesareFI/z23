@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Durable buyer plan/commit, idempotency, and fail-closed restart tests. */
 
+#include "services/market_participation_service.h"
 #include "test/test_core.h"
 
 #include "chain/chainparams.h"
@@ -330,6 +331,19 @@ static bool purchase_offer(struct file_offer *offer, int64_t now)
     return file_offer_auth_seal(offer, seed) == FILE_OFFER_AUTH_OK;
 }
 
+static bool marketplace_fixture_open(struct node_db *ndb, const char *path)
+{
+    bool opened = node_db_open(ndb, path);
+    market_participation_set_context(opened ? ndb : NULL);
+    return opened;
+}
+
+static void marketplace_fixture_close(struct node_db *ndb)
+{
+    market_participation_set_context(NULL);
+    node_db_close(ndb);
+}
+
 int file_market_purchase_tests(void)
 {
     int failures = 0;
@@ -339,7 +353,7 @@ int file_market_purchase_tests(void)
     struct node_db ndb; memset(&ndb, 0, sizeof(ndb));
     int64_t now = (int64_t)platform_time_wall_time_t();
     struct file_offer offer;
-    bool ready = node_db_open(&ndb, path) && purchase_offer(&offer, now) &&
+    bool ready = marketplace_fixture_open(&ndb, path) && purchase_offer(&offer, now) &&
                  db_file_offer_save(&ndb, &offer);
     const struct chain_params *params = chain_params_get();
     struct purchase_fixture fixture; memset(&fixture, 0, sizeof(fixture));
@@ -461,9 +475,9 @@ int file_market_purchase_tests(void)
         fixture.notifications == 2 &&
         memcmp(replay.txid, committed.txid, 32) == 0);
 
-    node_db_close(&ndb);
+    marketplace_fixture_close(&ndb);
     PURCHASE_CHECK("restart reopens durable purchase intent",
-                   node_db_open(&ndb, path));
+                   marketplace_fixture_open(&ndb, path));
     fixture.ndb = &ndb;
     struct market_purchase_view restarted;
     PURCHASE_CHECK("restart reconstructs claim without buyer key disclosure",
@@ -492,9 +506,9 @@ int file_market_purchase_tests(void)
         durable_download.chunks_received == 0 &&
         access(destination, F_OK) != 0);
 
-    node_db_close(&ndb);
+    marketplace_fixture_close(&ndb);
     PURCHASE_CHECK("download progress survives database restart",
-                   node_db_open(&ndb, path));
+                   marketplace_fixture_open(&ndb, path));
     fixture.ndb = &ndb;
     fixture.fetch_ready = true;
     int fetches_before_budget = fixture.fetches;
@@ -537,9 +551,9 @@ int file_market_purchase_tests(void)
                access(destination, F_OK) == 0);
     PURCHASE_CHECK("clearnet budget persists one chunk and starts no next fetch",
                    bounded_exact);
-    node_db_close(&ndb);
+    marketplace_fixture_close(&ndb);
     PURCHASE_CHECK("budgeted clearnet prefix survives database restart",
-                   node_db_open(&ndb, path));
+                   marketplace_fixture_open(&ndb, path));
     fixture.ndb = &ndb;
     struct zcl_result retrieved = market_purchase_retrieve(
         &runtime, plan.plan_id, destination, &downloaded);
@@ -734,7 +748,7 @@ int file_market_purchase_tests(void)
         access(onion_destination, F_OK) != 0);
 
 cleanup:
-    if (ndb.open) node_db_close(&ndb);
+    if (ndb.open) marketplace_fixture_close(&ndb);
     if (fixture.sim_ready) simnet_free(&fixture.sim);
     wallet_lock_reset_for_test();
     test_rm_rf(dir);

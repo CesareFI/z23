@@ -452,6 +452,8 @@ static bool boot_offer_relay_allowed(const struct file_offer *offer,
 void boot_wire_file_market(struct msg_processor *mp,
                            struct boot_svc_ctx *svc)
 {
+    market_moderation_set_context(svc ? svc->node_db : NULL,
+                                   svc ? svc->datadir : NULL);
     msg_processor_set_file_offer_save(mp, boot_save_file_offer, svc);
     msg_processor_set_file_payment_ingest(mp, boot_ingest_file_payment, svc);
     msg_processor_set_offer_relay_allowed(mp, boot_offer_relay_allowed, svc);

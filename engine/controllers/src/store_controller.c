@@ -4,6 +4,7 @@
 
 
 #include "base/hex.h"
+#include "net/marketplace.h"
 #include "controllers/store_controller_internal.h"
 #include "controllers/web_form.h"
 #include "controllers/zslp_controller.h"
@@ -357,12 +358,26 @@ static bool parse_positive_form_id(const char *body, size_t body_len,
 }
 
 /* Main request handler */
+static bool store_request_admitted(const char *path, uint8_t *response,
+                                   size_t response_max, size_t *refusal)
+{
+    *refusal = 0;
+    if (!path || !response) return false;
+    if (marketplace_enabled()) return true;
+    const char *message = "Marketplace disabled by the operator";
+    *refusal = store_error_response("403 Forbidden", message, strlen(message),
+                                    response, response_max);
+    return false;
+}
+
 size_t store_handle_request(const char *method, const char *path,
                              const uint8_t *body, size_t body_len,
                              uint8_t *response, size_t response_max,
                              const char *datadir)
 {
-    if (!path || !response) return 0;
+    size_t refusal;
+    if (!store_request_admitted(path, response, response_max, &refusal))
+        return refusal;
 
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);

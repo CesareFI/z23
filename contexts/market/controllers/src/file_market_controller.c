@@ -17,6 +17,7 @@
 #include "core/serialize.h"
 #include "core/uint256.h"
 #include "net/file_market.h"
+#include "net/marketplace.h"
 #include "net/msgprocessor.h"
 #include "net/rom_seed.h"
 #include "net/tor_integration.h"
@@ -74,11 +75,27 @@ void rpc_market_set_state(struct node_db *ndb)
  * review_state; the active per-node profile decides visibility. The same
  * profile decides what this node hands out (chunk delivery, offer
  * re-gossip), so what it lists and what it serves can never disagree.
- * Protocol validity is unaffected and a hidden offer is still stored,
- * never deleted, and reachable from any node that does host it. */
+ * A view-hidden offer remains stored. Explicit root refusal is a separate,
+ * durable admission boundary that also removes listing projections.
+ * Neither control changes protocol validity on the blockchain. */
+static bool market_listing_visible(
+    const struct market_moderation_view_service_v1 *view,
+    int profile, const struct file_offer *offer, int *review)
+{
+    if (!marketplace_root_allowed(offer->root_hash)) return false;
+    *review = market_moderation_review_state_for_root(offer->root_hash);
+    struct market_moderation_decision_result_v1 decision;
+    return view->decide(profile, *review, &decision) &&
+           decision.valid && decision.visible;
+}
+
 static bool market_list_json(const char *profile_override,
                              struct json_value *result)
 {
+    if (!marketplace_enabled()) {
+        json_set_str(result, "MARKETPLACE_DISABLED: opt in with -marketplace=1");
+        return false;
+    }
     int active = market_moderation_active_profile();
     struct zcl_hotswap_service_lease moderation_lease = {0};
     const struct market_moderation_view_service_v1 *moderation_view =
@@ -104,11 +121,8 @@ static bool market_list_json(const char *profile_override,
     json_set_array(&rows);
     int64_t hidden = 0;
     for (int i = 0; i < count; i++) {
-        int review = market_moderation_review_state_for_root(
-            offers[i].root_hash);
-        struct market_moderation_decision_result_v1 decision;
-        if (!moderation_view->decide(profile, review, &decision) ||
-            !decision.valid || !decision.visible) {
+        int review;
+        if (!market_listing_visible(moderation_view, profile, &offers[i], &review)) {
             hidden++;
             continue;
         }
@@ -760,6 +774,15 @@ static bool rpc_romseed_list(const struct json_value *params, bool help,
 bool api_market_list_profile(const char *profile_override,
                              struct json_value *result)
 {
+    int active = market_moderation_active_profile();
+    int requested = active;
+    const struct market_moderation_view_service_v1 *view =
+        market_moderation_view_service_builtin();
+    if (!view->resolve_profile(profile_override, active, &requested) ||
+        requested != active) {
+        json_set_str(result, "Remote requests cannot override the operator's profile");
+        return false;
+    }
     return market_list_json(profile_override, result);
 }
 

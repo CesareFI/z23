@@ -11,6 +11,7 @@
  * OUTSIDE the lock. */
 
 #include "zswap/zswap_yardsale.h"
+#include "net/marketplace.h"
 
 #include "json/json.h"
 #include "platform/time_compat.h"
@@ -142,16 +143,14 @@ static bool peer_window_admit_locked(int64_t peer_id, int64_t now_unix)
 
 /* ── Ingress ────────────────────────────────────────────────────── */
 
-enum zswap_yardsale_ingest zswap_yardsale_ingest_wire(
-    const uint8_t *wire, size_t wire_len,
-    const uint8_t expected_network_genesis[32],
-    int64_t peer_id, int64_t now_unix,
-    struct zswap_yardsale_ad *out_ad)
+static enum zswap_yardsale_ingest yardsale_verify_ingress(
+    const uint8_t *wire, size_t wire_len, const uint8_t network[32],
+    int64_t now_unix, struct zswap_quote_v1 *quote)
 {
-    if (!wire || !expected_network_genesis)
+    if (!wire || !network)
         LOG_RETURN(ZSWAP_YARDSALE_INGEST_INVALID, "zswap",
                    "ingest_wire: NULL wire=%d net=%d",
-                   !wire, !expected_network_genesis);
+                   !wire, !network);
 
     pthread_mutex_lock(&g_yardsale_mutex);
     g_counters.wires_seen++;
@@ -166,8 +165,7 @@ enum zswap_yardsale_ingest zswap_yardsale_ingest_wire(
         return ZSWAP_YARDSALE_INGEST_INVALID;
     }
 
-    struct zswap_quote_v1 quote;
-    if (zswap_quote_decode(wire, wire_len, &quote) != ZSWAP_QUOTE_OK) {
+    if (zswap_quote_decode(wire, wire_len, quote) != ZSWAP_QUOTE_OK) {
         pthread_mutex_lock(&g_yardsale_mutex);
         g_counters.ads_dropped_invalid++;
         pthread_mutex_unlock(&g_yardsale_mutex);
@@ -178,7 +176,7 @@ enum zswap_yardsale_ingest zswap_yardsale_ingest_wire(
      * inside its validity window right now, and carry a seller signature
      * that verifies — a relay can forward bytes but can never alter them. */
     enum zswap_quote_error verr =
-        zswap_quote_verify_at(&quote, expected_network_genesis, now_unix);
+        zswap_quote_verify_at(quote, network, now_unix);
     if (verr == ZSWAP_QUOTE_ERR_EXPIRED) {
         pthread_mutex_lock(&g_yardsale_mutex);
         g_counters.ads_dropped_expired++;
@@ -192,10 +190,26 @@ enum zswap_yardsale_ingest zswap_yardsale_ingest_wire(
         return ZSWAP_YARDSALE_INGEST_INVALID;
     }
 
+    return ZSWAP_YARDSALE_INGEST_NEW;
+}
+
+static enum zswap_yardsale_ingest yardsale_ingest_admitted(
+    const uint8_t *wire, size_t wire_len,
+    const uint8_t expected_network_genesis[32],
+    int64_t peer_id, int64_t now_unix,
+    struct zswap_yardsale_ad *out_ad)
+{
+    if (!marketplace_enabled()) return ZSWAP_YARDSALE_INGEST_REFUSED;
+    struct zswap_quote_v1 quote;
+    enum zswap_yardsale_ingest verified = yardsale_verify_ingress(
+        wire, wire_len, expected_network_genesis, now_unix, &quote);
+    if (verified != ZSWAP_YARDSALE_INGEST_NEW) return verified;
+
     uint8_t root[32];
     if (zswap_quote_root(&quote, root) != ZSWAP_QUOTE_OK)
         LOG_RETURN(ZSWAP_YARDSALE_INGEST_INVALID, "zswap",
                    "ingest_wire: verified quote has no root");
+    if (!marketplace_root_allowed(root)) return ZSWAP_YARDSALE_INGEST_REFUSED;
 
     pthread_mutex_lock(&g_yardsale_mutex);
     yardsale_prune_locked(now_unix);
@@ -250,6 +264,18 @@ enum zswap_yardsale_ingest zswap_yardsale_ingest_wire(
            (unsigned long long)quote.token_amount,
            (unsigned long long)quote.zcl_amount);
     return ZSWAP_YARDSALE_INGEST_NEW;
+}
+
+enum zswap_yardsale_ingest zswap_yardsale_ingest_wire(
+    const uint8_t *wire, size_t wire_len,
+    const uint8_t expected_network_genesis[32],
+    int64_t peer_id, int64_t now_unix, struct zswap_yardsale_ad *out_ad)
+{
+    marketplace_lock();
+    enum zswap_yardsale_ingest result = yardsale_ingest_admitted(
+        wire, wire_len, expected_network_genesis, peer_id, now_unix, out_ad);
+    marketplace_unlock();
+    return result;
 }
 
 /* ── Queries ────────────────────────────────────────────────────── */
@@ -314,6 +340,20 @@ void zswap_yardsale_reset(void)
     g_ad_count = 0;
     memset(g_peers, 0, sizeof(g_peers));
     memset(&g_counters, 0, sizeof(g_counters));
+    pthread_mutex_unlock(&g_yardsale_mutex);
+}
+
+void zswap_yardsale_forget(const uint8_t quote_root[32])
+{
+    if (!quote_root) return;
+    pthread_mutex_lock(&g_yardsale_mutex);
+    for (int i = 0; i < g_ad_count; i++) {
+        if (memcmp(g_ads[i].quote_root, quote_root, 32) == 0) {
+            g_ads[i] = g_ads[--g_ad_count];
+            memset(&g_ads[g_ad_count], 0, sizeof(g_ads[0]));
+            break;
+        }
+    }
     pthread_mutex_unlock(&g_yardsale_mutex);
 }
 

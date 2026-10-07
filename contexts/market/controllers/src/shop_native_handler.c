@@ -37,6 +37,7 @@
  * copied-snapshot posture core without granting it storefront authority. */
 
 #include "controllers/shop_native_handler.h"
+#include "net/marketplace.h"
 
 #include "controllers/native_handler_body.h" /* json_get_bool_or/json_get_str_or */
 #include "controllers/store_controller_internal.h" /* store_ensure_schema */
@@ -78,6 +79,16 @@ static void sh_fail(struct zcl_command_reply *reply,
               evidence && evidence[0] ? evidence : "-");
     zcl_command_reply_fail(reply, status, exit_code, code, phase, false,
                            false, message, evidence ? evidence : "");
+}
+
+bool shop_marketplace_required(struct zcl_command_reply *reply)
+{
+    if (marketplace_enabled()) return true;
+    sh_fail(reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_DENIED,
+            "MARKETPLACE_DISABLED", "admission",
+            "Shop participation requires the operator's marketplace=1 opt-in",
+            "marketplace");
+    return false;
 }
 
 /* Explicit input.datadir wins, else the CLI's --datadir. NULL when neither
@@ -469,18 +480,25 @@ static void shop_init_plan(const char *datadir,
                            SHOP_REMEDY_INIT);
 }
 
+static bool shop_init_request_admitted(const struct zcl_command_request *request,
+                                       struct zcl_command_reply *reply,
+                                       const char **datadir)
+{
+    if (!request || !reply) return false;
+    if (!shop_marketplace_required(reply)) return false;
+    *datadir = sh_datadir(request);
+    if (*datadir) return true;
+    sh_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "MISSING_DATADIR", "normalize", "no datadir given and no --datadir default",
+            "datadir");
+    return false;
+}
+
 void zcl_native_handle_shop_init(const struct zcl_command_request *request,
                                  struct zcl_command_reply *reply)
 {
-    if (!request || !reply)
-        return;
-    const char *datadir = sh_datadir(request);
-    if (!datadir) {
-        sh_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-                "MISSING_DATADIR", "normalize",
-                "no datadir given and no --datadir default", "datadir");
-        return;
-    }
+    const char *datadir;
+    if (!shop_init_request_admitted(request, reply, &datadir)) return;
 
     struct shop_snapshot snap;
     shop_snapshot_collect(datadir, &snap);

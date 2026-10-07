@@ -23,6 +23,7 @@
 
 #define _GNU_SOURCE
 
+#include "test/marketplace_fixture.h"
 #include "test/test_core.h"
 
 #include "base/hex.h"
@@ -400,6 +401,7 @@ static bool yw_capture_contains(const struct yw_capture *c,
 
 int test_yardsale_wallet(void)
 {
+    test_marketplace_opt_in();
     int failures = 0;
     struct node_db ndb;
     memset(&ndb, 0, sizeof(ndb));

@@ -706,6 +706,24 @@ ZCL_COMMAND_READY_COMMAND(
 
 /* ── File market ───────────────────────────────────────────────────── */
 
+ZCL_COMMAND_READY_COMMAND(
+    "app.market.refuse", "app.market", "", "Refuse and remove a local listing",
+    "Plan/commit a durable local refusal of one optional content or quote root. "
+    "Remove its file-market and Yardsale projections and prevent re-ingestion, "
+    "serving and new forwarding of that root. Available with marketplace off. "
+    "No content file, wallet record or blockchain data is deleted.", 0,
+    "market,refuse,remove,policy", "zcl.market_refuse.input.v1",
+    "zcl.market_refusal.v1", "root,mode,plan_token", "root,mode",
+    "z23 app market refuse --input='{\"root\":\"<64hex>\",\"mode\":\"plan\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_refuse)
+
 ZCL_COMMAND_READY_READ(
     "app.market.list", "app.market", "", "List files on the ZCL Market",
     "The admitted file offers in the bounded live cache, filtered through "
@@ -932,11 +950,11 @@ ZCL_COMMAND_READY_READ(
     "stored offers plus the TWO independently-valued rules — serve_rule "
     "(what this node hands out; default general-audience.v1, reviewed_ok "
     "only) and relay_rule (whether it forwards other people's offer "
-    "announcements; default relay-all.v1, yes). They have separate defaults "
-    "and separate set commands, and neither moves the other. No "
-    "network-wide bans and no deletion authority: a hidden offer stays "
-    "stored with its signed wire intact and stays reachable from any node "
-    "that does host it, and neither rule reaches block or transaction "
+    "announcements; relay-all.v1 within an opted-in marketplace). They have "
+    "separate set commands, and neither moves the other. Marketplace is "
+    "disabled by default; durable root refusals override both preferences. "
+    "A view-hidden offer stays stored; app.market.refuse removes its local "
+    "listing projections. Neither control reaches block or transaction "
     "acceptance.", 0,
     "market,moderation,status,profile,review",
     "zcl.command.empty_input.v1", "zcl.market_moderation_status.v1",
@@ -997,10 +1015,9 @@ ZCL_COMMAND_READY_COMMAND(
     "Exact plan/commit over the node's own RELAY rule, persisted to "
     "<datadir>/market/moderation.v1 alongside, and independent of, the "
     "serve profile — setting one leg never moves the other, and their plan "
-    "tokens are not interchangeable. Boot default is relay-all.v1: forward "
-    "every valid offer announcement. Relaying passes on a POINTER, not "
-    "content, so gating it by default would cut an honest seller's reach to "
-    "one hop and hand discovery to whoever has operators awake. "
+    "tokens are not interchangeable. Marketplace is disabled by default. "
+    "With marketplace=1, relay-all.v1 forwards valid admitted offers. "
+    "Durable root refusals override either relay preference. "
     "relay-reviewed-only.v1 is the opt-in that forwards only offers this "
     "node marked reviewed_ok; refusals stay counted, never silently "
     "dropped. A local decision that binds no other node and never touches "

@@ -139,7 +139,7 @@ mkt_spawn() {
     # payment can ever be mined or relayed).
     setsid "$NODE_BIN" -datadir="$dd" -regtest -port="$p2p" \
         -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
-        "${args[@]}" -packagehost=0 -regtestshielded \
+        "${args[@]}" -marketplace=1 -packagehost=0 -regtestshielded \
         -operator-lane=dev -wallet-no-phrase-backup \
         -nobgvalidation -nolegacyimport -showmetrics=0 \
         "${MKT_EXTRA_FLAGS[@]}" \

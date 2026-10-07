@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Seller offer plan/commit, idempotency, custody, and wire-roundtrip tests. */
 
+#include "services/market_participation_service.h"
 #include "test/test_core.h"
 
 #include "chain/chainparams.h"
@@ -131,6 +132,19 @@ static void offer_runtime(struct market_offer_runtime *rt,
     rt->now_unix = now_unix;
 }
 
+static bool marketplace_fixture_open(struct node_db *ndb, const char *path)
+{
+    bool opened = node_db_open(ndb, path);
+    market_participation_set_context(opened ? ndb : NULL);
+    return opened;
+}
+
+static void marketplace_fixture_close(struct node_db *ndb)
+{
+    market_participation_set_context(NULL);
+    node_db_close(ndb);
+}
+
 int file_market_offer_tests(void)
 {
     int failures = 0;
@@ -153,11 +167,11 @@ int file_market_offer_tests(void)
     memset(&ndb, 0, sizeof(ndb));
     wallet_lock_reset_for_test();
     wallet_lock_note_encrypted_at_rest();
-    bool ready = files_ready && params && node_db_open(&ndb, dbpath) &&
+    bool ready = files_ready && params && marketplace_fixture_open(&ndb, dbpath) &&
         wallet_lock_unlock(NULL, NULL, "market-offer-test").ok;
     OFFER_CHECK("database and encrypted wallet fixture", ready);
     if (!ready) {
-        if (ndb.open) node_db_close(&ndb);
+        if (ndb.open) marketplace_fixture_close(&ndb);
         wallet_lock_reset_for_test();
         test_cleanup_tmpdir(dir);
         return failures;
@@ -248,9 +262,9 @@ int file_market_offer_tests(void)
         memcmp(replayed.offer_id, committed.offer_id, 32) == 0 &&
         fixture.announcements == 1);
 
-    node_db_close(&ndb);
+    marketplace_fixture_close(&ndb);
     memset(&ndb, 0, sizeof(ndb));
-    bool reopened = node_db_open(&ndb, dbpath);
+    bool reopened = marketplace_fixture_open(&ndb, dbpath);
     offer_runtime(&rt, &ndb, &fixture, genesis, now);
     struct market_offer_request second = request;
     second.filepath = second_path;
@@ -378,7 +392,7 @@ int file_market_offer_tests(void)
     rt.prefer_onion = false;
 
 cleanup:
-    node_db_close(&ndb);
+    marketplace_fixture_close(&ndb);
     wallet_lock_reset_for_test();
     test_cleanup_tmpdir(dir);
     return failures;

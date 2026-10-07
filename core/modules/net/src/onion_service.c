@@ -3,6 +3,7 @@
  * Onion service: bridges Tor dynhost to zclassic23 MVC controllers.
  * All .onion traffic flows through here. */
 
+#include "net/marketplace.h"
 #include "platform/time_compat.h"
 #include "net/onion_service.h"
 #include "net/onion_peer_merge.h"
@@ -1126,6 +1127,7 @@ static size_t serve_puzzle_required(const struct onion_pow_challenge *ch,
 #include "net/site_routes.def"
 #undef SITE_ROUTE
 
+
 /* ── Main request handler ─────────────────────────────────── */
 
 size_t onion_service_handle_request(const char *method,
@@ -1149,6 +1151,11 @@ size_t onion_service_handle_request(const char *method,
         return serve_rate_limited(response, response_max);
     if (admit == ONION_ADMIT_POW_REQUIRED)
         return serve_puzzle_required(&challenge, response, response_max);
+
+    if (marketplace_path_disabled(path))
+        return onion_render_response((char *)response, response_max,
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n"
+            "Connection: close\r\n\r\nMarketplace participation is disabled.\n");
 
     /* JSON status endpoint */
     if (strcmp(path, "/status") == 0)

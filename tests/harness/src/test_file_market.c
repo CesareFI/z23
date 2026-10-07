@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for ZCL Market — file sharing serialization, cache, and DB. */
 
+#include "test/marketplace_fixture.h"
 #include "platform/time_compat.h"
 #include "test/test_core.h"
 #include "controllers/file_market_controller.h"
@@ -59,6 +60,7 @@ static bool market_test_refuse_persist(const struct file_offer *offer,
 
 int test_file_market(void)
 {
+    test_marketplace_opt_in();
     int failures = 0;
 
     printf("\n=== File Market Tests ===\n");

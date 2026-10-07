@@ -13,6 +13,7 @@
 #include "models/database.h"
 #include "models/zswap_ad.h"
 #include "net/onion_service.h"
+#include "net/marketplace.h"
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -57,6 +58,7 @@ static size_t yardsale_render_index(struct node_db *ndb, int64_t now,
 
     for (int i = 0; i < count && off < out_cap - 512; i++) {
         const struct zswap_yardsale_ad *ad = &ads[i];
+        if (!marketplace_root_allowed(ad->quote_root)) continue;
         char root_hex[65], root_short[40], token_short[40], seller_short[40];
         zcl_hex_encode(ad->quote_root, 32, root_hex);
         hex_short(ad->quote_root, 32, 8, root_short, sizeof(root_short));
@@ -168,7 +170,7 @@ static size_t yardsale_render_ad(struct node_db *ndb, int64_t now,
             out, out_cap);
 
     struct zswap_yardsale_ad ad;
-    if (!db_zswap_ad_find(ndb, root, &ad) ||
+    if (!marketplace_root_allowed(root) || !db_zswap_ad_find(ndb, root, &ad) ||
         ad.quote.expires_unix <= now)
         return yardsale_error_page("404 Not Found", "404 Not Found",
             "no live sign with that root", out, out_cap);
@@ -251,12 +253,25 @@ static size_t yardsale_handle_accept_post(const uint8_t *body,
 
 /* ── The mount ───────────────────────────────────────────────────── */
 
+static bool yardsale_request_admitted(const char *method, const char *path,
+                                      uint8_t *response, size_t response_max,
+                                      size_t *refusal)
+{
+    *refusal = 0;
+    if (!method || !path || !response || response_max < 1024) return false;
+    if (marketplace_enabled()) return true;
+    *refusal = yardsale_error_page("403 Forbidden", "Marketplace disabled",
+        "The operator has not enabled marketplace participation.", response, response_max);
+    return false;
+}
+
 size_t yardsale_site_handle_request(const char *method, const char *path,
                                     const uint8_t *body, size_t body_len,
                                     uint8_t *response, size_t response_max)
 {
-    if (!method || !path || !response || response_max < 1024)
-        return 0;
+    size_t refusal;
+    if (!yardsale_request_admitted(method, path, response, response_max, &refusal))
+        return refusal;
 
     const char *query = strchr(path, '?');
     size_t path_len = query ? (size_t)(query - path) : strlen(path);

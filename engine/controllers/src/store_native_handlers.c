@@ -51,6 +51,7 @@
 #include "models/model_text.h"
 #include "models/store.h"
 #include "models/store_blob.h"
+#include "net/marketplace.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -295,6 +296,33 @@ static void sn_render_product(struct json_value *into,
     }
 }
 
+static bool store_operator_enabled(struct zcl_command_reply *reply)
+{
+    if (marketplace_enabled()) return true;
+    sn_fail(reply, ZCL_COMMAND_EXIT_DENIED, "MARKETPLACE_DISABLED",
+            "Store requires the operator's -marketplace=1 opt-in", "marketplace");
+    return false;
+}
+
+static bool store_name_allowed(const char *name, struct zcl_command_reply *reply)
+{
+    if (!store_operator_enabled(reply)) return false;
+    if (name && name[0]) return true;
+    sn_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_NAME",
+            "name is required", "name");
+    return false;
+}
+
+static bool store_datadir_allowed(const char *datadir,
+                                  struct zcl_command_reply *reply)
+{
+    if (!store_operator_enabled(reply)) return false;
+    if (datadir) return true;
+    sn_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+            "no datadir given and no --datadir default", "datadir");
+    return false;
+}
+
 /* ── app.store.list-product ─────────────────────────────────────────── */
 void zcl_native_handle_store_list_product(
     const struct zcl_command_request *request,
@@ -304,11 +332,7 @@ void zcl_native_handle_store_list_product(
 
     /* name */
     const char *name_in = json_get_str(json_get(in, "name"));
-    if (!name_in || !name_in[0]) {
-        sn_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_NAME",
-                "name is required", "name");
-        return;
-    }
+    if (!store_name_allowed(name_in, reply)) return;
     if (strlen(name_in) > STORE_PRODUCT_NAME_MAX) {
         sn_fail(reply, ZCL_COMMAND_EXIT_INVALID, "NAME_TOO_LONG",
                 "name exceeds the 255-character product-name limit", "name");
@@ -527,11 +551,7 @@ void zcl_native_handle_store_products(
     struct zcl_command_reply *reply)
 {
     const char *datadir = sn_datadir(request);
-    if (!datadir) {
-        sn_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
-                "no datadir given and no --datadir default", "datadir");
-        return;
-    }
+    if (!store_datadir_allowed(datadir, reply)) return;
     /* READ-ONLY, and not sn_open_db.
      *
      * This leaf is declared ZCL_COMMAND_READY_READ and its `datadir` falls

@@ -14,6 +14,7 @@
  * valid when created" principle preserved in storage; the AR projection
  * roundtrip; and the dumpstate counters. */
 
+#include "test/marketplace_fixture.h"
 #include "test/test_core.h"
 
 #include "chain/chainparams.h"
@@ -545,6 +546,7 @@ static int t_dump_state(const uint8_t net[32])
 
 int test_zswap_yardsale(void)
 {
+    test_marketplace_opt_in();
     printf("\n=== zswap_yardsale: yardsale gossip + cache + projection ===\n");
     int failures = 0;
 

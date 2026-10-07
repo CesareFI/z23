@@ -14,6 +14,7 @@
  * in-process. No datadir, no chain state — address decoding reads the
  * process chain params the runner selects (CHAIN_MAIN). */
 
+#include "test/marketplace_fixture.h"
 #include "test/test_core.h"
 
 #include "base/hex.h"
@@ -2012,6 +2013,7 @@ static int t_webbuy_plan_gate(void)
 
 int test_yardsale_app(void)
 {
+    test_marketplace_opt_in();
     printf("\n=== yardsale_app: manifest + ceremony through the controller ===\n");
     int failures = 0;
     failures += t_manifest();

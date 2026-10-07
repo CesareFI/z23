@@ -199,6 +199,7 @@ static bool shw_open_board_readonly(const char *datadir,
                                     struct node_db *ndb,
                                     struct zcl_command_reply *reply)
 {
+    if (!shop_marketplace_required(reply)) return false;
     if (!zcl_native_node_db_require_readonly(datadir, reply,
                                              "the shop want board", db, ndb))
         return false;
@@ -228,6 +229,7 @@ static bool shw_open_board_readonly(const char *datadir,
 static bool shw_open_board_write(const char *datadir, struct node_db *ndb,
                                  struct zcl_command_reply *reply)
 {
+    if (!shop_marketplace_required(reply)) return false;
     char db_path[1024];
     if (!shw_require_node_db_path(datadir, db_path, reply)) // raw-return-ok:shw_fail-already-logged-and-set-the-reply-error
         return false;

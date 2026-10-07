@@ -6,6 +6,7 @@
  * signed-wire-untouched invariant. Ingest and storage are asserted
  * unaffected and nothing is ever deleted. */
 
+#include "test/marketplace_fixture.h"
 #include "platform/time_compat.h"
 #include "test/test_core.h"
 #include "controllers/file_market_controller.h"
@@ -1041,6 +1042,7 @@ static int test_mmt_relay_leg_defaults_open_and_stays_closed(void)
 
 int test_file_market_moderation(void)
 {
+    test_marketplace_opt_in();
     int failures = 0;
     printf("\n=== File Market Moderation Tests ===\n");
     failures += test_mmt_profile_matrix();

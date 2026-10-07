@@ -59,6 +59,7 @@ enum zswap_yardsale_ingest {
     ZSWAP_YARDSALE_INGEST_INVALID,     /* decode/verify/network/tamper/not-yet-valid */
     ZSWAP_YARDSALE_INGEST_EXPIRED,     /* well-formed but expired at now_unix */
     ZSWAP_YARDSALE_INGEST_RATE_LIMITED,/* per-peer new-ad clamp fired */
+    ZSWAP_YARDSALE_INGEST_REFUSED,     /* local operator policy */
 };
 
 struct zswap_yardsale_counters {
@@ -119,6 +120,7 @@ void zswap_yardsale_counters_snapshot(struct zswap_yardsale_counters *out);
 
 /* Test hook: clear the cache, the clamp table, and all counters. */
 void zswap_yardsale_reset(void);
+void zswap_yardsale_forget(const uint8_t quote_root[32]);
 
 struct json_value;
 /* See AGENTS.md "Adding state introspection". Reentrant-safe. */

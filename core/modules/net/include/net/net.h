@@ -180,6 +180,7 @@ struct send_segment {
     uint8_t *data;
     size_t size;
     struct send_segment *next;
+    uint64_t marketplace_generation; /* zero for ordinary protocol traffic */
 };
 
 /* Free a send_segment AND release its bytes from the process-wide send

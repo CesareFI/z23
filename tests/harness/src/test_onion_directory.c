@@ -62,6 +62,7 @@
 #include "net/tor_integration.h"
 #include "json/json.h"
 #include "util/path_check.h"
+#include "util/util.h"
 #include "znam/znam.h"
 
 #include <sqlite3.h>
@@ -1097,7 +1098,14 @@ static int od_test_self_clearnet(const char *datadir)
                            "onion_address='" HOST_SELF "' AND self=1 AND "
                            "clearnet_ip='203.0.113.7' AND clearnet_port=8033",
                        -1) == 1);
-    /* Track 2: the self row also advertises the mounted app-catalog Apps,
+    OD_CHECK("default self advertisement omits the disabled marketplace",
+             od_scalar(db, "SELECT COUNT(*) FROM peer_directory WHERE "
+                           "onion_address='" HOST_SELF "' AND self=1 AND "
+                           "apps='blog'", -1) == 1);
+    const char *market_args[] = {"test", "-marketplace=1"};
+    ParseParameters(2, market_args);
+    onion_service_set_address(HOST_SELF);
+    /* Track 2: an opted-in self row advertises the mounted app-catalog Apps,
      * computed from the ONE site-route registry (net/site_routes.def app_id
      * column, def-row order) — blog and yardsale today. */
     OD_CHECK("the self row advertises the mounted app-catalog Apps",
@@ -1827,6 +1835,8 @@ static int od_test_response_bounds(const char *datadir)
 int test_onion_directory(void)
 {
     int failures = 0;
+    const char *default_args[] = {"test"};
+    ParseParameters(1, default_args);
     printf("\n=== Onion Directory (freshness, names, onion-graph walk) ===\n");
 
     /* The address singleton is process-global; the sequential runner
@@ -1869,6 +1879,7 @@ int test_onion_directory(void)
 
     test_cleanup_tmpdir(datadir);
     onion_service_set_address(saved[0] ? saved : NULL);
+    ParseParameters(1, default_args);
 
     printf("=== Onion Directory: %d failure(s) ===\n", failures);
     return failures;

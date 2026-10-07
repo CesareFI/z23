@@ -163,7 +163,7 @@ mkt_spawn() {
     # the clearnet -externalip endpoint opt-in instead.
     setsid "$NODE_BIN" -datadir="$dd" -regtest -port="$p2p" \
         -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
-        "${args[@]}" -packagehost=0 -regtestshielded \
+        "${args[@]}" -packagehost=0 -marketplace=1 -regtestshielded \
         -operator-lane=dev -wallet-no-phrase-backup \
         -nobgvalidation -nolegacyimport -showmetrics=0 \
         "${MKT_EXTRA_FLAGS[@]}" \

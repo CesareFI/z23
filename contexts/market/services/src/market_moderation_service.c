@@ -18,6 +18,8 @@
 
 #include "services/market_moderation_service.h"
 #include "services/market_moderation_view_service.h"
+#include "services/market_participation_service.h"
+#include "net/marketplace.h"
 
 #include "models/database.h"
 #include "models/file_offer.h"
@@ -299,6 +301,7 @@ static _Atomic int g_mm_active_relay = MARKET_MODERATION_RELAY_ALL;
 
 void market_moderation_set_context(struct node_db *ndb, const char *datadir)
 {
+    market_participation_set_context(ndb);
     pthread_mutex_lock(&g_mm_mutex);
     g_mm_ndb = ndb;
     if (datadir) {
@@ -473,14 +476,14 @@ static bool mm_may_serve_with_review(int review_state)
 
 bool market_moderation_may_serve_root(const uint8_t root_hash[32])
 {
-    if (!root_hash) return false; // raw-return-ok:null-id-hides-fail-closed
+    if (!marketplace_root_allowed(root_hash)) return false;
     return mm_may_serve_with_review(
         market_moderation_review_state_for_root(root_hash));
 }
 
 bool market_moderation_may_serve_offer_id(const uint8_t offer_id[32])
 {
-    if (!offer_id) return false; // raw-return-ok:null-id-hides-fail-closed
+    if (!market_participation_offer_allowed(offer_id)) return false;
     return mm_may_serve_with_review(
         market_moderation_review_state_for_offer_id(offer_id));
 }
@@ -488,7 +491,7 @@ bool market_moderation_may_serve_offer_id(const uint8_t offer_id[32])
 bool market_moderation_may_relay_root(const uint8_t root_hash[32])
 {
     /* Malformed input, not a policy question: there is nothing to relay. */
-    if (!root_hash) return false; // raw-return-ok:null-id-is-malformed-input
+    if (!marketplace_root_allowed(root_hash)) return false;
     int rule = (int)market_moderation_active_relay_rule();
     if (!market_moderation_relay_rule_valid(rule)) {
         /* Unreachable through the setters, which validate. If it ever

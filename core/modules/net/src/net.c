@@ -4,6 +4,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "net/marketplace.h"
 #include "net/net.h"
 #include "net/noise_transport.h"
 #include "net/net_fault.h"
@@ -351,6 +352,7 @@ static struct send_segment *send_segment_create(const uint8_t *data, size_t size
     memcpy(seg->data, data, size);
     seg->size = size;
     seg->next = NULL;
+    seg->marketplace_generation = 0;
     /* Charge this segment against the process-wide send budget. Released
      * symmetrically in send_segment_free on every drain/disconnect path. */
     atomic_fetch_add(&g_send_total_bytes, size);
@@ -1038,6 +1040,25 @@ void p2p_node_write_message_data(struct p2p_node *node,
         stream_write(&tls_msg_stream, data, len);
 }
 
+static bool marketplace_message_admitted(struct p2p_node *node,
+                                          const char *command,
+                                          const uint8_t *wire, size_t size,
+                                          uint64_t *generation)
+{
+    *generation = 0;
+    if (!marketplace_message(command)) return true;
+    if (node->transport) {
+        struct noise_transport_snapshot snapshot;
+        if (!noise_transport_snapshot(node->transport, &snapshot) ||
+            !snapshot.established)
+            LOG_FAIL("market", "marketplace send requires an established transport");
+    }
+    /* Take the generation BEFORE validation: a concurrent refusal can only
+     * make this segment stale, never relabel refused bytes as newly admitted. */
+    *generation = marketplace_generation();
+    return marketplace_wire_allowed(command, wire, size);
+}
+
 bool p2p_node_end_message(struct p2p_node *node)
 {
     if (!tls_msg_active) {
@@ -1046,7 +1067,7 @@ bool p2p_node_end_message(struct p2p_node *node)
     }
 
     size_t total = tls_msg_stream.size;
-    if (total == 0 || tls_msg_stream.error) {
+    if (total < MSG_HEADER_SIZE || tls_msg_stream.error) {
         stream_free(&tls_msg_stream);
         tls_msg_active = false;
         zcl_mutex_unlock(&node->cs_send);
@@ -1078,6 +1099,19 @@ bool p2p_node_end_message(struct p2p_node *node)
 
     uint8_t *buf = tls_msg_stream.data;
 
+    char policy_command[COMMAND_SIZE + 1];
+    memcpy(policy_command, buf + MESSAGE_START_SIZE, COMMAND_SIZE);
+    policy_command[COMMAND_SIZE] = '\0';
+    uint64_t market_generation;
+    if (!marketplace_message_admitted(node, policy_command,
+            buf + MSG_HEADER_SIZE, total - MSG_HEADER_SIZE, &market_generation)) {
+        stream_free(&tls_msg_stream);
+        tls_msg_active = false;
+        zcl_mutex_unlock(&node->cs_send);
+        LOG_FAIL("market", "outbound %s refused by operator policy",
+                 policy_command);
+    }
+
     unsigned int payload_size = (unsigned int)(total - MSG_HEADER_SIZE);
     buf[MESSAGE_START_SIZE + COMMAND_SIZE] = (uint8_t)(payload_size & 0xff);
     buf[MESSAGE_START_SIZE + COMMAND_SIZE + 1] = (uint8_t)((payload_size >> 8) & 0xff);
@@ -1093,9 +1127,6 @@ bool p2p_node_end_message(struct p2p_node *node)
         char cmd[COMMAND_SIZE + 1];
         memcpy(cmd, buf + MESSAGE_START_SIZE, COMMAND_SIZE);
         cmd[COMMAND_SIZE] = '\0';
-        /* Trim trailing nulls for clean display */
-        for (int ci = COMMAND_SIZE - 1; ci >= 0 && cmd[ci] == '\0'; ci--)
-            cmd[ci] = '\0';
         event_emitf(EV_MSG_SENT, (uint32_t)node->id,
                     "%s size=%u", cmd, payload_size);
     }
@@ -1139,6 +1170,7 @@ bool p2p_node_end_message(struct p2p_node *node)
         LOG_FAIL("net", "send_segment_create failed for node id=%d", (int)node->id);
     }
 
+    seg->marketplace_generation = market_generation;
     if (node->send_tail) {
         node->send_tail->next = seg;
         node->send_tail = seg;
@@ -1205,43 +1237,6 @@ void p2p_node_queue_raw(struct p2p_node *node, const uint8_t *bytes, size_t len)
     if (node->send_head == seg)
         socket_send_data(node);
     zcl_mutex_unlock(&node->cs_send);
-}
-
-/* --- socket_send_data --- */
-
-void socket_send_data(struct p2p_node *node)
-{
-    while (node->send_head) {
-        struct send_segment *seg = node->send_head;
-        size_t remain = seg->size - node->send_offset;
-        ssize_t sent = send(node->socket,
-                            (const char *)(seg->data + node->send_offset),
-                            remain, MSG_NOSIGNAL | MSG_DONTWAIT);
-        if (sent > 0) {
-            node->last_send = GetTime();
-            node->send_bytes += (uint64_t)sent;
-            node->send_offset += (size_t)sent;
-
-            if (node->send_offset >= seg->size) {
-                node->send_head = seg->next;
-                if (!node->send_head)
-                    node->send_tail = NULL;
-                node->send_size -= seg->size;
-                node->send_offset = 0;
-                send_segment_free(seg);
-            } else {
-                break;
-            }
-        } else {
-            if (sent < 0) {
-                int err = platform_socket_last_error(); /* Winsock reports here, never errno */
-                if (!platform_socket_error_would_block(err) && !platform_socket_error_interrupted(err) &&
-                    !platform_socket_error_in_progress(err))
-                    p2p_node_close_socket(node);
-            }
-            break;
-        }
-    }
 }
 
 /* --- net_manager --- */

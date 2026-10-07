@@ -173,6 +173,30 @@ static int test_boot_onion_early_skips_only_when_told(void)
 
 /* ── torrc generation tests ────────────────────────────────── */
 
+static bool torrc_client_only(const char *config)
+{
+    return strstr(config, "ClientOnly 1\n") &&
+           strstr(config, "ORPort 0\n") &&
+           strstr(config, "DirPort 0\n") &&
+           strstr(config, "ExitRelay 0\n") &&
+           strstr(config, "ExitPolicy reject *:*\n") &&
+           strstr(config, "SocksPolicy reject *\n");
+}
+
+static int test_tor_config_injection_refused(void)
+{
+    char directory[512], injected[640];
+    test_make_tmpdir(directory, sizeof(directory), "torrc", "injection");
+    snprintf(injected, sizeof(injected), "%s\nClientOnly 0\nORPort 9001", directory);
+    bool refused = !tor_write_torrc(injected, 8033);
+    char path[640];
+    snprintf(path, sizeof(path), "%s/torrc", directory);
+    bool absent = access(path, F_OK) != 0;
+    remove_tree(directory);
+    return refused && absent && !tor_write_torrc(NULL, 8033) &&
+           !tor_write_torrc("", 8033) ? 0 : 1;
+}
+
 /* Verify torrc uses localhost-only bootstrap port derived from p2p_port.
  * The SocksPort is a Tor bootstrap workaround — nothing connects to it.
  * It must be localhost-only and derived from p2p_port to avoid collisions. */
@@ -219,7 +243,7 @@ static int test_tor_write_torrc_bootstrap_port(void)
     bool has_rend_info = strstr(buf, "Log info [rend]") != NULL;
 
     if (has_localhost && has_correct_port && has_datadir && has_log &&
-        has_rend_info) {
+        has_rend_info && torrc_client_only(buf)) {
         printf("OK\n");
     } else {
         printf("FAIL (localhost=%d port=%d datadir=%d log=%d rend=%d)\n",
@@ -893,6 +917,7 @@ int test_tor(void)
 
     /* torrc generation — bootstrap port derivation */
     failures += test_tor_write_torrc_bootstrap_port();
+    failures += test_tor_config_injection_refused();
     failures += test_tor_write_torrc_no_collision();
     failures += test_tor_write_torrc_datadir();
     failures += test_tor_write_torrc_idempotent();

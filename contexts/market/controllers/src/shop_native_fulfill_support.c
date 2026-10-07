@@ -173,6 +173,7 @@ bool shf_open_readonly(const char *datadir, sqlite3 **db,
                        struct node_db *ndb,
                        struct zcl_command_reply *reply)
 {
+    if (!shop_marketplace_required(reply)) return false;
     if (!zcl_native_node_db_require_readonly(datadir, reply,
                                              "the shop fulfillment board",
                                              db, ndb))
@@ -191,6 +192,7 @@ bool shf_open_readonly(const char *datadir, sqlite3 **db,
 bool shf_open_write(const char *datadir, struct node_db *ndb,
                     struct zcl_command_reply *reply)
 {
+    if (!shop_marketplace_required(reply)) return false;
     char path[1024];
     if (!shf_require_node_db(datadir, path, reply))
         return false; // raw-return-ok:reply-already-carries-named-error

@@ -35,6 +35,7 @@
  * wants are signed with fixture Ed25519 seeds and time is pinned through
  * the leaves' now_unix input, so nothing here is wall-clock dependent. */
 
+#include "test/marketplace_fixture.h"
 #include "test/test_core.h"
 
 #include "command/native_command.h"
@@ -1118,6 +1119,7 @@ static int shop_want_input_clock(void)
 
 int test_shop_want(void)
 {
+    test_marketplace_opt_in();
     int failures = 0;
     failures += shop_want_codec();
     failures += shop_want_post_plan();

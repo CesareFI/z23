@@ -2218,6 +2218,9 @@ void zcl_native_handle_market_moderation_guide(
 void zcl_native_handle_market_moderation_profile_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_market_refuse(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_market_moderation_profile_set(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

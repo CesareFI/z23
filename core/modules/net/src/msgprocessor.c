@@ -2287,7 +2287,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 break;
             }
 
-            ok = e->handler(mp, node, &s);
+            ok = marketplace_dispatch(e, mp, node, &s);
             dispatched = true;
             break;
         }

@@ -25,6 +25,7 @@
  * No node, no network, no wallet: every case is an in-process call against a
  * fixture datadir under ./test-tmp. */
 
+#include "test/marketplace_fixture.h"
 #include "test/test_core.h"
 
 #include "command/native_command.h"
@@ -569,6 +570,7 @@ static int t_json_path_still_works(void)
 
 int test_store_listing(void)
 {
+    test_marketplace_opt_in();
     int failures = 0;
     printf("\n=== Store listing (typed merchant surface) ===\n");
     failures += t_list_and_serve();

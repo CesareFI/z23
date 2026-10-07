@@ -8,6 +8,7 @@
 
 #include "platform/time_compat.h"
 #include "net/file_market.h"
+#include "net/marketplace.h"
 #include "core/serialize.h"
 #include "util/log_macros.h"
 #include <stdint.h>
@@ -191,7 +192,7 @@ bool file_market_offer_can_replace(const struct file_offer *existing,
                sizeof(existing->offer_id)) == 0;
 }
 
-bool file_market_add_offer(const struct file_offer *offer)
+static bool file_market_add_admitted(const struct file_offer *offer)
 {
     if (!offer || offer->ttl == 0 || offer->num_chunks == 0)
         LOG_FAIL("market", "add_offer: null offer or ttl=0 or num_chunks=0");
@@ -241,6 +242,15 @@ bool file_market_add_offer(const struct file_offer *offer)
     g_offer_count++;
     pthread_mutex_unlock(&g_market_mutex);
     return true;
+}
+
+bool file_market_add_offer(const struct file_offer *offer)
+{
+    marketplace_lock();
+    bool added = offer && marketplace_root_allowed(offer->root_hash) &&
+                 file_market_add_admitted(offer);
+    marketplace_unlock();
+    return added;
 }
 
 /* Caller holds g_market_mutex. One bounded window covers cheap admission
@@ -297,93 +307,93 @@ static bool offer_peer_admit_locked(int64_t peer_id, int64_t now_unix)
     return true;
 }
 
+/* Caller holds the cache mutex. Identity lookup precedes root-conflict
+ * lookup, retaining the existing dedup and first-seller ownership rules. */
+static int offer_identity_slot_locked(const uint8_t id[32])
+{
+    for (int i = 0; i < g_offer_count; i++)
+        if (file_offer_auth_version_supported(g_offers[i].auth_version) &&
+            memcmp(g_offers[i].offer_id, id, 32) == 0) return i;
+    return -1;
+}
+
+static int offer_root_slot_locked(const uint8_t root[32])
+{
+    for (int i = 0; i < g_offer_count; i++)
+        if (memcmp(g_offers[i].root_hash, root, 32) == 0) return i;
+    return -1;
+}
+
+static int offer_new_slot_locked(void)
+{
+    if (g_offer_count < FILE_MARKET_MAX_OFFERS) return g_offer_count++;
+    int oldest = 0;
+    for (int i = 1; i < g_offer_count; i++)
+        if (g_offers[i].last_seen < g_offers[oldest].last_seen) oldest = i;
+    return oldest;
+}
+
+static enum file_market_offer_ingest offer_cache_verified_locked(
+    const struct file_offer *offer, int64_t peer_id,
+    struct file_offer *out_offer, file_market_offer_persist_fn persist,
+    void *persist_ctx)
+{
+    int slot = offer_identity_slot_locked(offer->offer_id);
+    bool dedup = slot >= 0;
+    if (!dedup) slot = offer_root_slot_locked(offer->root_hash);
+    if (!dedup && slot >= 0 &&
+        !file_market_offer_can_replace(&g_offers[slot], offer))
+        return FILE_MARKET_INGEST_CONFLICT;
+    if (!dedup && !offer_peer_admit_locked(peer_id, offer->last_seen))
+        return FILE_MARKET_INGEST_RATE_LIMITED;
+    if (persist && !persist(offer, persist_ctx))
+        return FILE_MARKET_INGEST_PERSIST_FAILED;
+    if (slot < 0) slot = offer_new_slot_locked();
+    if (!dedup) g_offers[slot] = *offer;
+    g_offers[slot].last_seen = offer->last_seen;
+    if (out_offer) *out_offer = g_offers[slot];
+    return dedup ? FILE_MARKET_INGEST_DEDUP : FILE_MARKET_INGEST_NEW;
+}
+
+static enum file_market_offer_ingest file_market_ingest_admitted(
+    const uint8_t *wire, size_t wire_len,
+    const uint8_t expected_network_genesis[32],
+    int64_t peer_id, int64_t now_unix, struct file_offer *out_offer,
+    file_market_offer_persist_fn persist, void *persist_ctx)
+{
+    if (!marketplace_enabled()) return FILE_MARKET_INGEST_REFUSED;
+    struct file_offer offer;
+    pthread_mutex_lock(&g_market_mutex);
+    bool attempt_allowed = offer_peer_attempt_locked(peer_id, now_unix);
+    pthread_mutex_unlock(&g_market_mutex);
+    if (!attempt_allowed) return FILE_MARKET_INGEST_RATE_LIMITED;
+    enum file_offer_auth_error error = file_offer_auth_decode(wire, wire_len, &offer);
+    if (error != FILE_OFFER_AUTH_OK) return FILE_MARKET_INGEST_INVALID;
+    if (!marketplace_root_allowed(offer.root_hash)) return FILE_MARKET_INGEST_REFUSED;
+    error = file_offer_auth_verify_at(&offer, expected_network_genesis, now_unix);
+    if (error == FILE_OFFER_AUTH_ERR_EXPIRED) return FILE_MARKET_INGEST_EXPIRED;
+    if (error != FILE_OFFER_AUTH_OK) return FILE_MARKET_INGEST_INVALID;
+    offer.last_seen = now_unix;
+    offer.ttl = FILE_MARKET_MAX_TTL;
+    pthread_mutex_lock(&g_market_mutex);
+    enum file_market_offer_ingest result = offer_cache_verified_locked(
+        &offer, peer_id, out_offer, persist, persist_ctx);
+    pthread_mutex_unlock(&g_market_mutex);
+    return result;
+}
+
 enum file_market_offer_ingest file_market_ingest_offer_wire_persist(
     const uint8_t *wire, size_t wire_len,
     const uint8_t expected_network_genesis[32],
     int64_t peer_id, int64_t now_unix, struct file_offer *out_offer,
     file_market_offer_persist_fn persist, void *persist_ctx)
 {
-    struct file_offer offer;
-    pthread_mutex_lock(&g_market_mutex);
-    bool attempt_allowed = offer_peer_attempt_locked(peer_id, now_unix);
-    pthread_mutex_unlock(&g_market_mutex);
-    if (!attempt_allowed)
-        return FILE_MARKET_INGEST_RATE_LIMITED;
-
-    enum file_offer_auth_error error = file_offer_auth_decode(
-        wire, wire_len, &offer);
-    if (error != FILE_OFFER_AUTH_OK)
-        return FILE_MARKET_INGEST_INVALID;
-    error = file_offer_auth_verify_at(&offer, expected_network_genesis,
-                                      now_unix);
-    if (error == FILE_OFFER_AUTH_ERR_EXPIRED)
-        return FILE_MARKET_INGEST_EXPIRED;
-    if (error != FILE_OFFER_AUTH_OK)
-        return FILE_MARKET_INGEST_INVALID;
-    offer.last_seen = now_unix;
-    offer.ttl = FILE_MARKET_MAX_TTL;
-
-    pthread_mutex_lock(&g_market_mutex);
-    for (int i = 0; i < g_offer_count; i++) {
-        if (file_offer_auth_version_supported(g_offers[i].auth_version) &&
-            memcmp(g_offers[i].offer_id, offer.offer_id, 32) == 0) {
-            if (persist && !persist(&offer, persist_ctx)) {
-                pthread_mutex_unlock(&g_market_mutex);
-                return FILE_MARKET_INGEST_PERSIST_FAILED;
-            }
-            g_offers[i].last_seen = now_unix;
-            if (out_offer)
-                *out_offer = g_offers[i];
-            pthread_mutex_unlock(&g_market_mutex);
-            return FILE_MARKET_INGEST_DEDUP;
-        }
-    }
-    /* One seller owns the live contract for a content root. A fresh contract
-     * from that seller may replace its stale terms; another seller cannot
-     * enter cache, persistence, or relay state. */
-    for (int i = 0; i < g_offer_count; i++) {
-        if (memcmp(g_offers[i].root_hash, offer.root_hash, 32) == 0) {
-            if (!file_market_offer_can_replace(&g_offers[i], &offer)) {
-                pthread_mutex_unlock(&g_market_mutex);
-                return FILE_MARKET_INGEST_CONFLICT;
-            }
-            if (!offer_peer_admit_locked(peer_id, now_unix)) {
-                pthread_mutex_unlock(&g_market_mutex);
-                return FILE_MARKET_INGEST_RATE_LIMITED;
-            }
-            if (persist && !persist(&offer, persist_ctx)) {
-                pthread_mutex_unlock(&g_market_mutex);
-                return FILE_MARKET_INGEST_PERSIST_FAILED;
-            }
-            g_offers[i] = offer;
-            if (out_offer)
-                *out_offer = offer;
-            pthread_mutex_unlock(&g_market_mutex);
-            return FILE_MARKET_INGEST_NEW;
-        }
-    }
-    if (!offer_peer_admit_locked(peer_id, now_unix)) {
-        pthread_mutex_unlock(&g_market_mutex);
-        return FILE_MARKET_INGEST_RATE_LIMITED;
-    }
-    if (persist && !persist(&offer, persist_ctx)) {
-        pthread_mutex_unlock(&g_market_mutex);
-        return FILE_MARKET_INGEST_PERSIST_FAILED;
-    }
-    if (g_offer_count >= FILE_MARKET_MAX_OFFERS) {
-        int oldest = 0;
-        for (int i = 1; i < g_offer_count; i++) {
-            if (g_offers[i].last_seen < g_offers[oldest].last_seen)
-                oldest = i;
-        }
-        g_offers[oldest] = offer;
-    } else {
-        g_offers[g_offer_count++] = offer;
-    }
-    if (out_offer)
-        *out_offer = offer;
-    pthread_mutex_unlock(&g_market_mutex);
-    return FILE_MARKET_INGEST_NEW;
+    marketplace_lock();
+    enum file_market_offer_ingest result = file_market_ingest_admitted(
+        wire, wire_len, expected_network_genesis, peer_id, now_unix,
+        out_offer, persist, persist_ctx);
+    marketplace_unlock();
+    return result;
 }
 
 enum file_market_offer_ingest file_market_ingest_offer_wire(
@@ -404,6 +414,20 @@ int file_market_get_offers(struct file_offer *out, size_t max)
     memcpy(out, g_offers, count * sizeof(struct file_offer));
     pthread_mutex_unlock(&g_market_mutex);
     return count;
+}
+
+void file_market_forget(const uint8_t root_hash[32])
+{
+    if (!root_hash) return;
+    pthread_mutex_lock(&g_market_mutex);
+    for (int i = 0; i < g_offer_count; i++) {
+        if (memcmp(g_offers[i].root_hash, root_hash, 32) == 0) {
+            g_offers[i] = g_offers[--g_offer_count];
+            memset(&g_offers[g_offer_count], 0, sizeof(g_offers[0]));
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_market_mutex);
 }
 
 bool file_market_find_offer(const uint8_t root_hash[32],

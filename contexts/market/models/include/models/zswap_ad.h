@@ -43,6 +43,7 @@ bool db_zswap_ad_save(struct node_db *ndb,
 bool db_zswap_ad_find(struct node_db *ndb,
                       const uint8_t quote_root[32],
                       struct zswap_yardsale_ad *out);
+bool db_zswap_ad_delete(struct node_db *ndb, const uint8_t quote_root[32]);
 /* Explicit expiry maintenance: delete rows whose window has closed. */
 int db_zswap_ad_prune_expired(struct node_db *ndb, int64_t now_unix);
 /* Browse projection: ads for token_id still valid at now_unix (expired rows

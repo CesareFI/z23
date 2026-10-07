@@ -23,25 +23,38 @@
  * readiness poll. Both are size-bounded by tor_logs_rotate() below. */
 bool tor_write_torrc(const char *datadir, uint16_t p2p_port)
 {
+    if (!datadir || !datadir[0] || strpbrk(datadir, "\r\n"))
+        LOG_FAIL("tor", "torrc requires a nonempty datadir without line breaks");
     char torrc_path[1024];
-    snprintf(torrc_path, sizeof(torrc_path), "%s/torrc", datadir);
+    int n = snprintf(torrc_path, sizeof(torrc_path), "%s/torrc", datadir);
+    if (n < 0 || (size_t)n >= sizeof(torrc_path))
+        LOG_FAIL("tor", "torrc path exceeds its bound");
 
     FILE *f = fopen(torrc_path, "w");
     if (!f)
         LOG_FAIL("tor", "failed to open torrc for writing: %s", torrc_path);
 
-    /* Localhost-only SocksPort — NOTHING connects to this. It exists only
-     * because Tor will not bootstrap without a listener. Derivation keeps
-     * isolated instances disjoint (8033→19999, 8035→20001). */
+    /* Tor needs a listener to bootstrap the in-process onion transport.
+     * Reject every SOCKS client: this listener grants no proxy service.
+     * Explicit client-only settings also override inherited relay defaults.
+     * Derivation keeps isolated instances disjoint (8033→19999). */
     uint16_t bootstrap_port = (uint16_t)(p2p_port + 11966);
-    fprintf(f,
+    int written = fprintf(f,
+        "ClientOnly 1\n"
+        "ORPort 0\n"
+        "DirPort 0\n"
+        "ExitRelay 0\n"
+        "ExitPolicy reject *:*\n"
         "SocksPort 127.0.0.1:%u\n"
+        "SocksPolicy reject *\n"
         "DataDirectory %s/tor_data\n"
         "Log notice file %s/" TOR_LOG_BASENAME "\n"
         "Log info [rend] file %s/" TOR_REND_LOG_BASENAME "\n",
         bootstrap_port, datadir, datadir, datadir);
 
-    fclose(f);
+    int closed = fclose(f);
+    if (written < 0 || closed != 0)
+        LOG_FAIL("tor", "torrc write failed");
     return true;
 }
 
