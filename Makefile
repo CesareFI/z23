@@ -8410,6 +8410,10 @@ $(SQLQ_BIN): tools/sqlq.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
 JSONQ_BIN = $(BIN_DIR)/jsonq
 .PHONY: jsonq
 jsonq: $(JSONQ_BIN)
+.PHONY: jsonq-selftest
+jsonq-selftest: $(JSONQ_BIN)
+	@bash tools/scripts/jsonq_selftest.sh "$(abspath $(JSONQ_BIN))"
+
 $(JSONQ_BIN): tools/jsonq.c \
     contexts/commons/packages/zjsonp/src/zjsonp.c contexts/commons/packages/zutf8/src/zutf8.c \
     contexts/commons/packages/zjsonp/include/zjsonp/zjsonp.h \

@@ -17,7 +17,8 @@
  *   printf '%s' "$json" | jsonq unwrap
  *
  * PATH: dotted keys and [index] from the document root. Leading '.' is
- * optional. Example: result.items[1].id
+ * optional. Example: result.items[1].id. Array indices must fit in int;
+ * an oversized index is a malformed path, not a missing element.
  *
  * get/raw print the value and exit 0. Missing path exits 1. Malformed
  * JSON or usage exits 2. unwrap prints result when the envelope is a
@@ -25,12 +26,13 @@
  */
 #include "zjsonp/zjsonp.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 enum {
-    MAX_INPUT = 16 << 20,
+    JSONQ_MAX_INPUT = 16 << 20,
     MAX_SEGS = 32,
     MAX_KEY = 256,
     DECODE_CAP = 1 << 16
@@ -64,7 +66,7 @@ typedef enum {
     CMD_UNWRAP
 } cmd_kind;
 
-static char g_input[MAX_INPUT];
+static char g_input[JSONQ_MAX_INPUT];
 static char g_decode[DECODE_CAP];
 static path_seg g_segs[MAX_SEGS];
 static int g_nsegs;
@@ -77,6 +79,52 @@ static void usage(void)
           "       jsonq unwrap\n"
           "Read one JSON document from stdin.\n",
           stderr);
+}
+
+/* Borrow the argument bytes; publish the cursor and value only on success. */
+static bool parse_index(const char **cursor, int *index)
+{
+    const char *p = *cursor;
+    int value = 0;
+    if (*p < '0' || *p > '9') {
+        fputs("jsonq: expected array index\n", stderr);
+        return false;
+    }
+    while (*p >= '0' && *p <= '9') {
+        int digit = *p - '0';
+        if (value > (INT_MAX - digit) / 10) {
+            fputs("jsonq: array index too large\n", stderr);
+            return false;
+        }
+        value = value * 10 + digit;
+        p++;
+    }
+    if (*p != ']') {
+        fputs("jsonq: missing ]\n", stderr);
+        return false;
+    }
+    *cursor = p + 1;
+    *index = value;
+    return true;
+}
+
+static bool parse_key(const char **cursor, path_seg *segment)
+{
+    const char *start = *cursor, *p = start;
+    while (*p && *p != '.' && *p != '[')
+        p++;
+    size_t n = (size_t)(p - start);
+    if (n == 0 || n >= MAX_KEY) {
+        fputs("jsonq: empty or oversized path segment\n", stderr);
+        return false;
+    }
+    segment->kind = SEG_KEY;
+    memcpy(segment->key, start, n);
+    segment->key[n] = '\0';
+    segment->key_len = n;
+    segment->index = 0;
+    *cursor = p;
+    return true;
 }
 
 static int parse_path(const char *path)
@@ -95,41 +143,13 @@ static int parse_path(const char *path)
         path_seg *s = &g_segs[g_nsegs];
         if (*p == '[') {
             p++;
-            if (*p < '0' || *p > '9') {
-                fputs("jsonq: expected array index\n", stderr);
+            if (!parse_index(&p, &s->index))
                 return -1;
-            }
-            int idx = 0;
-            while (*p >= '0' && *p <= '9') {
-                idx = idx * 10 + (*p - '0');
-                p++;
-            }
-            if (*p != ']') {
-                fputs("jsonq: missing ]\n", stderr);
-                return -1;
-            }
-            p++;
             s->kind = SEG_INDEX;
-            s->index = idx;
             s->key_len = 0;
-            g_nsegs++;
-            if (*p == '.')
-                p++;
-            continue;
-        }
-        const char *start = p;
-        while (*p && *p != '.' && *p != '[')
-            p++;
-        size_t n = (size_t)(p - start);
-        if (n == 0 || n >= MAX_KEY) {
-            fputs("jsonq: empty or oversized path segment\n", stderr);
+        } else if (!parse_key(&p, s)) {
             return -1;
         }
-        s->kind = SEG_KEY;
-        memcpy(s->key, start, n);
-        s->key[n] = '\0';
-        s->key_len = n;
-        s->index = 0;
         g_nsegs++;
         if (*p == '.')
             p++;
@@ -220,7 +240,7 @@ static int emit_scalar(const char *text, const zjsonp_event *ev, bool raw)
 
 static int emit_raw_range(const char *text, size_t start, size_t end)
 {
-    if (end < start || end > MAX_INPUT)
+    if (end < start || end > JSONQ_MAX_INPUT)
         return -1;
     fwrite(text + start, 1, end - start, stdout);
     fputc('\n', stdout);
@@ -563,7 +583,7 @@ int main(int argc, char **argv)
     size_t len = fread(g_input, 1, sizeof g_input, stdin);
     if (ferror(stdin) || !feof(stdin)) {
         fprintf(stderr, "jsonq: read error or input over %d bytes\n",
-                MAX_INPUT);
+                JSONQ_MAX_INPUT);
         return 2;
     }
     if (!valid_document(g_input, len)) {
