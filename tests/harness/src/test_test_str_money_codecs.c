@@ -558,6 +558,51 @@ int test_test_str_money_codecs(void)
 
     /* ───────────────────────── ConvertBits ───────────────────────── */
 
+    TEST("ConvertBits: enforces byte widths and preserves supported values") {
+        {
+            const unsigned char in[2] = {0xFF, 0xFF};
+            unsigned char out[2] = {0xA5, 0xA5};
+            size_t out_len = 999;
+            ASSERT(!ConvertBits(8, 9, true, in, sizeof(in), out, sizeof(out), &out_len));
+            ASSERT_EQ(out_len, (size_t)999);
+            ASSERT_EQ(out[0], 0xA5);
+            ASSERT_EQ(out[1], 0xA5);
+        }
+        {
+            const int invalid[] = {0, -1, 9, (int)(sizeof(size_t) * 8)};
+            const unsigned char in = 0xFF;
+            for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+                for (int side = 0; side < 2; ++side) {
+                    unsigned char out[2] = {0xA5, 0xA5};
+                    size_t out_len = 999;
+                    const int from = side == 0 ? invalid[i] : 8;
+                    const int to = side == 0 ? 8 : invalid[i];
+                    ASSERT(!ConvertBits(from, to, true, &in, 1, out, sizeof(out), &out_len));
+                    ASSERT_EQ(out_len, (size_t)999);
+                    ASSERT_EQ(out[0], 0xA5);
+                    ASSERT_EQ(out[1], 0xA5);
+                    ASSERT(!ConvertBits(from, to, false, NULL, 0, out, sizeof(out), NULL));
+                }
+            }
+        }
+        {
+            for (int width = 1; width <= 8; ++width) {
+                unsigned char in[8], packed[8], back[8];
+                const unsigned char max = (unsigned char)((1u << width) - 1);
+                memset(in, max, sizeof(in));
+                size_t packed_len = 999, back_len = 999;
+                ASSERT(ConvertBits(width, 8, false, in, sizeof(in), packed, sizeof(packed), &packed_len));
+                ASSERT_EQ(packed_len, (size_t)width);
+                for (size_t i = 0; i < packed_len; ++i)
+                    ASSERT_EQ(packed[i], 0xFF);
+                ASSERT(ConvertBits(8, width, false, packed, packed_len, back, sizeof(back), &back_len));
+                ASSERT_EQ(back_len, sizeof(in));
+                ASSERT(memcmp(back, in, sizeof(in)) == 0);
+            }
+        }
+        PASS();
+    }
+
     TEST("ConvertBits: 8-bit -> 5-bit with padding, then back 5-bit -> 8-bit "
          "without padding roundtrips the original bytes") {
         unsigned char in[5] = {0xFF, 0x00, 0xFF, 0x00, 0xFF};

@@ -481,6 +481,9 @@ bool ConvertBits(int frombits, int tobits, bool pad,
                  const unsigned char *in, size_t in_len,
                  unsigned char *out, size_t out_size, size_t *out_len)
 {
+    /* Both alphabets must fit in the byte-sized input and output elements. */
+    if (frombits < 1 || frombits > 8 || tobits < 1 || tobits > 8)
+        return false;
     size_t acc = 0, bits = 0, j = 0;
     size_t maxv = ((size_t)1 << tobits) - 1;
     size_t max_acc = ((size_t)1 << (frombits + tobits - 1)) - 1;
