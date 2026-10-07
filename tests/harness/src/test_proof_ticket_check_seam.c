@@ -288,10 +288,10 @@ static int seam_case_conflict(void)
     return failures;
 }
 
-static int seam_case_changed(void)
+static int seam_changed_input(size_t field)
 {
     int failures = 0;
-    TEST_CASE("check seam: changed closure executes") {
+    TEST_CASE("check seam: each changed sealed input executes") {
         struct ptf f;
         uint8_t raw[SEAM_RAW][32];
         struct zcl_dev_proof_check_inputs in;
@@ -303,14 +303,72 @@ static int seam_case_changed(void)
         seam_fill(raw, &in);
         ASSERT(seam_align(&f, &in, &key, &policy));
         ASSERT(seam_quorum(&f, &key));
-        raw[0][31] ^= 0x01;
+        if (field < SEAM_RAW) raw[field][31] ^= 0x01;
+        else in.unit = "other-check-group";
+        /* Current receiver policy follows the new obligation. The earlier
+         * signed observations must still not authorize this changed input. */
+        ASSERT(seam_align(&f, &in, &key, &policy));
         ASSERT(seam_dir(dir, sizeof(dir), binary, sizeof(binary), 1));
         ASSERT(seam_run(&in, dir, binary, 1, f.rx, &f.domain, &policy, &run));
         ASSERT(run.out.ok);
         ASSERT_EQ(run.out.test_children, 1u);
         ASSERT_EQ(run.out.reused, 0u);
-        printf("check_seam case=changed children=%u reused=%u ok=%d\n",
-               run.out.test_children, run.out.reused, run.out.ok ? 1 : 0);
+        ASSERT_EQ(run.out.ran, 1u);
+        ASSERT(run.out.log_present);
+        printf("check_seam case=changed input=%zu children=%u reused=%u ok=%d\n",
+               field, run.out.test_children, run.out.reused, run.out.ok ? 1 : 0);
+        ptf_free(&f);
+    } TEST_END
+    return failures;
+}
+
+static int seam_case_changed(void)
+{
+    int failures = 0;
+    for (size_t field = 0; field <= SEAM_RAW; field++)
+        failures += seam_changed_input(field);
+    return failures;
+}
+
+/* These pointers borrow fields of the live fixture, never its root bytes.
+ * Keep the field order independent of production's derivation table. */
+static bool seam_omit_input(struct zcl_dev_proof_check_inputs *in, size_t field)
+{
+    const uint8_t **fields[] = {
+        &in->source_cas, &in->dependency, &in->harness, &in->flags,
+        &in->environment, &in->build_graph, &in->toolchain, &in->policy,
+        &in->changed,
+    };
+    if (field >= sizeof(fields) / sizeof(fields[0])) return false;
+    *fields[field] = NULL;
+    return true;
+}
+
+static int seam_incomplete_input(size_t field)
+{
+    int failures = 0;
+    TEST_CASE("check seam: each missing sealed input executes") {
+        struct ptf f;
+        uint8_t raw[SEAM_RAW][32];
+        struct zcl_dev_proof_check_inputs in;
+        struct vcs_component_proof_key_v1 key;
+        struct vcs_proof_reuse_policy policy;
+        struct seam_meter run;
+        char dir[SEAM_PATH], binary[SEAM_PATH];
+        ASSERT(ptf_init(&f));
+        seam_fill(raw, &in);
+        ASSERT(seam_align(&f, &in, &key, &policy));
+        ASSERT(seam_quorum(&f, &key));
+        ASSERT(seam_omit_input(&in, field));
+        ASSERT(seam_dir(dir, sizeof(dir), binary, sizeof(binary), 1));
+        ASSERT(seam_run(&in, dir, binary, 1, f.rx, &f.domain, &policy, &run));
+        ASSERT(run.out.ok);
+        ASSERT_EQ(run.out.test_children, 1u);
+        ASSERT_EQ(run.out.reused, 0u);
+        ASSERT_EQ(run.out.ran, 1u);
+        ASSERT(run.out.log_present);
+        printf("check_seam case=incomplete input=%zu children=%u reused=%u ok=%d\n",
+               field, run.out.test_children, run.out.reused, run.out.ok ? 1 : 0);
         ptf_free(&f);
     } TEST_END
     return failures;
@@ -319,28 +377,8 @@ static int seam_case_changed(void)
 static int seam_case_incomplete(void)
 {
     int failures = 0;
-    TEST_CASE("check seam: incomplete closure executes") {
-        struct ptf f;
-        uint8_t raw[SEAM_RAW][32];
-        struct zcl_dev_proof_check_inputs in;
-        struct vcs_component_proof_key_v1 key;
-        struct vcs_proof_reuse_policy policy;
-        struct seam_meter run;
-        char dir[SEAM_PATH], binary[SEAM_PATH];
-        ASSERT(ptf_init(&f));
-        seam_fill(raw, &in);
-        ASSERT(seam_align(&f, &in, &key, &policy));
-        ASSERT(seam_quorum(&f, &key));
-        in.source_cas = NULL;
-        ASSERT(seam_dir(dir, sizeof(dir), binary, sizeof(binary), 1));
-        ASSERT(seam_run(&in, dir, binary, 1, f.rx, &f.domain, &policy, &run));
-        ASSERT(run.out.ok);
-        ASSERT_EQ(run.out.test_children, 1u);
-        ASSERT_EQ(run.out.reused, 0u);
-        printf("check_seam case=incomplete children=%u reused=%u ok=%d\n",
-               run.out.test_children, run.out.reused, run.out.ok ? 1 : 0);
-        ptf_free(&f);
-    } TEST_END
+    for (size_t field = 0; field < SEAM_RAW; field++)
+        failures += seam_incomplete_input(field);
     return failures;
 }
 
@@ -733,8 +771,8 @@ static int seam_case_derived(void)
 }
 
 /* A directory this process owns is the same trust domain the proof
- * refuses. /usr is root-owned on this host, so the uid compare is the
- * branch that runs, and no verifier is qualified for it. */
+ * refuses. /usr can share that owner when tests run as root; classify its
+ * actual owner rather than assuming the test process is unprivileged. */
 static int seam_case_same_uid(void)
 {
     int failures = 0;
@@ -744,15 +782,17 @@ static int seam_case_same_uid(void)
         struct stat st;
         const char *own;
         const char *other;
+        const char *expected;
         ASSERT(made != NULL);
         ASSERT(lstat("/usr", &st) == 0);
-        ASSERT(st.st_uid != geteuid());
+        expected = st.st_uid == geteuid() ? "donor_untrusted_same_uid"
+                                          : "donor_verifier_unqualified";
         own = zcl_dev_proof_test_donor_trust_name(dir);
         other = zcl_dev_proof_test_donor_trust_name("/usr");
         ASSERT(own != NULL);
         ASSERT(strcmp(own, "donor_untrusted_same_uid") == 0);
         ASSERT(other != NULL);
-        ASSERT(strcmp(other, "donor_verifier_unqualified") == 0);
+        ASSERT(strcmp(other, expected) == 0);
         printf("check_seam case=same_uid own=%s other=%s\n", own, other);
         test_rm_rf(dir);
     } TEST_END
