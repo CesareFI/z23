@@ -10,10 +10,16 @@ static bool valid_output(size_t width, size_t height)
 static void sample_pixels(const uint8_t *image, const zcl_qr_image *source,
                             uint8_t *pixels, const zcl_qr_image *target, size_t step)
 {
-    for (size_t y = 0; y < target->height; ++y) {
-        for (size_t x = 0; x < target->width; ++x)
-            pixels[y * target->width + x] =
-                image[y * step * source->row_stride + x * step * source->pixel_stride];
+    /* Snapshot validated scalars before byte stores, which otherwise alias
+     * descriptor fields from the compiler's perspective. No view escapes. */
+    const size_t width = target->width, height = target->height;
+    const size_t row_step = step * source->row_stride;
+    const size_t pixel_step = step * source->pixel_stride;
+    for (size_t y = 0; y < height; ++y) {
+        const uint8_t *row = image + y * row_step;
+        uint8_t *output = pixels + y * width;
+        for (size_t x = 0; x < width; ++x)
+            output[x] = row[x * pixel_step];
     }
 }
 

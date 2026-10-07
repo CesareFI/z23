@@ -50,8 +50,8 @@ class WalletKeysTest {
         try {
             val encoded = WalletKeys.recoveryPhrase(entropy).also { phrase = it }
             val decoded = WalletKeys.restoreEntropy(encoded).also { restored = it }
-            assertEquals(32, entropy.size)
-            assertEquals(24, encoded.count { it == ' ' } + 1)
+            assertEquals(16, entropy.size)
+            assertEquals(12, encoded.count { it == ' ' } + 1)
             // Avoid an assertion framework that could print generated secrets.
             check(entropy.contentEquals(decoded)) { "Generated recovery round trip failed" }
         } finally {
@@ -77,6 +77,29 @@ class WalletKeysTest {
             }
         } finally {
             publicFixture.fill(0)
+        }
+    }
+
+    @Test fun everySupportedPhraseLengthRecoversTheSameReceivingKeys() {
+        for (length in listOf(16, 20, 24, 28, 32)) {
+            val entropy = ByteArray(length) { it.toByte() } // Public fixture, not wallet material.
+            val words = WalletKeys.recoveryPhrase(entropy)
+            var restored: ByteArray? = null
+            try {
+                val recovered = WalletKeys.restoreEntropy(words).also { restored = it }
+                assertEquals(length * 3 / 4, words.count { it == ' ' } + 1)
+                assertContentEquals(entropy, recovered)
+                for (network in Network.entries) {
+                    for (index in listOf(0, 1, Int.MAX_VALUE)) {
+                        assertEquals(WalletKeys.receivingAddress(entropy, network, index),
+                            WalletKeys.receivingAddress(recovered, network, index))
+                    }
+                }
+            } finally {
+                entropy.fill(0)
+                words.fill('\u0000')
+                restored?.fill(0)
+            }
         }
     }
 
