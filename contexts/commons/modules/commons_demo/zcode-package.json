@@ -13,12 +13,12 @@
       "semver": "0.1.0-dev.1"
     },
     {
-      "root": "1a57e38206c4f2030dd2b44a218cbc9397ff4da8ca2d17d2b6513027344222bf",
+      "root": "34050264a9e6003ab3f4389e63e950c68f25c678c2a45124debb2229e599c045",
       "name": "zclassic23/codec",
       "semver": "0.1.0-dev.1"
     },
     {
-      "root": "f83fc763841b9771248f431e554c0b46ff8c4a51a2739f8c03f3f6243bb78ccf",
+      "root": "d130457f051503e5c36b2f4ec10dbedc648f08685ab046024ee5884af058ce46",
       "name": "zclassic23/json",
       "semver": "0.1.0-alpha.1"
     }
