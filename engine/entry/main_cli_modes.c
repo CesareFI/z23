@@ -13,6 +13,7 @@
  * main() (engine/entry/main.c) dispatches to these; print_usage() lives in
  * engine/composition/src/args.c (config/args.h).
  */
+#if !defined(ZCL_TESTING) || !defined(ZCL_RPC_COMPOSER_TEST)
 #include "main_cli_modes.h"
 #include "config/boot.h"
 #include "config/boot_cold_start.h"     /* -cold-start staged driver */
@@ -2331,12 +2332,14 @@ enum { CLI_MAX_PARAMS = 128 };
 static int cli_validate_client_argv(int argc, char **argv);
 /* Keep serialization's would-have-written length, so partial parameters
  * never reach the outer body composer or the loopback socket. */
+#endif /* Composer-only inclusion for isolated ownership tests. */
 static bool cli_compose_rpc_params(const char *method, const char **params,
                                    size_t nparams, char *buf, size_t cap)
 {
     struct json_value value;
     if (!rpc_convert_values(method, params, nparams, &value)) {
         fprintf(stderr, "Bad parameters\n");
+        json_free(&value);
         return false;
     }
     size_t needed = json_write(&value, buf, cap);
@@ -2349,6 +2352,7 @@ static bool cli_compose_rpc_params(const char *method, const char **params,
     return true;
 }
 
+#if !defined(ZCL_TESTING) || !defined(ZCL_RPC_COMPOSER_TEST)
 int cli_main(int argc, char **argv)
 {
     /* Strict operator-target-flag validation FIRST — before datadir/home
@@ -4268,3 +4272,4 @@ int mintutxocommitment_mode(int argc, char **argv)
     printf("};\n");
     return 0;
 }
+#endif /* ZCL_RPC_COMPOSER_TEST */

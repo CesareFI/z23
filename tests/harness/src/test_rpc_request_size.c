@@ -13,6 +13,8 @@
 
 #include "test/test_core.h"
 #include "controllers/rpc_client.h"
+#include "rpc/client.h"
+#include "test/test_rpc_priv.h"
 #include "base/safe_alloc.h"
 #include "platform/socket_compat.h"
 #include "platform/clock.h"
@@ -578,4 +580,74 @@ int check_rpc_node_client_sends_max_sized_request(void)
     }
 
     return failures;
+}
+
+/* Include the exact production composers without their socket/entry code. */
+#define ZCL_RPC_COMPOSER_TEST
+#include "../../../engine/entry/cli.c"
+#include "../../../engine/entry/main_cli_modes.c"
+#undef ZCL_RPC_COMPOSER_TEST
+
+static bool rpc_test_composer_refusal(
+    bool (*compose)(const char *, const char **, size_t, char *, size_t))
+{
+    const char *params[] = { "retained", "refused" };
+    char buf[64] = "unchanged";
+    size_t before = json_test_live_blocks();
+    zcl_alloc_fault_fail_nth("json_set_str", 2);
+    bool converted = compose("help", params, 2, buf, sizeof(buf));
+    bool consumed = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    return !converted && consumed && strcmp(buf, "unchanged") == 0 &&
+           json_test_live_blocks() == before;
+}
+
+static bool rpc_test_retained_prefix(void)
+{
+    const char *params[] = { "retained", "refused" };
+    struct json_value result;
+    size_t before = json_test_live_blocks();
+    zcl_alloc_fault_fail_nth("json_set_str", 2);
+    bool converted = rpc_convert_values("help", params, 2, &result);
+    bool consumed = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    const struct json_value *first = json_at(&result, 0);
+    bool ok = !converted && consumed && result.type == JSON_ARR &&
+              json_size(&result) == 1 && first && first->type == JSON_STR;
+    if (ok) ok = strcmp(json_get_str(first), "retained") == 0;
+    json_free(&result);
+    return ok && json_test_live_blocks() == before;
+}
+
+static bool rpc_test_string_conversion(const char *arg, bool fault)
+{
+    const char *params[] = { arg };
+    struct json_value result;
+    if (fault) zcl_alloc_fault_fail_next("json_set_str");
+    bool converted = rpc_convert_values("help", params, 1, &result);
+    bool consumed = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    bool ok = converted == !fault && consumed && result.type == JSON_ARR &&
+              json_size(&result) == (fault ? 0 : 1);
+    if (!fault) {
+        const struct json_value *value = json_at(&result, 0);
+        ok = ok && value && value->type == (arg ? JSON_STR : JSON_NULL);
+        if (ok && arg) ok = strcmp(json_get_str(value), arg) == 0;
+    }
+    json_free(&result); /* The partial array remains caller-owned. */
+    return ok;
+}
+
+int check_rpc_string_conversion_cases(void)
+{
+    printf("rpc_convert_values string allocation refusal and null policy... ");
+    bool ok = rpc_test_string_conversion("getinfo", true);
+    ok = rpc_test_string_conversion("getinfo", false) && ok;
+    ok = rpc_test_string_conversion("", false) && ok;
+    ok = rpc_test_string_conversion(NULL, false) && ok;
+    ok = rpc_test_retained_prefix() && ok;
+    ok = rpc_test_composer_refusal(rpc_compose_params) && ok;
+    ok = rpc_test_composer_refusal(cli_compose_rpc_params) && ok;
+    printf("%s\n", ok ? "OK" : "FAIL");
+    return ok ? 0 : 1;
 }

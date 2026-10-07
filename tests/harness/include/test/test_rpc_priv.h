@@ -60,9 +60,11 @@ int check_rpc_http_tls_inactive(void);
 int check_rpc_tls_start_self_signed(void);
 int check_rpc_tls_without_env_and_port_oracle(void);
 
-/* test_rpc_request_size.c — the loopback client's fixed-buffer request
+/* test_rpc_request_size.c — parameter allocation ownership and the
+ * loopback client's fixed-buffer request
  * guard: oversized params are refused before connecting, and a request
  * comfortably inside the buffer round-trips intact. */
+int check_rpc_string_conversion_cases(void);
 int check_rpc_node_client_rejects_oversized_request(void);
 int check_rpc_node_client_sends_max_sized_request(void);
 

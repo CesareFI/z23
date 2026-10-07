@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(ZCL_TESTING) || !defined(ZCL_RPC_COMPOSER_TEST)
 /* Wall-clock bounds so a dead-but-listening or firewalled RPC port cannot hang
  * the client indefinitely. Both overridable for tests. */
 #define CLI_CONNECT_MS 2000
@@ -109,12 +110,14 @@ static bool rpc_request_fits(size_t body_cap, int blen)
 
 /* json_write reports the required size even when the buffer truncates.
  * Refuse partial parameters before composing or sending a request. */
+#endif /* Composer-only inclusion for isolated ownership tests. */
 static bool rpc_compose_params(const char *method, const char **params,
                                 size_t nparams, char *buf, size_t cap)
 {
     struct json_value value;
     if (!rpc_convert_values(method, params, nparams, &value)) {
         fprintf(stderr, "Failed to parse parameters\n");
+        json_free(&value);
         return false;
     }
     size_t needed = json_write(&value, buf, cap);
@@ -126,6 +129,7 @@ static bool rpc_compose_params(const char *method, const char **params,
     return true;
 }
 
+#if !defined(ZCL_TESTING) || !defined(ZCL_RPC_COMPOSER_TEST)
 /* Send only a complete JSON-RPC body. Caller frees the response. */
 static char *rpc_call(const char *body, size_t body_cap, int composed_len)
 {
@@ -297,3 +301,4 @@ int main(int argc, char **argv)
     free(response);
     return rc;
 }
+#endif /* ZCL_RPC_COMPOSER_TEST */

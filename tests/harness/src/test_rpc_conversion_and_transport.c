@@ -271,6 +271,7 @@ int check_rpc_convert_values(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    failures += check_rpc_string_conversion_cases();
     return failures;
 }
 

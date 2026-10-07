@@ -169,6 +169,26 @@ static bool rpc_msg_send_recipient_is_onchain_string(const char *method,
            str_params[2] != NULL && strcmp(str_params[2], "onchain") == 0;
 }
 
+static bool rpc_push_string_param(struct json_value *result, const char *arg,
+                                  size_t index)
+{
+    struct json_value sv;
+    json_init(&sv);
+#ifdef ZCL_TESTING
+    /* Model strdup failure: its allocator does not consult the fault hook. */
+    if (!zcl_alloc_fault_should_fail("json_set_str"))
+#endif
+        json_set_str(&sv, arg);
+    /* NULL caller arguments retain the existing JSON null policy. */
+    if (arg && sv.type != JSON_STR) {
+        json_free(&sv);
+        LOG_FAIL("rpc", "string parameter allocation failed at index %zu", index);
+    }
+    json_push_back(result, &sv);
+    json_free(&sv);
+    return true;
+}
+
 bool rpc_convert_values(const char *method, const char **str_params,
                         size_t num_params, struct json_value *result)
 {
@@ -184,11 +204,8 @@ bool rpc_convert_values(const char *method, const char **str_params,
         if (convert && i == 0 && msg_send_onchain)
             convert = false;
         if (!convert) {
-            struct json_value sv;
-            json_init(&sv);
-            json_set_str(&sv, str_params[i]);
-            json_push_back(result, &sv);
-            json_free(&sv);
+            if (!rpc_push_string_param(result, str_params[i], i))
+                return false;
         } else {
             struct json_value parsed;
             size_t len = strlen(str_params[i]);
