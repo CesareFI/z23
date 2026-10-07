@@ -324,6 +324,14 @@ static int dep_path_cmp(const void *left, const void *right)
     return strcmp(*(const char *const *)left, *(const char *const *)right);
 }
 
+/* Empty collections have a null items pointer; qsort needs a nonnull base. */
+static void dep_paths_sort(struct dep_paths *paths)
+{
+    if (paths->count > 1)
+        qsort(paths->items, paths->count, sizeof(paths->items[0]),
+              dep_path_cmp);
+}
+
 /* A compile epoch's directory name is exactly 64 lowercase hex digits. Nothing
  * else is accepted, so a pointer can never name a parent, a sibling tree, or an
  * absolute path. */
@@ -965,7 +973,7 @@ static bool deps_scan_exact(const char *root, ci_dep_cb cb, void *user,
         dep_paths_free(&paths);
         LOG_FAIL("codeindex", "collect depfiles failed: %s", strerror(errno));
     }
-    qsort(paths.items, paths.count, sizeof(paths.items[0]), dep_path_cmp);
+    dep_paths_sort(&paths);
     bool ok = true;
     for (size_t i = 0; i < paths.count && ok; i++)
         ok = scan_one_depfile(root, paths.items[i], cb, user, &sha,
@@ -1058,6 +1066,28 @@ bool codeindex_depfile_graph(const char *root, size_t *out_count,
     return true;
 }
 
+static bool dep_paths_stat_hash(const char *root, const struct dep_paths *paths,
+                                struct sha3_256_ctx *sha)
+{
+    for (size_t i = 0; i < paths->count; i++) {
+        char full[CI_PATH_MAX];
+        int fn = snprintf(full, sizeof(full), "%s/%s", root, paths->items[i]);
+        struct platform_positioned_file file;
+        struct platform_positioned_file_snapshot snapshot;
+        platform_positioned_file_init(&file);
+        if (fn <= 0 || (size_t)fn >= sizeof(full) ||
+            !platform_positioned_file_open(&file, full) ||
+            !platform_positioned_file_snapshot(&file, &snapshot)) {
+            platform_positioned_file_close(&file);
+            LOG_FAIL("codeindex", "inspect depfile metadata failed: %s",
+                     strerror(errno ? errno : EIO));
+        }
+        platform_positioned_file_close(&file);
+        dep_stat_root_add(sha, paths->items[i], &snapshot);
+    }
+    return true;
+}
+
 bool ci_deps_stat_root_sha3(const char *root, uint8_t out_root[32])
 {
     if (!root || !out_root)
@@ -1086,24 +1116,8 @@ bool ci_deps_stat_root_sha3(const char *root, uint8_t out_root[32])
         LOG_FAIL("codeindex", "collect depfile metadata failed: %s",
                  strerror(errno));
     }
-    qsort(paths.items, paths.count, sizeof(paths.items[0]), dep_path_cmp);
-    bool ok = true;
-    for (size_t i = 0; i < paths.count; i++) {
-        char full[CI_PATH_MAX];
-        int fn = snprintf(full, sizeof(full), "%s/%s", root, paths.items[i]);
-        struct platform_positioned_file file;
-        struct platform_positioned_file_snapshot snapshot;
-        platform_positioned_file_init(&file);
-        if (fn <= 0 || (size_t)fn >= sizeof(full) ||
-            !platform_positioned_file_open(&file, full) ||
-            !platform_positioned_file_snapshot(&file, &snapshot)) {
-            platform_positioned_file_close(&file);
-            ok = false;
-            break;
-        }
-        platform_positioned_file_close(&file);
-        dep_stat_root_add(&sha, paths.items[i], &snapshot);
-    }
+    dep_paths_sort(&paths);
+    bool ok = dep_paths_stat_hash(root, &paths, &sha);
     dep_paths_free(&paths);
     if (!ok)
         LOG_FAIL("codeindex", "inspect depfile metadata failed: %s",
