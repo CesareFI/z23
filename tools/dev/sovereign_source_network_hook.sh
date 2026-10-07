@@ -48,7 +48,9 @@ ssn_insert_after_include_blank() {
 
 ssn_native() {
     local role="$1" leaf="$2" input="$3"
-    dht_native "${DDS[$role]}" "${RPCS[$role]}" "$leaf" --input="$input"
+    # Native refusals have a useful JSON body but a nonzero exit. Keep that
+    # body for the caller's explicit ssn_require_ok check under set -e.
+    dht_native "${DDS[$role]}" "${RPCS[$role]}" "$leaf" --input="$input" || true
 }
 
 ssn_local() {
@@ -132,12 +134,24 @@ ssn_wait_complete() {
 }
 
 ssn_live_fetch() {
-    local role="$1" root="$2" fetched
-    fetched="$(ssn_native "$role" zcode.package.fetch \
-        "{\"root\":\"$root\",\"namespace\":\"zclassic23.source\",\"maximum_bytes\":268435456}")"
-    ssn_require_ok "role $role live DHT-routed fetch" "$fetched"
-    [ "$(ssn_json "$fetched" data.live 2>/dev/null || true)" = true ] ||
-        ssn_die "role $role fetch did not enter the daemon-owned swarm: $fetched"
+    local role="$1" root="$2" fetched="" deadline retries=0
+    deadline=$(( $(date +%s) + ${SSN_WAIT:-180} ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        fetched="$(ssn_native "$role" zcode.package.fetch \
+            "{\"root\":\"$root\",\"namespace\":\"zclassic23.source\",\"maximum_bytes\":268435456}")"
+        if [ "$(ssn_json "$fetched" ok 2>/dev/null || true)" = true ]; then
+            [ "$(ssn_json "$fetched" data.live 2>/dev/null || true)" = true ] ||
+                ssn_die "role $role fetch did not enter the daemon-owned swarm: $fetched"
+            [ "$retries" -eq 0 ] ||
+                ssn_note "role $role live fetch recovered after $retries retryable refusals"
+            return 0
+        fi
+        [ "$(ssn_json "$fetched" error.retryable 2>/dev/null || true)" = true ] ||
+            ssn_require_ok "role $role live DHT-routed fetch" "$fetched"
+        retries=$((retries + 1))
+        sleep 1
+    done
+    ssn_die "role $role had no live authenticated provider within the bounded fetch wait: $fetched"
 }
 
 ssn_pin() {
@@ -218,18 +232,33 @@ done
 
 # Publisher-only source preparation. Git is allowed here solely to select the
 # accepted local commit; no host or consumer below receives a path into this
-# tree. The archive already contains regular, canonical AGENTS.md and CLAUDE.md
-# files, so their distinct model-neutral contract/adapter bytes are preserved.
+# tree. The standalone ledger app has tracked symlinks and is outside this
+# node build. Keep the exact node-source archive as one inert package file:
+# the ordinary work-project inspector has an 8192-file bound and must still
+# reject symlinks instead of silently flattening or omitting them.
 SSN_SOURCE="$DHT_WORK/sovereign-source-envelope"
-mkdir -p "$SSN_SOURCE/zclassic23" "$SSN_SOURCE/include" \
-    "$SSN_SOURCE/src" "$SSN_SOURCE/tests" "$SSN_SOURCE/vendor/.cache" \
-    "$SSN_SOURCE/zclassic23/vendor/.cache"
-git -C "$REPO_ROOT" archive HEAD | tar -x -C "$SSN_SOURCE/zclassic23"
-[ -f "$SSN_SOURCE/zclassic23/AGENTS.md" ] ||
+SSN_ARCHIVE="$SSN_SOURCE/zclassic23-source.tar.gz"
+SSN_PREFLIGHT="$DHT_WORK/publisher-vendor-preflight"
+mkdir -p "$SSN_SOURCE/include" "$SSN_SOURCE/src" \
+    "$SSN_SOURCE/tests" "$SSN_SOURCE/vendor/.cache" "$SSN_PREFLIGHT"
+git -C "$REPO_ROOT" archive HEAD -- . ':(exclude)apps/zcl-ledger' |
+    gzip -n >"$SSN_ARCHIVE"
+[ -s "$SSN_ARCHIVE" ] || ssn_die "publisher node-source archive is empty"
+if tar -tvzf "$SSN_ARCHIVE" | awk '
+    substr($1, 1, 1) != "-" && substr($1, 1, 1) != "d" { bad = 1 }
+    END { exit bad }
+'; then
+    :
+else
+    ssn_die "publisher node-source archive contains a non-regular entry"
+fi
+SSN_ARCHIVE_SHA256="$(sha256sum "$SSN_ARCHIVE" | awk '{print $1}')"
+tar -xzf "$SSN_ARCHIVE" -C "$SSN_PREFLIGHT"
+[ -f "$SSN_PREFLIGHT/AGENTS.md" ] ||
     ssn_die "publisher archive is missing canonical AGENTS.md"
-[ -f "$SSN_SOURCE/zclassic23/CLAUDE.md" ] ||
+[ -f "$SSN_PREFLIGHT/CLAUDE.md" ] ||
     ssn_die "publisher archive is missing the Claude adapter"
-cp "$SSN_SOURCE/zclassic23/LICENSE" "$SSN_SOURCE/LICENSE"
+cp "$SSN_PREFLIGHT/LICENSE" "$SSN_SOURCE/LICENSE"
 for archive in \
     leveldb-1.23.tar.gz \
     libevent-2.1.12.tar.gz \
@@ -240,21 +269,22 @@ for archive in \
         ssn_die "publisher is missing pinned offline input $archive"
     cp "$REPO_ROOT/vendor/.cache/$archive" \
         "$SSN_SOURCE/vendor/.cache/$archive"
+    mkdir -p "$SSN_PREFLIGHT/vendor/.cache"
     cp "$REPO_ROOT/vendor/.cache/$archive" \
-        "$SSN_SOURCE/zclassic23/vendor/.cache/$archive"
+        "$SSN_PREFLIGHT/vendor/.cache/$archive"
 done
 [ "$(find "$SSN_SOURCE/vendor/.cache" -maxdepth 1 -type f | wc -l)" -eq 5 ] ||
     ssn_die "publisher does not have the five pinned offline inputs"
 
 # Prove the five carried archives can prepare the vendor tree offline before
 # asking a human to accept anything. This is preflight evidence, not source:
-# generated libraries, amalgamations, headers, and the duplicate nested cache
-# must not enter the immutable task that also carries those exact archives.
+# generated libraries, amalgamations, and headers must not enter the immutable
+# task that also carries those exact archives.
 SSN_NO_GIT_BIN="$DHT_WORK/no-git-bin"
 mkdir -p "$SSN_NO_GIT_BIN"
 ln -sf /bin/false "$SSN_NO_GIT_BIN/git"
 PRE_VENDOR_CAPTURE="$(ssn_local zcode.workspace.source.capture \
-    --input="{\"workspace\":\"$SSN_SOURCE/zclassic23\"}")"
+    --input="{\"workspace\":\"$SSN_PREFLIGHT\"}")"
 ssn_require_ok "publisher pre-vendor source capture" "$PRE_VENDOR_CAPTURE"
 PRE_VENDOR_ROOT="$(ssn_json "$PRE_VENDOR_CAPTURE" data.source_root)"
 [ "${#PRE_VENDOR_ROOT}" -eq 64 ] ||
@@ -262,7 +292,7 @@ PRE_VENDOR_ROOT="$(ssn_json "$PRE_VENDOR_CAPTURE" data.source_root)"
 # Run the pinned vendor builder directly. `make vendor` reparses after writing
 # archives and would compare the changed preflight tree to PRE_VENDOR_ROOT;
 # that root describes the inputs before the generated archives exist.
-if ! (cd "$SSN_SOURCE/zclassic23" && \
+if ! (cd "$SSN_PREFLIGHT" && \
     PATH="$SSN_NO_GIT_BIN:$PATH" ZCL_VENDOR_OFFLINE=1 JOBS="$(nproc)" \
     tools/scripts/build_vendor.sh) \
     >"$DHT_WORK/publisher-vendor-build.log" 2>&1; then
@@ -270,19 +300,11 @@ if ! (cd "$SSN_SOURCE/zclassic23" && \
 fi
 # The pre-vendor capture's CAS is bootstrap scratch, not accepted source. Move
 # it outside the inspected workspace before `zcode work start`; otherwise its
-# ~5,000 immutable objects are mistaken for project files and exhaust the
-# ordinary package-inspection file bound. The post-vendor work capture below
-# creates the authoritative CAS in its normal external task datadir.
-if [ -d "$SSN_SOURCE/zclassic23/.zvcs" ]; then
-    mv "$SSN_SOURCE/zclassic23/.zvcs" "$DHT_WORK/pre-vendor-zvcs"
+# ~5,000 immutable objects must not be mistaken for source during the later
+# build capture. The work task carries only the clean archive and input cache.
+if [ -d "$SSN_PREFLIGHT/.zvcs" ]; then
+    mv "$SSN_PREFLIGHT/.zvcs" "$DHT_WORK/pre-vendor-zvcs"
 fi
-mv "$SSN_SOURCE/zclassic23" "$DHT_WORK/publisher-vendor-preflight"
-mkdir -p "$SSN_SOURCE/zclassic23"
-git -C "$REPO_ROOT" archive HEAD | tar -x -C "$SSN_SOURCE/zclassic23"
-[ -f "$SSN_SOURCE/zclassic23/AGENTS.md" ] ||
-    ssn_die "clean publisher archive is missing canonical AGENTS.md"
-[ -f "$SSN_SOURCE/zclassic23/CLAUDE.md" ] ||
-    ssn_die "clean publisher archive is missing the Claude adapter"
 
 printf '%s\n' '{"schema":1,"name":"zclassic23/sovereign-source-envelope","semver":"0.1.0-dev.1","language":"c23","license":"Apache-2.0","include_dir":"include","source_dir":"src","dependencies":[]}' \
     >"$SSN_SOURCE/zcode-package.json"
@@ -312,7 +334,7 @@ TASK_ROOT="$(ssn_json "$START" data.expert.task_root)"
 # the same tree from carrier bytes.
 PUBLISHER_BUILD_SOURCE="$DHT_WORK/publisher-reference-source"
 mkdir -p "$PUBLISHER_BUILD_SOURCE"
-git -C "$REPO_ROOT" archive HEAD | tar -x -C "$PUBLISHER_BUILD_SOURCE"
+tar -xzf "$SSN_ARCHIVE" -C "$PUBLISHER_BUILD_SOURCE"
 mv "$PUBLISHER_BUILD_SOURCE/vendor" "$DHT_WORK/publisher-clean-vendor"
 cp -a "$DHT_WORK/publisher-vendor-preflight/vendor" \
     "$PUBLISHER_BUILD_SOURCE/vendor"
@@ -344,7 +366,7 @@ RUN="$(ssn_local zcode.work.run --input="{\"workspace\":\"$SSN_SOURCE\",\"work\"
 ssn_require_ok "candidate proof" "$RUN"
 [ "$(ssn_json "$RUN" data.state)" = EVIDENCE_READY ] ||
     ssn_die "candidate did not reach EVIDENCE_READY: $RUN"
-REVIEW="$(ssn_local zcode.work.review --input="{\"workspace\":\"$SSN_SOURCE\",\"work\":\"latest\",\"adapter\":\"manual\",\"verdict\":\"approve\",\"findings\":\"The exact nested Zclassic23 source and root license are bound; only the inert envelope marker changed.\"}")"
+REVIEW="$(ssn_local zcode.work.review --input="{\"workspace\":\"$SSN_SOURCE\",\"work\":\"latest\",\"adapter\":\"manual\",\"verdict\":\"approve\",\"findings\":\"The exact node-source archive and root license are bound; only the inert envelope marker changed.\"}")"
 ssn_require_ok "independent review" "$REVIEW"
 ACCEPT="$(ssn_local zcode.work.accept --input="{\"workspace\":\"$SSN_SOURCE\",\"work\":\"latest\",\"details\":true}")"
 ssn_require_ok "explicit human acceptance" "$ACCEPT"
@@ -352,6 +374,12 @@ ssn_require_ok "explicit human acceptance" "$ACCEPT"
     ssn_die "human acceptance did not produce PROVEN: $ACCEPT"
 SOURCE_ROOT="$(ssn_json "$ACCEPT" data.expert.source_root)"
 ACCEPTED_WORK_ROOT="$(ssn_json "$ACCEPT" data.expert.lane_receipt_root)"
+[ "$(ssn_json "$ACCEPT" 'next[0].command' 2>/dev/null || true)" = \
+    zcode.work.publish ] ||
+    ssn_die "accepted work did not return its publication continuation"
+WORK_DATADIR="$(ssn_json "$ACCEPT" 'next[0].input.datadir' 2>/dev/null || true)"
+[ -d "$WORK_DATADIR" ] ||
+    ssn_die "accepted work did not name an existing publication ledger"
 ssn_insert_after_include_blank \
     "$SSN_SOURCE/src/source_envelope.c" \
     '#include "source_envelope.h"' \
@@ -365,8 +393,7 @@ SIGNER="$REPO_ROOT/build/bin/zclassic23-package-sign"
 [ -x "$SIGNER" ] || ssn_die "offline zclassic23-package-sign is not built"
 PUBLISH_KEY="$DHT_WORK/source-publisher.key"
 PUBLISHER_PUBKEY="$($SIGNER --generate "$PUBLISH_KEY")"
-WORK_DATADIR="/tmp/zclassic23-zcode-workspaces/$(id -u)/$TASK_ROOT/zbuild"
-PLAN="$(ssn_local zcode.package.dev.publish.plan --input="{\"workspace\":\"$SSN_SOURCE\",\"datadir\":\"${DDS[$SSN_PUBLISHER]}\",\"acceptance_datadir\":\"$WORK_DATADIR\",\"source_root\":\"$SOURCE_ROOT\",\"publisher_pubkey\":\"$PUBLISHER_PUBKEY\",\"name\":\"zclassic23/sovereign-source-envelope\",\"semver\":\"0.1.0-dev.1\",\"license\":\"Apache-2.0\",\"publisher_sequence\":1}")"
+PLAN="$(ssn_native "$SSN_PUBLISHER" zcode.package.dev.publish.plan "{\"workspace\":\"$SSN_SOURCE\",\"datadir\":\"${DDS[$SSN_PUBLISHER]}\",\"acceptance_datadir\":\"$WORK_DATADIR\",\"source_root\":\"$SOURCE_ROOT\",\"publisher_pubkey\":\"$PUBLISHER_PUBKEY\",\"name\":\"zclassic23/sovereign-source-envelope\",\"semver\":\"0.1.0-dev.1\",\"license\":\"Apache-2.0\",\"publisher_sequence\":1}")"
 ssn_require_ok "source publication plan" "$PLAN"
 PACKAGE_ROOT="$(ssn_json "$PLAN" data.package_root)"
 DIGEST="$(ssn_json "$PLAN" data.release_signing_digest)"
@@ -457,6 +484,18 @@ ssn_require_ok "Git-free accepted source checkout" "$CHECKOUT"
 [ ! -e "$CONSUMER_DEST/zclassic23/.git" ] ||
     ssn_die "consumer checkout materialized forbidden Git metadata"
 
+# The accepted package commits to the compressed archive as a regular file.
+# Match the publisher's exact digest before extracting any carried source.
+[ "$(sha256sum "$CONSUMER_DEST/zclassic23-source.tar.gz" | awk '{print $1}')" = \
+    "$SSN_ARCHIVE_SHA256" ] ||
+    ssn_die "consumer node-source archive differs from accepted publisher bytes"
+mkdir -p "$CONSUMER_DEST/zclassic23"
+tar -xzf "$CONSUMER_DEST/zclassic23-source.tar.gz" \
+    -C "$CONSUMER_DEST/zclassic23"
+[ -f "$CONSUMER_DEST/zclassic23/AGENTS.md" ] &&
+[ -f "$CONSUMER_DEST/zclassic23/CLAUDE.md" ] ||
+    ssn_die "consumer node-source archive lacks its agent contracts"
+
 # The carrier keeps offline inputs beside the accepted envelope; copy only
 # those verified package-derived bytes into the nested build tree's expected
 # cache path. A fake `git` fails closed on any accidental invocation, while
@@ -514,6 +553,7 @@ printf '%s\n' \
     "package_root=$PACKAGE_ROOT" \
     "release_root=$RELEASE_ROOT" \
     "build_source_root=$BUILD_SOURCE_ROOT" \
+    "node_archive_sha256=$SSN_ARCHIVE_SHA256" \
     "binary_sha256=$CONSUMER_BINARY_SHA256" \
     "github_contacted=false" \
     "publisher=$SSN_PUBLISHER" \
