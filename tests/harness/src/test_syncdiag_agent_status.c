@@ -9,9 +9,11 @@ static int test_operator_snapshot_unavailable_capture(void)
 {
     int failures = 0;
 
-    printf("api: operator snapshot classifier handles unavailable capture... ");
+    printf("api: operator snapshot helpers handle unavailable capture... ");
+    bool bindings_known = operator_snapshot_chain_bindings_known(NULL);
     struct operator_verdict verdict = operator_snapshot_classify(NULL);
-    bool ok = !verdict.healthy && !verdict.complete && !verdict.serving &&
+    bool ok = !bindings_known && !verdict.healthy && !verdict.complete &&
+              !verdict.serving &&
               strcmp(verdict.status, "unknown") == 0 &&
               strcmp(verdict.primary, "unknown") == 0 &&
               strcmp(verdict.next_command, "z23 ops snapshot") == 0;

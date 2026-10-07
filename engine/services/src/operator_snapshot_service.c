@@ -113,7 +113,8 @@ static bool operator_chain_values_known(const struct operator_capture *capture)
 bool operator_snapshot_chain_bindings_known(
     const struct operator_capture *capture)
 {
-    return chain_frontier_snapshot_bindings_known(&capture->chain);
+    return capture &&
+        chain_frontier_snapshot_bindings_known(&capture->chain);
 }
 
 static bool operator_frontier_order_ok(const struct operator_capture *capture)
