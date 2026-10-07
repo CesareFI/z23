@@ -7,6 +7,7 @@
  * each TU from catalog_cost.tsv, then compile_cost.tsv; writes Markdown to
  * stdout. */
 #include "base/safe_alloc.h"
+#include "sem_replay_record.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -43,29 +44,33 @@ static int cmp_price(const void *a, const void *b)
 static bool price_push(struct prices *p, const char *tu, double cpu)
 {
     if (p->n == p->cap) {
+        if (p->cap > SIZE_MAX / 2 ||
+            (p->cap ? p->cap * 2 : 4096) > SIZE_MAX / sizeof(*p->v)) {
+            fprintf(stderr, "sem-replay: price table capacity overflow\n");
+            return false;
+        }
         size_t cap = p->cap ? p->cap * 2 : 4096;
         struct price_row *v = zcl_realloc(p->v, cap * sizeof(*v), "sem_replay_price_row");
-        if (v == NULL)
+        if (v == NULL) {
+            fprintf(stderr, "sem-replay: out of memory in the price table\n");
             return false;
+        }
         p->v = v;
         p->cap = cap;
     }
-    p->v[p->n] = (struct price_row){.tu = zcl_strdup(tu, "sem_replay_price_tu"), .cpu = cpu, .n = 1};
-    return p->v[p->n++].tu != NULL;
+    char *dup = zcl_strdup(tu, "sem_replay_price_tu");
+    if (dup == NULL) {
+        fprintf(stderr, "sem-replay: out of memory in the price table\n");
+        return false;
+    }
+    p->v[p->n] = (struct price_row){.tu = dup, .cpu = cpu, .n = 1};
+    p->n++;
+    return true;
 }
 
-/* Rows "TU<TAB>cpu..." averaged per TU, sorted for lookup. */
-static bool prices_load(struct prices *p, const char *path)
+static void prices_average(struct prices *p)
 {
-    FILE *fp = fopen(path, "r");
-    char line[SR_PATH + 128], tu[SR_PATH];
-    double cpu = 0, sum = 0;
-    bool ok = true;
-    while (fp != NULL && ok && fgets(line, sizeof(line), fp) != NULL)
-        if (sscanf(line, "%4095s\t%lf", tu, &cpu) == 2)
-            ok = price_push(p, tu, cpu);
-    if (fp)
-        fclose(fp);
+    double sum = 0;
     if (p->n > 1)
         qsort(p->v, p->n, sizeof(*p->v), cmp_price);
     size_t w = 0;
@@ -83,6 +88,25 @@ static bool prices_load(struct prices *p, const char *path)
     p->n = w;
     for (size_t i = 0; i < p->n; i++)
         p->v[i].cpu /= (double)p->v[i].n;
+}
+
+/* Rows "TU<TAB>cpu..." averaged per TU, sorted for lookup. */
+static bool prices_load(struct prices *p, const char *path)
+{
+    FILE *fp = fopen(path, "r");
+    char line[SR_PATH + 128], *tu;
+    double cpu = 0;
+    bool ok = true;
+    int record = 0;
+    while (fp != NULL && ok && (record = sr_record(fp, line, sizeof line)) > 0)
+        ok = sr_record_cost(line, &tu, &cpu) && price_push(p, tu, cpu);
+    if (record < 0)
+        ok = false;
+    if (fp != NULL && fclose(fp) != 0)
+        ok = false;
+    if (!ok)
+        fprintf(stderr, "sem-replay: malformed cost record %s\n", path);
+    prices_average(p);
     return ok;
 }
 

@@ -19,6 +19,7 @@
 #include "sem_replay_step.h"
 
 #include "base/safe_alloc.h"
+#include "sem_replay_record.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -432,6 +433,11 @@ static int cmp_cost(const void *a, const void *b)
 static bool cost_push(struct cost_table *t, const char *tu, double cpu)
 {
     if (t->n == t->cap) {
+        if (t->cap > SIZE_MAX / 2 ||
+            (t->cap ? t->cap * 2 : 1024) > SIZE_MAX / sizeof(*t->v)) {
+            fprintf(stderr, "sem-replay: cost table capacity overflow\n");
+            return false;
+        }
         size_t cap = t->cap ? t->cap * 2 : 1024;
         struct cost_row *v = zcl_realloc(t->v, cap * sizeof(*v), "sem_replay_cost_row");
         if (v == NULL) {
@@ -441,22 +447,32 @@ static bool cost_push(struct cost_table *t, const char *tu, double cpu)
         t->v = v;
         t->cap = cap;
     }
-    t->v[t->n].tu = zcl_strdup(tu, "sem_replay_cost_tu");
+    char *dup = zcl_strdup(tu, "sem_replay_cost_tu");
+    if (dup == NULL) {
+        fprintf(stderr, "sem-replay: out of memory in the cost table\n");
+        return false;
+    }
+    t->v[t->n].tu = dup;
     t->v[t->n].cpu = cpu;
-    return t->v[t->n++].tu != NULL;
+    t->n++;
+    return true;
 }
 
 static bool cost_load(struct cost_table *t, const char *path)
 {
     FILE *fp = fopen(path, "r");
-    char line[SR_PATH + 128], tu[SR_PATH];
+    char line[SR_PATH + 128], *tu;
     double cpu = 0;
     bool ok = true;
-    while (fp != NULL && ok && fgets(line, sizeof(line), fp) != NULL)
-        if (sscanf(line, "%4095s\t%lf", tu, &cpu) == 2)
-            ok = cost_push(t, tu, cpu);
-    if (fp != NULL)
-        fclose(fp);
+    int record = 0;
+    while (fp != NULL && ok && (record = sr_record(fp, line, sizeof line)) > 0)
+        ok = sr_record_cost(line, &tu, &cpu) && cost_push(t, tu, cpu);
+    if (record < 0)
+        ok = false;
+    if (fp != NULL && fclose(fp) != 0)
+        ok = false;
+    if (!ok)
+        fprintf(stderr, "sem-replay: malformed cost record %s\n", path);
     if (t->n > 1)
         qsort(t->v, t->n, sizeof(*t->v), cmp_cost);
     return ok;

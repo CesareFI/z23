@@ -7,6 +7,7 @@
 
 #include "base/hex.h"
 #include "base/safe_alloc.h"
+#include "sem_replay_record.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -228,21 +229,40 @@ static bool unhex(const char *h, uint8_t out[32])
     return zcl_hex_decode(h, out, 32);
 }
 
+static bool snap_numbers(char **f, struct sr_obj *o)
+{
+    char *end;
+    errno = 0;
+    if (f[1][0] == '-')
+        return false;
+    o->ino = strtoull(f[1], &end, 10);
+    if (end == f[1] || *end || errno == ERANGE)
+        return false;
+    errno = 0;
+    o->mtime_ns = strtoll(f[2], &end, 10);
+    if (end == f[2] || *end || errno == ERANGE)
+        return false;
+    errno = 0;
+    o->size = strtoll(f[3], &end, 10);
+    return end != f[3] && *end == '\0' && errno != ERANGE;
+}
+
 static bool snap_line(struct sr_snap *s, char *line)
 {
-    char tu[SR_PATH], hex[65];
-    unsigned long long ino = 0;
-    long long mt = 0, sz = 0;
-    if (strncmp(line, "epoch\t", 6) == 0) {
-        snprintf(s->epoch, sizeof(s->epoch), "%s", line + 6);
-        s->epoch[strcspn(s->epoch, "\n")] = '\0';
+    char *f[5];
+    size_t n = sr_record_fields(line, f, 5);
+    if (n == 2 && strcmp(f[0], "epoch") == 0) {
+        if (strlen(f[1]) >= sizeof(s->epoch))
+            return false;
+        memcpy(s->epoch, f[1], strlen(f[1]) + 1);
         return true;
     }
-    if (sscanf(line, "%4095s\t%llu\t%lld\t%lld\t%64s", tu, &ino, &mt, &sz, hex) != 5)
+    struct sr_obj o = {0};
+    if (n != 5 || strlen(f[0]) >= SR_PATH ||
+        !snap_numbers(f, &o) || !unhex(f[4], o.hash))
         return false;
-    struct sr_obj o = {.ino = ino, .mtime_ns = mt, .size = sz};
-    o.tu = zcl_strdup(tu, "sem_replay_snap_tu");
-    if (o.tu == NULL || !unhex(hex, o.hash) || !snap_push(s, &o)) {
+    o.tu = zcl_strdup(f[0], "sem_replay_snap_tu");
+    if (o.tu == NULL || !snap_push(s, &o)) {
         free(o.tu);
         return false;
     }
@@ -257,12 +277,18 @@ bool sr_snap_load(struct sr_snap *s, const char *path)
         return false;
     char line[SR_PATH + 256];
     bool ok = true;
-    while (ok && fgets(line, sizeof(line), fp) != NULL)
+    int record = 0;
+    while (ok && (record = sr_record(fp, line, sizeof line)) > 0)
         ok = snap_line(s, line);
-    fclose(fp);
+    if (record < 0)
+        ok = false;
+    if (fclose(fp) != 0)
+        ok = false;
     if (!ok)
         fprintf(stderr, "sem-replay: malformed snapshot %s\n", path);
-    qsort(s->v, s->n, sizeof(*s->v), cmp_obj);
+    /* Empty snapshots have no allocation to pass as qsort's base. */
+    if (s->n > 1)
+        qsort(s->v, s->n, sizeof(*s->v), cmp_obj);
     return ok;
 }
 

@@ -425,9 +425,315 @@ static bool srt_planner(const struct srt_fx *fx, const char *name, const char *f
     return ok && srt_write(fx->tools, rel, facts);
 }
 
+/* Compile the production translation unit into a bounded probe. Dead-code
+ * elimination keeps unrelated replay drivers out; no sanitizer is required.
+ * The probes replace allocation fault selection, string duplication and the
+ * sort observer. Checked strdup does not consult the allocation fault hook. */
+static const char k_replay_probe_head[] =
+    "#define _GNU_SOURCE\n"
+    "#include <stdlib.h>\n"
+    "#include <stdbool.h>\n"
+    "#include <stddef.h>\n"
+    "#include <string.h>\n"
+    "#include \"base/safe_alloc.h\"\n"
+    "static unsigned alloc_calls, dup_calls;\n"
+    "static char *probe_strdup(const char *s, const char *label)\n"
+    "{ (void)s; (void)label; dup_calls++; return NULL; }\n"
+    "#undef zcl_strdup\n"
+    "#define zcl_strdup(s, label) probe_strdup(s, label)\n"
+    "static unsigned small_sorts;\n"
+    "static void probe_sort(void *p, size_t n, size_t z,\n"
+    "                       int (*cmp)(const void *, const void *))\n"
+    "{ if (n < 2) small_sorts++; else qsort(p, n, z, cmp); }\n"
+    "#define qsort probe_sort\n";
+
+static const char k_replay_probe_fault[] =
+    "bool zcl_alloc_fault_should_fail(const char *label)\n"
+    "{ (void)label; alloc_calls++; return true; }\n";
+
+static const char k_replay_probe_snap[] =
+    "int main(int argc, char **argv)\n"
+    "{\n"
+    "    struct sr_snap s;\n"
+    "    if (argc != 2 || !sr_snap_load(&s, argv[1])) return 1;\n"
+    "    if (s.n != 0 || s.v != NULL || small_sorts != 0) return 2;\n"
+    "    return strcmp(s.epoch, \"" SRT_EPOCH "\");\n"
+    "}\n";
+
+static const char k_replay_probe_cost[] =
+    "static int probe_cost_overflow(size_t cap)\n"
+    "{\n"
+    "    struct cost_table t = {.n = cap, .cap = cap};\n"
+    "    alloc_calls = dup_calls = 0;\n"
+    "    if (cost_push(&t, \"overflow.c\", 3)) return 1;\n"
+    "    if (t.n != cap || t.cap != cap || t.v != NULL) return 2;\n"
+    "    return alloc_calls != 0 || dup_calls != 0;\n"
+    "}\n"
+    "static int probe_cost_retention(void)\n"
+    "{\n"
+    "    struct cost_row rows[2] = {{.tu = \"kept.c\", .cpu = 7},\n"
+    "                               {.tu = \"sentinel.c\", .cpu = 9}};\n"
+    "    struct cost_table t = {.v = rows, .n = 1, .cap = 2};\n"
+    "    if (cost_push(&t, \"failed.c\", 3)) return 1;\n"
+    "    if (t.n != 1 || t.cap != 2 || t.v != rows) return 2;\n"
+    "    if (strcmp(rows[0].tu, \"kept.c\") || rows[0].cpu != 7) return 3;\n"
+    "    if (strcmp(rows[1].tu, \"sentinel.c\") || rows[1].cpu != 9) return 4;\n"
+    "    if (dup_calls != 1 || alloc_calls != 0) return 5;\n"
+    "    return 0;\n"
+    "}\n"
+    "int main(void)\n"
+    "{\n"
+    "    int rc = probe_cost_retention();\n"
+    "    if (rc) return rc;\n"
+    "    if (probe_cost_overflow(SIZE_MAX)) return 6;\n"
+    "    if (probe_cost_overflow(SIZE_MAX / sizeof(struct cost_row))) return 7;\n"
+    "    return 0;\n"
+    "}\n";
+
+static const char k_replay_probe_price[] =
+    "static int probe_price_overflow(size_t cap)\n"
+    "{\n"
+    "    struct prices p = {.n = cap, .cap = cap};\n"
+    "    alloc_calls = dup_calls = 0;\n"
+    "    if (price_push(&p, \"overflow.c\", 3)) return 1;\n"
+    "    if (p.n != cap || p.cap != cap || p.v != NULL) return 2;\n"
+    "    return alloc_calls != 0 || dup_calls != 0;\n"
+    "}\n"
+    "static int probe_price_retention(void)\n"
+    "{\n"
+    "    struct price_row rows[2] = {{.tu = \"kept.c\", .cpu = 7, .n = 1},\n"
+    "                                {.tu = \"sentinel.c\", .cpu = 9, .n = 2}};\n"
+    "    struct prices p = {.v = rows, .n = 1, .cap = 2};\n"
+    "    if (price_push(&p, \"failed.c\", 3)) return 1;\n"
+    "    if (p.n != 1 || p.cap != 2 || p.v != rows) return 2;\n"
+    "    if (strcmp(rows[0].tu, \"kept.c\") || rows[0].cpu != 7 || rows[0].n != 1) return 3;\n"
+    "    if (strcmp(rows[1].tu, \"sentinel.c\") || rows[1].cpu != 9 || rows[1].n != 2) return 4;\n"
+    "    if (dup_calls != 1 || alloc_calls != 0) return 5;\n"
+    "    return 0;\n"
+    "}\n"
+    "int main(void)\n"
+    "{\n"
+    "    int rc = probe_price_retention();\n"
+    "    if (rc) return rc;\n"
+    "    if (probe_price_overflow(SIZE_MAX)) return 6;\n"
+    "    if (probe_price_overflow(SIZE_MAX / sizeof(struct price_row))) return 7;\n"
+    "    return 0;\n"
+    "}\n";
+
+static bool srt_execute_row_probe(const struct srt_fx *fx, const char *name,
+                                  const char *text)
+{
+    char src[PATH_MAX + 32], bin[PATH_MAX + 32];
+    char snap[PATH_MAX + 32], rel[64];
+    if (snprintf(rel, sizeof rel, "%s.c", name) >= (int)sizeof rel ||
+        !srt_write(fx->tools, rel, text) ||
+        snprintf(src, sizeof src, "%s/%s.c", fx->tools, name) >= (int)sizeof src ||
+        snprintf(bin, sizeof bin, "%s/%s", fx->tools, name) >= (int)sizeof bin ||
+        snprintf(snap, sizeof snap, "%s/epoch.snap", fx->tools) >= (int)sizeof snap)
+        return false;
+#ifdef __APPLE__
+    const char *strip = "-Wl,-dead_strip";
+#else
+    const char *strip = "-Wl,--gc-sections";
+#endif
+    const char *cc[] = {"cc", "-std=c23", "-O1", "-ffunction-sections",
+                        "-fdata-sections", strip, "-I.",
+                        "-Iplatform/modules/base/include", "-o", bin, src, NULL};
+    if (srt_run(cc) != 0) {
+        printf("(replay probe compile %s: %s) ", name, g_srt_out);
+        return false;
+    }
+    const char *run[] = {bin, snap, NULL};
+    int rc = srt_run(run);
+    if (rc != 0)
+        printf("(replay probe %s exited %d: %s) ", name, rc, g_srt_out);
+    return rc == 0;
+}
+
+static bool srt_compile_row_probe(const struct srt_fx *fx, const char *name,
+                                  const char *source, const char *body)
+{
+    char text[8192];
+    int len = snprintf(text, sizeof text, "%s#include \"tools/dev/%s\"\n%s%s",
+                       k_replay_probe_head, source, k_replay_probe_fault, body);
+    if (len < 0 || len >= (int)sizeof text)
+        return false;
+    return srt_execute_row_probe(fx, name, text);
+}
+
+/* Include each production reader; fixed buffers replace allocation only.
+ * The fixture paths belong to the test_core.h-created replay directory. */
+static const char k_replay_reader_head[] =
+    "#define _GNU_SOURCE\n"
+    "#include <stdio.h>\n"
+    "#include <stdlib.h>\n"
+    "#include <stdbool.h>\n"
+    "#include <string.h>\n"
+    "#include \"base/safe_alloc.h\"\n"
+    "static bool read_fail, close_fail;\n"
+    "static unsigned read_count;\n"
+    "static int probe_getc(FILE *fp)\n"
+    "{ if (read_fail && read_count++ == 6) return EOF; return fgetc(fp); }\n"
+    "static int probe_error(FILE *fp)\n"
+    "{ return read_fail || ferror(fp); }\n"
+    "static int probe_close(FILE *fp)\n"
+    "{ int rc = fclose(fp); return close_fail ? EOF : rc; }\n"
+    "static union { max_align_t align; unsigned char bytes[512 * 1024]; } rows;\n"
+    "static char tu_copy[4096];\n"
+    "static void *probe_rows(void *p, size_t n, const char *label)\n"
+    "{ (void)p; (void)label; return n <= sizeof rows.bytes ? rows.bytes : NULL; }\n"
+    "static char *probe_tu(const char *s, const char *label)\n"
+    "{ (void)label; size_t n = strlen(s); if (n >= sizeof tu_copy) return NULL;\n"
+    "  memcpy(tu_copy, s, n + 1); return tu_copy; }\n"
+    "#undef zcl_realloc\n"
+    "#undef zcl_strdup\n"
+    "#define zcl_realloc(p, n, label) probe_rows(p, n, label)\n"
+    "#define zcl_strdup(s, label) probe_tu(s, label)\n"
+    "#define fgetc probe_getc\n"
+    "#define ferror probe_error\n"
+    "#define fclose probe_close\n";
+
+static const char k_replay_reader_body[] =
+    "static int fixture(const char *path, const char *bytes, size_t n, bool want)\n"
+    "{\n"
+    "    FILE *fp = fopen(path, \"wb\");\n"
+    "    if (!fp) return 1;\n"
+    "    bool written = fwrite(bytes, 1, n, fp) == n;\n"
+    "    int closed = probe_close(fp);\n"
+    "    if (!written || (!close_fail && closed != 0)) return 2;\n"
+    "    read_count = 0;\n"
+    "    bool got = probe_load(path);\n"
+    "    if (got != want) {\n"
+    "        fprintf(stderr, \"reader accepted=%d expected=%d length=%zu\\n\", got, want, n);\n"
+    "        return 3;\n"
+    "    }\n"
+    "    return 0;\n"
+    "}\n"
+    "static int malformed(const char *path)\n"
+    "{\n"
+    "    static const char nul[] = VALID_PREFIX \"\\0hidden\\n\";\n"
+    "    static const char tail[] = VALID_PREFIX \"\\textra\\n\";\n"
+    "    static const char junk[] = INVALID_RECORD;\n"
+    "    static const char empty[] = \"\\t3\\n\";\n"
+    "    char long_line[4608];\n"
+    "    memset(long_line, 'x', sizeof long_line);\n"
+    "    memcpy(long_line, VALID_PREFIX, sizeof(VALID_PREFIX) - 1);\n"
+    "    long_line[sizeof long_line - 1] = '\\n';\n"
+    "    if (fixture(path, nul, sizeof nul - 1, false)) return 1;\n"
+    "    if (fixture(path, tail, sizeof tail - 1, false)) return 2;\n"
+    "    if (fixture(path, junk, sizeof junk - 1, false)) return 3;\n"
+    "    if (fixture(path, empty, sizeof empty - 1, false)) return 4;\n"
+    "    return fixture(path, long_line, sizeof long_line, false);\n"
+    "}\n"
+    "static int io_failures(const char *path)\n"
+    "{\n"
+    "    read_fail = true;\n"
+    "    int rc = fixture(path, VALID_RECORD, sizeof(VALID_RECORD) - 1, false);\n"
+    "    read_fail = false;\n"
+    "    if (rc) return 1;\n"
+    "    close_fail = true;\n"
+    "    rc = fixture(path, VALID_RECORD, sizeof(VALID_RECORD) - 1, false);\n"
+    "    close_fail = false;\n"
+    "    return rc;\n"
+    "}\n"
+    "int main(int argc, char **argv)\n"
+    "{\n"
+    "    if (argc != 2) return 1;\n"
+    "    if (fixture(argv[1], VALID_RECORD, sizeof(VALID_RECORD) - 1, true)) return 2;\n"
+    "    if (fixture(argv[1], VALID_PREFIX, sizeof(VALID_PREFIX) - 1, true)) return 3;\n"
+    "    if (malformed(argv[1])) return 4;\n"
+    "    if (io_failures(argv[1])) return 5;\n"
+    "    return additional(argv[1]);\n"
+    "}\n";
+
+static const char k_replay_reader_snap[] =
+    "#include \"tools/dev/sem_replay_build.c\"\n"
+    "#define VALID_PREFIX \"epoch\\tok\"\n"
+    "#define VALID_RECORD \"epoch\\tok\\n\"\n"
+    "#define INVALID_RECORD \"epoch\\tok\\textra\\n\"\n"
+    "static bool probe_load(const char *path)\n"
+    "{ struct sr_snap s; return sr_snap_load(&s, path); }\n"
+    "static int additional(const char *path);\n";
+
+static const char k_replay_reader_cost[] =
+    "#include \"tools/dev/sem_replay_step.c\"\n"
+    "#define VALID_PREFIX \"src/a.c\\t3\"\n"
+    "#define VALID_RECORD \"src/a.c\\t3\\t4\\t1\\n\"\n"
+    "#define INVALID_RECORD \"src/a.c\\t3junk\\n\"\n"
+    "static bool probe_load(const char *path)\n"
+    "{ struct cost_table t = {0}; return cost_load(&t, path); }\n"
+    "static int additional(const char *path);\n";
+
+static const char k_replay_reader_price[] =
+    "#include \"tools/dev/sem_replay_report.c\"\n"
+    "#define VALID_PREFIX \"src/a.c\\t3\"\n"
+    "#define VALID_RECORD \"src/a.c\\t3\\t4\\t1\\n\"\n"
+    "#define INVALID_RECORD \"src/a.c\\t3junk\\n\"\n"
+    "static bool probe_load(const char *path)\n"
+    "{ struct prices p = {0}; return prices_load(&p, path); }\n"
+    "static int additional(const char *path);\n";
+
+static const char k_replay_reader_snap_extra[] =
+    "static int additional(const char *path)\n"
+    "{\n"
+    "    static const char row[] = \"src/a.c\\t1\\t2\\t3\\t\"\n"
+    "        \"0000000000000000000000000000000000000000000000000000000000000000\";\n"
+    "    char tail[256];\n"
+    "    if (fixture(path, row, sizeof row - 1, true)) return 1;\n"
+    "    int n = snprintf(tail, sizeof tail, \"%sX\\n\", row);\n"
+    "    if (n < 0 || n >= (int)sizeof tail) return 2;\n"
+    "    if (fixture(path, tail, (size_t)n, false)) return 3;\n"
+    "    n = snprintf(tail, sizeof tail, \"%s\\textra\\n\", row);\n"
+    "    if (n < 0 || n >= (int)sizeof tail) return 4;\n"
+    "    return fixture(path, tail, (size_t)n, false);\n"
+    "}\n";
+
+static const char k_replay_reader_cost_extra[] =
+    "static int additional(const char *path)\n"
+    "{\n"
+    "    static const char extra[] = \"src/a.c\\t3\\t4\\t1\\textra\\n\";\n"
+    "    static const char partial[] = \"src/a.c\\t3\\t4\\n\";\n"
+    "    static const char bad_wall[] = \"src/a.c\\t3\\t4junk\\t1\\n\";\n"
+    "    static const char bad_match[] = \"src/a.c\\t3\\t4\\t1junk\\n\";\n"
+    "    if (fixture(path, extra, sizeof extra - 1, false)) return 1;\n"
+    "    if (fixture(path, partial, sizeof partial - 1, false)) return 2;\n"
+    "    if (fixture(path, bad_wall, sizeof bad_wall - 1, false)) return 3;\n"
+    "    return fixture(path, bad_match, sizeof bad_match - 1, false);\n"
+    "}\n";
+
+static bool srt_compile_reader_probe(const struct srt_fx *fx, const char *name,
+                                     const char *reader, const char *extra)
+{
+    char text[8192];
+    int n = snprintf(text, sizeof text, "%s%s%s%s", k_replay_reader_head,
+                     reader, k_replay_reader_body, extra);
+    if (n < 0 || n >= (int)sizeof text)
+        return false;
+    return srt_execute_row_probe(fx, name, text);
+}
+
+static bool srt_replay_reader_cases(const struct srt_fx *fx)
+{
+    return srt_compile_reader_probe(fx, "snap-reader", k_replay_reader_snap,
+                                    k_replay_reader_snap_extra) &&
+           srt_compile_reader_probe(fx, "cost-reader", k_replay_reader_cost,
+                                    k_replay_reader_cost_extra) &&
+           srt_compile_reader_probe(fx, "price-reader", k_replay_reader_price,
+                                    k_replay_reader_cost_extra);
+}
+
+static bool srt_replay_row_cases(const struct srt_fx *fx)
+{
+    return srt_write(fx->tools, "epoch.snap", "epoch\t" SRT_EPOCH "\n") &&
+           srt_compile_row_probe(fx, "snap-probe", "sem_replay_build.c", k_replay_probe_snap) &&
+           srt_compile_row_probe(fx, "cost-probe", "sem_replay_step.c", k_replay_probe_cost) &&
+           srt_compile_row_probe(fx, "price-probe", "sem_replay_report.c", k_replay_probe_price);
+}
+
 static bool srt_tools(struct srt_fx *fx)
 {
-    return srt_cc(fx, "fx-epoch-object", k_epoch_object) && srt_cc(fx, "fx-sensor", k_sensor) &&
+    return srt_replay_row_cases(fx) && srt_replay_reader_cases(fx) &&
+           srt_cc(fx, "fx-epoch-object", k_epoch_object) && srt_cc(fx, "fx-sensor", k_sensor) &&
            srt_planner(fx, "fx-planner-omits", k_facts_omits) &&
            srt_planner(fx, "fx-planner-narrows", k_facts_narrows) &&
            srt_planner(fx, "fx-planner-overselects", k_facts_overselects);

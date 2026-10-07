@@ -4537,7 +4537,7 @@ sem-replay-bin: $(SEM_REPLAY_BIN)
 $(SEM_REPLAY_BIN): $(SEM_REPLAY_SRCS) tools/dev/sem_replay.h \
 		tools/dev/sem_replay_build.h tools/dev/sem_replay_change.h \
 		tools/dev/sem_replay_plan.h tools/dev/sem_replay_step.h \
-		tools/dev/sem_replay_classify.h \
+		tools/dev/sem_replay_classify.h tools/dev/sem_replay_record.h \
 		contexts/commons/packages/zjsonp/src/zjsonp.c \
 		contexts/commons/packages/zutf8/src/zutf8.c \
 		platform/modules/sha3/src/sha3.c \
