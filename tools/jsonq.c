@@ -20,7 +20,7 @@
  * optional. Example: result.items[1].id
  *
  * get/raw print the value and exit 0. Missing path exits 1. Malformed
- * JSON or usage exits 2. unwrap prints result when the envelope is a
+ * JSON, usage, or failed output exits 2. unwrap prints result when the envelope is a
  * JSON-RPC object with a null/absent error; a present error exits 2.
  */
 #include "zjsonp/zjsonp.h"
@@ -512,50 +512,50 @@ static int cmd_unwrap(const char *text, size_t len)
     return walk(text, len, CMD_RAW, NULL);
 }
 
-int main(int argc, char **argv)
+/* Command arguments borrow argv storage for the lifetime of main. */
+static bool parse_arguments(int argc, char **argv, cmd_kind *cmd,
+                            const char **path, const char **eq)
 {
-    if (argc < 2) {
-        usage();
+    static const struct {
+        const char *name;
+        int argc;
+        cmd_kind kind;
+    } commands[] = {
+        {"get", 3, CMD_GET}, {"raw", 3, CMD_RAW},
+        {"type", 3, CMD_TYPE}, {"has", 3, CMD_HAS},
+        {"eq", 4, CMD_EQ}, {"count", 3, CMD_COUNT},
+        {"keys", 3, CMD_KEYS}, {"unwrap", 2, CMD_UNWRAP}
+    };
+    if (argc < 2)
+        return false;
+    for (size_t i = 0; i < sizeof commands / sizeof commands[0]; i++) {
+        if (strcmp(argv[1], commands[i].name) != 0)
+            continue;
+        if (argc != commands[i].argc)
+            return false;
+        *cmd = commands[i].kind;
+        *path = argc > 2 ? argv[2] : NULL;
+        *eq = argc == 4 ? argv[3] : NULL;
+        return true;
+    }
+    return false;
+}
+
+static int finish_output(int status)
+{
+    if (fflush(stdout) != 0 || ferror(stdout)) {
+        fputs("jsonq: output write failed\n", stderr);
         return 2;
     }
+    return status;
+}
+
+int main(int argc, char **argv)
+{
     cmd_kind cmd;
     const char *path = NULL;
     const char *eq = NULL;
-    if (strcmp(argv[1], "unwrap") == 0) {
-        if (argc != 2) {
-            usage();
-            return 2;
-        }
-        cmd = CMD_UNWRAP;
-    } else if (strcmp(argv[1], "get") == 0 || strcmp(argv[1], "raw") == 0 ||
-               strcmp(argv[1], "type") == 0 || strcmp(argv[1], "has") == 0 ||
-               strcmp(argv[1], "count") == 0 || strcmp(argv[1], "keys") == 0) {
-        if (argc != 3) {
-            usage();
-            return 2;
-        }
-        path = argv[2];
-        if (argv[1][0] == 'g')
-            cmd = CMD_GET;
-        else if (argv[1][0] == 'r')
-            cmd = CMD_RAW;
-        else if (argv[1][0] == 't')
-            cmd = CMD_TYPE;
-        else if (argv[1][0] == 'h')
-            cmd = CMD_HAS;
-        else if (argv[1][0] == 'c')
-            cmd = CMD_COUNT;
-        else
-            cmd = CMD_KEYS;
-    } else if (strcmp(argv[1], "eq") == 0) {
-        if (argc != 4) {
-            usage();
-            return 2;
-        }
-        cmd = CMD_EQ;
-        path = argv[2];
-        eq = argv[3];
-    } else {
+    if (!parse_arguments(argc, argv, &cmd, &path, &eq)) {
         usage();
         return 2;
     }
@@ -571,8 +571,8 @@ int main(int argc, char **argv)
         return 2;
     }
     if (cmd == CMD_UNWRAP)
-        return cmd_unwrap(g_input, len);
+        return finish_output(cmd_unwrap(g_input, len));
     if (parse_path(path) != 0)
         return 2;
-    return walk(g_input, len, cmd, eq);
+    return finish_output(walk(g_input, len, cmd, eq));
 }

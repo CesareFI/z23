@@ -8421,6 +8421,10 @@ $(JSONQ_BIN): tools/jsonq.c \
 	    -o $@ tools/jsonq.c contexts/commons/packages/zjsonp/src/zjsonp.c \
 	    contexts/commons/packages/zutf8/src/zutf8.c
 
+.PHONY: jsonq-output-selftest
+jsonq-output-selftest: $(JSONQ_BIN)
+	@bash tools/scripts/jsonq_output_selftest.sh "$(abspath $(JSONQ_BIN))"
+
 # Native bridge over the existing private fleet JSONL projection.
 .PHONY: fleet-board-bridge
 fleet-board-bridge: $(BIN_DIR)/fleet-board-bridge
