@@ -330,6 +330,7 @@ int test_agent_copy_prove(void);
 int test_agent_test(void);
 int test_source_identity_authority(void);
 int test_recovery_policy(void);
+int test_crash_recovery(void);
 int test_oracle_policy(void);
 int test_quorum_oracle(void);
 int test_db_txn(void);

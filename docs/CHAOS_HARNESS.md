@@ -32,6 +32,17 @@ group, restarts it, and asserts the recovery invariants. It is the
 end-to-end counterpart to the in-process unit test
 `tests/harness/src/test_kill9_recovery.c`.
 
+The final `--datadir` and `--connect` values must fit their buffers (511 and
+127 characters respectively). An oversized value exits 2 with a diagnostic
+naming the flag before recovery starts. Repeated options use the last value;
+`--help` / `-h` short-circuit path validation. An oversized
+`ZCL_CRASH_DATADIR` warns and falls back through `HOME`; an oversized
+HOME-derived path warns and uses the system temporary-path fallback
+(`tools/crash_recovery_test.c`, `cr_env_datadir`, `cr_default_datadir`, and
+`parse_args`). The focused CLI regression group is `test_crash_recovery`:
+`make t-fast-exact ONLY=test_crash_recovery` builds the harness through its
+declared build need. This group does not run the kill/restart loop.
+
 ### Isolation contract (the hard rails)
 
 The single audited chokepoint is **`tools/scripts/isolated_node_env.sh`**,
