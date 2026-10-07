@@ -9,7 +9,7 @@
  * rules surfaces in CI rather than after a week of wall-clock
  * runtime.
  *
- * Six cases, each asserting a specific verdict:
+ * Analyzer cases include these verdicts:
  *
  *   1. empty state                                    → FAIL_NO_SAMPLES
  *   2. one-hour sample run, healthy otherwise         → FAIL_TOO_SHORT
@@ -22,8 +22,14 @@
  * 2, 4, 5, 6 all FAIL. Post-GREEN: all six pass.
  */
 
+#define main soak_runner_fixture_main
+int soak_runner_fixture_main(int argc, char **argv);
+#include "../../../tools/soak/main.c"
+#undef main
+
 #include "test/test_core.h"
 #include "test/soak_harness.h"
+#include <sys/stat.h>
 
 int test_soak_harness(void);
 
@@ -237,10 +243,106 @@ static int t_ci_proxy_short_is_too_short(void)
     return 0;
 }
 
+static int t_rpc_height_envelope(void)
+{
+    static const struct { const char *text; bool valid; } rows[] = {
+        {"{\"result\":42,", false},
+        {"{\"result\":42}junk", false},
+        {"{\"error\":{\"result\":42},\"result\":null,\"id\":1}", false},
+        {"{\"result\":42}{\"result\":43}", false},
+        {"{\"result\":42,\"result\":43}", false},
+        {"{\"result\":42,\"error\":null,}", false},
+        {"{\"result\":42,\"error\":null,\"error\":null}", false},
+        {"{\"result\":42,\"id\":1,\"id\":1}", false},
+        {"{\"result\":42,\"error\":false}", false},
+        {"{\"result\":42,\"id\":1junk}", false},
+        {"{\"result\":42,\"error\":null,\"id\":1}", true},
+        {" \n{ \"id\" : 1 , \"error\" : null , \"result\" : 42 }\t\r\n", true},
+        {"{\"result\":42}", true},
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        int64_t height = -7;
+        bool valid = scan_result_int(rows[i].text, &height);
+        if (valid != rows[i].valid || height != (rows[i].valid ? 42 : -7)) {
+            printf("FAIL (RPC envelope row %zu: valid=%d height=%" PRId64 ")\n",
+                   i, valid, height);
+            failures++;
+        }
+    }
+    return failures;
+}
+
+static int t_rpc_height_numbers(void)
+{
+    static const struct { const char *text; bool valid; int64_t height; } rows[] = {
+        {"{\"result\":+42}", false, -7},
+        {"{\"result\":042}", false, -7},
+        {"{\"result\":-0}", false, -7},
+        {"{\"result\":0}", true, 0},
+        {"{\"result\":1}", true, 1},
+        {"{\"result\":9223372036854775807}", true, INT64_MAX},
+        {"{\"result\":9223372036854775808}", false, -7},
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        int64_t height = -7;
+        bool valid = scan_result_int(rows[i].text, &height);
+        if (valid != rows[i].valid || height != rows[i].height) {
+            printf("FAIL (RPC integer row %zu: valid=%d height=%" PRId64 ")\n",
+                   i, valid, height);
+            failures++;
+        }
+    }
+    return failures;
+}
+
+static int rpc_height_capture_row(const char *wire, bool expected, size_t row)
+{
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof(path), "soak-rpc");
+    if (fd < 0) return 1;
+    char script[256];
+    int n = snprintf(script, sizeof(script), "#!/bin/sh\nprintf '%%b' '%s'\n", wire);
+    bool ready = n > 0 && (size_t)n < sizeof(script);
+    if (ready) ready = write(fd, script, (size_t)n) == n;
+    if (ready) ready = fchmod(fd, 0700) == 0;
+    if (close(fd) != 0) ready = false;
+    int64_t height = -7;
+    bool valid = ready && height_via_rpc(NULL, path, &height);
+    bool cleaned = unlink(path) == 0;
+    if (!ready || !cleaned || valid != expected || height != (expected ? 42 : -7)) {
+        printf("FAIL (RPC capture row %zu: ready=%d cleaned=%d valid=%d height=%"
+               PRId64 ")\n", row, ready, cleaned, valid, height);
+        return 1;
+    }
+    return 0;
+}
+
+static int t_rpc_height_capture(void)
+{
+    static const struct { const char *wire; bool valid; } rows[] = {
+        {"{\"result\":42}\\000junk", false},
+        {"{\"result\":42}\\000", false},
+        {"\\000", false},
+        {"{\"result\":42}junk", false},
+        {"{\"result\":42,", false},
+        {"{\"result\":42}", true},
+        {"{\"result\":42,\"error\":null,\"id\":1}", true},
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++)
+        failures += rpc_height_capture_row(rows[i].wire, rows[i].valid, i);
+    return failures;
+}
+
 int test_soak_harness(void)
 {
     int failures = 0;
     printf("\n=== soak harness (MVP #6) ===\n");
+    failures += t_rpc_height_envelope();
+    failures += t_rpc_height_numbers();
+    failures += t_rpc_height_capture();
 
     printf("soak_harness empty → FAIL_NO_SAMPLES... ");
     if (t_empty_state_is_no_samples()) failures++;

@@ -8,11 +8,11 @@
  * and exits non-zero if the run tripped any verdict rule (crash,
  * tip stall, RSS walk, too-short, no-samples).
  *
- * Intentionally minimal — no JSON parser, no libevent, no
+ * Intentionally minimal — bounded RPC envelope parsing, no libevent, no
  * threads. Every signal the verdict cares about comes from
  * either /proc (/proc/<pid>/status → VmRSS) or one-shot fork/exec
  * of `build/bin/zcl-rpc getblockcount` (integer result is trivial to
- * extract by scanning for "result"). The runner doesn't try to
+ * extract from a complete success envelope). The runner doesn't try to
  * recover from a dead node — if the node goes down, the runner
  * keeps polling, records the crash sample, and lets the verdict
  * logic flip to FAIL_CRASH.
@@ -104,31 +104,72 @@ struct spawn_cfg {
     pid_t pid;           /* the owned child (the ONLY pid we sample) */
 };
 
-/* Pull the first non-whitespace integer value that follows the
- * literal "result" key in a JSON-RPC response body. Accepts the
- * minimal shape the node emits ({"result":3081601,"error":null,
- * "id":1}) without dragging a full JSON parser into the runner. */
+static const char *rpc_space(const char *p)
+{
+    return p + strspn(p, " \t\n\r");
+}
+
+/* Read a nonnegative result value; the caller validates the envelope. */
 static bool scan_decimal_result(const char *p, int64_t *out)
 {
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (*p == 'n') return false; /* "result": null */
+    p = rpc_space(p);
+    if (*p < '0' || *p > '9') return false;
+    if (*p == '0' && p[1] >= '0' && p[1] <= '9') return false;
     char *end = NULL;
     errno = 0;
     long long v = strtoll(p, &end, 10);
     if (end == p || errno == ERANGE || v < 0) return false;
-    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
+    end += strspn(end, " \t\n\r");
     if (*end != ',' && *end != '}') return false;
     *out = (int64_t)v;
     return true;
 }
 
+/* Only the integer-height success envelope is needed. ID 1 is sent by
+ * zcl-rpc; optional error/id fields retain the minimal result-only form.
+ * No output is assigned until the entire record has been accepted. */
+static unsigned rpc_height_member(const char **cursor, int64_t *height)
+{
+    const char *p = *cursor;
+    unsigned field;
+    if (strncmp(p, "\"result\"", 8) == 0) { field = 1; p += 8; }
+    else if (strncmp(p, "\"error\"", 7) == 0) { field = 2; p += 7; }
+    else if (strncmp(p, "\"id\"", 4) == 0) { field = 4; p += 4; }
+    else return 0;
+    p = rpc_space(p);
+    if (*p != ':') return 0;
+    p = rpc_space(p + 1);
+    if (field == 1) {
+        if (!scan_decimal_result(p, height)) return 0;
+        char *end = NULL;
+        (void)strtoll(p, &end, 10);
+        p = end;
+    } else if (field == 2) {
+        if (strncmp(p, "null", 4) != 0) return 0;
+        p += 4;
+    } else {
+        if (*p != '1') return 0;
+        p++;
+    }
+    *cursor = rpc_space(p);
+    return field;
+}
+
 static bool scan_result_int(const char *buf, int64_t *out)
 {
-    const char *p = strstr(buf, "\"result\"");
-    if (!p) return false;
-    p = strchr(p, ':');
-    if (!p) return false;
-    return scan_decimal_result(p + 1, out);
+    const char *p = rpc_space(buf);
+    if (*p != '{') return false;
+    unsigned seen = 0;
+    int64_t height = 0;
+    do {
+        p = rpc_space(p + 1);
+        unsigned field = rpc_height_member(&p, &height);
+        if (!field || (seen & field)) return false;
+        seen |= field;
+    } while (*p == ',');
+    if (*p != '}' || *rpc_space(p + 1) != '\0' || !(seen & 1)) return false;
+    *out = height;
+    return true;
 }
 
 static void capture_child_exec(int write_fd, const char *program,
@@ -168,8 +209,9 @@ static bool capture_read_all(int fd, char *out, size_t cap)
         do { n = read(fd, &extra, 1); } while (n < 0 && errno == EINTR);
         complete = n == 0;
     }
+    bool text_only = memchr(out, '\0', used) == NULL;
     out[used] = '\0';
-    return complete && used > 0;
+    return complete && used > 0 && text_only;
 }
 
 /* Capture one child without invoking a shell. A full buffer is an error:
