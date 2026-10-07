@@ -303,6 +303,14 @@ with `ZCL_FUZZ=ON`, `ZCL_SANITIZE=ON` builds `fuzz_change_ownership`. Its seed
 format is shared with `seed_change_reservation`; use a new private corpus and
 artifact directory, max_len246, timeout5, RSS512MiB and a bounded duration.
 
+Both fuzz modes require success for exact known authentic state controls, so an
+implementation that refuses every operation cannot satisfy their oracles.
+Reservation also requires its unmodified initial-state control to succeed.
+The registered `wallet_change_reservation_fuzz_contract` and
+`wallet_change_ownership_fuzz_contract` replay the controls, ignored metadata,
+selector boundaries and a damaged head while checking input immutability.
+These checks add no recovery or signing permission and change no stored format.
+
 ## Android fresh creation
 
 Fresh Android creation now reaches paired persistence through
@@ -375,6 +383,13 @@ Eighteen reached child-process interruption boundaries check preserved bytes,
 complete-successor consumption and refusal of ambiguous partial replacement.
 These fixtures use public entropy and inert ciphertext, and do not simulate
 power loss, establish GCM/hardware custody or qualify seed discovery.
+
+The recovery fuzzer also requires its unmodified, known recoverable fixture to
+succeed before checking the exact repaired bytes and successor index. Refusing
+every input cannot satisfy that control. The registered
+`wallet_change_recovery_fuzz_contract` replays six control lengths and eight
+mutation selectors under the normal host suite, with unchanged input bytes.
+This is a fuzz-oracle liveness check, not an additional recovery permission.
 
 ## Threat and evidence limits
 
