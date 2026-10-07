@@ -88,6 +88,15 @@ void snapsync_service_unlock_internal(void)
 struct snapshot_sync_service *snapsync_global(void) { return &g_snapsync_instance; }
 bool snapsync_global_initialized(void) { return g_snapsync_init_done; }
 
+/* Both callers hold the service lock. */
+static void snapsync_init_locked(struct snapshot_sync_service *svc,
+                                 struct node_db *ndb)
+{
+    memset(svc, 0, sizeof(*svc));
+    svc->state = SNAPSYNC_IDLE;
+    svc->ndb = ndb;
+}
+
 struct snapshot_sync_service *snapsync_condition_service(void)
 {
     struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
@@ -102,7 +111,7 @@ void snapsync_global_ensure_init(struct node_db *ndb)
 {
     snapsync_service_lock_internal();
     if (!g_snapsync_init_done) {
-        snapsync_init(&g_snapsync_instance, ndb);
+        snapsync_init_locked(&g_snapsync_instance, ndb);
         g_snapsync_init_done = true;
     }
     snapsync_service_unlock_internal();
@@ -217,9 +226,7 @@ void snapsync_init(struct snapshot_sync_service *svc, struct node_db *ndb)
     if (!svc)
         return;
     snapsync_service_lock_internal();
-    memset(svc, 0, sizeof(*svc));
-    svc->state = SNAPSYNC_IDLE;
-    svc->ndb = ndb;
+    snapsync_init_locked(svc, ndb);
     snapsync_service_unlock_internal();
 }
 

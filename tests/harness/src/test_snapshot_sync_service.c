@@ -2086,6 +2086,40 @@ static int test_snapshot_blacklist_survives_reset(void)
     return failures;
 }
 
+static int test_snapshot_global_ensure_init_completes(void)
+{
+    int failures = 0;
+    TEST("snapshot global lazy init completes without recursive lock") {
+        /* This case requires a fresh process; the singleton has no teardown.
+         * Its non-owning database binding must outlive all later groups. */
+        static struct node_db ndb = {0};
+
+        ASSERT(!snapsync_global_initialized());
+        snapsync_global_ensure_init(&ndb);
+        ASSERT(snapsync_global_initialized());
+        ASSERT(snapsync_global()->state == SNAPSYNC_IDLE);
+        ASSERT(snapsync_global()->ndb == &ndb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_snapshot_global_post_init_fallback(void)
+{
+    int failures = 0;
+    TEST("snapshot global fallback reads database after lazy init case returns") {
+        struct snapsync_failed_status status;
+
+        app_runtime_set_current(NULL);
+        snapsync_get_failed_status(NULL, &status);
+        ASSERT(snapsync_global_initialized());
+        ASSERT(!status.failed);
+        ASSERT(status.staged_row_count == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_snapshot_sync_service(void)
 {
     int failures = 0;
@@ -2139,6 +2173,8 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_blacklist_multiple();
     failures += test_snapshot_blacklist_rejects_offer();
     failures += test_snapshot_blacklist_survives_reset();
+    failures += test_snapshot_global_ensure_init_completes();
+    failures += test_snapshot_global_post_init_fallback();
     progress_store_close();
     test_cleanup_tmpdir(progress_dir);
     return failures;
