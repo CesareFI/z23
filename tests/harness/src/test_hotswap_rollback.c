@@ -94,6 +94,7 @@ static char g_datadir[PATH_MAX];
 static char g_home_saved[PATH_MAX];
 static bool g_had_home;
 static bool g_fixture_ready;
+static bool g_rb_env_started;
 
 /* ── a registry the override layer can validate against ───────────────────
  * The batch commit independently re-checks READY + read-only + resolvable for
@@ -203,24 +204,32 @@ static void rb_hooks(struct hotswap_publish_hooks *h)
 
 /* ── fixture ──────────────────────────────────────────────────────────────
  * HOME is redirected so `~/.zclassic-c23-dev` resolves into a throwaway tree. */
-static bool rb_env_begin(void)
+/* Refusal leaves fixture globals and the filesystem/environment unchanged. */
+static bool rb_env_paths(const char *cwd, char home[PATH_MAX],
+                         char datadir[PATH_MAX])
 {
-    char cwd[PATH_MAX];
-    if (!getcwd(cwd, sizeof(cwd)))
+    int n = snprintf(home, PATH_MAX, "%s/test-tmp/hs_rollback_home_%d", cwd,
+                     (int)getpid());
+    if (n < 0 || (size_t)n >= PATH_MAX)
         return false;
+    n = snprintf(datadir, PATH_MAX, "%s/.zclassic-c23-dev", home);
+    return n >= 0 && (size_t)n < PATH_MAX;
+}
 
+static bool rb_env_apply(const char *home_path, const char *datadir_path)
+{
+    snprintf(g_home, sizeof(g_home), "%s", home_path);
+    snprintf(g_datadir, sizeof(g_datadir), "%s", datadir_path);
     const char *home = getenv("HOME");
     g_had_home = home != NULL;
     if (g_had_home)
         snprintf(g_home_saved, sizeof(g_home_saved), "%s", home);
+    g_rb_env_started = true;
 
-    snprintf(g_home, sizeof(g_home), "%s/test-tmp/hs_rollback_home_%d", cwd,
-             (int)getpid());
     (void)mkdir("test-tmp", 0700);
     test_rm_rf_recursive(g_home);
     if (mkdir(g_home, 0700) != 0)
         return false;
-    snprintf(g_datadir, sizeof(g_datadir), "%s/.zclassic-c23-dev", g_home);
     if (mkdir(g_datadir, 0700) != 0)
         return false;
 
@@ -232,8 +241,92 @@ static bool rb_env_begin(void)
     return true;
 }
 
+static bool rb_env_begin_at(const char *cwd,
+                            bool (*apply)(const char *, const char *))
+{
+    char home[PATH_MAX], datadir[PATH_MAX];
+    if (!rb_env_paths(cwd, home, datadir)) {
+        fprintf(stderr, "hotswap_rollback: fixture path exceeds capacity\n");
+        return false;
+    }
+    return apply(home, datadir);
+}
+
+static bool rb_env_begin(void)
+{
+    char cwd[PATH_MAX];
+    if (!getcwd(cwd, sizeof(cwd)))
+        return false;
+    return rb_env_begin_at(cwd, rb_env_apply);
+}
+
+/* All setup effects are behind apply; this recorder never touches a path. */
+static unsigned g_rb_setup_calls;
+static char g_rb_recorded_home[PATH_MAX], g_rb_recorded_datadir[PATH_MAX];
+
+static bool rb_env_record(const char *home, const char *datadir)
+{
+    ++g_rb_setup_calls;
+    snprintf(g_rb_recorded_home, sizeof(g_rb_recorded_home), "%s", home);
+    snprintf(g_rb_recorded_datadir, sizeof(g_rb_recorded_datadir), "%s", datadir);
+    return true;
+}
+
+static void rb_env_end(void);
+
+static int t_fixture_path_bounds(void)
+{
+    int failures = 0;
+    TEST("fixture path overflow refuses before cleanup, mkdir or environment writes") {
+        char saved_home[PATH_MAX];
+        const char *original_home = getenv("HOME");
+        bool had_home = original_home != NULL;
+        int saved_n = snprintf(saved_home, sizeof(saved_home), "%s",
+                               original_home ? original_home : "");
+        ASSERT(saved_n >= 0 && (size_t)saved_n < sizeof(saved_home));
+        char cwd[PATH_MAX], suffix[64];
+        int n = snprintf(suffix, sizeof(suffix),
+                         "/test-tmp/hs_rollback_home_%d", (int)getpid());
+        ASSERT(n > 0 && (size_t)n < sizeof(suffix));
+        ASSERT((size_t)n + sizeof("/.zclassic-c23-dev") < sizeof(cwd));
+        memset(cwd, 'x', sizeof(cwd) - 1);
+        cwd[0] = '/';
+        cwd[sizeof(cwd) - 1] = '\0';
+        g_rb_setup_calls = 0;
+        ASSERT(!rb_env_begin_at(cwd, rb_env_record));
+        ASSERT_EQ(g_rb_setup_calls, 0u);
+        ASSERT(!g_rb_env_started);
+        rb_env_end();
+        ASSERT_EQ(getenv("HOME") != NULL, had_home);
+        if (had_home)
+            ASSERT_STR_EQ(getenv("HOME"), saved_home);
+        /* HOME fits exactly, but its datadir suffix cannot fit. */
+        cwd[PATH_MAX - 1 - (size_t)n] = '\0';
+        ASSERT(!rb_env_begin_at(cwd, rb_env_record));
+        ASSERT_EQ(g_rb_setup_calls, 0u);
+        /* Datadir at capacity-1 fits; one more byte must refuse. */
+        size_t limit = PATH_MAX - 1 - (size_t)n - strlen("/.zclassic-c23-dev");
+        cwd[limit] = '\0';
+        ASSERT(rb_env_begin_at(cwd, rb_env_record));
+        ASSERT_EQ(strlen(g_rb_recorded_datadir), (size_t)PATH_MAX - 1);
+        cwd[limit] = 'x';
+        cwd[limit + 1] = '\0';
+        ASSERT(!rb_env_begin_at(cwd, rb_env_record));
+        ASSERT_EQ(g_rb_setup_calls, 1u);
+        ASSERT(rb_env_begin_at("/fixture", rb_env_record));
+        ASSERT_EQ(g_rb_setup_calls, 2u);
+        ASSERT(strncmp(g_rb_recorded_home, "/fixture/test-tmp/", 18) == 0);
+        ASSERT_STR_EQ(g_rb_recorded_datadir + strlen(g_rb_recorded_home),
+                      "/.zclassic-c23-dev");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static void rb_env_end(void)
 {
+    if (!g_rb_env_started)
+        return;
     hotswap_set_activate_flag(false);
     (void)unsetenv("ZCL_HOTSWAP_ACTIVATE");
     if (g_had_home)
@@ -242,6 +335,7 @@ static void rb_env_end(void)
         (void)unsetenv("HOME");
     if (g_home[0])
         test_rm_rf_recursive(g_home);
+    g_rb_env_started = false;
 }
 
 /* Resolve the two module images. Absent images are a hard failure: they are a
@@ -537,7 +631,7 @@ static int t_refused_rollback_changes_nothing(void)
 int test_hotswap_rollback(void)
 {
     printf("\n=== hot-swap rollback: a real image put back live ===\n");
-    int failures = 0;
+    int failures = t_fixture_path_bounds();
 
     g_fixture_ready = rb_env_begin() && rb_resolve_images();
     if (!g_fixture_ready) {
