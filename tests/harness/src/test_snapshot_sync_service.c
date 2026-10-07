@@ -1685,6 +1685,7 @@ static int test_snapshot_local_recovery_manifest_builder(void)
         uint8_t solution[1] = {0};
         uint8_t chain_work[32];
         uint8_t expected_root[32];
+        uint8_t truncated_height = 1;
         uint64_t expected_count = 0;
 
         memset(block_hash, 0x41, sizeof(block_hash));
@@ -1749,6 +1750,10 @@ static int test_snapshot_local_recovery_manifest_builder(void)
         manifest.peer_tip_height = params.peer_tip_height;
         ASSERT(snapshot_manifest_validate_recovery(&manifest, 1) ==
                SNAPSHOT_MANIFEST_OK);
+
+        ASSERT(node_db_state_set(&ndb, "tip_height", &truncated_height,
+                                 sizeof(truncated_height)));
+        ASSERT(!snapsync_build_local_recovery_manifest(&ndb, &params, 0).ok);
 
         node_db_close(&ndb);
         PASS();
