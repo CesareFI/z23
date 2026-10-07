@@ -53,8 +53,11 @@ struct wallet_backup_service_state {
     pthread_t       thread;
     bool            thread_running;
     bool            stop_requested;
+    uint64_t        stop_completion;
     struct wallet_backup_config cfg;
     struct node_db             *db;
+    char   *owned_encrypt_password;
+    size_t  owned_encrypt_password_cap;
     /* Snapshot counters */
     int64_t total_runs;
     int64_t total_failures;
@@ -83,6 +86,7 @@ static struct wallet_backup_service_state g_wbs = {
     .supervisor_id = SUPERVISOR_INVALID_ID,
 };
 static struct liveness_contract g_wbs_contract;
+static pthread_cond_t g_wbs_stopped = PTHREAD_COND_INITIALIZER;
 /* ── Helpers ────────────────────────────────────────────────── */
 static bool wbs_same_snapshot(
     const struct platform_positioned_file_snapshot *a,
@@ -597,40 +601,23 @@ static void *wbs_thread_fn(void *arg)
         wbs_supervisor_heartbeat();
         platform_sleep_ms(200);
     }
+#ifdef ZCL_TESTING
+    wbs_test_stop_observe(WBS_STOP_TEST_WORKER_EXIT);
+#endif
     pthread_mutex_lock(&g_wbs.lock);
     g_wbs.thread_running = false;
     pthread_mutex_unlock(&g_wbs.lock);
     return NULL;
 }
-struct zcl_result wallet_backup_start(const struct wallet_backup_config *cfg,
-                          struct node_db *db)
+
+/* Caller holds g_wbs.lock. Keep path policy and owned-config installation
+ * outside wallet_backup_start() so the lifecycle entry point stays below the
+ * repository complexity cap. */
+static struct zcl_result wbs_prepare_start_locked(
+    const struct wallet_backup_config *cfg, struct node_db *db)
 {
-    if (!cfg || !db || !cfg->backup_dir)
-        return ZCL_ERR(-20, "start: NULL config, db, or backup_dir");
-    /* Explicit encrypt without a password must fail loudly here —
-     * silently falling back to plaintext would betray the operator's
-     * stated intent. (config_defaults sets cfg->encrypt only when
-     * WALLET_BACKUP_PASSWORD is non-empty, so this guard fires on
-     * misconfigured direct callers — or on the OOM path above that
-     * deliberately leaves encrypt=true with no password.
-     * ZCL_SERVICE_OPTIONAL keeps it a kernel WARNING, not a boot
-     * failure.) */
-    if (cfg->encrypt && (!cfg->encrypt_password || !*cfg->encrypt_password)) {
-        struct zcl_result r = ZCL_ERR(-24,
-            "start: encrypt=true but encrypt_password is empty "
-            "(set WALLET_BACKUP_PASSWORD)");
-        LOG_WARN("wallet_backup", "%s", r.message);
-        return r;
-    }
-    pthread_mutex_lock(&g_wbs.lock);
-    if (g_wbs.thread_running) {
-        pthread_mutex_unlock(&g_wbs.lock);
-        return ZCL_OK;
-    }
     /* Refuse to back up into the same datadir as the source — the
-     * whole point is an *external* copy. We detect this by
-     * comparing the backup_dir to the directory containing the
-     * source db file. */
+     * whole point is an *external* copy. */
     char src_path[1024];
     if (wbs_source_path(db, src_path, sizeof(src_path)).ok) {
         char src_dir[1024];
@@ -650,20 +637,57 @@ struct zcl_result wallet_backup_start(const struct wallet_backup_config *cfg,
                                          cfg->backup_dir, backup_real,
                                          sizeof(backup_real))
             ? backup_real : cfg->backup_dir;
-        if (strcmp(src_compare, backup_compare) == 0) {
-            struct zcl_result r = ZCL_ERR(-21,
+        if (strcmp(src_compare, backup_compare) == 0)
+            return ZCL_ERR(-21,
                 "start: refusing to back up into source dir %s", src_dir);
-            pthread_mutex_unlock(&g_wbs.lock);
-            return r;
-        }
     }
     struct zcl_result dir_r = wbs_ensure_backup_dir(cfg->backup_dir);
-    if (!dir_r.ok) {
-        struct zcl_result r = ZCL_ERR(-22, "start: %s", dir_r.message);
-        pthread_mutex_unlock(&g_wbs.lock);
+    if (!dir_r.ok)
+        return ZCL_ERR(-22, "start: %s", dir_r.message);
+    return wbs_config_install(
+        cfg, &g_wbs.cfg, &g_wbs.owned_encrypt_password,
+        &g_wbs.owned_encrypt_password_cap);
+}
+
+struct zcl_result wallet_backup_start(const struct wallet_backup_config *cfg,
+                          struct node_db *db)
+{
+    if (!cfg || !db || !cfg->backup_dir) {
+        struct zcl_result r = ZCL_ERR(-20,
+            "start: NULL config, db, or backup_dir");
+        LOG_WARN("wallet_backup", "%s", r.message);
         return r;
     }
-    g_wbs.cfg = *cfg;
+    /* Explicit encrypt without a password must fail loudly here —
+     * silently falling back to plaintext would betray the operator's
+     * stated intent. ZCL_SERVICE_OPTIONAL keeps it a kernel WARNING,
+     * not a boot failure. */
+    if (cfg->encrypt && (!cfg->encrypt_password || !*cfg->encrypt_password)) {
+        struct zcl_result r = ZCL_ERR(-24,
+            "start: encrypt=true but encrypt_password is empty "
+            "(set WALLET_BACKUP_PASSWORD)");
+        LOG_WARN("wallet_backup", "%s", r.message);
+        return r;
+    }
+    pthread_mutex_lock(&g_wbs.lock);
+    if (g_wbs.thread_running) {
+        pthread_mutex_unlock(&g_wbs.lock);
+        return ZCL_OK;
+    }
+    /* The retiring worker clears thread_running before stop's join returns.
+     * Do not install a new password that the in-flight stop would retire. */
+    if (g_wbs.stop_requested) {
+        pthread_mutex_unlock(&g_wbs.lock);
+        struct zcl_result r = ZCL_ERR(-26, "start: previous worker is stopping");
+        LOG_WARN("wallet_backup", "%s", r.message);
+        return r;
+    }
+    struct zcl_result prepare_r = wbs_prepare_start_locked(cfg, db);
+    if (!prepare_r.ok) {
+        pthread_mutex_unlock(&g_wbs.lock);
+        LOG_WARN("wallet_backup", "%s", prepare_r.message);
+        return prepare_r;
+    }
     g_wbs.db = db;
     g_wbs.stop_requested = false;
     wbs_restore_encrypted_authority_locked();
@@ -672,9 +696,15 @@ struct zcl_result wallet_backup_start(const struct wallet_backup_config *cfg,
                                        &g_wbs.thread);
     if (rc != 0) {
         g_wbs.thread_running = false;
+        g_wbs.db = NULL;
+        wbs_config_retire_password(&g_wbs.cfg,
+                                   &g_wbs.owned_encrypt_password,
+                                   &g_wbs.owned_encrypt_password_cap);
+        memset(&g_wbs.cfg, 0, sizeof(g_wbs.cfg));
         struct zcl_result r = ZCL_ERR(-23,
                 "start: thread_registry_spawn failed (%d)", rc);
         pthread_mutex_unlock(&g_wbs.lock);
+        LOG_WARN("wallet_backup", "%s", r.message);
         return r;
     }
     pthread_mutex_unlock(&g_wbs.lock);
@@ -693,6 +723,39 @@ void wallet_backup_stop(void)
     if (id != SUPERVISOR_INVALID_ID)
         supervisor_set_deadline(id, 0);
     pthread_mutex_lock(&g_wbs.lock);
+    if (g_wbs.stop_requested) {
+        /* The caller that set stop_requested owns join and retirement. */
+        uint64_t completion = g_wbs.stop_completion;
+#ifdef ZCL_TESTING
+        bool waited = false;
+        wbs_test_stop_observe(WBS_STOP_TEST_WAITING);
+#endif
+        while (g_wbs.stop_completion == completion) {
+#ifdef ZCL_TESTING
+            if (waited && !wbs_test_stop_observe(WBS_STOP_TEST_REWAIT)) {
+                pthread_mutex_unlock(&g_wbs.lock);
+                return;
+            }
+            waited = true;
+#endif
+            int rc = pthread_cond_wait(&g_wbs_stopped, &g_wbs.lock);
+            if (rc != 0) {
+                LOG_WARN("wallet_backup", "stop: retirement wait failed (%d)", rc);
+                pthread_mutex_unlock(&g_wbs.lock);
+                return;
+            }
+#ifdef ZCL_TESTING
+            pthread_mutex_unlock(&g_wbs.lock);
+            wbs_test_stop_observe(WBS_STOP_TEST_RECHECK);
+            pthread_mutex_lock(&g_wbs.lock);
+#endif
+        }
+        pthread_mutex_unlock(&g_wbs.lock);
+#ifdef ZCL_TESTING
+        wbs_test_stop_observe(WBS_STOP_TEST_RETURNING);
+#endif
+        return;
+    }
     if (g_wbs.thread_running) {
         g_wbs.stop_requested = true;
         th = g_wbs.thread;
@@ -700,12 +763,25 @@ void wallet_backup_stop(void)
     }
     pthread_mutex_unlock(&g_wbs.lock);
     if (joinable) {
+#ifdef ZCL_TESTING
+        if (!wbs_test_stop_observe(WBS_STOP_TEST_OWNER))
+            return;
+#endif
         pthread_join(th, NULL);
         pthread_mutex_lock(&g_wbs.lock);
         g_wbs.thread_running = false;
         g_wbs.stop_requested = false;
         g_wbs.db = NULL;
         g_wbs.key_change_pending = false;
+        wbs_config_retire_password(&g_wbs.cfg,
+                                   &g_wbs.owned_encrypt_password,
+                                   &g_wbs.owned_encrypt_password_cap);
+        memset(&g_wbs.cfg, 0, sizeof(g_wbs.cfg));
+        g_wbs.stop_completion++;
+        int notify_rc = pthread_cond_broadcast(&g_wbs_stopped);
+        if (notify_rc != 0)
+            LOG_WARN("wallet_backup", "stop: retirement notification failed (%d)",
+                     notify_rc);
         pthread_mutex_unlock(&g_wbs.lock);
     }
 #ifdef ZCL_TESTING

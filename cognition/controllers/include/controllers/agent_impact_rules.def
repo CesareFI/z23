@@ -2161,13 +2161,13 @@ AGENT_IMPACT_RULE("engine/services/src/consensus_state_publication_decide.c|engi
  * failure into a green that proves nothing, so they are deliberately absent
  * and the omission is named in each comment. */
 
-/* wallet-backup configuration defaults + the WALLET_BACKUP_PASSWORD policy,
- * split out of wallet_backup_service.c. test_wallet_backup calls
- * wallet_backup_config_defaults() at eight sites before driving each backup.
+/* wallet-backup configuration defaults, owned password lifetime, and the
+ * WALLET_BACKUP_PASSWORD policy. test_wallet_backup calls defaults before
+ * driving backups and explicitly exercises the environment-set arm.
  * NOT carrying the parent rule's wallet_backup_port / wallet_restore: neither
  * test names this entry point, and its only other caller is boot.c's app_init,
- * which no test runs. The env-set arm of the password policy is unexercised —
- * every test takes the unset arm. */
+ * which no test runs. Service tests cover password-copy OOM, caller mutation,
+ * and full-allocation retirement through start/now/stop. */
 AGENT_IMPACT_RULE("contexts/wallet/services/src/wallet_backup_config.c", "wallet_backup make_lint_gates")
 
 /* The S4 benchmark executor's sandbox escape suite (three forked canaries)

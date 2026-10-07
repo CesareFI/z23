@@ -25,6 +25,7 @@
 #endif
 
 #include "platform/directory_compat.h"
+#include "platform/environment_compat.h"
 #include "platform/file_sync.h"
 #include "platform/private_directory.h"
 #include "platform/private_file.h"
@@ -32,6 +33,9 @@
 #include "json/json.h"
 
 #include "services/wallet_backup_service.h"
+#include "services/wallet_backup_internal.h"
+#include "core/serialize.h"
+#include "support/cleanse.h"
 #include "event/event.h"
 #include "util/supervisor.h"
 
@@ -59,6 +63,24 @@
  * POSIX platforms see. */
 #define O_CLOEXEC 0
 #endif
+
+/* Password retirement observations are declared in the owning header. */
+
+static const char wb_env_name[] = "WALLET_BACKUP_PASSWORD";
+#define WB_FIXTURE_CREDENTIAL_CAP 17
+
+static void wb_fixture_credential(
+    char out[static WB_FIXTURE_CREDENTIAL_CAP], bool alternate)
+{
+    static const uint8_t bytes[WB_FIXTURE_CREDENTIAL_CAP - 1] = {
+        0x66, 0x69, 0x78, 0x74, 0x75, 0x72, 0x65, 0x2d,
+        0x63, 0x72, 0x65, 0x64, 0x2d, 0x30, 0x30, 0x31,
+    };
+    memcpy(out, bytes, sizeof(bytes));
+    if (alternate)
+        out[sizeof(bytes) - 1] = 0x32;
+    out[sizeof(bytes)] = '\0';
+}
 
 /* ── Event observer ────────────────────────────────────────── */
 
@@ -100,38 +122,13 @@ struct wb_fixture {
     struct node_db ndb;
 };
 
-/* This suite's whole point is proving the *bytes* land in a separate backup
- * file (see the file banner) — not proving fsync() takes any particular
- * amount of wall time on the box running the suite. Every subtest does at
- * least one real durable write (write-temp + fsync + atomic rename + parent
- * dir fsync), and this file alone drives ~25 of them; on a journaled disk
- * shared with concurrent lanes each fsync can queue behind someone else's
- * journal commit (observed: threads parked in jbd2_log_wait_commit).
- * tmpfs has no journal to queue behind, so route the fixture through
- * /dev/shm where it's writable (Linux) and fall back to /tmp otherwise
- * (macOS has no /dev/shm) — the durability *calls* are unchanged, only
- * their backing store is memory instead of disk when memory is available. */
-static const char *wb_test_tmp_root(void)
-{
-    static int cached = -1; /* -1 unknown, 0 = /tmp, 1 = /dev/shm */
-    if (cached < 0)
-        cached = (access("/dev/shm", W_OK) == 0) ? 1 : 0;
-    return cached ? "/dev/shm" : "/tmp";
-}
-
 static bool wb_fixture_init(struct wb_fixture *f, const char *tag)
 {
     memset(f, 0, sizeof(*f));
-    char datadir[256], backup_dir[256];
-    snprintf(datadir, sizeof(datadir),
-             "%s/zcl_wb_test_%d_%s_src", wb_test_tmp_root(),
-             (int)getpid(), tag);
-    snprintf(backup_dir, sizeof(backup_dir),
-             "%s/zcl_wb_test_%d_%s_dst", wb_test_tmp_root(),
-             (int)getpid(), tag);
-    if (!test_abs_path(datadir, f->datadir, sizeof(f->datadir)) ||
-        !test_abs_path(backup_dir, f->backup_dir, sizeof(f->backup_dir)))
+    if (!test_ensure_tmproot())
         return false;
+    test_fmt_tmpdir(f->datadir, sizeof(f->datadir), "zcl_wb_src", tag);
+    test_fmt_tmpdir(f->backup_dir, sizeof(f->backup_dir), "zcl_wb_dst", tag);
     platform_directory_create(f->datadir, 0755);
     /* Build the fixture through the same owner-private platform seam the
      * service validates.  A plain Windows mkdir inherits the parent DACL and
@@ -1107,7 +1104,616 @@ static int t_encrypt_requires_password(void)
     return failures;
 }
 
-/* ── 15. Rotation + listing count .enc files ─────────────────── */
+/* ── 15. Config borrows the environment password ────────────── */
+
+struct wb_saved_password_env {
+    char *value;
+    size_t cap;
+    bool was_set;
+};
+
+static bool wb_password_env_save(struct wb_saved_password_env *saved)
+{
+    memset(saved, 0, sizeof(*saved));
+    const char *value = getenv(wb_env_name);
+    if (!value)
+        return true;
+    size_t len = strlen(value);
+    if (len == SIZE_MAX)
+        return false;
+    size_t cap = len + 1;
+    char *copy = zcl_malloc(cap, "wallet_backup_test_env_save");
+    if (!copy)
+        return false;
+    saved->cap = cap;
+    saved->value = copy;
+    memcpy(saved->value, value, saved->cap);
+    saved->was_set = true;
+    return true;
+}
+
+static bool wb_password_env_restore(struct wb_saved_password_env *saved)
+{
+    bool restored = saved->was_set
+        ? platform_environment_set(wb_env_name, saved->value, 1) == 0
+#if defined(_WIN32)
+        : platform_environment_set(wb_env_name, "", 1) == 0;
+#else
+        : unsetenv(wb_env_name) == 0;
+#endif
+    if (saved->value) {
+        memory_cleanse(saved->value, saved->cap);
+        struct byte_stream retired = {
+            .data = (unsigned char *)saved->value,
+            .owns_data = true,
+        };
+        stream_free(&retired);
+    }
+    memset(saved, 0, sizeof(*saved));
+    return restored;
+}
+
+static int t_env_password_is_borrowed(void)
+{
+    int failures = 0;
+    struct wb_saved_password_env saved_env;
+    bool saved = wb_password_env_save(&saved_env);
+    char primary[WB_FIXTURE_CREDENTIAL_CAP];
+    char alternate[WB_FIXTURE_CREDENTIAL_CAP];
+    wb_fixture_credential(primary, false);
+    wb_fixture_credential(alternate, true);
+    const char *old_password = getenv(wb_env_name);
+    const char *test_password = old_password &&
+        strcmp(old_password, primary) == 0 ? alternate : primary;
+    bool installed = saved &&
+        platform_environment_set(wb_env_name, test_password, 1) == 0;
+    struct wallet_backup_config cfg = {0};
+    bool borrowed = false;
+    if (installed) {
+        zcl_alloc_fault_clear();
+        zcl_alloc_fault_fail_next("wallet_backup_env_pw");
+        wallet_backup_config_defaults(&cfg);
+        borrowed = cfg.encrypt && cfg.encrypt_password &&
+            cfg.encrypt_password == getenv(wb_env_name) &&
+            strcmp(cfg.encrypt_password, test_password) == 0 &&
+            zcl_alloc_fault_armed_label() != NULL;
+        zcl_alloc_fault_clear();
+    }
+
+    bool restored = saved && wb_password_env_restore(&saved_env);
+    WB_RUN("wbenc: config borrows env password without an immortal copy",
+           installed && borrowed && restored);
+    return failures;
+}
+
+/* ── 16. Service-owned password copy fails closed on OOM ─────── */
+
+static int t_service_password_copy_oom(void)
+{
+    int failures = 0;
+    wb_install_observer();
+    supervisor_reset_for_testing();
+
+    struct wb_fixture f;
+    if (!wb_fixture_init(&f, "encpw_oom")) {
+        printf("wbenc: password OOM fixture setup failed\n");
+        return 1;
+    }
+    wb_seed_keys(&f.ndb, 1);
+
+    struct wallet_backup_config cfg;
+    wallet_backup_config_defaults(&cfg);
+    cfg.backup_dir = f.backup_dir;
+    cfg.interval_seconds = 999999;
+    cfg.encrypt = true;
+    char credential[WB_FIXTURE_CREDENTIAL_CAP];
+    wb_fixture_credential(credential, false);
+    cfg.encrypt_password = credential;
+
+    zcl_alloc_fault_clear();
+    zcl_alloc_fault_fail_next("wallet_backup_password");
+    struct zcl_result started = wallet_backup_start(&cfg, &f.ndb);
+    bool fault_consumed = zcl_alloc_fault_armed_label() == NULL;
+    zcl_alloc_fault_clear();
+    wallet_backup_stop();
+
+    struct wallet_backup_status status;
+    wallet_backup_status_snapshot(&status);
+    bool no_files = wb_count_dir_suffix(f.backup_dir,
+                                        WALLET_BACKUP_FILENAME_SUFFIX) == 0 &&
+                    wb_count_dir_suffix(f.backup_dir,
+                                        WALLET_BACKUP_FILENAME_SUFFIX_ENC) == 0;
+    WB_RUN("wbenc: service password copy OOM refuses before thread start",
+           !started.ok && started.code == -25 && fault_consumed &&
+           !status.running && supervisor_child_count_total() == 0 && no_files);
+
+    wb_fixture_tear_down(&f);
+    supervisor_reset_for_testing();
+    return failures;
+}
+
+/* ── 17. Service owns and retires the encryption password ────── */
+
+static bool wb_password_run_counts_match(
+    const struct wallet_backup_status *base,
+    const struct wallet_backup_status *first,
+    const struct wallet_backup_status *latest)
+{
+    return first->total_runs == base->total_runs + 1 &&
+           latest->total_runs == base->total_runs + 2 &&
+           latest->total_failures == base->total_failures;
+}
+
+static int t_service_password_lifetime(void)
+{
+    int failures = 0;
+    wb_install_observer();
+    supervisor_reset_for_testing();
+
+    struct wb_fixture f;
+    if (!wb_fixture_init(&f, "encpw_lifetime")) {
+        printf("wbenc: password lifetime fixture setup failed\n");
+        return 1;
+    }
+    int seeded = wb_seed_keys(&f.ndb, 2);
+    char password[WB_FIXTURE_CREDENTIAL_CAP];
+    char expected[WB_FIXTURE_CREDENTIAL_CAP];
+    wb_fixture_credential(password, false);
+    wb_fixture_credential(expected, false);
+
+    struct wallet_backup_config cfg;
+    wallet_backup_config_defaults(&cfg);
+    cfg.backup_dir = f.backup_dir;
+    cfg.interval_seconds = 999999;
+    cfg.encrypt = true;
+    cfg.encrypt_password = password;
+
+    struct wallet_backup_status base;
+    wallet_backup_status_snapshot(&base);
+    wallet_backup_test_password_retirement_reset();
+    bool started = wallet_backup_start(&cfg, &f.ndb).ok;
+    struct wallet_backup_status first;
+    if (started)
+        wb_wait_runs_past(base.total_runs, &first);
+    else
+        wallet_backup_status_snapshot(&first);
+
+    memset(password, 'x', sizeof(password) - 1);
+    password[sizeof(password) - 1] = '\0';
+    bool ran_after_caller_change = wallet_backup_now().ok;
+    struct wallet_backup_status latest;
+    wallet_backup_status_snapshot(&latest);
+    wallet_backup_stop();
+
+    size_t retired_len = 0;
+    bool retired_zero =
+        wallet_backup_test_password_retirement_snapshot(&retired_len);
+    char restored[640];
+    snprintf(restored, sizeof(restored), "%s/restored-password.sqlite",
+             f.backup_dir);
+    bool decrypted = latest.last_path[0] != '\0' &&
+        wallet_backup_decrypt_file(latest.last_path, restored, expected).ok;
+    int64_t rows = decrypted
+        ? wb_count_rows_in_file(restored, "wallet_keys") : -1;
+
+    WB_RUN("wbenc: service owns password and retires its full allocation",
+           started && ran_after_caller_change &&
+           wb_password_run_counts_match(&base, &first, &latest) &&
+           seeded == 2 && rows == 2 &&
+           retired_len == sizeof(password) && retired_zero);
+
+    wb_fixture_tear_down(&f);
+    supervisor_reset_for_testing();
+    return failures;
+}
+
+/* ── 18. Overlapping stoppers retire one worker only ─────────── */
+
+static struct {
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    unsigned owners;
+    bool waiting;
+    bool returning;
+    bool release_owner;
+    bool release_waiter;
+    bool failed;
+} g_wb_stop_gate = {
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .changed = PTHREAD_COND_INITIALIZER,
+};
+
+/* Rendezvous follow observed lifecycle stages; the group watchdog bounds hangs. */
+static bool wb_stop_gate_wait(const bool *ready)
+{
+    while (!*ready && !g_wb_stop_gate.failed) {
+        int rc = pthread_cond_wait(&g_wb_stop_gate.changed,
+                                   &g_wb_stop_gate.lock);
+        if (rc != 0) {
+            g_wb_stop_gate.failed = true;
+            printf("wbenc: stop rendezvous failed (%d)\n", rc);
+        }
+    }
+    return *ready && !g_wb_stop_gate.failed;
+}
+
+static bool wb_stop_observe(enum wbs_stop_test_stage stage)
+{
+    pthread_mutex_lock(&g_wb_stop_gate.lock);
+    bool admitted = true;
+    if (stage == WBS_STOP_TEST_OWNER) {
+        g_wb_stop_gate.owners++;
+        if (g_wb_stop_gate.owners != 1) {
+            g_wb_stop_gate.failed = true;
+            admitted = false;
+        }
+    } else if (stage == WBS_STOP_TEST_WAITING) {
+        g_wb_stop_gate.waiting = true;
+    } else if (stage == WBS_STOP_TEST_RETURNING) {
+        g_wb_stop_gate.returning = true;
+        if (!g_wb_stop_gate.release_owner)
+            g_wb_stop_gate.failed = true;
+    }
+    pthread_cond_broadcast(&g_wb_stop_gate.changed);
+    if (stage == WBS_STOP_TEST_OWNER || stage == WBS_STOP_TEST_WORKER_EXIT)
+        wb_stop_gate_wait(&g_wb_stop_gate.release_owner);
+    else if (stage == WBS_STOP_TEST_RETURNING)
+        wb_stop_gate_wait(&g_wb_stop_gate.release_waiter);
+    pthread_mutex_unlock(&g_wb_stop_gate.lock);
+    return admitted;
+}
+
+static void *wb_stop_caller(void *unused)
+{
+    (void)unused;
+    wallet_backup_stop();
+    return NULL;
+}
+
+static bool wb_stop_gate_prepare(void)
+{
+    g_wb_stop_gate.owners = 0;
+    g_wb_stop_gate.waiting = false;
+    g_wb_stop_gate.returning = false;
+    g_wb_stop_gate.release_owner = false;
+    g_wb_stop_gate.release_waiter = false;
+    g_wb_stop_gate.failed = false;
+    return true;
+}
+
+/* Start both real stop callers, hold the owner before join, and leave the
+ * waiter held outside the service lock after retirement. */
+static bool wb_overlap_stops(pthread_t *waiter, bool *waiter_created)
+{
+    pthread_t owner;
+    int rc = pthread_create(&owner, NULL, wb_stop_caller, NULL);
+    if (rc != 0) {
+        printf("wbenc: owner creation failed (%d)\n", rc);
+        return false;
+    }
+    pthread_mutex_lock(&g_wb_stop_gate.lock);
+    /* OWNER increments before broadcasting; wait on that observation. */
+    while (g_wb_stop_gate.owners == 0 && !g_wb_stop_gate.failed) {
+        rc = pthread_cond_wait(&g_wb_stop_gate.changed,
+                                   &g_wb_stop_gate.lock);
+        if (rc != 0)
+            g_wb_stop_gate.failed = true;
+    }
+    pthread_mutex_unlock(&g_wb_stop_gate.lock);
+    rc = pthread_create(waiter, NULL, wb_stop_caller, NULL);
+    *waiter_created = rc == 0;
+    if (rc != 0)
+        printf("wbenc: waiter creation failed (%d)\n", rc);
+    pthread_mutex_lock(&g_wb_stop_gate.lock);
+    bool overlapped = *waiter_created &&
+        wb_stop_gate_wait(&g_wb_stop_gate.waiting);
+    g_wb_stop_gate.release_owner = true;
+    pthread_cond_broadcast(&g_wb_stop_gate.changed);
+    bool retired = overlapped && wb_stop_gate_wait(&g_wb_stop_gate.returning);
+    pthread_mutex_unlock(&g_wb_stop_gate.lock);
+    rc = pthread_join(owner, NULL);
+    if (rc != 0)
+        printf("wbenc: owner join failed (%d)\n", rc);
+    return retired && rc == 0;
+}
+
+static bool wb_release_stop_waiter(pthread_t waiter, bool created)
+{
+    pthread_mutex_lock(&g_wb_stop_gate.lock);
+    g_wb_stop_gate.release_waiter = true;
+    pthread_cond_broadcast(&g_wb_stop_gate.changed);
+    bool single_owner = g_wb_stop_gate.owners == 1 && !g_wb_stop_gate.failed;
+    pthread_mutex_unlock(&g_wb_stop_gate.lock);
+    int rc = created ? pthread_join(waiter, NULL) : 0;
+    if (rc != 0)
+        printf("wbenc: waiter join failed (%d)\n", rc);
+    wbs_test_stop_observer_set(NULL);
+    return created && single_owner && rc == 0;
+}
+
+static bool wb_restarted_password_backup(struct wb_fixture *f,
+                                         const char *expected)
+{
+    struct wallet_backup_status status;
+    bool ran = wallet_backup_now().ok;
+    wallet_backup_status_snapshot(&status);
+    char restored[640];
+    snprintf(restored, sizeof(restored), "%s/restored-restart.sqlite",
+             f->backup_dir);
+    bool decrypted = ran && status.running && status.last_path[0] &&
+        wallet_backup_decrypt_file(status.last_path, restored, expected).ok;
+    return decrypted && wb_count_rows_in_file(restored, "wallet_keys") == 2;
+}
+
+static int t_overlapping_stop_password_lifetime(void)
+{
+    int failures = 0;
+    supervisor_reset_for_testing();
+    struct wb_fixture f;
+    if (!wb_fixture_init(&f, "encpw_overlap")) {
+        printf("wbenc: overlapping stop fixture setup failed\n");
+        return 1;
+    }
+    int seeded = wb_seed_keys(&f.ndb, 2);
+    char password[WB_FIXTURE_CREDENTIAL_CAP];
+    char expected[WB_FIXTURE_CREDENTIAL_CAP];
+    wb_fixture_credential(password, false);
+    wb_fixture_credential(expected, true);
+    struct wallet_backup_config cfg;
+    wallet_backup_config_defaults(&cfg);
+    cfg.backup_dir = f.backup_dir;
+    cfg.interval_seconds = 999999;
+    cfg.encrypt = true;
+    cfg.encrypt_password = password;
+    bool started = wallet_backup_start(&cfg, &f.ndb).ok;
+    bool prepared = started && wb_stop_gate_prepare();
+    pthread_t waiter = {0};
+    bool created = false;
+    bool retired = false;
+    if (prepared) {
+        wbs_test_stop_observer_set(wb_stop_observe);
+        retired = wb_overlap_stops(&waiter, &created);
+    }
+    wb_fixture_credential(password, true);
+    bool restarted = retired && wallet_backup_start(&cfg, &f.ndb).ok;
+    memset(password, 'x', sizeof(password) - 1);
+    bool single_owner = prepared && wb_release_stop_waiter(waiter, created);
+    bool backup = restarted && wb_restarted_password_backup(&f, expected);
+    WB_RUN("wbenc: overlapping stop cannot retire a restarted password",
+           seeded == 2 && started && retired && restarted && single_owner && backup);
+    wallet_backup_stop();
+    wb_fixture_tear_down(&f);
+    supervisor_reset_for_testing();
+    return failures;
+}
+
+/* ── 19. A waiter returns after its own retirement ──────────── */
+
+static struct {
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    unsigned owners;
+    bool waiting;
+    bool rechecking;
+    bool returned;
+    bool release_first;
+    bool release_second;
+    bool release_waiter;
+    bool failed;
+} g_wb_completion_gate = {
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .changed = PTHREAD_COND_INITIALIZER,
+};
+
+/* Caller holds the fixture mutex. A wait error fails the rendezvous. */
+static bool wb_completion_wait(const bool *ready)
+{
+    while (!*ready && !g_wb_completion_gate.failed) {
+        int rc = pthread_cond_wait(&g_wb_completion_gate.changed,
+                                   &g_wb_completion_gate.lock);
+        if (rc != 0) {
+            printf("wbenc: completion rendezvous failed (%d)\n", rc);
+            g_wb_completion_gate.failed = true;
+        }
+    }
+    return *ready && !g_wb_completion_gate.failed;
+}
+
+static bool wb_completion_owner(void)
+{
+    unsigned owner = ++g_wb_completion_gate.owners;
+    if (owner > 2) {
+        g_wb_completion_gate.failed = true;
+        pthread_cond_broadcast(&g_wb_completion_gate.changed);
+        return false;
+    }
+    pthread_cond_broadcast(&g_wb_completion_gate.changed);
+    wb_completion_wait(owner == 1 ? &g_wb_completion_gate.release_first
+                                 : &g_wb_completion_gate.release_second);
+    return true;
+}
+
+static bool wb_completion_observe(enum wbs_stop_test_stage stage)
+{
+    pthread_mutex_lock(&g_wb_completion_gate.lock);
+    bool admitted = true;
+    if (stage == WBS_STOP_TEST_OWNER)
+        admitted = wb_completion_owner();
+    else if (stage == WBS_STOP_TEST_WAITING)
+        g_wb_completion_gate.waiting = true;
+    else if (stage == WBS_STOP_TEST_RECHECK) {
+        g_wb_completion_gate.rechecking = true;
+        pthread_cond_broadcast(&g_wb_completion_gate.changed);
+        wb_completion_wait(&g_wb_completion_gate.release_waiter);
+    } else if (stage == WBS_STOP_TEST_REWAIT) {
+        printf("wbenc: completed retirement incorrectly waits for later owner\n");
+        g_wb_completion_gate.failed = true;
+        admitted = false;
+    }
+    pthread_cond_broadcast(&g_wb_completion_gate.changed);
+    pthread_mutex_unlock(&g_wb_completion_gate.lock);
+    return admitted;
+}
+
+static void *wb_completion_waiter(void *unused)
+{
+    (void)unused;
+    wallet_backup_stop();
+    pthread_mutex_lock(&g_wb_completion_gate.lock);
+    g_wb_completion_gate.returned = true;
+    pthread_cond_broadcast(&g_wb_completion_gate.changed);
+    pthread_mutex_unlock(&g_wb_completion_gate.lock);
+    return NULL;
+}
+
+static bool wb_completion_prepare(void)
+{
+    g_wb_completion_gate.owners = 0;
+    g_wb_completion_gate.waiting = false;
+    g_wb_completion_gate.rechecking = false;
+    g_wb_completion_gate.returned = false;
+    g_wb_completion_gate.release_first = false;
+    g_wb_completion_gate.release_second = false;
+    g_wb_completion_gate.release_waiter = false;
+    g_wb_completion_gate.failed = false;
+    return true;
+}
+
+static bool wb_completion_await_owner(unsigned expected)
+{
+    pthread_mutex_lock(&g_wb_completion_gate.lock);
+    while (g_wb_completion_gate.owners < expected &&
+           !g_wb_completion_gate.failed) {
+        int rc = pthread_cond_wait(&g_wb_completion_gate.changed,
+                                   &g_wb_completion_gate.lock);
+        if (rc != 0) {
+            printf("wbenc: completion owner wait failed (%d)\n", rc);
+            g_wb_completion_gate.failed = true;
+        }
+    }
+    bool ready = g_wb_completion_gate.owners == expected &&
+                 !g_wb_completion_gate.failed;
+    pthread_mutex_unlock(&g_wb_completion_gate.lock);
+    return ready;
+}
+
+static bool wb_completion_retire_first(void)
+{
+    pthread_mutex_lock(&g_wb_completion_gate.lock);
+    bool waiting = wb_completion_wait(&g_wb_completion_gate.waiting);
+    g_wb_completion_gate.release_first = true;
+    pthread_cond_broadcast(&g_wb_completion_gate.changed);
+    bool rechecking = waiting &&
+        wb_completion_wait(&g_wb_completion_gate.rechecking);
+    pthread_mutex_unlock(&g_wb_completion_gate.lock);
+    return rechecking;
+}
+
+/* A repeated wait is a direct failure, recorded by the observer before it
+ * refuses that fixture caller. Cleanup then releases the second owner. */
+static bool wb_completion_returned_before_second(void)
+{
+    pthread_mutex_lock(&g_wb_completion_gate.lock);
+    g_wb_completion_gate.release_waiter = true;
+    pthread_cond_broadcast(&g_wb_completion_gate.changed);
+    int rc = 0;
+    while (!g_wb_completion_gate.returned && rc == 0)
+        rc = pthread_cond_wait(&g_wb_completion_gate.changed,
+                                   &g_wb_completion_gate.lock);
+    bool returned = g_wb_completion_gate.returned && rc == 0 &&
+                    !g_wb_completion_gate.release_second &&
+                    !g_wb_completion_gate.failed;
+    if (!returned)
+        printf("wbenc: waiter did not return before second retirement (%d)\n", rc);
+    pthread_mutex_unlock(&g_wb_completion_gate.lock);
+    return returned;
+}
+
+static bool wb_completion_join(pthread_t thread, bool created)
+{
+    int rc = created ? pthread_join(thread, NULL) : 0;
+    if (rc != 0)
+        printf("wbenc: completion caller join failed (%d)\n", rc);
+    return rc == 0;
+}
+
+static void wb_completion_release_all(void)
+{
+    pthread_mutex_lock(&g_wb_completion_gate.lock);
+    g_wb_completion_gate.release_first = true;
+    g_wb_completion_gate.release_second = true;
+    g_wb_completion_gate.release_waiter = true;
+    pthread_cond_broadcast(&g_wb_completion_gate.changed);
+    pthread_mutex_unlock(&g_wb_completion_gate.lock);
+}
+
+static bool wb_completion_launch(pthread_t *thread, void *(*caller)(void *))
+{
+    int rc = pthread_create(thread, NULL, caller, NULL);
+    if (rc != 0)
+        printf("wbenc: completion caller creation failed (%d)\n", rc);
+    return rc == 0;
+}
+
+static int wb_completion_restart_order(const struct wallet_backup_config *cfg,
+                                       struct node_db *db)
+{
+    int failures = 0;
+    pthread_t first = {0}, waiter = {0}, second = {0};
+    wbs_test_stop_observer_set(wb_completion_observe);
+    bool first_created = wb_completion_launch(&first, wb_stop_caller);
+    bool first_owned = first_created && wb_completion_await_owner(1);
+    bool waiter_created = first_owned &&
+        wb_completion_launch(&waiter, wb_completion_waiter);
+    bool notified = waiter_created && wb_completion_retire_first();
+    /* Join proves A's notification and retirement completed before B starts. */
+    if (!notified)
+        wb_completion_release_all();
+    bool first_joined = wb_completion_join(first, first_created);
+    bool restarted = notified && first_joined && wallet_backup_start(cfg, db).ok;
+    bool second_created = restarted &&
+        wb_completion_launch(&second, wb_stop_caller);
+    bool second_owned = second_created && wb_completion_await_owner(2);
+    bool returned = second_owned && wb_completion_returned_before_second();
+    WB_RUN("wbenc: waiter returns while the later stop owner remains held",
+           notified && restarted && second_owned && returned);
+    wb_completion_release_all();
+    bool second_joined = wb_completion_join(second, second_created);
+    bool waiter_joined = wb_completion_join(waiter, waiter_created);
+    wbs_test_stop_observer_set(NULL);
+    failures += !first_joined + !second_joined + !waiter_joined;
+    return failures;
+}
+
+static int t_stop_waiter_completion_sequence(void)
+{
+    int failures = 0;
+    supervisor_reset_for_testing();
+    struct wb_fixture f;
+    if (!wb_fixture_init(&f, "stop_completion")) {
+        printf("wbenc: completion fixture setup failed\n");
+        return 1;
+    }
+    struct wallet_backup_config cfg;
+    wallet_backup_config_defaults(&cfg);
+    cfg.backup_dir = f.backup_dir;
+    cfg.interval_seconds = 999999;
+    cfg.encrypt = false;
+    bool started = wallet_backup_start(&cfg, &f.ndb).ok;
+    bool prepared = started && wb_completion_prepare();
+    if (!prepared) {
+        printf("wbenc: completion fixture start or preparation failed\n");
+        failures++;
+    }
+    if (prepared)
+        failures += wb_completion_restart_order(&cfg, &f.ndb);
+    wallet_backup_stop();
+    wb_fixture_tear_down(&f);
+    supervisor_reset_for_testing();
+    return failures;
+}
+
+/* ── 20. Rotation + listing count .enc files ─────────────────── */
 
 static int t_rotation_counts_enc(void)
 {
@@ -1265,6 +1871,11 @@ int test_wallet_backup(void)
     failures += t_rotation_timestamp_overflow_falls_back();
     failures += t_encrypted_service_run();
     failures += t_encrypt_requires_password();
+    failures += t_env_password_is_borrowed();
+    failures += t_service_password_copy_oom();
+    failures += t_service_password_lifetime();
+    failures += t_overlapping_stop_password_lifetime();
+    failures += t_stop_waiter_completion_sequence();
     failures += t_rotation_counts_enc();
     event_clear_observers(EV_WALLET_BACKUP);
     event_clear_observers(EV_WALLET_BACKUP_FAILED);

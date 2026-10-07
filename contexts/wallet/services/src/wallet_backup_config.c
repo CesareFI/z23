@@ -1,52 +1,51 @@
 // one-result-type-ok:config-defaults-fill-caller-struct — E2 (one way out):
-// this TU owns no fallible service surface. Both entry points return void
-// and fill a CALLER-owned struct wallet_backup_config; the single failure
-// they can meet (OOM copying WALLET_BACKUP_PASSWORD) is deliberately
-// encoded as encrypt=true with a NULL password so wallet_backup_start
-// refuses LOUDLY with a typed struct zcl_result (-24) instead of silently
-// writing plaintext. Every fallible wallet-backup surface (start, now,
-// now_encrypted, run_once) already returns struct zcl_result.
+// wallet_backup_config_defaults() fills a CALLER-owned config and cannot
+// report failure. The service-owned password installation path in this TU
+// is fallible and returns struct zcl_result.
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Purpose: wallet-backup configuration defaults and the
  * WALLET_BACKUP_PASSWORD environment encryption policy.
  *
- * Split out of contexts/wallet/services/src/wallet_backup_service.c when the lifecycle
- * half passed the 800-line shape ceiling. This TU owns exactly one seam:
- * how a caller-supplied struct wallet_backup_config is filled in before the
- * service is started. It touches no module state, no mutex, and no database
- * — the thread, status snapshot, supervisor contract, and diagnostics
- * dumper stay in wallet_backup_service.c; the one-shot snapshot primitive
- * is wallet_backup_run.c; rotation is wallet_backup_rotation.c; the WBE1
- * crypto is wallet_backup_crypto.c.
+ * Split out of contexts/wallet/services/src/wallet_backup_service.c when the
+ * lifecycle half passed the 800-line shape ceiling. This TU owns one seam:
+ * how caller-supplied configuration becomes service-owned configuration,
+ * including allocation and retirement of the full-length encryption
+ * password. It touches no module state, mutex, or database — the caller
+ * supplies every ownership slot. The thread, status snapshot, supervisor
+ * contract, and diagnostics dumper stay in wallet_backup_service.c; the
+ * one-shot snapshot primitive is wallet_backup_run.c; rotation is
+ * wallet_backup_rotation.c; the WBE1 crypto is wallet_backup_crypto.c.
  *
- * wallet_backup_config_defaults() is already declared in
- * services/wallet_backup_service.h, so this is a pure move with no linkage
- * change.
+ * The public defaults entry point stays in wallet_backup_service.h. Password
+ * ownership helpers are private to the wallet-backup service module.
  */
 
-#include "services/wallet_backup_service.h"
+#include "services/wallet_backup_internal.h"
+#include "core/serialize.h"
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "support/cleanse.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
+static const char wbs_alloc_label[] = "wallet_backup_password";
+
 /* WALLET_BACKUP_PASSWORD env policy: non-empty => encrypt; absent or
  * empty => plaintext with a one-time warning (the service is the
- * key-loss safety net, so it must not refuse to run). The password is
- * kept as a FULL-LENGTH heap copy: the --decrypt-wallet-backup restore
- * path derives its key from the raw env string, so truncating here
- * (e.g. into a fixed buffer) would encrypt every backup under a key
- * the documented recovery path can never re-derive. The copy is cached
- * and never freed — a running service's shallow config copy may still
- * reference it. */
+ * key-loss safety net, so it must not refuse to run). This pointer is a
+ * borrowed process-environment view used only until wallet_backup_start()
+ * makes the service-owned full-length copy. Keeping allocation and cleanup
+ * in the service avoids immortal copies while preserving exact password
+ * bytes for the documented restore path. */
 static void wbs_config_apply_env_password(struct wallet_backup_config *cfg)
 {
-    static char *cached_pw;
     static bool warned_plaintext;
     const char *env_pw = getenv("WALLET_BACKUP_PASSWORD");
     if (!env_pw || !*env_pw) {
@@ -58,25 +57,8 @@ static void wbs_config_apply_env_password(struct wallet_backup_config *cfg)
         }
         return;
     }
-    if (!cached_pw || strcmp(cached_pw, env_pw) != 0) {
-        size_t len = strlen(env_pw) + 1;
-        char *copy = zcl_malloc(len, "wallet_backup_env_pw");
-        if (!copy) {
-            /* encrypt=true with a NULL password makes
-             * wallet_backup_start fail loudly (-24) instead of
-             * silently writing plaintext against operator intent. */
-            LOG_WARN("wallet_backup",
-                     "cannot copy WALLET_BACKUP_PASSWORD (OOM) — backup "
-                     "start will refuse rather than fall back to plaintext");
-            cfg->encrypt = true;
-            cfg->encrypt_password = NULL;
-            return;
-        }
-        memcpy(copy, env_pw, len);
-        cached_pw = copy;   /* old copy (if any) intentionally leaked */
-    }
     cfg->encrypt = true;
-    cfg->encrypt_password = cached_pw;
+    cfg->encrypt_password = env_pw;
 }
 
 void wallet_backup_config_defaults(struct wallet_backup_config *cfg)
@@ -89,4 +71,96 @@ void wallet_backup_config_defaults(struct wallet_backup_config *cfg)
     /* Fleet-wide encryption policy rides the env var so every
      * config_defaults caller (boot included) inherits it. */
     wbs_config_apply_env_password(cfg);
+}
+
+#ifdef ZCL_TESTING
+static _Atomic(wbs_stop_test_observer) g_wbs_stop_observer;
+
+void wbs_test_stop_observer_set(wbs_stop_test_observer observer)
+{
+    atomic_store(&g_wbs_stop_observer, observer);
+}
+
+bool wbs_test_stop_observe(enum wbs_stop_test_stage stage)
+{
+    wbs_stop_test_observer observer = atomic_load(&g_wbs_stop_observer);
+    return observer ? observer(stage) : true;
+}
+
+static _Atomic size_t g_wbs_password_retired_len;
+static _Atomic bool g_wbs_password_retired_zero;
+
+void wallet_backup_test_password_retirement_reset(void)
+{
+    atomic_store(&g_wbs_password_retired_len, 0);
+    atomic_store(&g_wbs_password_retired_zero, false);
+}
+
+bool wallet_backup_test_password_retirement_snapshot(size_t *retired_len)
+{
+    if (retired_len)
+        *retired_len = atomic_load(&g_wbs_password_retired_len);
+    return atomic_load(&g_wbs_password_retired_zero);
+}
+
+static void wbs_test_observe_password_retirement(const char *password,
+                                                 size_t password_cap)
+{
+    bool all_zero = true;
+    for (size_t i = 0; i < password_cap; i++)
+        all_zero = all_zero && password[i] == '\0';
+    atomic_store(&g_wbs_password_retired_len, password_cap);
+    atomic_store(&g_wbs_password_retired_zero, all_zero);
+}
+#endif
+
+void wbs_config_retire_password(struct wallet_backup_config *cfg,
+                                char **owned_password,
+                                size_t *owned_password_cap)
+{
+    char *password = *owned_password;
+    size_t password_cap = *owned_password_cap;
+    *owned_password = NULL;
+    *owned_password_cap = 0;
+    cfg->encrypt_password = NULL;
+    if (!password)
+        return;
+    memory_cleanse(password, password_cap);
+#ifdef ZCL_TESTING
+    wbs_test_observe_password_retirement(password, password_cap);
+#endif
+    /* Adopt the already-cleansed allocation for the shared buffer releaser. */
+    struct byte_stream retired = {
+        .data = (unsigned char *)password,
+        .owns_data = true,
+    };
+    stream_free(&retired);
+}
+
+struct zcl_result wbs_config_install(
+    const struct wallet_backup_config *source,
+    struct wallet_backup_config *destination,
+    char **owned_password,
+    size_t *owned_password_cap)
+{
+    char *password = NULL;
+    size_t password_cap = 0;
+    if (source->encrypt) {
+        size_t password_len = strlen(source->encrypt_password);
+        if (password_len == SIZE_MAX)
+            return ZCL_ERR(-25, "start: encryption password is too long");
+        password_cap = password_len + 1;
+        password = zcl_malloc(password_cap, wbs_alloc_label);
+        if (!password)
+            return ZCL_ERR(-25,
+                           "start: cannot allocate encryption password");
+        memcpy(password, source->encrypt_password, password_cap);
+    }
+    wbs_config_retire_password(destination, owned_password,
+                               owned_password_cap);
+    *destination = *source;
+    *owned_password = password;
+    *owned_password_cap = password_cap;
+    destination->encrypt_password = password;
+    return ZCL_OK;
 }

@@ -111,10 +111,21 @@ struct wallet_backup_config {
     int         interval_seconds;  /* 0 = use default */
     int         max_versions;      /* 0 = use default */
     bool        encrypt;           /* encrypt snapshots (WBE1); requires encrypt_password */
-    const char *encrypt_password;  /* env WALLET_BACKUP_PASSWORD if encrypt */
+    /* Borrowed through wallet_backup_start(); the service keeps and retires
+     * its own full-length copy while the worker is running. */
+    const char *encrypt_password;
 };
 
+/* Defaults borrow WALLET_BACKUP_PASSWORD from the process environment.
+ * Keep that view valid until start returns; an environment mutation before
+ * start requires refreshing defaults. Start retains its own password copy. */
 void wallet_backup_config_defaults(struct wallet_backup_config *cfg);
+
+#ifdef ZCL_TESTING
+/* Observe the full service-owned allocation after cleansing, before release. */
+void wallet_backup_test_password_retirement_reset(void);
+bool wallet_backup_test_password_retirement_snapshot(size_t *retired_len);
+#endif
 
 /* ── Status snapshot (read-only) ────────────────────────────── */
 
