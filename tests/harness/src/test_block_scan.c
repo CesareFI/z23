@@ -21,6 +21,10 @@
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 #include "wallet/wallet.h"
+#ifdef ZCL_TESTING
+#include "platform/read_mapping_testing.h"
+#endif
+#include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -29,6 +33,139 @@
 /* ── block_index_cmp_height ────────────────────────────────────── */
 
 int boot_block_scan_test_worker_count(int nfiles, uint32_t cpus);
+
+#ifndef _WIN32
+static bool scan_descriptor_matches_policy(
+    int fd, const struct platform_read_mapping *mapping)
+{
+    int descriptor_flags = fcntl(fd, F_GETFD);
+    int access_flags = fcntl(fd, F_GETFL);
+    return descriptor_flags >= 0 && (descriptor_flags & FD_CLOEXEC) != 0 &&
+           access_flags >= 0 && (access_flags & O_ACCMODE) == O_RDONLY &&
+           mapping->size == 1 && mapping->data && mapping->data[0] == 'x';
+}
+
+struct scan_descriptor_fixture {
+    char dir[256];
+    struct stat identity;
+    struct node_db ndb;
+    struct active_chain chain;
+    struct block_index index;
+    struct scan_addr_ht ht;
+    unsigned observed;
+    bool policy_ok;
+    bool bytes_ok;
+    int descriptor;
+};
+
+static void scan_descriptor_observe(
+    int fd, const struct platform_read_mapping *mapping, void *context)
+{
+    struct scan_descriptor_fixture *fixture = context;
+    struct stat identity;
+    if (fstat(fd, &identity) != 0) {
+        fixture->policy_ok = false;
+        return;
+    }
+    if (identity.st_dev != fixture->identity.st_dev ||
+        identity.st_ino != fixture->identity.st_ino)
+        return;
+    fixture->observed++;
+    fixture->descriptor = fd;
+    fixture->bytes_ok = mapping->data && mapping->size == 1 &&
+                        mapping->data[0] == 'x';
+    fixture->policy_ok = scan_descriptor_matches_policy(fd, mapping);
+}
+
+static bool scan_descriptor_fixture_open(struct scan_descriptor_fixture *fixture)
+{
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->descriptor = -1;
+    active_chain_init(&fixture->chain);
+    scan_aht_init(&fixture->ht);
+    block_index_init(&fixture->index);
+    fixture->index.nHeight = 0;
+    fixture->index.nStatus = BLOCK_HAVE_DATA;
+    fixture->index.nFile = 0;
+    fixture->index.nDataPos = 0;
+    test_make_tmpdir(fixture->dir, sizeof(fixture->dir),
+                     "block_scan", "cloexec");
+    char blocks[320], path[384];
+    snprintf(blocks, sizeof(blocks), "%s/blocks", fixture->dir);
+    snprintf(path, sizeof(path), "%s/blk00000.dat", blocks);
+    if (mkdir(blocks, 0700) != 0)
+        return false;
+    int seed = open(path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+    if (seed < 0)
+        return false;
+    bool ok = write(seed, "x", 1) == 1 &&
+              fstat(seed, &fixture->identity) == 0;
+    ok = close(seed) == 0 && ok;
+    return ok && node_db_open(&fixture->ndb, ":memory:") &&
+           active_chain_install_tip_slot(&fixture->chain, &fixture->index);
+}
+
+static bool scan_descriptor_fixture_close(struct scan_descriptor_fixture *fixture)
+{
+    scan_aht_free(&fixture->ht);
+    active_chain_free(&fixture->chain);
+    if (fixture->ndb.open)
+        node_db_close(&fixture->ndb);
+    return test_rm_rf_recursive(fixture->dir) == 0;
+}
+
+static bool scan_descriptor_pass2(struct scan_descriptor_fixture *fixture)
+{
+    const bool file_has_match[1] = {true};
+    const struct timespec started = {.tv_sec = 1};
+    /* Observe the real mapping boundary, not the new wallet helper. The
+     * one-byte fixture is intentionally unparsable; observation precedes
+     * deserialization and the empty result must still commit successfully. */
+    platform_read_mapping_observe_for_testing(scan_descriptor_observe, fixture);
+    int result = wallet_scan_pass2_execute(
+        &fixture->ndb, &fixture->chain, fixture->dir, 0, 0,
+        &fixture->ht, file_has_match, 1, &started, &started);
+    platform_read_mapping_observe_for_testing(NULL, NULL);
+    bool closed = fixture->descriptor >= 0 &&
+                  fcntl(fixture->descriptor, F_GETFD) == -1 && errno == EBADF;
+    printf("[Pass2 result=%d observed=%u bytes=%d policy=%d closed=%d] ",
+           result, fixture->observed, fixture->bytes_ok,
+           fixture->policy_ok, closed);
+    return result == 0 && fixture->observed == 1 && fixture->bytes_ok &&
+           fixture->policy_ok && closed;
+}
+
+static bool scan_mapping_refusal_is_empty(void)
+{
+    struct platform_read_mapping mapping = {.size = 1};
+    int fd = wallet_scan_block_file_map(NULL, &mapping);
+    bool ok = fd == -1 && !mapping.data && mapping.size == 0 &&
+              !mapping.native_mapping;
+    platform_read_mapping_close(&mapping);
+    if (fd >= 0)
+        close(fd);
+    return ok;
+}
+#endif
+
+static int test_scan_block_descriptor_cloexec(void)
+{
+#ifdef _WIN32
+    return 0; /* Windows CRT descriptors have no POSIX exec boundary. */
+#else
+    printf("GIVEN a matched block file WHEN production Pass2 maps it "
+           "THEN its descriptor is close-on-exec... ");
+    struct scan_descriptor_fixture fixture;
+    bool ok = scan_descriptor_fixture_open(&fixture);
+    if (ok)
+        ok = scan_descriptor_pass2(&fixture);
+    ok = scan_mapping_refusal_is_empty() && ok;
+    ok = scan_descriptor_fixture_close(&fixture) && ok;
+    if (ok) { printf("OK\n"); return 0; }
+    printf("FAIL\n");
+    return 1;
+#endif
+}
 
 static int test_scan_storage_concurrency(void)
 {
@@ -596,6 +733,7 @@ int test_block_scan(void)
 
     printf("\n=== Block Scan & Chain Propagation Tests ===\n");
 
+    failures += test_scan_block_descriptor_cloexec();
     failures += test_scan_storage_concurrency();
     failures += test_cmp_height();
     failures += test_failed_child_propagation();

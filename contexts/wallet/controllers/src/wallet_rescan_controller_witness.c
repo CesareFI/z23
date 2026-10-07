@@ -6,6 +6,7 @@
  * rescanwitnesses RPC: rebuild Sapling Merkle witnesses for unspent notes. */
 
 #include "controllers/wallet_rescan_controller_internal.h"
+#include "services/wallet_scan_service.h"
 
 struct wallet_rescan_block_mapping {
     int file_num;
@@ -42,22 +43,9 @@ static bool wallet_rescan_block_mapping_open(
     if (path_len < 0 || (size_t)path_len >= sizeof(path))
         return false;
 
-    int flags = O_RDONLY;
-#ifdef O_BINARY
-    flags |= O_BINARY;
-#endif
-    int fd = open(path, flags);
+    int fd = wallet_scan_block_file_map(path, &mapping->view);
     if (fd < 0)
         return false;
-
-    struct stat fst;
-    if (fstat(fd, &fst) != 0 || fst.st_size <= 0 ||
-        (uintmax_t)fst.st_size > (uintmax_t)SIZE_MAX ||
-        !platform_read_mapping_open(&mapping->view, fd,
-                                    (size_t)fst.st_size)) {
-        close(fd);
-        return false;
-    }
 
     mapping->fd = fd;
     mapping->file_num = file_num;

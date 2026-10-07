@@ -4,6 +4,9 @@
  * and Windows file mappings. */
 
 #include "platform/read_mapping.h"
+#ifdef ZCL_TESTING
+#include "platform/read_mapping_testing.h"
+#endif
 #include "platform/positioned_file.h"
 
 #include <limits.h>
@@ -18,6 +21,21 @@
 
 #else
 #include <sys/mman.h>
+#endif
+
+#ifdef ZCL_TESTING
+static _Thread_local void (*read_mapping_observer)(
+    int, const struct platform_read_mapping *, void *);
+static _Thread_local void *read_mapping_observer_context;
+
+void platform_read_mapping_observe_for_testing(
+    void (*observer)(int fd, const struct platform_read_mapping *mapping,
+                     void *context),
+    void *context)
+{
+    read_mapping_observer = observer;
+    read_mapping_observer_context = context;
+}
 #endif
 
 void platform_read_mapping_init(struct platform_read_mapping *mapping)
@@ -54,6 +72,10 @@ bool platform_read_mapping_open(struct platform_read_mapping *mapping,
     mapping->data = (const uint8_t *)view;
 #endif
     mapping->size = size;
+#ifdef ZCL_TESTING
+    if (read_mapping_observer)
+        read_mapping_observer(fd, mapping, read_mapping_observer_context);
+#endif
     return true;
 }
 

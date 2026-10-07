@@ -40,6 +40,44 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+int wallet_scan_block_file_open(const char *path)
+{
+    if (!path)
+        LOG_ERR("wallet_scan", "block file open: NULL path");
+    int flags = O_RDONLY;
+#ifdef O_BINARY
+    flags |= O_BINARY;
+#endif
+#ifdef _WIN32
+    flags |= _O_NOINHERIT;
+#else
+    flags |= O_CLOEXEC;
+#endif
+    int fd = open(path, flags);
+    if (fd < 0)
+        LOG_ERR("wallet_scan", "block file open failed: %s", path);
+    return fd;
+}
+
+int wallet_scan_block_file_map(const char *path,
+                               struct platform_read_mapping *mapping)
+{
+    platform_read_mapping_init(mapping);
+    if (!mapping)
+        LOG_ERR("wallet_scan", "block file map: NULL mapping");
+    int fd = wallet_scan_block_file_open(path);
+    if (fd < 0)
+        LOG_ERR("wallet_scan", "block file map: open refused");
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size <= 0 ||
+        (uintmax_t)st.st_size > (uintmax_t)SIZE_MAX ||
+        !platform_read_mapping_open(mapping, fd, (size_t)st.st_size)) {
+        close(fd);
+        LOG_ERR("wallet_scan", "block file map failed: %s", path);
+    }
+    return fd;
+}
+
 static void wallet_scan_rollback_best_effort(struct node_db *ndb,
                                              const char *label)
 {
@@ -260,20 +298,8 @@ static int wallet_scan_pass2_nonempty(struct node_db *ndb,
             char path[512];
             snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
                      datadir, pi->nFile);
-            int fd = open(path, O_RDONLY);
+            int fd = wallet_scan_block_file_map(path, &cached_mapping);
             if (fd < 0) continue;
-            struct stat st;
-            if (fstat(fd, &st) != 0) { close(fd); continue; }
-            if (st.st_size <= 0 ||
-                (uintmax_t)st.st_size > (uintmax_t)SIZE_MAX) {
-                close(fd);
-                continue;
-            }
-            if (!platform_read_mapping_open(&cached_mapping, fd,
-                                            (size_t)st.st_size)) {
-                close(fd);
-                continue;
-            }
             cached_fd = fd;
             cached_file = pi->nFile;
             platform_read_mapping_advise_sequential(&cached_mapping);

@@ -26,8 +26,21 @@
 #include "models/database.h"
 #include "validation/chainstate.h"
 #include "services/scan_util.h"
+#include "platform/read_mapping.h"
 #include <stdbool.h>
 #include <time.h>
+
+/* Open one canonical block file for mapping without granting write access.
+ * The descriptor is close-on-exec (non-inheritable on Windows).
+ * Returns a caller-owned descriptor, or -1 on error, including a NULL path. */
+int wallet_scan_block_file_open(const char *path);
+
+/* Open and map a nonempty block file through the scan descriptor policy.
+ * mapping must be non-NULL and have no live view; it is initialized before
+ * any refusal and remains empty on failure. Returns -1 on error, otherwise
+ * the caller-owned descriptor, kept open until platform_read_mapping_close(). */
+int wallet_scan_block_file_map(const char *path,
+                               struct platform_read_mapping *mapping);
 
 /* Run Pass 2 of the wallet block scan.
  *

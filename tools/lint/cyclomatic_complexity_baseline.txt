@@ -1137,7 +1137,6 @@ contexts/wallet/services/src/wallet_money_service.c:wallet_money_snapshot_build:
 contexts/wallet/services/src/wallet_recovery_service.c:wallet_recovery_run:46
 contexts/wallet/services/src/wallet_restore_service.c:wallet_restore_run:26
 contexts/wallet/services/src/wallet_restore_service.c:wrs_summarize:16
-contexts/wallet/services/src/wallet_scan_service.c:wallet_scan_pass2_nonempty:18
 contexts/wallet/services/src/wallet_scan_service.c:wallet_scan_store_results:17
 contexts/wallet/services/src/yardsale_wallet_service.c:yardsale_wallet_seller_arm:44
 contexts/wallet/services/src/yardsale_wallet_service.c:yardsale_wallet_status_code:18
