@@ -104,6 +104,8 @@ bool wks_encrypt(const uint8_t *plaintext, size_t plen,
 
 /* Decrypt an envelope produced by wks_encrypt.  Writes plaintext
  * into `out`; `out_cap` must be at least env_len - WKS_HEADER_LEN.
+ * On AEAD failure, wipes that plaintext span; bytes beyond it are unchanged.
+ * Argument/header/KDF/context-allocation refusal leaves `out` unchanged.
  * Sets *out_len to zero on failure when out_len is non-NULL.
  * Oversized ciphertext is refused before KDF or output writes.
  * Returns false on:

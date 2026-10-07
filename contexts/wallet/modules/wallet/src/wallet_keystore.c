@@ -192,6 +192,8 @@ static bool decrypt_ciphertext(const uint8_t *envelope, size_t ct_len,
 
 done:
     EVP_CIPHER_CTX_free(ctx);
+    /* GCM update can write tentative plaintext before final authentication. */
+    if (!ok) OPENSSL_cleanse(out, ct_len);
     return ok;
 }
 
