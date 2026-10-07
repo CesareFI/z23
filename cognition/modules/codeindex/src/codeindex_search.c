@@ -169,6 +169,12 @@ static int story_file_cmp(const void *left, const void *right)
                   ((const struct ci_file *)right)->path);
 }
 
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void story_files_sort(struct ci_file *files, size_t n)
+{
+    if (n > 1) qsort(files, n, sizeof(*files), story_file_cmp);
+}
+
 static bool story_collect_files(struct codeindex *ci, struct ci_file **out,
                                 size_t *count)
 {
@@ -210,7 +216,7 @@ static bool story_collect_files(struct codeindex *ci, struct ci_file **out,
         free(files);
     }
     free(groups);
-    qsort(all, used, sizeof(*all), story_file_cmp);
+    story_files_sort(all, used);
     for (size_t i = 1; i < used; i++) {
         if (strcmp(all[i - 1u].path, all[i].path) == 0) {
             free(all);

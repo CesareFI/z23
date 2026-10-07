@@ -215,6 +215,12 @@ static int ci_str_cmp(const void *a, const void *b)
     return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void ci_strlist_sort(struct ci_strlist *l)
+{
+    if (l->len > 1) qsort(l->items, l->len, sizeof(*l->items), ci_str_cmp);
+}
+
 /* ── traversal state (heap-owned; freed on every exit) ── */
 struct ci_closure_ctx {
     struct ci_strset  seen_syms;   /* symbol identity keys queued/visited */
@@ -562,7 +568,7 @@ static int ci_closure_collect_output(struct ci_closure_ctx *c,
                                       char (*out)[256], int cap,
                                       bool *truncated)
 {
-    qsort(c->files.items, c->files.len, sizeof(*c->files.items), ci_str_cmp);
+    ci_strlist_sort(&c->files);
     int n = 0;
     for (size_t i = 0; i < c->files.len && n < cap; i++) {
         memset(out[n], 0, sizeof(out[n]));
@@ -1022,7 +1028,7 @@ int codeindex_forward_closure(struct codeindex *ci, const char *root_symbol,
     if (frontier.len > 0)
         *truncated = true;  /* depth ceiling hit with the frontier non-empty */
 
-    qsort(c.files.items, c.files.len, sizeof(*c.files.items), ci_str_cmp);
+    ci_strlist_sort(&c.files);
     int n = 0;
     for (size_t i = 0; i < c.files.len && n < cap; i++) {
         memset(out[n], 0, sizeof(out[n]));
