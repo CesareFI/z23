@@ -39,20 +39,18 @@ static bool snapsync_bytes32_nonzero_internal(const uint8_t b[32])
     return false;
 }
 
-static bool snapsync_read_i64_state_internal(struct node_db *ndb,
-                                             const char *key,
-                                             int64_t *out)
+static bool snapsync_read_tip_height_internal(struct node_db *ndb,
+                                               int64_t *out)
 {
-    uint8_t buf[8] = {0};
-    size_t len = 0;
+    uint8_t tip_bytes[sizeof(*out) + 1];
+    size_t tip_len = 0;
 
-    if (!ndb || !key || !out)
+    if (!node_db_state_get(ndb, "tip_height", tip_bytes,
+                           sizeof(tip_bytes), &tip_len) ||
+        tip_len != sizeof(*out))
         return false;
-    if (!node_db_state_get(ndb, key, buf, sizeof(buf), &len) ||
-        len == 0 || len > sizeof(buf))
-        return false;
-    memcpy(out, buf, len);
-    return true;
+    memcpy(out, tip_bytes, sizeof(*out));
+    return *out > 0 && *out <= INT32_MAX;
 }
 
 static bool snapsync_load_state_mmr_root_internal(struct node_db *ndb,
@@ -179,8 +177,7 @@ struct zcl_result snapsync_build_local_recovery_manifest(struct node_db *ndb,
         return ZCL_ERR(-1, "build_local_recovery_manifest: null/closed ndb or null out");
 
     memset(out, 0, sizeof(*out));
-    if (!snapsync_read_i64_state_internal(ndb, "tip_height", &tip_height) ||
-        tip_height <= 0 || tip_height > INT32_MAX)
+    if (!snapsync_read_tip_height_internal(ndb, &tip_height))
         return ZCL_ERR(-2, "build_local_recovery_manifest: invalid tip_height=%lld",
                        (long long)tip_height);
     out->height = (int32_t)tip_height;

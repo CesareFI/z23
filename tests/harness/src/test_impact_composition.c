@@ -8152,6 +8152,10 @@ static int test_ic_snapshot_tool_routes(void)
 {
     int failures = 0;
     TEST("snapshot tool source and acceptance have an explicit group route") {
+        ASSERT(ic_tool_path_maps("engine/services/src/snapshot_offer.c",
+                                "snapshot_sync_service"));
+        ASSERT(ic_tool_path_maps("engine/services/src/snapshot_offer.c",
+                                "make_lint_gates"));
         ASSERT(ic_tool_path_maps("tools/export_snapshot.c", "export_snapshot"));
         ASSERT(ic_tool_path_maps("tests/harness/src/test_export_snapshot.c", "export_snapshot"));
         ASSERT(!ic_tool_path_maps("tools/unknown_snapshot_tool.c", "export_snapshot"));
