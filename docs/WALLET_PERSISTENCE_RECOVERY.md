@@ -104,7 +104,9 @@ still works and reads the same environment variable.)
 `core wallet restore` merges a backup file's wallet tables into
 `<datadir>/node.db`. **Stop the node first** — `<datadir>/zclassic23.pid` is the
 single-writer lock and the command refuses with `DATADIR_LOCKED` while it is
-held.
+held. An explicit `datadir` of 1024 bytes or more is refused with
+`DATADIR_TOO_LONG` before restore begins, rather than shortened to fit the
+1024-byte path buffer.
 
 ```sh
 systemctl --user stop zclassic23

@@ -292,6 +292,37 @@ static int t_restore_leaf_requires_an_explicit_datadir(void)
     return failures;
 }
 
+static int t_backup_restore_leaf_rejects_a_truncated_datadir(void)
+{
+    int failures = 0;
+    char datadir[1025];
+    memset(datadir, 'x', sizeof(datadir) - 1);
+    datadir[sizeof(datadir) - 1] = '\0';
+
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "from", "missing-backup.sqlite");
+    (void)json_push_kv_str(&input, "datadir", datadir);
+    (void)json_push_kv_bool(&input, "confirm", true);
+
+    struct zcl_command_request request = { .input = &input };
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, "zcl.wallet_restore.v1");
+    zcl_native_handle_wallet_restore(&request, &reply);
+
+    WRS_CHECK("backup restore refuses a target it cannot copy exactly",
+              reply.exit_code == ZCL_COMMAND_EXIT_INVALID);
+    WRS_CHECK("the backup restore overlong target refusal is named",
+              strcmp(reply.error.code, "DATADIR_TOO_LONG") == 0);
+    WRS_CHECK("the backup restore target refusal reports no mutation",
+              !reply.error.mutated);
+
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+    return failures;
+}
+
 /* ── case 2: two concurrent restores — exactly one may win ─────────── */
 
 /* One child: wait on the barrier, then commit `phrase` into `dir`.
@@ -657,6 +688,7 @@ int test_wallet_recovery_safety(void)
 
     failures += t_damaged_db_is_refused_not_reset();
     failures += t_restore_leaf_requires_an_explicit_datadir();
+    failures += t_backup_restore_leaf_rejects_a_truncated_datadir();
     failures += t_two_concurrent_restores_leave_one_wallet();
     failures += t_at_rest_policy_is_obeyed();
 
