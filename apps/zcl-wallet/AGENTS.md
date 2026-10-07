@@ -4,6 +4,16 @@ The user's 2026-09-11 correction overrides the initial Kotlin-core plan and the
 parent repository's C23 language preference for this app: use portable C17
 (C11-compatible interfaces where practical). No Rust and no Rust toolchain.
 
+The active wallet mission targets the C-based Z23 codebase. New security-critical
+wallet and protocol implementation is C, not C++. Preserve the existing C23 node
+and portable C17 Android boundaries. Migrate any required C++ implementation in
+small independently tested steps; prove equivalent behavior before replacing
+it, and retain independent reference implementations used as test oracles.
+Do not rewrite Android lifecycle, UI, permission or Keystore adapters merely to
+remove their platform language. Inventory remaining non-C runtime components
+accurately. No marketplace development, consensus changes, production nodes,
+mining, real wallets or funds belong in this development mission.
+
 Wallet, key, protocol, transaction, networking and validation logic belong in
 the C core. Kotlin/Java/JNI is only a thin Android UI/platform adapter. Retain
 and adapt existing public test fixtures and Android build setup. Do not import
