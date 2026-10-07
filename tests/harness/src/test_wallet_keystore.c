@@ -151,6 +151,30 @@ static int test_envelope_header(void)
 
         ASSERT(memcmp(env, WKS_MAGIC, WKS_MAGIC_LEN) == 0);
         ASSERT(wks_envelope_iterations(env, env_len) == TEST_ITERS);
+
+        memset(env + 8, 0, sizeof(uint32_t));
+        ASSERT(wks_envelope_iterations(env, env_len) == 0);
+
+        uint32_t excessive = WKS_MAX_ITERS + 1U;
+        env[8]  = (uint8_t)(excessive >> 24);
+        env[9]  = (uint8_t)(excessive >> 16);
+        env[10] = (uint8_t)(excessive >> 8);
+        env[11] = (uint8_t)excessive;
+        ASSERT(wks_envelope_iterations(env, env_len) == 0);
+
+        uint32_t below_minimum = WKS_MIN_ITERS - 1U;
+        env[8]  = (uint8_t)(below_minimum >> 24);
+        env[9]  = (uint8_t)(below_minimum >> 16);
+        env[10] = (uint8_t)(below_minimum >> 8);
+        env[11] = (uint8_t)below_minimum;
+        ASSERT(wks_envelope_iterations(env, env_len) == 0);
+
+        uint32_t maximum = WKS_MAX_ITERS;
+        env[8]  = (uint8_t)(maximum >> 24);
+        env[9]  = (uint8_t)(maximum >> 16);
+        env[10] = (uint8_t)(maximum >> 8);
+        env[11] = (uint8_t)maximum;
+        ASSERT(wks_envelope_iterations(env, env_len) == WKS_MAX_ITERS);
         PASS();
     } _test_next:;
     return failures;
