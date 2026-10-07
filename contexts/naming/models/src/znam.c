@@ -653,6 +653,9 @@ bool db_znam_addr_save(struct node_db *ndb, const char *name,
     if (!ndb || !ndb->open) LOG_FAIL("znam", "db_znam_addr_save: db not open");
     if (!name || !address)
         LOG_FAIL("znam", "db_znam_addr_save: name/address NULL");
+    if (strnlen(name, ZNAM_NAME_MAX + 1) > ZNAM_NAME_MAX ||
+        strnlen(address, ZNAM_VALUE_MAX + 1) > ZNAM_VALUE_MAX)
+        LOG_FAIL("znam", "db_znam_addr_save: name/address exceeds maximum length");
 
     struct znam_addr_record rec;
     memset(&rec, 0, sizeof(rec));

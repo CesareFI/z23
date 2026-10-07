@@ -132,6 +132,48 @@ static bool open_test_names_db(sqlite3 **db_out, struct node_db *ndb_out)
     return true;
 }
 
+static int znam_addr_save_bounds(void)
+{
+    printf("znam DB addr save refuses truncation... ");
+    sqlite3 *db = NULL;
+    struct node_db ndb = {0};
+    if (!open_test_names_db(&db, &ndb)) {
+        printf("FAIL (open)\n");
+        if (db) sqlite3_close(db);
+        return 1;
+    }
+    char name[ZNAM_NAME_MAX + 1], long_name[ZNAM_NAME_MAX + 2];
+    char address[ZNAM_VALUE_MAX + 1], long_address[ZNAM_VALUE_MAX + 2];
+    memset(name, 'a', sizeof(name) - 1); name[sizeof(name) - 1] = '\0';
+    memset(long_name, 'a', sizeof(long_name) - 1);
+    long_name[sizeof(long_name) - 1] = '\0';
+    memset(address, 'x', sizeof(address) - 1);
+    address[sizeof(address) - 1] = '\0';
+    memset(long_address, 'x', sizeof(long_address) - 1);
+    long_address[sizeof(long_address) - 1] = '\0';
+    bool ok = db_znam_addr_save(&ndb, name, ZNAM_TYPE_BTC, "1old");
+    ok &= db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_BTC, "1old");
+    ok &= !db_znam_addr_save(&ndb, long_name, ZNAM_TYPE_BTC, "1new");
+    ok &= !db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_BTC, long_address);
+    ok &= !db_znam_addr_save(&ndb, "bob", ZNAM_TYPE_BTC, long_address);
+    char out[ZNAM_VALUE_MAX + 1] = {0};
+    ok &= db_znam_addr_get(&ndb, name, ZNAM_TYPE_BTC, out, sizeof(out));
+    ok &= strcmp(out, "1old") == 0;
+    ok &= db_znam_addr_get(&ndb, "alice", ZNAM_TYPE_BTC, out, sizeof(out));
+    ok &= strcmp(out, "1old") == 0;
+    ok &= db_znam_addr_count(&ndb, long_name) == 0;
+    ok &= db_znam_addr_count(&ndb, "bob") == 0;
+    ok &= db_znam_addr_count(&ndb, name) == 1;
+    ok &= db_znam_addr_count(&ndb, "alice") == 1;
+    ok &= db_znam_addr_save(&ndb, name, ZNAM_TYPE_BTC, address);
+    ok &= db_znam_addr_get(&ndb, name, ZNAM_TYPE_BTC, out, sizeof(out));
+    ok &= strcmp(out, address) == 0;
+    sqlite3_close(db);
+    if (ok) { printf("OK\n"); return 0; }
+    printf("FAIL (refusal, unchanged rows or exact maximum)\n");
+    return 1;
+}
+
 /* Call a registered name_* RPC with 0-3 string args. has_a2 distinguishes
  * "no 3rd arg" from "3rd arg is an explicit empty string" (name_set_text's
  * optional value). Frees params; leaves *result for the caller to inspect
@@ -361,6 +403,7 @@ static int test_znam_wallet_sweep(void)
 int test_znam(void)
 {
     int failures = 0;
+    failures += znam_addr_save_bounds();
 
     /* ── Name validation ──────────────────────────────────────── */
 
