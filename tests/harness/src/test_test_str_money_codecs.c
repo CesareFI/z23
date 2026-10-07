@@ -184,6 +184,14 @@ int test_test_str_money_codecs(void)
         PASS();
     }
 
+    TEST("SanitizeString: zero capacity leaves output untouched") {
+        char sentinel = 'X';
+        SanitizeString("", SAFE_CHARS_DEFAULT, &sentinel, 0);
+        ASSERT_EQ(sentinel, 'X');
+        SanitizeString("", SAFE_CHARS_DEFAULT, NULL, 0);
+        PASS();
+    }
+
     TEST("SanitizeString: empty input yields empty output") {
         char out[16];
         SanitizeString("", SAFE_CHARS_DEFAULT, out, sizeof(out));
