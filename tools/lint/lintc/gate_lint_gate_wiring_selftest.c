@@ -2,15 +2,18 @@
  *
  * purpose: --selftest for check-lint-gate-wiring (gate_lint_gate_wiring.c).
  * Builds a scratch fixture tree carrying the REAL run_lint.sh and
- * lint_cache.sh (so --list and --print-command are the code under test,
+ * lint_cache.sh (so --list and --print-commands are the code under test,
  * not a mock) stripped of its real case table, plants one defect per case
  * (A-G, I, J, K) and asserts lgw_check_root() rejects it and names the
  * offender, then a positive control (H) that a correctly wired
  * three-file fixture (Makefile, run_lint.sh, DEFENSIVE_CODING.md doc
  * block) passes. Cases I and J cover the doc-block three-way parity by
  * name: a listed gate missing from the doc, and a doc-only phantom gate.
+ * Cases L/M retain exact Make target matching during single-pass scanning.
  * Case K wires the same case label twice — only the duplicate-label check
  * (gate check H) can see it, since every other check is set-based.
+ * Batch cases require complete, ordered, bounded command discovery and
+ * reject failed or malformed output without losing any script checks.
  * Sandbox lives under getenv("TMPDIR") else "test-tmp", never /tmp.
  */
 #ifndef _POSIX_C_SOURCE
@@ -472,11 +475,156 @@ static const char *lgws_absolutize(char *d0, char *scratch, size_t cap, int *rc)
     return scratch;
 }
 
+/* Intercept only the read-only batch query in a disposable driver. The
+ * real --list, --list-raw and --print-command paths stay live controls. */
+static int lgws_override_batch(const char *d, const char *body)
+{
+    char path[4096];
+    if (ovf(snprintf(path, sizeof path, "%s/tools/lint/run_lint.sh", d), sizeof path))
+        return 2;
+    FILE *f = fopen(path, "r");
+    if (!f) return die("z23-lint: cannot open %s\n", path);
+    static char original[LGWS_BUF], replacement[LGWS_BUF];
+    size_t n = fread(original, 1, sizeof original - 1, f);
+    int bad = ferror(f);
+    int closed = fclose(f);
+    if (bad || closed != 0 || n == sizeof original - 1)
+        return die("z23-lint: cannot read batch fixture: %s\n", path);
+    original[n] = '\0';
+    if (ovf(snprintf(replacement, sizeof replacement,
+                     "#!/usr/bin/env bash\nif [[ ${1:-} == --print-commands ]]; then\n"
+                     "%s\nfi\n%s", body, original), sizeof replacement))
+        return 2;
+    return csr_write(path, replacement);
+}
+
+static int lgws_batch_fixture(const char *base, size_t i, char *d, size_t cap)
+{
+    if (ovf(snprintf(d, cap, "%s/batch-%zu", base, i), cap)) return 2;
+    if (csr_mkdirs(d)) return 2;
+    char root[4096];
+    if (cic_repo_root(root, sizeof root)) return 2;
+    if (lgws_make_fixture(root, d)) return 2;
+    const char *gates[] = { "check-a", "check-b" };
+    if (lgws_write_makefile(d, gates, 2)) return 2;
+    if (lgws_write_doc(d, gates, 2)) return 2;
+    if (lgws_wire(d, "check-a", "./tools/lint/sentinel_a.sh\t&& ./tools/lint/sentinel_b.sh"))
+        return 2;
+    return lgws_wire(d, "check-b", "");
+}
+
+static int lgws_batch_result(const char *d, const char *label, int expected, int *fails)
+{
+    FILE *out = tmpfile();
+    if (!out) return die("z23-lint: cannot open batch test output\n", "");
+    int rc = lgw_check_root(d, out);
+    if (fclose(out) != 0) return die("z23-lint: cannot close batch test output\n", "");
+    if (rc != expected) {
+        fprintf(stderr, "SELFTEST FAIL: batch %s: expected %d, got %d\n",
+                label, expected, rc);
+        (*fails)++;
+    } else {
+        printf("  selftest ok: batch %s\n", label);
+    }
+    return 0;
+}
+
+static int lgws_case_batch(const char *base, int *fails)
+{
+    static const struct { const char *label, *body; int rc; } cases[] = {
+        { "canonical tab/empty commands", NULL, 0 },
+        { "complete control", "printf 'check-a\\t./tools/lint/sentinel_a.sh\\ncheck-b\\t\\n'; exit 0", 0 },
+        { "missing last script", "printf 'check-a\\t\\ncheck-b\\tmissing.sh\\n'; exit 0", 1 },
+        { "missing row", "printf 'check-a\\t\\n'; exit 0", 2 },
+        { "extra row", "printf 'check-a\\t\\ncheck-b\\t\\ncheck-c\\t\\n'; exit 0", 2 },
+        { "duplicate row", "printf 'check-a\\t\\ncheck-a\\t\\n'; exit 0", 2 },
+        { "reordered rows", "printf 'check-b\\t\\ncheck-a\\t\\n'; exit 0", 2 },
+        { "wrong name", "printf 'check-aa\\t\\ncheck-b\\t\\n'; exit 0", 2 },
+        { "missing separator", "printf 'check-a\\ncheck-b\\t\\n'; exit 0", 2 },
+        { "missing terminator", "printf 'check-a\\t\\ncheck-b\\t'; exit 0", 2 },
+        { "failed partial query", "printf 'check-a\\t\\n'; exit 7", 2 },
+        { "failed complete query", "printf 'check-a\\t\\ncheck-b\\t\\n'; exit 7", 2 },
+        { "embedded NUL", "printf 'check-a\\t\\ncheck-b\\t\\n\\0'; exit 0", 2 },
+        { "blank row", "printf 'check-a\\t\\n\\ncheck-b\\t\\n'; exit 0", 2 },
+        { "multiline command", "printf 'check-a\\ttrue\\ntrue\\ncheck-b\\t\\n'; exit 0", 2 },
+        { "oversized command", "printf 'check-a\\t%8192s\\ncheck-b\\t\\n' ''; exit 0", 2 },
+        { "oversized batch", "printf '%1048576s' ''; exit 0", 2 },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char d[4096];
+        if (lgws_batch_fixture(base, i, d, sizeof d)) return 2;
+        if (cases[i].body && lgws_override_batch(d, cases[i].body)) return 2;
+        if (lgws_batch_result(d, cases[i].label, cases[i].rc, fails)) return 2;
+    }
+    return 0;
+}
+
+static int lgws_target_fixture(const char *d)
+{
+    char root[4096];
+    if (cic_repo_root(root, sizeof root)) return 2;
+    if (lgws_make_fixture(root, d)) return 2;
+    const char *gates[] = {
+        "check-sentinel-a", "check-sentinel-ab", "check-sentinel-last"
+    };
+    if (lgws_write_doc(d, gates, 3)) return 2;
+    for (int i = 0; i < 3; i++)
+        if (lgws_wire(d, gates[i], "./tools/lint/sentinel_a.sh")) return 2;
+    return 0;
+}
+
+static int lgws_target_makefile(const char *d, const char *targets)
+{
+    char path[4096], text[4096];
+    if (ovf(snprintf(path, sizeof path, "%s/Makefile", d), sizeof path)) return 2;
+    if (ovf(snprintf(text, sizeof text,
+                    "LINT_GATES := \\\n"
+                    "    check-sentinel-a \\\n"
+                    "    check-sentinel-ab \\\n"
+                    "    check-sentinel-last\n"
+                    "LINT_FAST_GATES := \\\n"
+                    "    check-sentinel-a\n\n%s", targets), sizeof text))
+        return 2;
+    return csr_write(path, text);
+}
+
+static int lgws_case_l(const char *base, int *fails)
+{
+    char d[4096];
+    if (ovf(snprintf(d, sizeof d, "%s/l", base), sizeof d)) return 2;
+    if (lgws_target_fixture(d)) return 2;
+    if (lgws_target_makefile(d,
+                            "check-sentinel-ab:\r\n"
+                            "check-sentinel-a:\n"
+                            "check-sentinel-a:\n"
+                            "check-sentinel-last:")) return 2;
+    return lgws_expect_accept("L: exact targets, repeats, CRLF and final EOF pass", d, fails);
+}
+
+static int lgws_case_m(const char *base, int *fails)
+{
+    char d[4096];
+    if (ovf(snprintf(d, sizeof d, "%s/m", base), sizeof d)) return 2;
+    if (lgws_target_fixture(d)) return 2;
+    if (lgws_target_makefile(d,
+                            "# check-sentinel-a:\n"
+                            " check-sentinel-a:\n"
+                            "\tcheck-sentinel-a:\n"
+                            "check-sentinel-a-extra:\n"
+                            "check-sentinel-a :\n"
+                            "check-sentinel-a\n"
+                            "check-sentinel-ab:\n"
+                            " check-sentinel-last:")) return 2;
+    return lgws_expect_reject("M: lookalikes cannot hide either missing target",
+                              "    check-sentinel-a\n    check-sentinel-last\n", d, fails);
+}
+
 typedef int (*lgws_case_fn)(const char *, int *);
 static const lgws_case_fn k_lgws_cases[] = {
     lgws_case_a, lgws_case_b, lgws_case_c, lgws_case_d,
     lgws_case_e, lgws_case_f, lgws_case_g, lgws_case_h,
-    lgws_case_i, lgws_case_j, lgws_case_k,
+    lgws_case_i, lgws_case_j, lgws_case_k, lgws_case_l, lgws_case_m,
+    lgws_case_batch,
 };
 
 int check_lint_gate_wiring_selftest(void)
@@ -507,6 +655,7 @@ int check_lint_gate_wiring_selftest(void)
         printf("\xe2\x95\x90\xe2\x95\x90 selftest: FAIL \xe2\x95\x90\xe2\x95\x90\n");
         return 1;
     }
-    printf("\xe2\x95\x90\xe2\x95\x90 selftest: PASS (11/11) \xe2\x95\x90\xe2\x95\x90\n");
+    printf("\xe2\x95\x90\xe2\x95\x90 selftest: PASS (%zu/%zu) \xe2\x95\x90\xe2\x95\x90\n",
+           ncases, ncases);
     return 0;
 }
