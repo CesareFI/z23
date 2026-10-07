@@ -342,6 +342,8 @@ static int case_poisoned(void)
     struct zcl_retrieval_hit h[8];
     RT_CHECK("it answers before the failure",
              zcl_retrieval_query(r, "sha3", h, 8) == 1);
+    RT_CHECK("committed documents determine frequency before the failure",
+             zcl_retrieval_df(r, "a") == 3);
 
     /* Fail the first posting list the insertion must grow ("a" already has room), so the failure lands part-way through the document. */
     zcl_alloc_fault_fail_next("retrieval_postings");
@@ -350,6 +352,10 @@ static int case_poisoned(void)
     zcl_alloc_fault_clear();
 
     RT_CHECK("the index reports itself unhealthy", !zcl_retrieval_ok(r));
+    RT_CHECK("it refuses frequency from abandoned postings",
+             zcl_retrieval_df(r, "a") == 0);
+    RT_CHECK("it refuses frequency from committed postings too",
+             zcl_retrieval_df(r, "sha3") == 0);
     RT_CHECK("and refuses to answer from here on",
              zcl_retrieval_query(r, "sha3", h, 8) == 0);
     RT_CHECK("and refuses further insertions",

@@ -483,7 +483,7 @@ static bool df_emit(const char *tok, void *vctx)
 
 size_t zcl_retrieval_df(const struct zcl_retrieval *r, const char *token)
 {
-    if (!r || !token)
+    if (!r || !token || r->poisoned)
         return 0;
     struct df_ctx c = { .r = r, .df = 0, .seen = 0 };
     (void)zcl_retrieval_tokenize(token, df_emit, &c);
