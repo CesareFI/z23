@@ -55,7 +55,8 @@ void zcl_native_handle_wallet_security_lock(
 {
     (void)request;
     wallet_security_copy_status(reply, "walletlock", NULL);
-    reply->error.mutated = true;
+    if (reply->exit_code == ZCL_COMMAND_EXIT_OK)
+        reply->error.mutated = true;
 }
 
 void zcl_native_handle_wallet_security_unlock(
@@ -82,7 +83,8 @@ void zcl_native_handle_wallet_security_unlock(
     }
     wallet_security_copy_status(reply, "walletunlock", params);
     free(params);
-    reply->error.mutated = true;
+    if (reply->exit_code == ZCL_COMMAND_EXIT_OK)
+        reply->error.mutated = true;
 }
 
 void zcl_native_handle_wallet_security_encrypt(
@@ -107,7 +109,8 @@ void zcl_native_handle_wallet_security_encrypt(
     }
     wallet_security_copy_status(reply, "walletencrypt", params);
     free(params);
-    reply->error.mutated = true;
+    if (reply->exit_code == ZCL_COMMAND_EXIT_OK)
+        reply->error.mutated = true;
 }
 
 /* ── Hot-swappable leaves ──────────────────────────────────────────────────

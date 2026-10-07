@@ -954,6 +954,113 @@ static char *wallet_stub_rpc(const char *method, const char *params_json)
     return strdup("null");
 }
 
+static bool g_security_rpc_success;
+static int g_security_rpc_calls;
+static char *security_refusal_rpc(const char *method, const char *params_json)
+{
+    (void)params_json;
+    g_security_rpc_calls++;
+    if (g_security_rpc_success)
+        return strdup("{\"locked\":true}");
+    if (strcmp(method, "walletlock") == 0)
+        return strdup("{\"code\":-28,\"message\":\"warming up\"}");
+    return strdup("{\"error\":{\"code\":-32603,\"message\":"
+                  "\"cannot read RPC auth cookie\"}}");
+}
+static bool security_restore_fd(int saved, FILE *stream)
+{
+    if (saved < 0) return true;
+    bool ok = dup2(saved, fileno(stream)) >= 0;
+#if defined(_WIN32)
+    ok &= _close(saved) == 0;
+#else
+    ok &= close(saved) == 0;
+#endif
+    clearerr(stream);
+    return ok;
+}
+static bool security_cli_capture(FILE *input, FILE *output, const char *leaf,
+                                 char *wire, size_t cap, int *rc)
+{
+    if (fputs("{\"passphrase\":\"dummy-fixture-passphrase\"}", input) < 0 ||
+        fflush(input) != 0 || fseek(input, 0, SEEK_SET) != 0)
+        return false;
+    if (fflush(stdout) != 0 || dup2(fileno(input), fileno(stdin)) < 0 ||
+        dup2(fileno(output), fileno(stdout)) < 0)
+        return false;
+    clearerr(stdin);
+    const char *args[] = {"wallet", "security", leaf, "--input=-", "--format=json"};
+    *rc = zcl_native_command_main("core", args, 5, "", 0, CHAIN_MAIN, false);
+    if (fflush(stdout) != 0 || fseek(output, 0, SEEK_SET) != 0)
+        return false;
+    size_t n = fread(wire, 1, cap - 1, output);
+    return !ferror(output) && n < cap - 1;
+}
+static bool security_wire_refused(const char *wire, int rc)
+{
+    return rc == ZCL_COMMAND_EXIT_FAILED && g_security_rpc_calls == 1 &&
+        strstr(wire, "\"code\":\"WALLET_RPC_ERROR\"") &&
+        strstr(wire, "\"mutated\":false") &&
+        strstr(wire, "cannot read RPC auth cookie") &&
+        !strstr(wire, "\"data\":") && !strstr(wire, "dummy-fixture-passphrase");
+}
+static bool security_stdin_refusal(const char *leaf)
+{
+    FILE *input = tmpfile(), *output = tmpfile();
+    int saved_in = -1, saved_out = -1, rc = -1;
+    char wire[4096] = {0};
+    bool ok = false;
+    if (!input || !output) goto cleanup;
+    saved_in = dup(fileno(stdin));
+    saved_out = dup(fileno(stdout));
+    if (saved_in < 0 || saved_out < 0) goto cleanup;
+    ok = security_cli_capture(input, output, leaf, wire, sizeof(wire), &rc);
+    ok &= security_wire_refused(wire, rc);
+cleanup:
+    ok &= fflush(stdout) == 0;
+    ok &= security_restore_fd(saved_in, stdin);
+    ok &= security_restore_fd(saved_out, stdout);
+    if (input && fclose(input) != 0) ok = false;
+    if (output && fclose(output) != 0) ok = false;
+    return ok;
+}
+static int test_wallet_security_refusal_flags(void)
+{
+    int failures = 0;
+    struct zcl_command_reply reply;
+    TEST("wallet security refuses without overwriting mutation flags") {
+        g_security_rpc_success = false;
+        g_security_rpc_calls = 0;
+        node_rpc_client_set_test_hook(security_refusal_rpc);
+        zcl_command_reply_init(&reply, "zcl.wallet_security.v1");
+        zcl_native_handle_wallet_security_lock(NULL, &reply);
+        bool refused = reply.exit_code == ZCL_COMMAND_EXIT_FAILED &&
+            !reply.error.mutated && reply.data.num_children == 0 &&
+            strcmp(reply.error.code, "WALLET_RPC_ERROR") == 0;
+        zcl_command_reply_free(&reply);
+        ASSERT(refused && g_security_rpc_calls == 1);
+        g_security_rpc_calls = 0;
+        ASSERT(security_stdin_refusal("unlock"));
+        g_security_rpc_calls = 0;
+        ASSERT(security_stdin_refusal("encrypt"));
+        g_security_rpc_success = true;
+        zcl_command_reply_init(&reply, "zcl.wallet_security.v1");
+        zcl_native_handle_wallet_security_lock(NULL, &reply);
+        bool accepted = reply.exit_code == ZCL_COMMAND_EXIT_OK &&
+            reply.error.mutated && json_get_bool(json_get(&reply.data, "locked"));
+        zcl_command_reply_free(&reply);
+        ASSERT(accepted);
+        zcl_command_reply_init(&reply, "zcl.wallet_security.v1");
+        zcl_native_handle_wallet_security_status(NULL, &reply);
+        bool read_only = reply.exit_code == ZCL_COMMAND_EXIT_OK && !reply.error.mutated;
+        zcl_command_reply_free(&reply);
+        ASSERT(read_only);
+        PASS();
+    } _test_next:;
+    node_rpc_client_set_test_hook(NULL);
+    g_security_rpc_success = false;
+    return failures;
+}
 static int test_wallet_mutating_native_e2e(void)
 {
     int failures = 0;
@@ -3042,6 +3149,7 @@ int test_native_api_contract(void)
     failures += test_dev_failure_native_api();
     failures += test_native_app_catalog_uses_strict_builtin_source();
     failures += test_wallet_mutating_native_e2e();
+    failures += test_wallet_security_refusal_flags();
     failures += test_raw_native_pipeline_mines_exact_signed_bytes();
     failures += test_app_write_native_e2e();
     failures += test_zslp_intent_refusal_surfaces_node_message();
