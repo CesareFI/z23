@@ -138,6 +138,71 @@ static enum land_state state_of(struct land_queue *q, uint64_t seq)
 
 /* ── 1. submit costs nothing and the queue is the log ──────────────────── */
 
+static int case_gate_member_bounds(void)
+{
+    int failures = 0;
+    char dir[512], path[640];
+    test_make_tmpdir(dir, sizeof dir, "land", "member-bounds");
+    snprintf(path, sizeof path, "%s/queue.chainlog", dir);
+    struct zcl_chainlog_report rep;
+    struct land_queue *q = land_queue_open(path, &rep);
+    LQ_CHECK("member bounds: fixture opens", q != NULL);
+    if (!q) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+    uint64_t a = submit_one(q, "lane/bounds", k_head_a);
+    LQ_CHECK("member bounds: submission is seq 1", a == 1);
+    const struct land_entry *e = land_queue_find_seq(q, a);
+    if (!e) {
+        land_queue_close(q);
+        test_cleanup_tmpdir(dir);
+        return failures + 1;
+    }
+    struct land_entry before;
+    memcpy(&before, e, sizeof before);
+    struct { struct land_gate_run gate; uint64_t sentinel; } fixture = {0};
+    fixture.gate.outcome = LAND_GATE_GREEN;
+    fixture.gate.stress = true;
+    (void)land_sha_parse(k_integ, fixture.gate.integration);
+    (void)land_id32_parse(k_gate_id, fixture.gate.gate_id);
+    for (uint32_t i = 0; i < LAND_MEMBERS_MAX; i++)
+        fixture.gate.member_seq[i] = a;
+    /* Invalid counts must win over an unknown member. This also makes
+     * the parent and mutation fail by status before an invalid read. */
+    fixture.gate.member_seq[0] = 0;
+    const uint32_t counts[] = {LAND_MEMBERS_MAX + 1u, 0, UINT32_MAX};
+    const char *const names[] = {
+        "member bounds: 257 refuses encode without changing state or output",
+        "member bounds: zero refuses encode without changing state or output",
+        "member bounds: UINT32_MAX refuses encode without changing state or output"
+    };
+    for (size_t i = 0; i < sizeof counts / sizeof counts[0]; i++) {
+        fixture.gate.member_count = counts[i];
+        uint64_t out = UINT64_MAX;
+        enum land_status status = land_queue_gate_run(q, &fixture.gate, &out);
+        LQ_CHECK(names[i], status == LAND_ERR_ENCODE && out == UINT64_MAX &&
+                 land_queue_count(q) == 1 && memcmp(e, &before, sizeof before) == 0);
+    }
+    land_queue_close(q);
+    q = land_queue_open(path, &rep);
+    LQ_CHECK("member bounds: refusals append no frame", q && rep.records == 1);
+    if (q) {
+        const struct land_entry *replayed = land_queue_find_seq(q, a);
+        LQ_CHECK("member bounds: refused queue replays unchanged",
+                 land_queue_count(q) == 1 && replayed &&
+                     memcmp(replayed, &before, sizeof before) == 0);
+        fixture.gate.member_count = LAND_MEMBERS_MAX;
+        fixture.gate.member_seq[0] = a;
+        uint64_t out = 0;
+        LQ_CHECK("member bounds: 256 remains valid at next log sequence",
+                 land_queue_gate_run(q, &fixture.gate, &out) == LAND_OK && out == 2);
+        land_queue_close(q);
+    }
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int case_submit_and_pending(void)
 {
     int failures = 0;
@@ -1210,6 +1275,7 @@ int test_land_queue(void)
 #endif
     int failures = 0;
     failures += case_submit_and_pending();
+    failures += case_gate_member_bounds();
     failures += case_landing_needs_a_real_gate();
     failures += case_bisect();
     failures += case_timeout();

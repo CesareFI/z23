@@ -391,6 +391,8 @@ enum land_status land_queue_gate_run(struct land_queue *q,
 {
     if (!q || !g)
         return LAND_ERR_ARGUMENT;
+    if (g->member_count == 0 || g->member_count > LAND_MEMBERS_MAX)
+        return LAND_ERR_ENCODE;
     /* A gate run naming a submission nobody made is a receipt about
      * nothing. Refuse before it reaches disk. */
     for (uint32_t i = 0; i < g->member_count; i++)
