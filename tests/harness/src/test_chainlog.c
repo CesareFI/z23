@@ -703,22 +703,23 @@ static int case_observation_lock(void)
     return failures;
 }
 
-static int case_readonly(void)
+static int case_readonly(const char *fail_label, char dir[256])
 {
     int failures = 0;
-    char dir[256], path[320];
-    test_make_tmpdir(dir, sizeof(dir), "chainlog", "readonly");
+    char path[320];
+    test_make_tmpdir(dir, 256, "chainlog", "readonly");
     (void)snprintf(path, sizeof(path), "%s/log", dir);
     struct zcl_chainlog_report report;
     struct zcl_chainlog *log = zcl_chainlog_open_readonly(path, k_stream_a, &report);
     CL_CHECK("readonly open does not create", !log && file_size(path) < 0);
     zcl_chainlog_close(log);
     CL_CHECK("writer creates fixture", build_log(path, k_stream_a, 1, NULL));
+    if (fail_label) zcl_alloc_fault_fail_next(fail_label);
     size_t original_len = 0;
     uint8_t *original = file_slurp(path, &original_len);
-    if (!original) return failures + 1;
+    if (!original) goto allocation_failed;
     uint8_t *torn = zcl_malloc(original_len + 4, "chainlog_readonly_test");
-    if (!torn) { free(original); return failures + 1; }
+    if (!torn) { free(original); goto allocation_failed; }
     memcpy(torn, original, original_len);
     memcpy(torn + original_len, "torn", 4);
     CL_CHECK("fixture tail written", file_spill(path, torn, original_len + 4));
@@ -739,6 +740,31 @@ static int case_readonly(void)
     zcl_chainlog_close(log);
     test_cleanup_tmpdir(dir);
     return failures;
+allocation_failed:
+    test_cleanup_tmpdir(dir);
+    return failures + 1;
+}
+
+static int case_readonly_cleanup(void)
+{
+    int failures = 0;
+    const char *const labels[] = {
+        "test_chainlog_slurp", "chainlog_readonly_test"
+    };
+    char dir[256];
+    struct stat st;
+    for (size_t i = 0; i < sizeof labels / sizeof labels[0]; ++i) {
+        int result = case_readonly(labels[i], dir);
+        bool injected = zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+        CL_CHECK(labels[i], result == 1 && injected);
+        errno = 0;
+        CL_CHECK("allocation failure removes readonly fixture",
+            stat(dir, &st) == -1 && errno == ENOENT);
+        /* Also remove the fixture when exercising the restored defect. */
+        test_cleanup_tmpdir(dir);
+    }
+    return failures;
 }
 
 int test_chainlog(void);
@@ -746,7 +772,9 @@ int test_chainlog(void)
 {
     int failures = 0;
     failures += case_observation_lock();
-    failures += case_readonly();
+    char readonly_dir[256];
+    failures += case_readonly(NULL, readonly_dir);
+    failures += case_readonly_cleanup();
     failures += case_roundtrip();
     failures += case_restart_invisible();
     failures += case_stream_binding();
