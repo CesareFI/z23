@@ -40,6 +40,7 @@
 #include "test/test_core.h"
 
 #include "land/land_queue.h"
+#include "util/spawn.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1101,6 +1102,99 @@ static int case_surface(void)
     return failures;
 }
 
+/* Exercise the real entry point; no queue command reaches a live queue. */
+static int case_git_selectors(void)
+{
+#if defined(_WIN32)
+    return 0; /* This bash lander is a POSIX-only surface. */
+#else
+    int failures = 0;
+    char dir[512], root[4096], path_env[4096], out[4096];
+    const char *path = getenv("PATH");
+    int n = snprintf(path_env, sizeof path_env, "PATH=%s", path ? path : "");
+    LQ_CHECK("selector fixture has a bounded trusted PATH and root",
+             path && n > 0 && (size_t)n < sizeof path_env &&
+                 getcwd(root, sizeof root) != NULL);
+    if (failures) return failures;
+    test_make_tmpdir(dir, sizeof dir, "land", "selectors");
+    static const char fixture[] =
+        "set -euo pipefail\n"
+        "t=$(mktemp -d \"$2/fixture.XXXXXX\")\n"
+        "trap 'rm -rf -- \"$t\"' EXIT\n"
+        "export HOME=$t LC_ALL=C\n"
+        "git_tool=$(command -v git); bash_tool=$(command -v bash)\n"
+        "for repo in a b; do\n"
+        " git init -q -b fixture-base \"$t/$repo\"\n"
+        " printf 'original\\n' > \"$t/$repo/tracked\"\n"
+        " git -C \"$t/$repo\" add tracked\n"
+        " env GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' GIT_COMMITTER_DATE='2000-01-01T00:00:00Z'"
+        " git -C \"$t/$repo\" -c user.name=Fixture -c user.email=fixture@example.invalid"
+        " -c core.hooksPath=/dev/null commit -qm base\n"
+        " git -C \"$t/$repo\" branch -f main HEAD\n"
+        " git -C \"$t/$repo\" branch land/ready HEAD\n"
+        " printf 'UNCOMMITTED\\n' > \"$t/$repo/tracked\"\n"
+        " cp \"$t/$repo/.git/index\" \"$t/$repo.index\"\n"
+        " cp \"$t/$repo/.git/HEAD\" \"$t/$repo.head\"\n"
+        " cp \"$t/$repo/tracked\" \"$t/$repo.bytes\"\n"
+        " git -C \"$t/$repo\" show-ref > \"$t/$repo.refs\"\n"
+        "done\n"
+        "mkdir \"$t/bin\"\n"
+        "printf '#!/bin/sh\\nprintf called >> \"$CALLS\"\\nexec \"$REAL_GIT\" \"$@\"\\n' > \"$t/bin/git\"\n"
+        "printf '#!/bin/sh\\n[ \"$LC_ALL\" = C ] && [ \"${BASH_ENV+x}\" != x ]\\n' > \"$t/queue\"\n"
+        "chmod +x \"$t/bin/git\" \"$t/queue\"\n"
+        "export REAL_GIT=$git_tool CALLS=$t/calls\n"
+        "export ZCL_LAND_BIN=$t/queue ZCL_LAND_WORKTREE=$t/a ZCL_LAND_STATE_DIR=$t/state\n"
+        "selectors=\"GIT_DIR GIT_WORK_TREE $(\"$git_tool\" rev-parse --local-env-vars)\"\n"
+        "selectors+=\" GIT_NAMESPACE GIT_EXEC_PATH GIT_CONFIG_KEY_17 GIT_CONFIG_VALUE_17"
+        " GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_CEILING_DIRECTORIES"
+        " GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS"
+        " GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS\"\n"
+        "for selector in $selectors; do\n"
+        " for value in \"$t/b/.git\" ''; do\n"
+        "  rc=0\n"
+        "  env PATH=\"$t/bin:$PATH\" \"$selector=$value\" \"$bash_tool\" --noprofile --norc"
+        " \"$1/tools/dev/land_lander.sh\" --once > \"$t/output\" 2>&1 || rc=$?\n"
+        "  [ \"$rc\" = 2 ]\n"
+        "  grep -Fx \"lander: inherited Git selector refused: $selector\" \"$t/output\"\n"
+        "  [ ! -e \"$t/calls\" ] && [ ! -e \"$t/state\" ]\n"
+        " done\n"
+        "done\n"
+        "rc=0\n"
+        "env PATH=\"$t/bin:$PATH\" GIT_DIR=\"$t/b/.git\" GIT_WORK_TREE=\"$t/b\""
+        " \"$bash_tool\" --noprofile --norc \"$1/tools/dev/land_lander.sh\" --once"
+        " > \"$t/output\" 2>&1 || rc=$?\n"
+        "[ \"$rc\" = 2 ] && grep -F 'inherited Git selector refused:' \"$t/output\"\n"
+        "[ ! -e \"$t/calls\" ] && [ ! -e \"$t/state\" ]\n"
+        "for repo in a b; do\n"
+        " cmp \"$t/$repo/.git/index\" \"$t/$repo.index\"\n"
+        " cmp \"$t/$repo/.git/HEAD\" \"$t/$repo.head\"\n"
+        " cmp \"$t/$repo/tracked\" \"$t/$repo.bytes\"\n"
+        " \"$git_tool\" -C \"$t/$repo\" show-ref > \"$t/$repo.after\"\n"
+        " cmp \"$t/$repo.after\" \"$t/$repo.refs\"\n"
+        "done\n"
+        "printf 'echo unexpected > \"$HOME/startup\"\\n' > \"$t/startup.sh\"\n"
+        "env BASH_ENV=\"$t/startup.sh\" LC_ALL=invalid env -i PATH=\"$PATH\" HOME=\"$t\" LC_ALL=C"
+        " ZCL_LAND_BIN=\"$t/queue\" ZCL_LAND_WORKTREE=\"$t/a\" ZCL_LAND_STATE_DIR=\"$t/state\""
+        " \"$bash_tool\" --noprofile --norc \"$1/tools/dev/land_lander.sh\" --once\n"
+        "[ ! -e \"$t/startup\" ]\n"
+        "printf 'PASS: land-selector-fixture complete\\n'\n";
+    const char *const argv[] = {"env", "-i", path_env, "LC_ALL=C", "bash",
+        "--noprofile", "--norc", "-c", fixture, "selector-fixture", root, dir, NULL};
+    static const char complete[] = "PASS: land-selector-fixture complete\n";
+    struct zcl_spawn_binary_observation observation = {0};
+    memset(out, 0, sizeof out);
+    struct zcl_result capture = zcl_spawn_capture_binary(
+        argv, out, sizeof out - 1, 60000, &observation);
+    LQ_CHECK("real lander refuses selectors before Git and preserves both repositories",
+             capture.ok && observation.output_len >= sizeof complete - 1 &&
+                 memcmp(out + observation.output_len - (sizeof complete - 1),
+                        complete, sizeof complete - 1) == 0);
+    if (failures) printf("land_queue: selector fixture output: %s\n", out);
+    LQ_CHECK("selector fixture cleanup succeeds", test_rm_rf_recursive(dir) == 0);
+    return failures;
+#endif
+}
+
 int test_land_queue(void);
 int test_land_queue(void)
 {
@@ -1128,6 +1222,7 @@ int test_land_queue(void)
     failures += case_verdict_digest();
     failures += case_unreachable_queue();
     failures += case_surface();
+    failures += case_git_selectors();
     printf("land_queue: %d failure(s)\n", failures);
     return failures;
 }

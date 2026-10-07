@@ -90,6 +90,26 @@
 
 set -uo pipefail
 
+# The approved launcher must clear BASH_ENV before starting bash and provide
+# its trusted PATH and locale. Interpreter startup precedes this guard.
+reject_git_selectors() {
+    local selector
+    while IFS= read -r selector; do
+        case "$selector" in
+            GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|\
+            GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_COMMON_DIR|GIT_NAMESPACE|\
+            GIT_CONFIG|GIT_CONFIG_*|GIT_EXEC_PATH|GIT_IMPLICIT_WORK_TREE|\
+            GIT_GRAFT_FILE|GIT_NO_REPLACE_OBJECTS|GIT_REPLACE_REF_BASE|\
+            GIT_PREFIX|GIT_SHALLOW_FILE|GIT_CEILING_DIRECTORIES|\
+            GIT_DISCOVERY_ACROSS_FILESYSTEM|GIT_LITERAL_PATHSPECS|\
+            GIT_GLOB_PATHSPECS|GIT_NOGLOB_PATHSPECS|GIT_ICASE_PATHSPECS)
+                printf 'lander: inherited Git selector refused: %s\n' "$selector" >&2
+                return 2 ;;
+        esac
+    done < <(compgen -v)
+}
+reject_git_selectors || exit 2
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
