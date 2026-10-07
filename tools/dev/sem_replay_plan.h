@@ -33,7 +33,9 @@ struct sr_plan {
 
 /* Plan files in repo. facts is NULL for the plain plan, or the facts
  * directory relative to repo; every universe page is read and merged.
- * raw_prefix names where each page's JSON is saved (NULL: not saved). */
+ * raw_prefix names where each page's JSON is saved (NULL: not saved).
+ * Initialize out before reading pages. On refusal return false, set out->ok
+ * false and out->error, and discard the pending TU row; flushed rows remain. */
 bool sr_plan_run(const char *planner, const char *repo,
                  const struct sr_strv *files, const char *facts,
                  const char *raw_prefix, struct sr_plan *out);

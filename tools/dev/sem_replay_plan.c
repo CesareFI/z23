@@ -39,8 +39,10 @@ static bool copy_str(char *dst, size_t cap, const char *v)
 
 static bool copy_tu(char *dst, size_t cap, const char *v)
 {
-    if (copy_str(dst, cap, v))
+    if (strlen(v) < cap) {
+        copy_str(dst, cap, v);
         return true;
+    }
     dst[0] = '\0';
     fprintf(stderr, "sem-replay: planner TU field exceeds capacity %zu\n", cap);
     return false;
@@ -252,8 +254,9 @@ static bool plan_page(const char *planner, const char *repo,
     c->p->next_offset = -1;
     bool ok = rc == 0 && out != NULL && sr_json_flatten(out, len, on_value, c);
     ok = ok && !c->failed;
-    if (ok)
-        row_flush(c);
+    if (!ok)
+        c->row_open = false;
+    row_flush(c);
     if (!ok)
         snprintf(c->p->error, sizeof(c->p->error), "planner exit %d at offset %ld",
                  rc, offset);

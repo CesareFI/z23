@@ -69,7 +69,9 @@ bool sr_split_words(const char *line, size_t len, struct sr_strv *out);
 
 /* Flatten a JSON document: cb(path, value) for every scalar, where path
  * joins object keys with '.' and writes each array index as "[]"; value is
- * the decoded string, or the raw number/true/false/null text. */
+ * the decoded string, or the raw number/true/false/null text. Refuse decoded
+ * NUL in keys or strings and string decode/allocation failures. Callbacks
+ * already made before refusal are not rolled back. */
 typedef void (*sr_json_cb)(void *ctx, const char *path, const char *value);
 bool sr_json_flatten(const char *text, size_t len, sr_json_cb cb, void *ctx);
 

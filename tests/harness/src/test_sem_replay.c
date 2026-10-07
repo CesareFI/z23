@@ -857,7 +857,9 @@ static bool srt_plan_probe(const struct srt_fx *fx)
         "int64_t clock_now_monotonic_ns(void) { return 0; }\n"
         "int main(int argc, char **argv) {\n"
         " struct sr_plan p; struct sr_strv files = {0};\n"
-        " if (argc != 2) return 2;\n"
+        " if (argc != 2 && argc != 3) return 2;\n"
+        " if (argc == 3) zcl_alloc_fault_fail_nth(\"sem_replay_json_scratch\",\n"
+        "     (unsigned)(argv[2][0] - '0'));\n"
         " bool ok = sr_plan_run(argv[1], NULL, &files, \"facts\", NULL, &p);\n"
         " printf(\"%d %d %zu %zu %s\\n\", ok, p.ok, p.tus_affected.n, p.tu_rows.n, p.error);\n"
         " for (size_t i = 0; i < p.tu_rows.n; i++) puts(p.tu_rows.v[i]);\n"
@@ -1006,12 +1008,52 @@ _test_next:;
     return failures;
 }
 
+/* Refuse scratch growth at a key, before callbacks or after a flushed TU. */
+static int srt_plan_key_alloc_case(const struct srt_fx *fx, const char *reply,
+                                  const char *nth, const char *expected)
+{
+    int failures = 0;
+    char probe[PATH_MAX + 32], planner[PATH_MAX + 32];
+    snprintf(probe, sizeof probe, "%s/plan-fields", fx->tools);
+    snprintf(planner, sizeof planner, "%s/fx-fields", fx->tools);
+    TEST("replay plan reader refuses key scratch allocation failure") {
+        printf("(allocation=%s) ", nth);
+        ASSERT(srt_write(fx->tools, "fx-fields.facts.json", reply));
+        const char *argv[] = {probe, planner, nth, NULL};
+        ASSERT_EQ(srt_run(argv), 0);
+        const char *result = strstr(g_srt_out, expected);
+        ASSERT(result != NULL);
+        ASSERT_STR_EQ(result, expected);
+        ASSERT(strstr(g_srt_out, "sem_replay_json_scratch") != NULL);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int srt_plan_key_alloc(const struct srt_fx *fx)
+{
+    static const char reply[] =
+        "{\"facts\":{\"tus\":[{\"path\":\"src/keep.c\",\"affected\":true,"
+        "\"broadened\":false,\"reason\":\"keep\"},"
+        "{\"path\":\"src/next.c\",\"affected\":true,\"broadened\":false,"
+        "\"reason\":\"next\",\"unknown_key_needs_scratch\":true},"
+        "{\"path\":\"src/later.c\",\"affected\":true,\"broadened\":false,"
+        "\"reason\":\"later\"}]}}";
+    int failures = srt_plan_key_alloc_case(fx, "{\"facts\":{\"tus\":[]}}", "1",
+        "0 0 0 0 planner exit 0 at offset 0\n");
+    failures += srt_plan_key_alloc_case(fx, reply, "3",
+        "0 0 1 1 planner exit 0 at offset 0\n"
+        "src/keep.c\ttrue\tfalse\tkeep\nsrc/keep.c\n");
+    return failures;
+}
+
 static int srt_plan_fields(const struct srt_fx *fx)
 {
     static const int caps[] = {1024, 8, 8, 128};
     if (!srt_plan_probe(fx) || !srt_cc(fx, "fx-fields", k_planner))
         return 1;
-    int failures = 0;
+    int failures = srt_plan_key_alloc(fx);
     for (size_t i = 0; i < sizeof caps / sizeof caps[0]; i++) {
         failures += srt_plan_field_case(fx, i, caps[i], false);
         failures += srt_plan_field_case(fx, i, caps[i] - 1, true);

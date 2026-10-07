@@ -541,13 +541,12 @@ static void flat_scalar(struct flat *f, const char *text,
 
 static void flat_key(struct flat *f, const char *text, const zjsonp_event *ev)
 {
-    char key[256];
-    size_t n = zjsonp_str_decode(text, ev, key, sizeof(key) - 1);
-    if (n == SIZE_MAX || n >= sizeof(key) || memchr(key, 0, n) != NULL) {
+    const char *key = flat_decode(f, text, ev);
+    size_t n = strlen(key);
+    if (f->failed || n >= 256) {
         f->failed = true;
         return;
     }
-    key[n] = '\0';
     f->path[f->mark[f->depth]] = '\0';
     flat_append(f, key, n);
 }
