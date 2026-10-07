@@ -98,7 +98,7 @@ set(SECP256K1_ECMULT_WINDOW_SIZE 8 CACHE STRING "Bounded mobile verification tab
 set(SECP256K1_ECMULT_GEN_KB 22 CACHE STRING "Bounded mobile signing table" FORCE)
 add_subdirectory("${ZCL_SECP_SOURCE}" "secp256k1" EXCLUDE_FROM_ALL)
 
-add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
+add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c src/shielded_address.c
     src/payment.c src/uri_text.c src/utf8_text.c src/secret_hash.c src/blake2_hash.c
     src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
     src/signature.c src/signature_script.c
@@ -308,7 +308,7 @@ if(ZCL_FUZZ)
     add_executable(seed_electrum tests/seed_electrum.c)
     target_compile_options(seed_electrum PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion)
-    add_executable(fuzz_camera_frame tests/fuzz_camera_frame.c tests/camera_reference.c)
+    add_executable(fuzz_camera_frame tests/fuzz_camera_frame.c tests/camera_reference.c tests/scan_result_reference.c)
     target_link_libraries(fuzz_camera_frame PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_camera_frame PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
@@ -332,6 +332,12 @@ if(ZCL_FUZZ)
     target_compile_options(fuzz_amount PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     target_link_options(fuzz_amount PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz_shielded_address tests/fuzz_shielded_address.c)
+    target_link_libraries(fuzz_shielded_address PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_shielded_address PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+        -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    target_link_options(fuzz_shielded_address PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz_codecs tests/fuzz_codecs.c)
     target_link_libraries(fuzz_codecs PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_codecs PRIVATE -fsanitize=fuzzer,address,undefined
@@ -505,6 +511,15 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         add_test(NAME wallet_jni_keys COMMAND jni_key_tests)
         set_tests_properties(wallet_jni_keys PROPERTIES TIMEOUT 15)
+        add_executable(jni_entropy_tests tests/test_jni_entropy.c src/jni_keys.c src/jni_support.c)
+        target_include_directories(jni_entropy_tests PRIVATE src ${JNI_INCLUDE_DIRS})
+        target_link_libraries(jni_entropy_tests PRIVATE zcl_wallet_core)
+        target_compile_definitions(jni_entropy_tests PRIVATE
+            zcl_secure_zero=zcl_entropy_test_zero zcl_random_bytes=zcl_entropy_test_random)
+        target_compile_options(jni_entropy_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_jni_entropy COMMAND jni_entropy_tests)
+        set_tests_properties(wallet_jni_entropy PROPERTIES TIMEOUT 15)
         add_executable(jni_record_tests tests/test_jni_record.c src/jni_wallet_record.c src/jni_support.c)
         target_include_directories(jni_record_tests PRIVATE src ${JNI_INCLUDE_DIRS})
         target_link_libraries(jni_record_tests PRIVATE zcl_wallet_core)
@@ -543,6 +558,15 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         add_test(NAME wallet_jni_review COMMAND jni_review_tests)
         set_tests_properties(wallet_jni_review PROPERTIES TIMEOUT 15)
+        add_executable(jni_review_race_tests tests/test_jni_review_races.c tests/assessment_fixture.c
+            src/jni_review.c src/jni_review_packet.c src/jni_full_review.c src/jni_full_prepare.c
+            src/jni_draft.c src/jni_draft_fields.c src/jni_draft_wire.c src/jni_support.c)
+        target_include_directories(jni_review_race_tests PRIVATE src ${JNI_INCLUDE_DIRS})
+        target_link_libraries(jni_review_race_tests PRIVATE zcl_wallet_core zcl_hash_provider Threads::Threads)
+        target_compile_options(jni_review_race_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_jni_review_races COMMAND jni_review_race_tests)
+        set_tests_properties(wallet_jni_review_races PROPERTIES TIMEOUT 15)
         add_executable(jni_address_tests tests/test_jni_address.c src/jni_codecs.c src/jni_support.c)
         target_include_directories(jni_address_tests PRIVATE src ${JNI_INCLUDE_DIRS})
         target_link_libraries(jni_address_tests PRIVATE zcl_wallet_core)
@@ -1067,7 +1091,7 @@ if(NOT ANDROID)
     endif()
     add_test(NAME wallet_rpc_provider COMMAND rpc_provider_tests)
     set_tests_properties(wallet_rpc_provider PROPERTIES TIMEOUT 15)
-    add_executable(camera_frame_tests tests/test_camera_frame.c tests/scan_fixture.c)
+    add_executable(camera_frame_tests tests/test_camera_frame.c tests/scan_fixture.c tests/scan_result_reference.c)
     target_link_libraries(camera_frame_tests PRIVATE zcl_wallet_core zcl_qr_provider)
     target_compile_options(camera_frame_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_camera_frame COMMAND camera_frame_tests)
@@ -1087,7 +1111,7 @@ if(NOT ANDROID)
     endif()
     add_test(NAME wallet_scan_provider COMMAND scan_provider_tests)
     set_tests_properties(wallet_scan_provider PROPERTIES TIMEOUT 10)
-    add_executable(scan_qr_tests tests/test_scan_qr.c tests/scan_fixture.c)
+    add_executable(scan_qr_tests tests/test_scan_qr.c tests/scan_fixture.c tests/scan_result_reference.c)
     target_link_libraries(scan_qr_tests PRIVATE zcl_wallet_core zcl_qr_provider)
     target_compile_options(scan_qr_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_scan_qr COMMAND scan_qr_tests)
@@ -1263,6 +1287,12 @@ if(NOT ANDROID)
     target_link_libraries(wallet_tests PRIVATE zcl_wallet_core)
     target_compile_options(wallet_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_core COMMAND wallet_tests)
+    add_executable(shielded_address_tests tests/test_shielded_address.c)
+    target_link_libraries(shielded_address_tests PRIVATE zcl_wallet_core)
+    target_compile_options(shielded_address_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_shielded_address COMMAND shielded_address_tests)
+    set_tests_properties(wallet_shielded_address PROPERTIES TIMEOUT 15)
     add_executable(codec_tests tests/test_codecs.c)
     target_link_libraries(codec_tests PRIVATE zcl_wallet_core zcl_hash_provider)
     target_compile_options(codec_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
@@ -1762,6 +1792,13 @@ if(NOT ANDROID)
         add_test(NAME wallet_change_recovery_corrupt COMMAND change_recovery_tests corrupt)
         set_tests_properties(wallet_change_recovery wallet_change_recovery_partial
             wallet_change_recovery_corrupt PROPERTIES TIMEOUT 30)
+        add_executable(change_recovery_fuzz_tests tests/test_change_recovery_fuzz.c
+            tests/fuzz_change_recovery.c tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(change_recovery_fuzz_tests PRIVATE zcl_wallet_core)
+        target_compile_options(change_recovery_fuzz_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_change_recovery_fuzz_contract COMMAND change_recovery_fuzz_tests)
+        set_tests_properties(wallet_change_recovery_fuzz_contract PROPERTIES TIMEOUT 30)
         add_executable(change_recovery_failure_tests tests/test_change_recovery_failures.c
             src/change_recovery.c src/change_custody.c tests/change_custody_retirement.c
             tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)
@@ -1798,6 +1835,16 @@ if(NOT ANDROID)
             -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
         add_test(NAME wallet_change_ownership COMMAND change_ownership_tests)
         set_tests_properties(wallet_change_ownership PROPERTIES TIMEOUT 60)
+        foreach(mode reservation ownership)
+            add_executable(change_${mode}_fuzz_tests tests/test_change_address_fuzz.c
+                tests/fuzz_change_reservation.c tests/change_storage_fixture.c tests/storage_fixture.c)
+            target_link_libraries(change_${mode}_fuzz_tests PRIVATE zcl_wallet_core)
+            target_compile_options(change_${mode}_fuzz_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+                -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
+            add_test(NAME wallet_change_${mode}_fuzz_contract COMMAND change_${mode}_fuzz_tests)
+            set_tests_properties(wallet_change_${mode}_fuzz_contract PROPERTIES TIMEOUT 30)
+        endforeach()
+        target_compile_definitions(change_ownership_fuzz_tests PRIVATE ZCL_CHANGE_RECONSTRUCT=1)
         add_library(review_wallet_test_fixture STATIC tests/review_wallet_fixture.c
             tests/assessment_fixture.c tests/change_storage_fixture.c tests/storage_fixture.c)
         target_include_directories(review_wallet_test_fixture PUBLIC src)

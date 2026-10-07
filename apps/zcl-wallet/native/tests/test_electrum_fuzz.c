@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_electrum.h"
+#include "electrum_genesis_fixture.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -47,11 +48,33 @@ static int cases(const char *directory)
     return number == 1600;
 }
 
+static int identity_cases(const char *directory, zcl_network network, size_t number)
+{
+    /* Same pinned public identities as the deterministic protocol unit tests.
+     * Positive controls ensure an always-refusing parser cannot pass. */
+    static const char main_hash[] = "0007104ccda289427919efc39dc9e4d499804b7bebc22df55f8b834301260602";
+    static const char test_hash[] = "03e1c4bb705c871bf9bfda3e74b7f8f86bff267993c215a89d5795e3708e5e1f";
+    static char frame[4096];
+    int length = snprintf(frame, sizeof(frame),
+        "{\"id\":1,\"result\":{\"genesis_hash\":\"%s\",\"hash_function\":\"sha256\"}}\n",
+        network == ZCL_MAINNET ? main_hash : test_hash);
+    if (length <= 0 || (size_t)length >= sizeof(frame)) return 0;
+    if (zcl_electrum_features_reply((const uint8_t *)frame, (size_t)length, 1, network) != ZCL_OK) return 0;
+    if (!exercise((const uint8_t *)frame, (size_t)length, directory, number)) return 0;
+    length = snprintf(frame, sizeof(frame), "{\"id\":1,\"result\":{\"count\":1,\"hex\":\"%s\"}}\n",
+        network == ZCL_MAINNET ? main_genesis : test_genesis);
+    if (length <= 0 || (size_t)length >= sizeof(frame)) return 0;
+    if (zcl_electrum_genesis_reply((const uint8_t *)frame, (size_t)length, 1, network) != ZCL_OK) return 0;
+    return exercise((const uint8_t *)frame, (size_t)length, directory, number + 1);
+}
+
 int main(int argc, char **argv)
 {
-    if (argc > 2 || !cases(argc == 2 ? argv[1] : NULL)) {
+    const char *directory = argc == 2 ? argv[1] : NULL;
+    if (argc > 2 || !cases(directory) || !identity_cases(directory, ZCL_MAINNET, 1600) ||
+        !identity_cases(directory, ZCL_TESTNET, 1602)) {
         fprintf(stderr, "Electrum framing corpus replay/generation failed\n");
         return 1;
     }
-    return puts("Electrum framing: 1600 byte/chunk/boundary cases, immutable terminal states and exact reset passed") < 0 ? 1 : 0;
+    return puts("Electrum: 1600 framing cases plus four live main/test identity controls passed") < 0 ? 1 : 0;
 }
