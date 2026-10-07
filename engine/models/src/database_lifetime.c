@@ -4,6 +4,7 @@
 
 #define _GNU_SOURCE
 #include "models/database_lifetime.h"
+#include "base/log_macros.h"
 
 #include "platform/path_compat.h"
 #include "platform/time_compat.h"
@@ -103,6 +104,7 @@ static const char *lifetime_authority_name(enum db_lifetime_authority authority)
     switch (authority) {
     case DB_LIFETIME_BACKING_OWNER: return "backing-owner";
     case DB_LIFETIME_HANDLE_OWNER: return "handle-owner";
+    case DB_LIFETIME_SCHEMA_PREFLIGHT: return "schema-preflight";
     default: return "borrowed";
     }
 }
@@ -319,6 +321,36 @@ static bool lifetime_delete_unauthorized(const char *path,
  * evade the same generation/refcount audit.  The syscall forms avoid calling
  * back through libc and therefore cannot recurse into these wrappers. */
 #if defined(__linux__)
+/* SQLite's robustFchown runs for root even on an existing read-only WAL.
+ * A redundant fchown still changes ctime. During schema classification only,
+ * observe the borrowed descriptor without changing its ownership or mode.
+ * The ordinary mutable-open path retains the real syscall, including its
+ * permission checks and privilege-bit clearing. No pathname is reconstructed. */
+int fchown(int fd, uid_t owner, gid_t group)
+{
+    if (g_scope_authority != DB_LIFETIME_SCHEMA_PREFLIGHT) {
+#if defined(SYS_fchown32)
+        return (int)syscall(SYS_fchown32, fd, owner, group);
+#else
+        return (int)syscall(SYS_fchown, fd, owner, group);
+#endif
+    }
+    struct stat st;
+    int error = 0;
+    if (fstat(fd, &st) != 0)
+        error = errno;
+    else if ((owner != (uid_t)-1 && owner != st.st_uid) ||
+             (group != (gid_t)-1 && group != st.st_gid))
+        error = EPERM;
+    if (error != 0) {
+        LOG_ERROR("db-lifetime", "schema preflight ownership refused fd=%d errno=%d",
+                  fd, error);
+        errno = error;
+        return -1;
+    }
+    return 0;
+}
+
 static int lifetime_os_remove(const char *event, int dirfd, const char *path,
                               int flags)
 {

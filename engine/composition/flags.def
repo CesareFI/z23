@@ -476,7 +476,7 @@ Z23_FLAG("ZCL_DB_BACKUP_BEFORE_MIGRATE", "env_runtime", "-", "-",
           "node.db to node.db.schema<N>.bak via SQLite's online backup API "
           "before a BREAKING migration step touches the live file")
 Z23_FLAG("ZCL_DB_LIFETIME_TRACE", "env_runtime", "-", "-",
-          "undocumented; first use engine/models/src/database_lifetime.c:92")
+          "undocumented; first use engine/models/src/database_lifetime.c:93")
 Z23_FLAG("ZCL_DB_LONG_OP_LOG_ALL", "env_runtime", "-", "-",
           "undocumented; first use engine/models/src/database_long_op.c:136")
 Z23_FLAG("ZCL_DB_TXN_TRACE", "env_runtime", "-", "-",
