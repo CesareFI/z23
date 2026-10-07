@@ -3523,7 +3523,6 @@ tools/command/native_dev_hotswap.c:registry_probe_cb:36
 tools/command/native_dev_hotswap.c:rpc_dev_hotswap_native:19
 tools/command/native_dev_hotswap.c:service_resident_observation_append:24
 tools/command/native_dev_land.c:dl_dependency_repair_one:36
-tools/command/native_dev_land.c:dl_escape:17
 tools/command/native_dev_land.c:dl_materialize_file:43
 tools/command/native_dev_land.c:dl_regen_run:18
 tools/command/native_dev_land.c:dl_status:40

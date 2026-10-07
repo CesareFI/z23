@@ -6635,9 +6635,105 @@ done:
 }
 #endif
 
-static int test_dev_land_receipt_adversarial(void)
+/* These cases enter dl_escape through its production caller dl_encode_row.
+ * No queue, clock, filesystem fixture or publication authority is involved. */
+static int dlx_row_utf8_refuses(const char *name, const char *text, bool detail)
 {
     int failures = 0;
+    TEST(name) {
+        char out[8192];
+        size_t len = 123;
+        memset(out, 'X', sizeof(out));
+        ASSERT(!zcl_native_dev_land_test_encode_text(text, detail, out,
+                                                     sizeof(out), &len));
+        ASSERT_EQ(len, 123);
+        ASSERT_EQ(out[0], 'X');
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_row_utf8_valid(bool detail)
+{
+    int failures = 0;
+    TEST("land: row encoding preserves UTF-8 and JSON escapes with exact capacity") {
+        static const char text[] =
+            "\"\\\n\r\t\b\f\x01\x1f\x7f"
+            "\xc2\x80\xdf\xbf\xe0\xa0\x80\xed\x9f\xbf"
+            "\xee\x80\x80\xef\xbf\xbf\xf0\x90\x80\x80\xf4\x8f\xbf\xbf";
+        static const char escaped[] =
+            "\\\"\\\\\\n\\r\\t\\u0008\\u000c\\u0001\\u001f\x7f"
+            "\xc2\x80\xdf\xbf\xe0\xa0\x80\xed\x9f\xbf"
+            "\xee\x80\x80\xef\xbf\xbf\xf0\x90\x80\x80\xf4\x8f\xbf\xbf";
+        char out[8192], exact[8192];
+        size_t len = 0, got = 0;
+        ASSERT(zcl_native_dev_land_test_encode_text(text, detail, out,
+                                                    sizeof(out), &len));
+        ASSERT(strstr(out, escaped) != NULL);
+        ASSERT_EQ(len, strlen(out));
+        ASSERT(len + 1 < sizeof(exact));
+        ASSERT(zcl_native_dev_land_test_encode_text(text, detail, exact,
+                                                    len + 1, &got));
+        ASSERT_EQ(got, len);
+        ASSERT_STR_EQ(exact, out);
+        got = 123;
+        ASSERT(!zcl_native_dev_land_test_encode_text(text, detail, exact,
+                                                     len, &got));
+        ASSERT_EQ(got, 123);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_row_utf8_dense_detail(void)
+{
+    int failures = 0;
+    TEST("land: a full control-byte detail still fits its escaped row buffer") {
+        char text[1024], out[8192], expected[1023 * 6 + 1];
+        size_t len = 0;
+        memset(text, '\x01', sizeof(text) - 1);
+        text[sizeof(text) - 1] = '\0';
+        for (size_t i = 0; i < sizeof(text) - 1; ++i)
+            memcpy(expected + i * 6, "\\u0001", 6);
+        expected[sizeof(expected) - 1] = '\0';
+        ASSERT(zcl_native_dev_land_test_encode_text(text, true, out,
+                                                    sizeof(out), &len));
+        ASSERT(strstr(out, expected) != NULL);
+        ASSERT_EQ(len, strlen(out));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int dlx_row_utf8_cases(void)
+{
+    static const struct { const char *name; const char *text; } cases[] = {
+        { "land: refuse stray continuation in a row", "a\x80" },
+        { "land: refuse overlong two-byte UTF-8 in a row", "\xc0\xaf" },
+        { "land: refuse overlong three-byte UTF-8 in a row", "\xe0\x80\xaf" },
+        { "land: refuse overlong four-byte UTF-8 in a row", "\xf0\x80\x80\xaf" },
+        { "land: refuse a UTF-16 surrogate in a row", "\xed\xa0\x80" },
+        { "land: refuse a scalar above U+10FFFF in a row", "\xf4\x90\x80\x80" },
+        { "land: refuse an illegal lead byte in a row", "\xff" },
+        { "land: refuse bad continuation in a row", "\xe2(\xa1" },
+        { "land: refuse truncated two-byte UTF-8 in a row", "\xc2" },
+        { "land: refuse truncated three-byte UTF-8 in a row", "\xe2\x82" },
+        { "land: refuse truncated four-byte UTF-8 in a row", "\xf0\x9f\x92" }
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        failures += dlx_row_utf8_refuses(cases[i].name, cases[i].text, false);
+        failures += dlx_row_utf8_refuses(cases[i].name, cases[i].text, true);
+    }
+    failures += dlx_row_utf8_valid(false);
+    failures += dlx_row_utf8_valid(true);
+    failures += dlx_row_utf8_dense_detail();
+    return failures;
+}
+
+static int test_dev_land_receipt_adversarial(void)
+{
+    int failures = dlx_row_utf8_cases();
 #if !defined(_WIN32)
     TEST("land: tampered persisted remote receipts refuse without redispatch") {
         ASSERT(dlx_receipt_tamper_cases());

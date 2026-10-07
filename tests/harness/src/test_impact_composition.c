@@ -10397,9 +10397,28 @@ static int test_ic_foreground_proof_command(void)
  * share), a string-literal name reference, and the genuine no-owner
  * case that must stay unmatched rather than guess. */
 
-static int test_ic_harness_test_group_naming(void)
+static int ic_landing_production_route(void)
 {
     int failures = 0;
+    TEST("landing production-only impact retains its UTF-8 regression group") {
+        const char *files[] = { "tools/command/native_dev_land.c" };
+        struct agent_impact_acc impact = {0};
+        ASSERT(agent_impact_apply_shared_rules(files[0], &impact));
+        ASSERT(!impact.groups_lost);
+        ASSERT(ic_acc_has_group(&impact, "dev_land"));
+        ASSERT(ic_acc_has_group(&impact, "make_lint_gates"));
+        struct zcl_devloop_plan plan;
+        ASSERT(zcl_devloop_plan_files(files, 1, &plan));
+        ASSERT(ic_planned(&plan, "dev_land"));
+        ASSERT(ic_planned(&plan, "make_lint_gates"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_ic_harness_test_group_naming(void)
+{
+    int failures = ic_landing_production_route();
     TEST("harness routing: test_<group>.c resolves from the catalog, not a "
          "listed AGENT_IMPACT_RULE row") {
         char group[ZCL_AGENT_IMPACT_GROUP_MAX];

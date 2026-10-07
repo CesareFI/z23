@@ -143,6 +143,7 @@
 #include "config/command_catalog.h"
 #include "crypto/sha256.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "platform/file_clone.h"
 #include "platform/file_metadata.h"
 #include "platform/logical_cpu.h"
@@ -356,41 +357,47 @@ static void dl_now_iso(char out[64])
 
 /* ── JSON string escaping (rows are machine-written, never trusted) ────── */
 
+static const char *dl_escape_short(unsigned char c)
+{
+    switch (c) {
+    case '"': return "\\\"";
+    case '\\': return "\\\\";
+    case '\n': return "\\n";
+    case '\r': return "\\r";
+    case '\t': return "\\t";
+    default: return NULL;
+    }
+}
+
 static bool dl_escape(const char *in, char *out, size_t cap)
 {
     size_t used = 0;
+    if (out && cap) out[0] = '\0';
     if (!in || !out || cap == 0)
         return false;
+    if (!zutf8_validate_n(in, strlen(in)))
+        return false;
     for (const unsigned char *p = (const unsigned char *)in; *p; p++) {
-        const char *rep = NULL;
+        const char *rep = dl_escape_short(*p);
         char tmp[8];
-        switch (*p) {
-        case '"': rep = "\\\""; break;
-        case '\\': rep = "\\\\"; break;
-        case '\n': rep = "\\n"; break;
-        case '\r': rep = "\\r"; break;
-        case '\t': rep = "\\t"; break;
-        default: break;
-        }
+        /* used < cap; subtraction avoids overflowing capacity arithmetic. */
         if (rep) {
-            if (used + 2 >= cap)
+            if (cap - used <= 2)
                 return false;
             out[used++] = rep[0];
             out[used++] = rep[1];
         } else if (*p < 0x20) {
             int w = snprintf(tmp, sizeof(tmp), "\\u%04x", *p);
-            if (w != 6 || used + 6 >= cap)
+            if (w != 6 || cap - used <= 6)
                 return false;
             memcpy(out + used, tmp, 6);
             used += 6;
         } else {
-            if (used + 1 >= cap)
+            if (cap - used <= 1)
                 return false;
             out[used++] = (char)*p;
         }
     }
-    if (used >= cap)
-        return false;
     out[used] = '\0';
     return true;
 }
@@ -1092,8 +1099,7 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
      * detail, but detail has other writers too (the proof stub's raw
      * value among them in tests) — sized here for the true worst case of
      * its source field rather than for the sanitised common case, so a
-     * source this leaf does not control can never make dl_escape refuse
-     * and the whole row un-persistable. */
+     * valid UTF-8 detail cannot overflow its escaped buffer. */
     char e_dim[128], e_log[8192], e_detail[1024 * 6 + 16];
     int w;
     if (!r || !out || cap == 0)
@@ -1140,6 +1146,25 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
         *len_out = (size_t)w;
     return true;
 }
+
+#if defined(ZCL_TESTING)
+/* Exercise the production row encoder with deterministic, bounded strings. */
+bool zcl_native_dev_land_test_encode_text(const char *text, bool detail,
+                                         char *out, size_t cap,
+                                         size_t *len_out)
+{
+    struct dl_row row = {0};
+    if (!text)
+        return false;
+    size_t len = strlen(text);
+    char *field = detail ? row.detail : row.note;
+    size_t field_cap = detail ? sizeof(row.detail) : sizeof(row.note);
+    if (len >= field_cap)
+        return false;
+    memcpy(field, text, len + 1);
+    return dl_encode_row(&row, out, cap, len_out);
+}
+#endif
 
 #if defined(ZCL_TESTING)
 /* Fixture-only composition of the real serializer and row reader. The queue
