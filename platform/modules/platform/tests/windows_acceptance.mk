@@ -656,6 +656,7 @@ ZCL_WINDOWS_ACCEPTANCE_wallet_restore_refusal_SOURCES := \
 	tests/harness/src/wallet_restore_windows_refusal_acceptance.c \
 	contexts/wallet/services/src/wallet_restore_service.c \
 	platform/modules/base/src/result.c
+ZCL_WINDOWS_ACCEPTANCE_wallet_restore_refusal_FLAGS := -Itests/harness/include
 ZCL_WINDOWS_ACCEPTANCE_watcher_lease_SOURCES := \
 	platform/modules/platform/tests/watcher_lease_windows_acceptance.c \
 	platform/modules/platform/src/watcher_lease.c \

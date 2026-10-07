@@ -29,6 +29,7 @@
  *   - a file that is not a SQLite database
  *   - a SQLite database holding none of the wallet tables
  *   - an encrypted backup with no password available
+ *   - a target path that cannot be represented without truncation
  */
 
 #include "platform/directory_compat.h"
@@ -46,6 +47,7 @@
 
 #include <sqlite3.h>
 #include <stdint.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -683,6 +685,141 @@ static int wr_test_encrypted(struct wallet_restore_request req, const char *back
 }
 #endif
 
+#if !defined(_WIN32)
+/* Grow only an owned fixture, keeping each component below NAME_MAX. */
+static bool wr_extend_target(char *datadir, size_t capacity, size_t length)
+{
+    size_t used = strlen(datadir);
+    if (length >= capacity || used >= length || length - used < 2)
+        return false;
+    while (used < length) {
+        size_t remaining = length - used;
+        size_t component = remaining > 17 ? 16 : remaining - 1;
+        /* Do not leave a final slash with an empty component. */
+        if (remaining > 17 && remaining % 17 == 1)
+            component = 15;
+        datadir[used++] = '/';
+        memset(datadir + used, 'd', component);
+        used += component;
+        datadir[used] = '\0';
+        if (mkdir(datadir, 0700) != 0) {
+            datadir[used - component - 1] = '\0';
+            return false;
+        }
+        if (chmod(datadir, 0700) != 0)
+            return false;
+    }
+    return true;
+}
+
+/* Inspect and clean by directory descriptor: the complete oversized path
+ * can exceed the host's PATH_MAX even though its datadir fits. */
+static int wr_check_long_target_empty(const char *datadir)
+{
+    int failures = 0;
+    int fd = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    WR_CHECK("opened the long-path fixture for absence checks", fd >= 0);
+    if (fd < 0)
+        return failures;
+    struct stat st;
+    WR_CHECK("refusal creates no database at the truncated target",
+             fstatat(fd, "node.d", &st, AT_SYMLINK_NOFOLLOW) != 0 &&
+             errno == ENOENT);
+    WR_CHECK("refusal creates no database at the complete target",
+             fstatat(fd, "node.db", &st, AT_SYMLINK_NOFOLLOW) != 0 &&
+             errno == ENOENT);
+    WR_CHECK("closed the long-path fixture after absence checks", close(fd) == 0);
+    return failures;
+}
+
+static int wr_remove_long_target_files(const char *datadir)
+{
+    int failures = 0;
+    static const char *const names[] = {
+        "node.db", "node.db-wal", "node.db-shm",
+        "node.d", "node.d-wal", "node.d-shm",
+    };
+    int fd = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    WR_CHECK("opened the long-path fixture for cleanup", fd >= 0);
+    if (fd < 0)
+        return failures;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        WR_CHECK("removed long-path fixture file or it was absent",
+                 unlinkat(fd, names[i], 0) == 0 || errno == ENOENT);
+    }
+    WR_CHECK("closed the long-path fixture after cleanup", close(fd) == 0);
+    return failures;
+}
+
+static int wr_remove_long_target(char *datadir, size_t root_len)
+{
+    int failures = wr_remove_long_target_files(datadir);
+    while (strlen(datadir) > root_len) {
+        WR_CHECK("removed long-path fixture component", rmdir(datadir) == 0);
+        char *slash = strrchr(datadir, '/');
+        if (!slash || (size_t)(slash - datadir) < root_len) {
+            WR_CHECK("long-path cleanup remains inside its fixture root", false);
+            return failures;
+        }
+        *slash = '\0';
+    }
+    WR_CHECK("removed long-path fixture root", rmdir(datadir) == 0);
+    return failures;
+}
+
+/* Test the real service at the last fitting and first truncated pathname.
+ * Refusal cases use a valid backup; the fitting control reaches the existing
+ * missing-source check without depending on SQLite's separate path limit. */
+static int wr_test_target_path_case(const char *backup_path, bool fits,
+                                    bool dry_run)
+{
+    int failures = 0;
+    char datadir[1100];
+    size_t target_capacity = sizeof(((struct wallet_restore_report *)0)->target_db);
+    char full_db[1200];
+    if (!test_mkdtemp(datadir, sizeof(datadir), "wr_long_target")) {
+        WR_CHECK("created an isolated long-path fixture root", false);
+        return failures;
+    }
+    size_t root_len = strlen(datadir);
+    /* "/node.db" occupies eight bytes, plus its NUL terminator. */
+    size_t target_len = target_capacity - sizeof("/node.db");
+    if (!fits)
+        target_len++;
+    bool built = wr_extend_target(datadir, sizeof(datadir), target_len);
+    WR_CHECK("built the exact boundary-length datadir", built);
+    if (!built) {
+        failures += wr_remove_long_target(datadir, root_len);
+        return failures;
+    }
+    int n = snprintf(full_db, sizeof(full_db), "%s/node.db", datadir);
+    if (n <= 0 || (size_t)n >= sizeof(full_db)) {
+        WR_CHECK("full fixture database path fits", false);
+        failures += wr_remove_long_target(datadir, root_len);
+        return failures;
+    }
+
+    struct wallet_restore_request req = {
+        .backup_path = fits ? full_db : backup_path,
+        .datadir = datadir, .dry_run = dry_run,
+    };
+    struct wallet_restore_report rep;
+    memset(&rep, 0xA5, sizeof(rep));
+    struct zcl_result r = wallet_restore_run(&req, &rep);
+    if (fits) {
+        WR_CHECK("last fitting target reaches source checks without path changes",
+                 !r.ok && r.code == -33 && strcmp(rep.target_db, full_db) == 0);
+    } else {
+        WR_CHECK("refuses the first target that cannot fit exactly",
+                 !r.ok && r.code == -59);
+        WR_CHECK("refusal clears the reported target", rep.target_db[0] == '\0');
+        failures += wr_check_long_target_empty(datadir);
+    }
+    failures += wr_remove_long_target(datadir, root_len);
+    return failures;
+}
+#endif
+
 /* ── the group ──────────────────────────────────────────────── */
 
 int test_wallet_restore(void)
@@ -702,10 +839,12 @@ int test_wallet_restore(void)
 #else
     int failures = 0;
     char src_db[256], backup_dir[256], target[256], target_db[320];
-    const char *scratch = wr_dir();
-    snprintf(src_db, sizeof(src_db), "%s/wr_%d_src.db", scratch, (int)getpid());
-    snprintf(backup_dir, sizeof(backup_dir), "%s/wr_%d_bk", scratch, (int)getpid());
-    snprintf(target, sizeof(target), "%s/wr_%d_target", scratch, (int)getpid());
+    char scratch[200];
+    if (!test_mkdtemp(scratch, sizeof(scratch), "wr_restore"))
+        return 1;
+    snprintf(src_db, sizeof(src_db), "%s/source.db", scratch);
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backup", scratch);
+    snprintf(target, sizeof(target), "%s/target", scratch);
     snprintf(target_db, sizeof(target_db), "%s/node.db", target);
     wr_rm(src_db);
     wr_rmdir_datadir(target);
@@ -768,6 +907,11 @@ int test_wallet_restore(void)
                                            .datadir = target, .dry_run = true };
 
     failures += wr_test_long_datadir_lock();
+
+    failures += wr_test_target_path_case(backup_path, true, true);
+    failures += wr_test_target_path_case(backup_path, true, false);
+    failures += wr_test_target_path_case(backup_path, false, true);
+    failures += wr_test_target_path_case(backup_path, false, false);
 
     failures += wr_test_restore_refusals(req, backup_dir, target, target_db);
 
@@ -850,6 +994,7 @@ int test_wallet_restore(void)
     wr_rm(src_db);
     wr_rmdir_datadir(target);
     rmdir(backup_dir);
+    WR_CHECK("removed the isolated restore fixture root", rmdir(scratch) == 0);
     return failures;
 #endif
 }

@@ -126,8 +126,11 @@ void wallet_restore_datadir_release(struct wallet_restore_datadir_lock *lock);
 /* Merge `req->backup_path` into `req->datadir`. Fills `out` (required) on
  * both success and failure — a failed run still reports whatever it learned
  * about the backup file, which is what the user needs to decide the next
- * move. Returns ZCL_OK only when the merge (or, for a dry run, the counted
- * rehearsal) completed. */
+ * move. The target path must fit `out->target_db` exactly; an oversized target
+ * is refused before any filesystem action, leaving `out->target_db` empty
+ * and returning -59. Native Windows refuses with -58 and a zeroed report.
+ * Returns ZCL_OK only when the merge (or, for a dry run, the counted rehearsal)
+ * completed. */
 struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
                                      struct wallet_restore_report *out);
 

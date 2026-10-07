@@ -8,9 +8,9 @@
  * deleted tools/scripts/winacceptance.sh only ever compiled — and compiled
  * NATIVELY, so the arm below (the whole assertion) was never read by a
  * compiler at all. The catalog cross-links it for Windows, which is the first
- * time these lines are checked. The body is the original verbatim; only the
- * non-Windows arm changed, from a `return 77` main() to the not-built typedef
- * its catalog siblings use. */
+ * time these lines are checked. The refusal also requires a completely zero
+ * report. File checks live in private helpers; the non-Windows arm uses
+ * the not-built typedef its catalog siblings use. */
 #if defined(_WIN32)
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -20,6 +20,8 @@
 
 #include "base/log_level.h"
 #include "services/wallet_restore_service.h"
+#include "test/windows_compat.h"
+#include "test/test_core.h"
 
 #include <stdbool.h>
 #include <stdarg.h>
@@ -54,18 +56,40 @@ static bool format_path(char *out, size_t capacity, const char *format, ...)
     return written >= 0 && (size_t)written < capacity;
 }
 
+static const char expected[] = "synthetic-wallet-restore-sentinel";
+
+static bool file_missing(const char *path)
+{
+    DWORD attributes = GetFileAttributesA(path);
+    DWORD error = GetLastError();
+    return attributes == INVALID_FILE_ATTRIBUTES &&
+        (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND);
+}
+
+static bool files_unchanged(const char *sentinel, const char *node_db,
+                            const char *lock_path)
+{
+    char actual[sizeof(expected)] = {0};
+    HANDLE file = CreateFileA(sentinel, GENERIC_READ, FILE_SHARE_READ, NULL,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD read = 0;
+    bool unchanged = file != INVALID_HANDLE_VALUE &&
+        ReadFile(file, actual, (DWORD)sizeof(expected) - 1, &read, NULL) &&
+        read == sizeof(expected) - 1 &&
+        memcmp(actual, expected, sizeof(expected) - 1) == 0;
+    if (file != INVALID_HANDLE_VALUE && !CloseHandle(file))
+        unchanged = false;
+    return unchanged &&
+        file_missing(node_db) && file_missing(lock_path);
+}
+
 int main(void)
 {
-    char temp[MAX_PATH], dir[MAX_PATH + 64];
+    char dir[MAX_PATH + 64];
     char sentinel[MAX_PATH + 96], node_db[MAX_PATH + 80];
     char lock_path[MAX_PATH + 96];
-    DWORD n = GetTempPathA(sizeof(temp), temp);
-    if (!n || n >= sizeof(temp)) return 2;
-    if (!format_path(dir, sizeof(dir), "%sz23-wr-refusal-%lu-%llu", temp,
-                     (unsigned long)GetCurrentProcessId(),
-                     (unsigned long long)GetTickCount64()))
+    if (!test_mkdtemp(dir, sizeof(dir), "wallet_restore_refusal"))
         return 2;
-    if (!CreateDirectoryA(dir, NULL)) return 3;
     if (!format_path(sentinel, sizeof(sentinel), "%s/sentinel.sqlite", dir) ||
         !format_path(node_db, sizeof(node_db), "%s/node.db", dir) ||
         !format_path(lock_path, sizeof(lock_path),
@@ -73,11 +97,16 @@ int main(void)
         RemoveDirectoryA(dir);
         return 2;
     }
-    const char expected[] = "synthetic-wallet-restore-sentinel";
-    if (!write_sentinel(sentinel, expected)) return 4;
+    if (!write_sentinel(sentinel, expected)) {
+        (void)DeleteFileA(sentinel);
+        (void)RemoveDirectoryA(dir);
+        return 4;
+    }
 
     struct wallet_restore_datadir_lock lock = {0};
     struct wallet_restore_report report;
+    const unsigned char zero_report[sizeof(report)] = {0};
+    memset(&report, 0xA5, sizeof(report));
     struct wallet_restore_request request = {
         .backup_path = sentinel,
         .datadir = dir,
@@ -89,21 +118,12 @@ int main(void)
     struct zcl_result restored = wallet_restore_run(&request, &report);
     wallet_restore_datadir_release(&lock);
 
-    char actual[sizeof(expected)] = {0};
-    HANDLE file = CreateFileA(sentinel, GENERIC_READ, FILE_SHARE_READ, NULL,
-                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    DWORD read = 0;
-    bool unchanged = file != INVALID_HANDLE_VALUE &&
-        ReadFile(file, actual, sizeof(expected) - 1, &read, NULL) &&
-        read == sizeof(expected) - 1 &&
-        memcmp(actual, expected, sizeof(expected) - 1) == 0;
-    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
-    bool no_mutation = GetFileAttributesA(node_db) == INVALID_FILE_ATTRIBUTES &&
-                       GetFileAttributesA(lock_path) == INVALID_FILE_ATTRIBUTES;
+    bool unchanged = files_unchanged(sentinel, node_db, lock_path);
 
-    DeleteFileA(sentinel);
-    RemoveDirectoryA(dir);
-    if (queried.ok || held.ok || restored.ok || !unchanged || !no_mutation)
+    if (!DeleteFileA(sentinel) || !RemoveDirectoryA(dir))
+        return 2;
+    if (queried.ok || held.ok || restored.ok || !unchanged ||
+        memcmp(&report, zero_report, sizeof(report)) != 0)
         return 1;
     puts("wallet_restore_windows_refusal_acceptance: PASS");
     return 0;

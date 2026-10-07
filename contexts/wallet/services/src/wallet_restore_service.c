@@ -202,7 +202,36 @@ void wallet_restore_datadir_release(struct wallet_restore_datadir_lock *lock)
 
 /* ── helpers ────────────────────────────────────────────────── */
 
+static struct zcl_result wrs_validate_request(
+    const struct wallet_restore_request *req)
+{
+    if (!req || !req->backup_path || !req->backup_path[0] ||
+        !req->datadir || !req->datadir[0]) {
+        LOG_WARN(WRS_TAG, "restore: backup_path and datadir are both required");
+        return ZCL_ERR(-31, "restore: backup_path and datadir are required");
+    }
+
+    return ZCL_OK;
+}
+
 #ifndef _WIN32
+/* Refuse a target that cannot be represented before filesystem access. */
+static struct zcl_result wrs_prepare_paths(
+    const struct wallet_restore_request *req,
+    struct wallet_restore_report *out)
+{
+    snprintf(out->backup_path, sizeof(out->backup_path), "%s",
+             req->backup_path);
+    int n = snprintf(out->target_db, sizeof(out->target_db), "%s/node.db",
+                     req->datadir);
+    if (n <= 0 || (size_t)n >= sizeof(out->target_db)) {
+        out->target_db[0] = '\0';
+        LOG_WARN(WRS_TAG, "restore: target path exceeds report capacity");
+        return ZCL_ERR(-59, "restore: target path is too long");
+    }
+    return ZCL_OK;
+}
+
 static void wrs_warn(struct wallet_restore_report *rep, const char *what)
 {
     size_t used = strlen(rep->warnings);
@@ -306,40 +335,12 @@ static struct zcl_result wrs_materialize(const char *src, const char *password,
     (void)chmod(tmp_out, 0600);
     return ZCL_OK;
 }
-#endif
-
-struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
-                                     struct wallet_restore_report *out)
+/* Preserve the existing filesystem and single-writer checks after the
+ * target pathname has been proven representable. */
+static struct zcl_result wrs_prepare_target(
+    const struct wallet_restore_request *req,
+    struct wallet_restore_report *out)
 {
-    if (!out)
-        return ZCL_ERR(-30, "restore: report argument is required");
-    memset(out, 0, sizeof(*out));
-    if (!req || !req->backup_path || !req->backup_path[0] ||
-        !req->datadir || !req->datadir[0]) {
-        LOG_WARN(WRS_TAG, "restore: backup_path and datadir are both required");
-        return ZCL_ERR(-31, "restore: backup_path and datadir are required");
-    }
-#ifdef _WIN32
-    return ZCL_ERR(-58,
-                   "native Windows wallet restore is disabled until the "
-                   "current-SID single-writer, no-reparse private restore "
-                   "transaction passes qualification");
-#else
-
-    size_t n_tables = 0;
-    const char *const *tables = wallet_backup_tables(&n_tables);
-    if (n_tables > WALLET_RESTORE_TABLE_MAX) {
-        LOG_WARN(WRS_TAG, "wallet table set (%zu) exceeds report capacity",
-                 n_tables);
-        return ZCL_ERR(-32, "restore: wallet table set exceeds report capacity");
-    }
-    out->n_tables = n_tables;
-    out->dry_run = req->dry_run;
-    snprintf(out->backup_path, sizeof(out->backup_path), "%s",
-             req->backup_path);
-    snprintf(out->target_db, sizeof(out->target_db), "%s/node.db",
-             req->datadir);
-
     struct stat st;
     if (stat(req->backup_path, &st) != 0 || !S_ISREG(st.st_mode)) {
         LOG_WARN(WRS_TAG, "backup %s is not a readable file", req->backup_path);
@@ -370,6 +371,71 @@ struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
         return ZCL_ERR(-34, "%s", lock_r.message);
     }
 
+    return ZCL_OK;
+}
+
+/* Inspect without opening the target. The caller owns plaintext cleanup. */
+static struct zcl_result wrs_inspect_source(
+    struct wallet_restore_store_port *port, const char *source,
+    const char *const *tables, size_t n_tables,
+    const struct wallet_restore_request *req,
+    struct wallet_restore_report *out)
+{
+    char err[ZCL_RESULT_MSG_MAX] = "";
+    enum wallet_restore_store_status is =
+        port->inspect_backup(port->self, source, tables, n_tables,
+                            out->tables, err, sizeof(err));
+    if (is != WR_STORE_OK) {
+        LOG_WARN(WRS_TAG, "inspect failed: %s", err);
+        return ZCL_ERR(-35, "%s", err[0] ? err : "cannot read backup file");
+    }
+    wrs_summarize(out);
+    if (out->tables_in_backup == 0) {
+        LOG_WARN(WRS_TAG, "%s holds none of the %zu wallet tables",
+                 req->backup_path, n_tables);
+        return ZCL_ERR(-36,
+            "%s holds none of the %zu wallet tables — not a wallet backup",
+            req->backup_path, n_tables);
+    }
+
+    return ZCL_OK;
+}
+#endif
+
+struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
+                                     struct wallet_restore_report *out)
+{
+    if (!out) {
+        LOG_WARN(WRS_TAG, "restore: report argument is required");
+        return ZCL_ERR(-30, "restore: report argument is required");
+    }
+    memset(out, 0, sizeof(*out));
+    struct zcl_result request_r = wrs_validate_request(req);
+    if (!request_r.ok)
+        return request_r;
+#ifdef _WIN32
+    return ZCL_ERR(-58,
+                   "native Windows wallet restore is disabled until the "
+                   "current-SID single-writer, no-reparse private restore "
+                   "transaction passes qualification");
+#else
+    struct zcl_result path_r = wrs_prepare_paths(req, out);
+    if (!path_r.ok)
+        return path_r;
+
+    size_t n_tables = 0;
+    const char *const *tables = wallet_backup_tables(&n_tables);
+    if (n_tables > WALLET_RESTORE_TABLE_MAX) {
+        LOG_WARN(WRS_TAG, "wallet table set (%zu) exceeds report capacity",
+                 n_tables);
+        return ZCL_ERR(-32, "restore: wallet table set exceeds report capacity");
+    }
+    out->n_tables = n_tables;
+    out->dry_run = req->dry_run;
+    struct zcl_result target_r = wrs_prepare_target(req, out);
+    if (!target_r.ok)
+        return target_r;
+
     /* (2) Decrypt if needed. */
     char tmp[1200];
     struct zcl_result mr = wrs_materialize(req->backup_path, req->password,
@@ -385,22 +451,11 @@ struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
     /* (3) Inspect read-only; refuse a file that is not a wallet backup
      * before the target datadir is touched at all. */
     char err[ZCL_RESULT_MSG_MAX] = "";
-    enum wallet_restore_store_status is =
-        port.inspect_backup(port.self, source, tables, n_tables,
-                            out->tables, err, sizeof(err));
-    if (is != WR_STORE_OK) {
+    struct zcl_result inspect_r =
+        wrs_inspect_source(&port, source, tables, n_tables, req, out);
+    if (!inspect_r.ok) {
         if (tmp[0]) (void)unlink(tmp);
-        LOG_WARN(WRS_TAG, "inspect failed: %s", err);
-        return ZCL_ERR(-35, "%s", err[0] ? err : "cannot read backup file");
-    }
-    wrs_summarize(out);
-    if (out->tables_in_backup == 0) {
-        if (tmp[0]) (void)unlink(tmp);
-        LOG_WARN(WRS_TAG, "%s holds none of the %zu wallet tables",
-                 req->backup_path, n_tables);
-        return ZCL_ERR(-36,
-            "%s holds none of the %zu wallet tables — not a wallet backup",
-            req->backup_path, n_tables);
+        return inspect_r;
     }
 
     /* (4) Open the TARGET through the schema path. */

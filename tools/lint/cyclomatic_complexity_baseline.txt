@@ -1135,7 +1135,6 @@ contexts/wallet/services/src/wallet_backup_run.c:wbs_run_once_impl:35
 contexts/wallet/services/src/wallet_backup_service.c:wbs_hash_regular_file:23
 contexts/wallet/services/src/wallet_money_service.c:wallet_money_snapshot_build:35
 contexts/wallet/services/src/wallet_recovery_service.c:wallet_recovery_run:46
-contexts/wallet/services/src/wallet_restore_service.c:wallet_restore_run:26
 contexts/wallet/services/src/wallet_restore_service.c:wrs_summarize:16
 contexts/wallet/services/src/wallet_scan_service.c:wallet_scan_store_results:17
 contexts/wallet/services/src/yardsale_wallet_service.c:yardsale_wallet_seller_arm:44
@@ -3430,7 +3429,6 @@ tests/harness/src/testcache.c:testcache_probe_group_internal:25
 tests/harness/src/transaction_lab_simnet.c:transaction_lab_simnet_mine_owned_op_return_at:21
 tests/harness/src/ui_host_transport_windows_acceptance.c:main:16
 tests/harness/src/wallet_recovery_directory_windows_acceptance.c:main:22
-tests/harness/src/wallet_restore_windows_refusal_acceptance.c:main:19
 tools/acme/acme_client.c:acme_client_obtain:33
 tools/acme/acme_client.c:answer_authorization:18
 tools/acme/acme_client.c:finalize_order:18
