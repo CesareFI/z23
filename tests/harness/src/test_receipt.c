@@ -486,27 +486,55 @@ static int case_red_delta(void)
 
 /* ── labels and NULLs ─────────────────────────────────────────────────── */
 
+static int case_labels(void)
+{
+    int failures = 0;
+    static const struct { int value; const char *label; } kinds[] = {
+        {ZCL_RECEIPT_KIND_PASS, "PASS_RECEIPT"},
+        {ZCL_RECEIPT_KIND_RED_DELTA, "RED_DELTA_RECEIPT"},
+        {-1, "UNKNOWN_KIND"}, {77, "UNKNOWN_KIND"},
+    }, verdicts[] = {
+        {ZCL_RECEIPT_VERDICT_PASS, "PASS"},
+        {ZCL_RECEIPT_VERDICT_FAIL, "FAIL"},
+        {ZCL_RECEIPT_VERDICT_HOLLOW, "HOLLOW"},
+        {ZCL_RECEIPT_VERDICT_NO_CHANGE, "NO_CHANGE"},
+        {ZCL_RECEIPT_VERDICT_TIMEOUT, "TIMEOUT"},
+        {ZCL_RECEIPT_VERDICT_REFUSED, "REFUSED"},
+        {ZCL_RECEIPT_VERDICT_UNVERIFIED, "UNVERIFIED"},
+        {-1, "UNKNOWN_VERDICT"}, {77, "UNKNOWN_VERDICT"},
+    }, beliefs[] = {
+        {ZCL_RECEIPT_UNVERIFIED, "UNVERIFIED"},
+        {ZCL_RECEIPT_CORROBORATED, "CORROBORATED"},
+        {ZCL_RECEIPT_REFUTED, "REFUTED"},
+        {-1, "UNKNOWN_BELIEF"}, {77, "UNKNOWN_BELIEF"},
+    }, eligibilities[] = {
+        {ZCL_RECEIPT_ELIGIBILITY_UNKNOWN, "UNKNOWN"},
+        {ZCL_RECEIPT_ELIGIBLE, "ELIGIBLE"},
+        {ZCL_RECEIPT_INELIGIBLE_NONDETERMINISTIC, "INELIGIBLE_NONDETERMINISTIC"},
+        {ZCL_RECEIPT_INELIGIBLE_TIMING_SENSITIVE, "INELIGIBLE_TIMING_SENSITIVE"},
+        {ZCL_RECEIPT_INELIGIBLE_NO_VECTOR, "INELIGIBLE_NO_VECTOR"},
+        {-1, "UNKNOWN"}, {77, "UNKNOWN"},
+    };
+#define CHECK_LABELS(rows, type, label_fn)                            \
+    for (size_t i = 0; i < sizeof(rows) / sizeof((rows)[0]); i++) {    \
+        printf("receipt: label %s value=%d\n", #rows, (rows)[i].value); \
+        RC_CHECK((rows)[i].label,                                    \
+                 strcmp(label_fn((enum type)(rows)[i].value),        \
+                        (rows)[i].label) == 0);                      \
+    }
+    CHECK_LABELS(kinds, zcl_receipt_kind, zcl_receipt_kind_label);
+    CHECK_LABELS(verdicts, zcl_receipt_verdict, zcl_receipt_verdict_label);
+    CHECK_LABELS(beliefs, zcl_receipt_belief, zcl_receipt_belief_label);
+    CHECK_LABELS(eligibilities, zcl_receipt_eligibility, zcl_receipt_eligibility_label);
+#undef CHECK_LABELS
+    return failures;
+}
+
 static int case_surface(void)
 {
     int failures = 0;
     struct zcl_proof_receipt r;
     bool have = build_pass(&r);
-
-    RC_CHECK("kind label", strcmp(zcl_receipt_kind_label(
-                 ZCL_RECEIPT_KIND_RED_DELTA), "RED_DELTA_RECEIPT") == 0);
-    RC_CHECK("verdict label", strcmp(zcl_receipt_verdict_label(
-                 ZCL_RECEIPT_VERDICT_HOLLOW), "HOLLOW") == 0);
-    RC_CHECK("belief label", strcmp(zcl_receipt_belief_label(
-                 ZCL_RECEIPT_UNVERIFIED), "UNVERIFIED") == 0);
-    RC_CHECK("eligibility label", strcmp(zcl_receipt_eligibility_label(
-                 ZCL_RECEIPT_INELIGIBLE_TIMING_SENSITIVE),
-                 "INELIGIBLE_TIMING_SENSITIVE") == 0);
-    RC_CHECK("an out-of-range kind still names itself",
-             strcmp(zcl_receipt_kind_label((enum zcl_receipt_kind)77),
-                    "UNKNOWN_KIND") == 0);
-    RC_CHECK("an out-of-range verdict still names itself",
-             strcmp(zcl_receipt_verdict_label((enum zcl_receipt_verdict)77),
-                    "UNKNOWN_VERDICT") == 0);
 
     uint8_t id[32];
     RC_CHECK("a NULL receipt is not valid", !zcl_receipt_is_valid(NULL));
@@ -539,6 +567,7 @@ int test_receipt(void)
     failures += case_eligibility();
     failures += case_belief();
     failures += case_red_delta();
+    failures += case_labels();
     failures += case_surface();
     printf("receipt: %d failure(s)\n", failures);
     return failures;
