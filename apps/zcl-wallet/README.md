@@ -9,6 +9,10 @@ repository's C23 convention. Rust is not used.
 This is unfinished development software. Do not fund development addresses or
 import a key controlling real funds. No signing or broadcast is enabled yet.
 
+The native core also has an offline [shielded public address envelope reader](docs/SHIELDED_ADDRESS.md).
+It checks encoding only and does not enable shielded payments or establish
+spendability, ownership or chain identity.
+
 ## Build
 
 JDK 17, CMake 3.22.1, Android NDK 27.2.12479018, Android SDK platform 36 and

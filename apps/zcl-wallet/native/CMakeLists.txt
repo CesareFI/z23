@@ -98,7 +98,7 @@ set(SECP256K1_ECMULT_WINDOW_SIZE 8 CACHE STRING "Bounded mobile verification tab
 set(SECP256K1_ECMULT_GEN_KB 22 CACHE STRING "Bounded mobile signing table" FORCE)
 add_subdirectory("${ZCL_SECP_SOURCE}" "secp256k1" EXCLUDE_FROM_ALL)
 
-add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
+add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c src/shielded_address.c
     src/payment.c src/uri_text.c src/utf8_text.c src/secret_hash.c src/blake2_hash.c
     src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
     src/signature.c src/signature_script.c
@@ -332,6 +332,12 @@ if(ZCL_FUZZ)
     target_compile_options(fuzz_amount PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     target_link_options(fuzz_amount PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz_shielded_address tests/fuzz_shielded_address.c)
+    target_link_libraries(fuzz_shielded_address PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_shielded_address PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+        -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    target_link_options(fuzz_shielded_address PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz_codecs tests/fuzz_codecs.c)
     target_link_libraries(fuzz_codecs PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_codecs PRIVATE -fsanitize=fuzzer,address,undefined
@@ -1263,6 +1269,12 @@ if(NOT ANDROID)
     target_link_libraries(wallet_tests PRIVATE zcl_wallet_core)
     target_compile_options(wallet_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_core COMMAND wallet_tests)
+    add_executable(shielded_address_tests tests/test_shielded_address.c)
+    target_link_libraries(shielded_address_tests PRIVATE zcl_wallet_core)
+    target_compile_options(shielded_address_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_shielded_address COMMAND shielded_address_tests)
+    set_tests_properties(wallet_shielded_address PROPERTIES TIMEOUT 15)
     add_executable(codec_tests tests/test_codecs.c)
     target_link_libraries(codec_tests PRIVATE zcl_wallet_core zcl_hash_provider)
     target_compile_options(codec_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
