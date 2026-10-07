@@ -93,7 +93,7 @@ static uint64_t                  g_reject_overflow_tx;
 static uint64_t                  g_reject_overflow_block;
 
 static pthread_mutex_t      g_lock = PTHREAD_MUTEX_INITIALIZER;
-static bool                 g_observer_installed = false;
+static bool                 g_observer_installed[4];
 
 /* HTTP RPC middleware counter source (prometheus_metrics.h). Registered by
  * the composition root; read by the renderer under g_lock, so the lock order
@@ -623,15 +623,15 @@ void metrics_prometheus_set_header_gap(int64_t gap_blocks)
 void metrics_prometheus_init(void)
 {
     pthread_mutex_lock(&g_lock);
-    if (g_observer_installed) {
-        pthread_mutex_unlock(&g_lock);
-        return;
+    static const enum event_type types[] = {
+        EV_PEER_MISBEHAVE, EV_PEER_BANNED,
+        EV_CONSENSUS_REJECT_TX, EV_CONSENSUS_REJECT_BLOCK
+    };
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+        if (!g_observer_installed[i])
+            g_observer_installed[i] = event_observe(types[i],
+                i < 2 ? peer_event_observer : consensus_reject_observer, NULL);
     }
-    event_observe(EV_PEER_MISBEHAVE, peer_event_observer, NULL);
-    event_observe(EV_PEER_BANNED, peer_event_observer, NULL);
-    event_observe(EV_CONSENSUS_REJECT_TX, consensus_reject_observer, NULL);
-    event_observe(EV_CONSENSUS_REJECT_BLOCK, consensus_reject_observer, NULL);
-    g_observer_installed = true;
     pthread_mutex_unlock(&g_lock);
 }
 

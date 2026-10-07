@@ -21,6 +21,96 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
+
+static const enum event_type ma_subscription_types[] = {
+    EV_PEER_MISBEHAVE, EV_PEER_BANNED,
+    EV_CONSENSUS_REJECT_TX, EV_CONSENSUS_REJECT_BLOCK
+};
+
+static void ma_subscription_noop(enum event_type type, uint32_t peer_id,
+    const void *payload, uint32_t payload_len, void *ctx)
+{
+    (void)type; (void)peer_id; (void)payload; (void)payload_len; (void)ctx;
+}
+
+static int ma_subscription_case(size_t target)
+{
+    int failures = 0;
+    TEST("metric_alerts: subscription recovers without duplicate observers") {
+        for (size_t i = 0; i < 4; i++)
+            event_clear_observers(ma_subscription_types[i]);
+        metrics_prometheus_reset();
+        for (int i = 0; i < EVENT_MAX_OBSERVERS; i++)
+            ASSERT(event_observe(ma_subscription_types[target], ma_subscription_noop, NULL));
+        metrics_prometheus_init();
+        metrics_prometheus_init();
+        ASSERT(!event_observe(ma_subscription_types[target], ma_subscription_noop, NULL));
+        event_clear_observers(ma_subscription_types[target]);
+        metrics_prometheus_init();
+        metrics_prometheus_init();
+        for (size_t i = 0; i < 4; i++) {
+            event_emitf(ma_subscription_types[i], 0, "kind=timeout reason=fixture");
+            event_emitf(ma_subscription_types[i], 0, "kind=timeout reason=fixture");
+        }
+        char text[16384];
+        ASSERT(metrics_prometheus_render_prometheus(text, sizeof(text)) < sizeof(text) - 1);
+        ASSERT(strstr(text, "zcl_peer_offences_total{kind=\"all\"} 2\n"));
+        ASSERT(strstr(text, "zcl_peer_bans_total 2\n"));
+        ASSERT(strstr(text, "zcl_consensus_rejects_total{kind=\"tx\",reason=\"all\"} 2\n"));
+        ASSERT(strstr(text, "zcl_consensus_rejects_total{kind=\"block\",reason=\"all\"} 2\n"));
+        for (size_t i = 0; i < 4; i++) {
+            for (int n = 1; n < EVENT_MAX_OBSERVERS; n++)
+                ASSERT(event_observe(ma_subscription_types[i], ma_subscription_noop, NULL));
+            ASSERT(!event_observe(ma_subscription_types[i], ma_subscription_noop, NULL));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int ma_subscription_child(size_t i)
+{
+    int failures = 0;
+#ifdef _WIN32
+    char role[] = "metrics-subscription-0", path[PATH_MAX];
+    role[sizeof(role) - 2] = (char)('0' + i);
+    int fd = test_mkstemp(path, sizeof(path), "metric_subscription");
+    if (fd < 0) { perror("metric subscription log"); return 1; }
+    failures += close(fd) != 0;
+    void *child = test_spawn_self_with_role("test_metric_alerts", role, path);
+    int status = child ? test_self_child_wait(child) : -1;
+    if (_putenv_s("ZCL_TEST_FORK_GROUP", "") != 0 ||
+        _putenv_s("ZCL_TEST_FORK_ROLE", "") != 0) {
+        fprintf(stderr, "metric subscription environment cleanup failed\n"); failures++;
+    }
+    if (unlink(path) != 0) { perror("metric subscription cleanup"); failures++; }
+    if (status != 0) failures++;
+#else
+    fflush(stdout);
+    pid_t child = fork();
+    if (child < 0) { perror("metric subscription fork"); return 1; }
+    if (child == 0) {
+        int result = ma_subscription_case(i);
+        fflush(stdout);
+        _exit(result ? 1 : 0);
+    }
+    int status = 0;
+    pid_t done;
+    do { done = waitpid(child, &status, 0); } while (done < 0 && errno == EINTR);
+    if (done != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) failures++;
+#endif
+    return failures;
+}
+
+static int test_subscription_retries(void)
+{
+    int failures = 0;
+    for (size_t i = 0; i < 4; i++) failures += ma_subscription_child(i);
+    return failures;
+}
 
 /* ── Event capture (sync observer on EV_CONDITION_DETECTED) ────── */
 
@@ -593,8 +683,15 @@ int test_metric_alerts(void);
 
 int test_metric_alerts(void)
 {
+#ifdef _WIN32
+    const char *role = getenv("ZCL_TEST_FORK_ROLE");
+    if (role && strncmp(role, "metrics-subscription-", 21) == 0 &&
+        role[21] >= '0' && role[21] <= '3' && role[22] == '\0')
+        return ma_subscription_case((size_t)(role[21] - '0'));
+#endif
     int failures = 0;
 
+    failures += test_subscription_retries();
     failures += test_rule_count_and_names();
     failures += test_peer_floor_env_bounds();
     failures += test_allow_listed_for_push();
