@@ -13,6 +13,11 @@ including the border. Provider buffers are fixed at 138 bytes; expanded output
 is bounded by 1681 bytes, and the JNI record adds one width byte. No native heap
 allocation, callback, I/O or retained pointer is involved.
 
+After every fallible check succeeds, C clears and fills only the validated
+caller-owned output span. It does not stage a second expanded image on the
+native stack. Failures leave the module buffer and side unchanged; capacity
+beyond the returned square is never written.
+
 The C tests verify both networks, public P2PKH/P2SH fixtures, malformed addresses,
 every insufficient output capacity, unchanged outputs on failure, canaries and
 the quiet border. Sanitizers and static analyzers run through the normal safety

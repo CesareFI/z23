@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "scan_fixture.h"
+#include "scan_result_reference.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,12 +23,14 @@ static void accepted(void)
             CHECK(image != NULL);
             zcl_payment_request result = {0};
             CHECK(zcl_scan_qr(image, image_len, &layout, network, &result) == ZCL_OK);
+            CHECK(scan_result_matches(text, text_len, network, &result));
             CHECK(memcmp(result.address_text, text, text_len) == 0);
             CHECK(result.address.network == network && !result.has_amount);
             /* Last-row padding is optional. */
             size_t needed = (layout.height - 1) * layout.row_stride +
                             (layout.width - 1) * layout.pixel_stride + 1;
             CHECK(zcl_scan_qr(image, needed, &layout, network, &result) == ZCL_OK);
+            CHECK(scan_result_matches(text, text_len, network, &result));
             free(image);
         }
     }
@@ -42,6 +45,7 @@ static void payment(void)
     CHECK(image != NULL);
     zcl_payment_request result = {0};
     CHECK(zcl_scan_qr(image, image_len, &layout, ZCL_MAINNET, &result) == ZCL_OK);
+    CHECK(scan_result_matches(uri, sizeof(uri) - 1, ZCL_MAINNET, &result));
     CHECK(result.has_amount && result.amount == UINT64_C(125000000));
     CHECK(result.has_label && result.label_len == 14 && memcmp(result.label, "Public fixture", 14) == 0);
     CHECK(result.has_message && result.message_len == 5 && memcmp(result.message, "Hello", 5) == 0);
