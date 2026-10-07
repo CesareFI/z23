@@ -21,7 +21,10 @@ class ReceiveQr private constructor(private val record: ByteArray) {
             check(side in 29..41 && side % 4 == 1 && result.size == 1 + side * side) {
                 "Invalid native QR dimensions"
             }
-            check(result.drop(1).all { it == 0.toByte() || it == 1.toByte() }) { "Invalid native QR module" }
+            // Scan the owned native bytes without copying them into a boxed list.
+            for (i in 1 until result.size) {
+                check(result[i] == 0.toByte() || result[i] == 1.toByte()) { "Invalid native QR module" }
+            }
             return ReceiveQr(result)
         }
     }
