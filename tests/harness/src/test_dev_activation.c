@@ -19,6 +19,10 @@
 #include "dev_activation.h"
 #include "dev_activation_internal.h"
 #include "json/json.h"
+#include "platform/file_sync.h"
+#include "platform/clock.h"
+#include <dirent.h>
+#include <errno.h>
 #if defined(_WIN32)
 #include "platform/process_lock.h"
 #endif
@@ -1388,9 +1392,219 @@ static int test_dropin_follows_xdg_config_home(void)
     return failures;
 }
 
+static int deploy_fault, deploy_io_seen;
+static int64_t deploy_test_wall(void *ctx) { (void)ctx; return 100; }
+
+static int deploy_test_io(FILE *f, bool closing)
+{
+    struct stat st;
+    if (!closing && (fstat(fileno(f), &st) != 0 || st.st_size == 0))
+        return EOF;
+    deploy_io_seen |= closing ? 2 : 1;
+    int rc = closing ? fclose(f) : platform_file_sync(fileno(f));
+    if (deploy_fault == (closing ? 2 : 1)) {
+        errno = closing ? ENOSPC : EIO;
+        return EOF;
+    }
+    return rc;
+}
+
+static int test_deploy_state_io(int fault)
+{
+    int failures = 0;
+    TEST("dev_activation: deploy projection flush/close preserves whole state") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "deploy_io");
+        struct dev_activation_request req;
+        base_request(&req, &sb, "fixture");
+        struct dev_activation_result result = {0};
+        struct dev_activation_txn txn = { .req = &req, .result = &result };
+        snprintf(txn.deploy_state, sizeof(txn.deploy_state),
+                 "%s/agent-deploy.json", sb.datadir);
+        snprintf(txn.gen_root, sizeof(txn.gen_root), "%s", sb.gen_root);
+        mkpath(sb.datadir);
+        const char old[] = "{\"candidate_generation\":\"gen-old\",\"verify_status\":\"ready\"}\n";
+        FILE *f = fopen(txn.deploy_state, "w");
+        ASSERT(f != NULL);
+        ASSERT_EQ(fwrite(old, 1, sizeof(old) - 1, f), sizeof(old) - 1);
+        ASSERT_EQ(fclose(f), 0);
+        snprintf(result.candidate_generation, sizeof(result.candidate_generation),
+                 "gen-new");
+        snprintf(result.verify_status, sizeof(result.verify_status), "ready");
+        deploy_fault = fault;
+        deploy_io_seen = 0;
+        struct platform_clock_source clock = {
+            .wall_unix = deploy_test_wall, .monotonic_us = deploy_test_wall };
+        platform_clock_set_source(&clock);
+        dev_activation_deploy_test_set_io(deploy_test_io);
+        bool ok = dev_activation_write_deploy_state(&txn);
+        dev_activation_deploy_test_set_io(NULL);
+        platform_clock_clear_source();
+        char bytes[8192];
+        ASSERT_EQ(ok, fault == 0);
+        ASSERT_EQ(deploy_io_seen, 3);
+        ASSERT(read_file(txn.deploy_state, bytes, sizeof(bytes)) > 0);
+        if (fault)
+            ASSERT_STR_EQ(bytes, old);
+        else {
+            struct json_value v = {0};
+            ASSERT(json_read(&v, bytes, strlen(bytes)));
+            ASSERT_STR_EQ(json_get_str(json_get(&v, "candidate_generation")), "gen-new");
+            ASSERT_STR_EQ(json_get_str(json_get(&v, "verify_status")), "ready");
+            json_free(&v);
+        }
+        DIR *dir = opendir(sb.datadir);
+        ASSERT(dir != NULL);
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL)
+            ASSERT(strncmp(entry->d_name, "agent-deploy.json.", 18) != 0);
+        ASSERT_EQ(closedir(dir), 0);
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+struct deploy_text_case {
+    const char *text;
+    int field;
+    bool accepted;
+};
+
+static bool deploy_text_record(const char *bytes, size_t length,
+                               const struct deploy_text_case *row)
+{
+    struct json_value value = {0};
+    if (!json_read(&value, bytes, length))
+        return false;
+    const char *key = row->field == 0 ? "service" : "verify_detail";
+    const struct json_value *actual = json_get(&value, key);
+    if (row->field == 2)
+        actual = json_at(json_get(&value, "rejected_generations"), 0);
+    bool ok = actual && actual->type == JSON_STR &&
+              strcmp(json_get_str(actual), row->text) == 0;
+    json_free(&value);
+    return ok;
+}
+
+static bool deploy_text_input(struct dev_activation_txn *txn,
+                              const struct deploy_text_case *row)
+{
+    if (row->field == 0) {
+        ((struct dev_activation_request *)txn->req)->unit = row->text;
+        return true;
+    }
+    if (row->field == 1) {
+        snprintf(txn->result->verify_detail,
+                 sizeof(txn->result->verify_detail), "%s", row->text);
+        return true;
+    }
+    char path[PATH_MAX];
+    snprintf(txn->rejected_dir, sizeof(txn->rejected_dir),
+             "%s/rejected", txn->req->datadir);
+    if (mkdir(txn->rejected_dir, 0700) != 0)
+        return false;
+    int n = snprintf(path, sizeof(path), "%s/%s.json",
+                     txn->rejected_dir, row->text);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return false;
+    FILE *f = fopen(path, "w");
+    return f && fclose(f) == 0;
+}
+
+static int test_deploy_text_row(const struct deploy_text_case *row)
+{
+    int failures = 0;
+    TEST("dev_activation: checked deployment text is lossless or preserves OLD") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "deploy_text");
+        struct dev_activation_request req;
+        base_request(&req, &sb, "fixture");
+        struct dev_activation_result result = {0};
+        struct dev_activation_txn txn = { .req = &req, .result = &result };
+        snprintf(txn.deploy_state, sizeof(txn.deploy_state),
+                 "%s/agent-deploy.json", sb.datadir);
+        snprintf(txn.gen_root, sizeof(txn.gen_root), "%s", sb.gen_root);
+        mkpath(sb.datadir);
+        const char old[] = "OLD\n";
+        FILE *f = fopen(txn.deploy_state, "w");
+        ASSERT(f != NULL);
+        ASSERT_EQ(fwrite(old, 1, sizeof(old) - 1, f), sizeof(old) - 1);
+        ASSERT_EQ(fclose(f), 0);
+        ASSERT(deploy_text_input(&txn, row));
+        struct platform_clock_source clock = {
+            .wall_unix = deploy_test_wall, .monotonic_us = deploy_test_wall };
+        platform_clock_set_source(&clock);
+        bool ok = dev_activation_write_deploy_state(&txn);
+        platform_clock_clear_source();
+        ASSERT_EQ(ok, row->accepted);
+        char bytes[8192];
+        size_t length = read_file(txn.deploy_state, bytes, sizeof(bytes));
+        ASSERT(length > 0);
+        if (row->accepted)
+            ASSERT(deploy_text_record(bytes, length, row));
+        else {
+            ASSERT_EQ(length, sizeof(old) - 1);
+            ASSERT_EQ(memcmp(bytes, old, length), 0);
+        }
+        DIR *dir = opendir(sb.datadir);
+        ASSERT(dir != NULL);
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL)
+            ASSERT(strncmp(entry->d_name, "agent-deploy.json.", 18) != 0);
+        ASSERT_EQ(closedir(dir), 0);
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_deploy_text(void)
+{
+    char fits[255], backslashes[256], overflow[87];
+    char ascii[511], rejected[95], rejected_overflow[97];
+    memset(fits, '"', sizeof(fits) - 1);
+    fits[sizeof(fits) - 1] = 0;
+    memset(backslashes, '\\', sizeof(backslashes) - 1);
+    backslashes[sizeof(backslashes) - 1] = 0;
+    memset(overflow, '\001', sizeof(overflow) - 1);
+    overflow[sizeof(overflow) - 1] = 0;
+    memset(ascii, 'a', sizeof(ascii) - 1);
+    ascii[sizeof(ascii) - 1] = 0;
+    memset(rejected, 'a', sizeof(rejected) - 1);
+    memcpy(rejected, "gen-", 4);
+    rejected[sizeof(rejected) - 1] = 0;
+    memset(rejected_overflow, 'a', sizeof(rejected_overflow) - 1);
+    memcpy(rejected_overflow, "gen-", 4);
+    rejected_overflow[sizeof(rejected_overflow) - 1] = 0;
+    const struct deploy_text_case rows[] = {
+        { "unit\"\\\n\r\t\001\b\f-λ-😀", 0, true },
+        { "detail\"\\\n\r\t\001\b\f-λ-😀", 1, true },
+        { "\xff", 0, false }, { "\xff", 1, false },
+        { "\xc0\xaf", 1, false }, { "\xed\xa0\x80", 1, false },
+        { "\xf4\x90\x80\x80", 1, false }, { "\xe2\x82", 1, false },
+        { fits, 1, true }, { backslashes, 1, true },
+        { overflow, 1, false }, { ascii, 0, true },
+        { rejected, 2, true }, { rejected_overflow, 2, false },
+        { "gen-\"\\-λ-😀", 2, true },
+#if defined(__linux__)
+        { "gen-\xff", 2, false },
+#endif
+        { "gen-abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijkl", 2, true },
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++)
+        failures += test_deploy_text_row(&rows[i]);
+    return failures;
+}
+
 int test_dev_activation(void)
 {
     int failures = 0;
+    failures += test_deploy_text();
+    failures += test_deploy_state_io(1);
+    failures += test_deploy_state_io(2);
+    failures += test_deploy_state_io(0);
     failures += test_dropin_follows_xdg_config_home();
     failures += test_null_result_refused();
     failures += test_happy_activation();

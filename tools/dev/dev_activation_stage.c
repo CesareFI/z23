@@ -20,8 +20,11 @@
 #include "platform/positioned_file.h"
 #include "platform/private_directory.h"
 #include "platform/private_file.h"
+#include "platform/file_sync.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "json/json.h"
+#include "zutf8/zutf8.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -397,18 +400,41 @@ void dev_activation_ensure_rollback(struct dev_activation_txn *txn)
 
 /* ── deploy-state (zcl.agent_dev_deploy.v1) ──────────────────────────── */
 
+static bool dev_deploy_escape(const char *text, char *out, size_t capacity)
+{
+    if (capacity)
+        out[0] = 0;
+    if (!text)
+        text = "";
+    if (!zutf8_validate(text))
+        return false;
+    struct json_value value = {0};
+    json_set_str(&value, text);
+    bool ok = value.type == JSON_STR &&
+              strcmp(json_get_str(&value), text) == 0;
+    char wire[PATH_MAX + 2];
+    size_t length = ok ? json_write(&value, wire, sizeof(wire)) : 0;
+    json_free(&value);
+    if (!ok || length < 2 || length >= sizeof(wire) ||
+        length - 2 >= capacity)
+        return false;
+    memcpy(out, wire + 1, length - 2);
+    out[length - 2] = 0;
+    return true;
+}
+
 static int dev_gen_name_cmp(const void *a, const void *b)
 {
     return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
-static void dev_emit_rejected(const struct dev_activation_txn *txn, FILE *f)
+static bool dev_emit_rejected(const struct dev_activation_txn *txn, FILE *f)
 {
     fputc('[', f);
     DIR *d = opendir(txn->rejected_dir);
     if (!d) {
         fputc(']', f);
-        return;
+        return true;
     }
     char *names[256];
     size_t count = 0;
@@ -428,13 +454,65 @@ static void dev_emit_rejected(const struct dev_activation_txn *txn, FILE *f)
     }
     closedir(d);
     qsort(names, count, sizeof(names[0]), dev_gen_name_cmp);
+    bool ok = true;
     for (size_t i = 0; i < count; i++) {
         char esc[96];
-        dev_activation_json_escape(names[i], esc, sizeof(esc));
-        fprintf(f, "%s\"%s\"", i ? "," : "", esc);
+        if (!dev_deploy_escape(names[i], esc, sizeof(esc)))
+            ok = false;
+        if (ok)
+            fprintf(f, "%s\"%s\"", i ? "," : "", esc);
         free(names[i]);
     }
     fputc(']', f);
+    return ok;
+}
+
+#ifdef ZCL_TESTING
+static int (*g_deploy_io_hook)(FILE *, bool);
+void dev_activation_deploy_test_set_io(int (*hook)(FILE *, bool))
+{
+    g_deploy_io_hook = hook;
+}
+#endif
+
+static int dev_deploy_io(FILE *f, bool closing)
+{
+#ifdef ZCL_TESTING
+    if (g_deploy_io_hook)
+        return g_deploy_io_hook(f, closing);
+#endif
+    return closing ? fclose(f) : platform_file_sync(fileno(f));
+}
+
+/* Consume the stream even when its flush fails; never install that stage. */
+static bool dev_deploy_finish(FILE *f)
+{
+    bool ok = !ferror(f) && fflush(f) == 0 && dev_deploy_io(f, false) == 0;
+    int saved_errno = errno;
+    if (dev_deploy_io(f, true) != 0)
+        return false;
+    if (!ok)
+        errno = saved_errno;
+    return ok;
+}
+
+static FILE *dev_deploy_open(const char *path, char tmp[PATH_MAX])
+{
+    tmp[0] = 0;
+    int n = snprintf(tmp, PATH_MAX, "%s.XXXXXX", path);
+    if (n <= 0 || (size_t)n >= PATH_MAX)
+        LOG_NULL("dev-activation", "deploy-state tmp overflow");
+    int fd = mkstemp(tmp);
+    if (fd < 0)
+        LOG_NULL("dev-activation", "deploy-state mkstemp: %s", strerror(errno));
+    FILE *f = fdopen(fd, "w");
+    if (!f) {
+        close(fd);
+        (void)unlink(tmp);
+        LOG_NULL("dev-activation", "deploy-state fdopen: %s", strerror(errno));
+    }
+
+    return f;
 }
 
 bool dev_activation_write_deploy_state(struct dev_activation_txn *txn)
@@ -447,18 +525,9 @@ bool dev_activation_write_deploy_state(struct dev_activation_txn *txn)
     bool rollback_available = txn->last_good_generation[0] != 0;
 
     char tmp[PATH_MAX];
-    int n = snprintf(tmp, sizeof(tmp), "%s.XXXXXX", txn->deploy_state);
-    if (n <= 0 || (size_t)n >= sizeof(tmp))
-        LOG_FAIL("dev-activation", "deploy-state tmp overflow");
-    int fd = mkstemp(tmp);
-    if (fd < 0)
-        LOG_FAIL("dev-activation", "deploy-state mkstemp: %s", strerror(errno));
-    FILE *f = fdopen(fd, "w");
-    if (!f) {
-        close(fd);
-        (void)unlink(tmp);
-        LOG_FAIL("dev-activation", "deploy-state fdopen: %s", strerror(errno));
-    }
+    FILE *f = dev_deploy_open(txn->deploy_state, tmp);
+    if (!f)
+        return false;
 
     char now[32];
     dev_activation_iso_utc_now(now);
@@ -467,25 +536,36 @@ bool dev_activation_write_deploy_state(struct dev_activation_txn *txn)
     char e_root[PATH_MAX], e_cand[96], e_cur[96], e_run[96], e_lg[96], e_prev[96];
     char e_act[64], e_rb[64], e_lock[PATH_MAX], e_ddir[PATH_MAX];
     char e_vstat[64], e_vdetail[512], e_capsule[512];
-    dev_activation_json_escape(req->build_commit, e_commit, sizeof(e_commit));
-    dev_activation_json_escape(req->source_identity, e_source_id,
-                               sizeof(e_source_id));
-    dev_activation_json_escape(req->build_type, e_type, sizeof(e_type));
-    dev_activation_json_escape(req->artifact_path, e_artifact, sizeof(e_artifact));
-    dev_activation_json_escape(txn->compat_bin, e_bin, sizeof(e_bin));
-    dev_activation_json_escape(txn->gen_root, e_root, sizeof(e_root));
-    dev_activation_json_escape(r->candidate_generation, e_cand, sizeof(e_cand));
-    dev_activation_json_escape(txn->current_generation, e_cur, sizeof(e_cur));
-    dev_activation_json_escape(r->running_generation, e_run, sizeof(e_run));
-    dev_activation_json_escape(txn->last_good_generation, e_lg, sizeof(e_lg));
-    dev_activation_json_escape(txn->previous_generation, e_prev, sizeof(e_prev));
-    dev_activation_json_escape(r->activation_status, e_act, sizeof(e_act));
-    dev_activation_json_escape(r->rollback_status, e_rb, sizeof(e_rb));
-    dev_activation_json_escape(txn->lock_path, e_lock, sizeof(e_lock));
-    dev_activation_json_escape(req->datadir, e_ddir, sizeof(e_ddir));
-    dev_activation_json_escape(r->verify_status, e_vstat, sizeof(e_vstat));
-    dev_activation_json_escape(r->verify_detail, e_vdetail, sizeof(e_vdetail));
-    dev_activation_json_escape(r->failure_capsule, e_capsule, sizeof(e_capsule));
+    char e_unit[512], e_sha[512];
+    const struct { const char *text; char *out; size_t capacity; } fields[] = {
+        { req->build_commit, e_commit, sizeof(e_commit) },
+        { req->source_identity, e_source_id, sizeof(e_source_id) },
+        { req->build_type, e_type, sizeof(e_type) },
+        { req->artifact_path, e_artifact, sizeof(e_artifact) },
+        { txn->compat_bin, e_bin, sizeof(e_bin) },
+        { txn->gen_root, e_root, sizeof(e_root) },
+        { r->candidate_generation, e_cand, sizeof(e_cand) },
+        { txn->current_generation, e_cur, sizeof(e_cur) },
+        { r->running_generation, e_run, sizeof(e_run) },
+        { txn->last_good_generation, e_lg, sizeof(e_lg) },
+        { txn->previous_generation, e_prev, sizeof(e_prev) },
+        { r->activation_status, e_act, sizeof(e_act) },
+        { r->rollback_status, e_rb, sizeof(e_rb) },
+        { txn->lock_path, e_lock, sizeof(e_lock) },
+        { req->datadir, e_ddir, sizeof(e_ddir) },
+        { r->verify_status, e_vstat, sizeof(e_vstat) },
+        { r->verify_detail, e_vdetail, sizeof(e_vdetail) },
+        { r->failure_capsule, e_capsule, sizeof(e_capsule) },
+        { req->unit, e_unit, sizeof(e_unit) },
+        { r->candidate_sha256, e_sha, sizeof(e_sha) },
+    };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        if (!dev_deploy_escape(fields[i].text, fields[i].out, fields[i].capacity)) {
+            fclose(f);
+            (void)unlink(tmp);
+            LOG_FAIL("dev-activation", "deploy-state text serialization refused");
+        }
+    }
 
     fprintf(f, "{\n");
     fprintf(f, "  \"schema\": \"zcl.agent_dev_deploy.v1\",\n");
@@ -498,7 +578,7 @@ bool dev_activation_write_deploy_state(struct dev_activation_txn *txn)
     fprintf(f, "  \"installed_binary\": \"%s\",\n", e_bin);
     fprintf(f, "  \"generation_root\": \"%s\",\n", e_root);
     fprintf(f, "  \"candidate_generation\": \"%s\",\n", e_cand);
-    fprintf(f, "  \"candidate_sha256\": \"%s\",\n", r->candidate_sha256);
+    fprintf(f, "  \"candidate_sha256\": \"%s\",\n", e_sha);
     fprintf(f, "  \"current_generation\": \"%s\",\n", e_cur);
     fprintf(f, "  \"running_generation\": \"%s\",\n", e_run);
     fprintf(f, "  \"last_good_generation\": \"%s\",\n", e_lg);
@@ -511,9 +591,13 @@ bool dev_activation_write_deploy_state(struct dev_activation_txn *txn)
     fprintf(f, "  \"activation_lock_held\": %s,\n",
             txn->lock_held ? "true" : "false");
     fprintf(f, "  \"rejected_generations\": ");
-    dev_emit_rejected(txn, f);
+    if (!dev_emit_rejected(txn, f)) {
+        fclose(f);
+        (void)unlink(tmp);
+        LOG_FAIL("dev-activation", "deploy-state rejected text serialization refused");
+    }
     fprintf(f, ",\n");
-    fprintf(f, "  \"service\": \"%s\",\n", req->unit);
+    fprintf(f, "  \"service\": \"%s\",\n", e_unit);
     fprintf(f, "  \"datadir\": \"%s\",\n", e_ddir);
     fprintf(f, "  \"rpcport\": %d,\n", req->rpcport);
     fprintf(f, "  \"verify_status\": \"%s\",\n", e_vstat);
@@ -538,14 +622,16 @@ bool dev_activation_write_deploy_state(struct dev_activation_txn *txn)
         fprintf(f, "  \"auto_reindex_count\": \"\"\n");
     }
     fprintf(f, "}\n");
-    if (fclose(f) != 0) {
+    if (!dev_deploy_finish(f)) {
         (void)unlink(tmp);
-        LOG_FAIL("dev-activation", "deploy-state fclose: %s", strerror(errno));
+        LOG_FAIL("dev-activation", "deploy-state flush/close: %s", strerror(errno));
     }
     if (rename(tmp, txn->deploy_state) != 0) {
         (void)unlink(tmp);
         LOG_FAIL("dev-activation", "deploy-state rename: %s", strerror(errno));
     }
+    if (!platform_private_parent_flush(req->datadir))
+        LOG_FAIL("dev-activation", "deploy-state parent flush: %s", strerror(errno));
     return true;
 }
 

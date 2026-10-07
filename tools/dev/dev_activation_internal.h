@@ -23,6 +23,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <sys/types.h>
+#ifdef ZCL_TESTING
+#include <stdio.h>
+#endif
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -162,6 +165,10 @@ void dev_activation_generation_commit(const struct dev_activation_txn *txn,
 
 /* Write the byte-compatible zcl.agent_dev_deploy.v1 state file. */
 bool dev_activation_write_deploy_state(struct dev_activation_txn *txn);
+
+#ifdef ZCL_TESTING
+void dev_activation_deploy_test_set_io(int (*hook)(FILE *, bool));
+#endif
 
 /* Remove the crash-recovery in-progress marker (best-effort). Called wherever
  * the transaction concludes (success OR rollback) so a live flip that finished
