@@ -2,7 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* catchup_lifecycle_service — start / bounded-join / poll-reap for the
+/* catchup_lifecycle_service — start / ownership-join / poll-reap for the
  * node_db catchup job (struct node_db_sync_catchup_job,
  * controllers/sync_controller.h).
  *
@@ -14,7 +14,7 @@
  * boot_services.c and boot_background_workers.c keep extracting
  * node_db/chain/wallet/datadir from `svc` and pass them through, so the
  * two call sites stay thin while the lifecycle POLICY (double-start
- * guard, bounded join with detach-on-timeout, poll-only reap) lives in
+ * guard, ownership-preserving join, poll-only reap) lives in
  * one place next to the job it manages.
  *
  * Kept as its own file rather than folded into node_db_catchup_service.c:
@@ -45,20 +45,27 @@ bool catchup_lifecycle_start(struct node_db_sync_catchup_job *job,
                              struct wallet *w,
                              const char *datadir);
 
-/* Bounded join for shutdown: waits up to timeout_sec for the catchup
- * thread, then detaches instead of blocking (never lets a stuck catchup
- * thread hang shutdown). No-op if the job is not started. Clears
- * job->started unconditionally on return — matches the former
- * boot_join_catchup_service contract. */
+/* Ownership-preserving join for shutdown. timeout_sec bounds the initial
+ * diagnostic wait; if it expires, the timeout is logged and the join keeps
+ * waiting. The worker borrows the job, database, chain, and wallet, so it must
+ * never be detached while shutdown frees those objects. No-op if the job is
+ * not started. After a successful join, clears job->started. The void shutdown
+ * wrapper also clears it on join failure; it cannot report reclamation failure. */
 void catchup_lifecycle_join(struct node_db_sync_catchup_job *job,
                             int timeout_sec);
 
 /* Poll-style reap for the background backfill watcher: if the job is
  * running but not yet finished, no-op (returns true — "nothing to reap
- * yet"). Once finished, joins it (bounded 1s) and clears job->started.
- * Returns false only if that bounded join itself times out, leaving the
- * job thread detached and job->started still true — matches the former
- * boot_reap_catchup_service contract. */
+ * yet"). Once finished, gives the join a one-second diagnostic deadline; if
+ * the thread is still in its epilogue, the timeout is logged and ownership is
+ * retained until it exits. A successful eventual join clears job->started.
+ * Returns false only when ownership could not be reclaimed. */
 bool catchup_lifecycle_reap(struct node_db_sync_catchup_job *job);
+
+#if defined(ZCL_TESTING) && defined(__linux__)
+/* Select ETIMEDOUT once on this calling thread; the fallback still joins the
+ * real worker. Does not claim that an actual diagnostic deadline elapsed. */
+void catchup_lifecycle_force_join_timeout_for_testing(void);
+#endif
 
 #endif /* ZCL_SERVICES_CATCHUP_LIFECYCLE_SERVICE_H */

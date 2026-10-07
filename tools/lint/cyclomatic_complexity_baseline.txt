@@ -2616,7 +2616,6 @@ tests/harness/src/test_bundle_staleness.c:test_bundle_staleness:22
 tests/harness/src/test_byte_order_codec.c:test_byte_order_codec:22
 tests/harness/src/test_canary_sentinel_watch.c:test_canary_sentinel_watch:99
 tests/harness/src/test_catalog_completeness.c:test_catalog_completeness:42
-tests/harness/src/test_catchup_lifecycle_service.c:test_catchup_lifecycle_service:28
 tests/harness/src/test_chacha20_isa_parity.c:test_chacha20_isa_parity:45
 tests/harness/src/test_chain.c:test_chain:319
 tests/harness/src/test_chain_evidence_live_advance.c:test_durable_frontier_one_row_skew_is_not_hash_mismatch:18
