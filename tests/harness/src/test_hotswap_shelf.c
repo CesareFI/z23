@@ -46,6 +46,7 @@
 #include "util/blocker.h"
 
 #include <fcntl.h>
+#include <errno.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
@@ -318,6 +319,8 @@ static bool drive_image(int idx, const char *source_tu,
         .unmap = test_unmap,
         .hooks = &hooks,
     };
+    /* hotswap_commit_image takes the descriptor on every path. */
+    im->fd = -1;
     (void)hotswap_commit_image(&req);
     return true;
 }
@@ -353,6 +356,43 @@ static void reset_fixture(void)
 static void give_image_an_fd(int idx)
 {
     g_img[idx].fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+}
+
+static bool close_prepared_fds(void)
+{
+    bool ok = true;
+    for (int i = 0; i < IMG_MAX; i++) {
+        int fd = g_img[i].fd;
+        g_img[i].fd = -1;
+        if (fd >= 0 && close(fd) != 0) {
+            printf("prepared image %d close failed: errno=%d\n", i, errno);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* Shared with the depth-one test: refusal settles fixture ownership before
+ * the caller can return a failure or reset the activation fixture. */
+static bool prepare_depth_one(const char *sha,
+                              struct hotswap_activate_report *r)
+{
+    const char *leaves[1] = { LEAF_PROBE };
+    for (int i = 0; i < 3; i++) {
+        give_image_an_fd(i);
+        if (g_img[i].fd < 0) {
+            int saved_errno = errno;
+            snprintf(r->stage, sizeof(r->stage), "fixture_open");
+            snprintf(r->error, sizeof(r->error), "image %d open: errno=%d", i, saved_errno);
+            (void)close_prepared_fds();
+            return false;
+        }
+    }
+    if (!drive_image(0, SHELF_TU, leaves, 1, sha, "/nonexistent", r)) {
+        (void)close_prepared_fds();
+        return false;
+    }
+    return true;
 }
 
 static void release_fixture(void)
@@ -456,8 +496,12 @@ static int t_rollback_refuses_unknown_source(void)
 static int t_commit_shelves_predecessor_at_depth_one(void)
 {
     int failures = 0;
+    size_t before = 0, after = 0;
+    bool measured = false;
     TEST("each commit shelves the image it superseded, keeping exactly one") {
         reset_fixture();
+        ASSERT(os_proc_open_fd_count(&before));
+        measured = true;
         const char *leaves[1] = { LEAF_PROBE };
         struct hotswap_activate_report r;
         struct hotswap_shelf_entry e;
@@ -468,11 +512,8 @@ static int t_commit_shelves_predecessor_at_depth_one(void)
         static const char sha2[65] =
             "2222222222222222222222222222222222222222222222222222222222222222";
 
-        for (int i = 0; i < 3; i++)
-            give_image_an_fd(i);
-
         /* First image: nothing is superseded, so nothing is shelved. */
-        ASSERT(drive_image(0, SHELF_TU, leaves, 1, sha0, "/nonexistent", &r));
+        ASSERT(prepare_depth_one(sha0, &r));
         ASSERT(!hotswap_shelf_peek(SHELF_TU, &e));
         ASSERT_EQ(hotswap_shelf_list(NULL, 0), (size_t)0);
 
@@ -487,6 +528,7 @@ static int t_commit_shelves_predecessor_at_depth_one(void)
 
         /* Third: depth is 1, so image 0 leaves the shelf and image 1 takes
          * its place. The count never grows. */
+        int live_fd = g_img[2].fd;
         ASSERT(drive_image(2, SHELF_TU, leaves, 1, sha2, "/nonexistent", &r));
         ASSERT(hotswap_shelf_peek(SHELF_TU, &e));
         ASSERT_STR_EQ(e.artifact_sha256, sha1);
@@ -501,9 +543,42 @@ static int t_commit_shelves_predecessor_at_depth_one(void)
         ASSERT_EQ(hotswap_stale_commit_count(), (uint64_t)0);
         ASSERT_EQ(hotswap_reference_hold_count(), (uint64_t)0);
         ASSERT_EQ(atomic_load(&g_unmap_of_live_image), (uint64_t)0);
-        release_fixture();
-        PASS();
+        ASSERT(close_prepared_fds());
+        ASSERT(fcntl(live_fd, F_GETFD) >= 0);
     } _test_next:;
+    if (!close_prepared_fds()) failures++;
+    release_fixture();
+    if (measured && (!os_proc_open_fd_count(&after) || after != before)) {
+        printf("depth-one cleanup descriptor census failed\n");
+        failures++;
+    }
+    if (!failures) PASS();
+    return failures;
+}
+
+static int t_depth_one_preparation_refusal(void)
+{
+    int failures = 0;
+    reset_fixture();
+    TEST("first publication refusal closes all prepared descriptors before reset") {
+        size_t before = 0, after = 0;
+        ASSERT(os_proc_open_fd_count(&before));
+        struct hotswap_activate_report r = {0};
+        zcl_alloc_fault_fail_next("command handler override snapshot");
+        ASSERT(!prepare_depth_one(NULL, &r));
+        ASSERT_STR_EQ(r.stage, "commit");
+        ASSERT_STR_EQ(r.error, "snapshot allocation failed");
+        ASSERT(!r.ok && !r.activated);
+        ASSERT_EQ(zcl_command_registry_active_generation(), (uint32_t)0);
+        ASSERT_EQ(hotswap_shelf_list(NULL, 0), (size_t)0);
+        ASSERT(os_proc_open_fd_count(&after));
+        ASSERT_EQ(after, before);
+        for (int i = 0; i < 3; i++) ASSERT_EQ(g_img[i].fd, -1);
+    } _test_next:;
+    zcl_alloc_fault_clear();
+    if (!close_prepared_fds()) failures++;
+    release_fixture();
+    if (!failures) PASS();
     return failures;
 }
 
@@ -848,6 +923,7 @@ int test_hotswap_shelf(void)
     failures += t_pure_publish_never_shelves();
     failures += t_rollback_refuses_unknown_source();
     failures += t_commit_shelves_predecessor_at_depth_one();
+    failures += t_depth_one_preparation_refusal();
     failures += t_retirement_race_never_unmaps_the_live_image();
     failures += t_shrinking_leaf_set_keeps_the_old_image_mapped();
     failures += t_rollback_races_forward_swaps();
