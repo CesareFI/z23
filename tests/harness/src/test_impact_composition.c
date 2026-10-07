@@ -1423,6 +1423,45 @@ static int test_ic_union_never_loses_a_rule_group(void)
     return failures;
 }
 
+static int test_ic_block_log_source_plan(void)
+{
+    int failures = 0;
+    char root[4096] = {0};
+    TEST("impact composition: a block-log source-only edit is admissible") {
+        const char *files[] = {
+            "platform/adapters/outbound/persistence/src/block_log_file.c"
+        };
+        ASSERT(test_mkdtemp(root, sizeof root, "impact_block_log") != NULL);
+        ASSERT(ic_write(root, files[0],
+                        "int blf_fixture_read(void) { return 1; }\n"));
+        ASSERT(ic_write(root, "build/obj/block_log_file.d",
+                        "build/obj/block_log_file.o: "
+                        "platform/adapters/outbound/persistence/src/block_log_file.c\n"));
+        struct zcl_devloop_plan plan;
+        ASSERT(zcl_devloop_plan_files(files, 1, &plan));
+        ASSERT(plan.file_count == 1);
+        ASSERT(ic_group_in(plan.path_groups, plan.path_groups_len,
+                           "block_log_file"));
+        ASSERT(ic_group_in(plan.path_groups, plan.path_groups_len,
+                           "replay_verify"));
+        ASSERT(ic_group_in(plan.path_groups, plan.path_groups_len,
+                           "make_lint_gates"));
+        ASSERT(zcl_devloop_plan_add_closure(root, files, 1, &plan));
+        ASSERT(plan.dims[ZCL_DEVLOOP_DIM_SEMANTIC].status ==
+               ZCL_DEVLOOP_DIM_COMPLETE);
+        ASSERT(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].status ==
+               ZCL_DEVLOOP_DIM_NOT_APPLICABLE);
+        ASSERT(!plan.closure_universal);
+        const char *why = "unset";
+        ASSERT(zcl_devloop_plan_proof_admissible(&plan, &why));
+        ASSERT_STR_EQ(why, "");
+        ASSERT(ic_planned(&plan, "block_log_file"));
+        PASS();
+    } _test_next:;
+    if (root[0]) failures += test_rm_rf_recursive(root) != 0;
+    return failures;
+}
+
 /* ── T7: query only graph dimensions that can contain an edge ─────────── */
 
 static int test_ic_dimension_applicability_and_exact_execution(void)
@@ -11684,6 +11723,7 @@ int test_impact_composition(void)
     failures += test_ic_every_selection_has_a_reason();
     failures += test_ic_union_never_loses_a_rule_group();
     failures += test_ic_dimension_applicability_and_exact_execution();
+    failures += test_ic_block_log_source_plan();
     failures += test_ic_lint_token_selects_every_shard();
     failures += test_ic_snapshot_overlays_current_symbols();
     failures += test_ic_pr72_rpc_routes();

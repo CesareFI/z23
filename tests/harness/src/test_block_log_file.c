@@ -23,6 +23,7 @@
 
 #include "adapters/outbound/persistence/block_log_file.h"
 #include "ports/block_log_port.h"
+#include "base/safe_alloc.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -76,6 +77,94 @@ static bool iter_collect(uint32_t height,
         strcat(s->buf, tail);
     s->count++;
     return s->count < 16;
+}
+static int check_live_extent(struct block_log_port p, struct block_hash hash, uint32_t size)
+{
+    int failures = 0;
+    uint8_t payload[4096] = {0x5a};
+    bool valid = size <= 1;
+    const uint8_t *out = payload; size_t n = 777;
+    zcl_alloc_fault_fail_next("block_log_read_buf");
+    if (valid) zcl_alloc_fault_clear();
+    struct zcl_result r = p.read_by_hash(p.self, &hash, &out, &n);
+    BLF_CHECK("live extent read", valid ? r.ok && n == size :
+        !r.ok && r.code == BLOCK_LOG_ERR_CORRUPT && out == payload && n == 777);
+    if (!valid) BLF_CHECK("read refused before allocation", zcl_alloc_fault_armed_label() != NULL);
+    zcl_alloc_fault_clear();
+    zcl_alloc_fault_fail_next("block_log_read_buf");
+    r = p.append(p.self, 0, &hash, payload, size == UINT32_MAX ? 1 : size);
+    BLF_CHECK("live extent duplicate", valid ? r.ok : !r.ok && r.code == BLOCK_LOG_ERR_CORRUPT);
+    BLF_CHECK("duplicate avoids allocation", zcl_alloc_fault_armed_label() != NULL);
+    zcl_alloc_fault_clear();
+    return failures;
+}
+static int check_extent_files(int fd, int idx, off_t extent, const uint8_t *before, const uint8_t *index_before)
+{
+    int failures = 0; struct stat st; uint8_t after[44];
+    BLF_CHECK("refusal preserves log", fstat(fd, &st) == 0 && st.st_size == extent &&
+        pread(fd, after, 40, 0) == 40 && memcmp(before, after, 40) == 0);
+    BLF_CHECK("refusal preserves index", fstat(idx, &st) == 0 && st.st_size == 44 &&
+        pread(idx, after, 44, 0) == 44 && memcmp(index_before, after, 44) == 0);
+    return failures;
+}
+static int check_extent_reopen(const char *dir, bool valid, int fd, int idx,
+    off_t extent, const uint8_t *before, const uint8_t *index_before)
+{
+    int failures = 0;
+    struct block_log_file *h = NULL;
+    struct block_log_port probe = {0}, untouched = probe;
+    struct zcl_result r = block_log_file_open(dir, &h, &probe);
+    BLF_CHECK("indexed extent on reopen", valid ? r.ok :
+        !r.ok && r.code == BLOCK_LOG_ERR_CORRUPT && h == NULL &&
+        memcmp(&probe, &untouched, sizeof probe) == 0);
+    failures += check_extent_files(fd, idx, extent, before, index_before);
+    block_log_file_close(h); h = NULL;
+    if (!valid) {
+        BLF_CHECK("clear index for torn-tail fixture", ftruncate(idx, 0) == 0);
+        r = block_log_file_open(dir, &h, &probe);
+        struct stat st;
+        BLF_CHECK("unindexed torn payload recovers", r.ok && fstat(fd, &st) == 0 && st.st_size == 0);
+    }
+    block_log_file_close(h);
+    return failures;
+}
+static bool prepare_extent(int fd, int idx, uint32_t size, off_t extent,
+                           uint8_t *before, uint8_t *index_before)
+{
+    uint8_t lenbytes[4];
+    for (unsigned j = 0; j < 4; j++) lenbytes[j] = (uint8_t)(size >> (8 * j));
+    return fd >= 0 && idx >= 0 && pwrite(fd, lenbytes, 4, 36) == 4 &&
+        ftruncate(fd, extent) == 0 && pread(fd, before, 40, 0) == 40 &&
+        pread(idx, index_before, 44, 0) == 44;
+}
+
+static int indexed_extent_case(uint32_t size)
+{
+    int failures = 0;
+    char dir[4096];
+    if (!test_mkdtemp(dir, sizeof dir, "zcl_blf_extent")) return 1;
+    struct block_log_file *h = NULL;
+    struct block_log_port p = {0};
+    struct zcl_result r = block_log_file_open(dir, &h, &p);
+    if (!r.ok) { test_rm_rf(dir); return 1; }
+    struct block_hash hash; fill_hash(&hash, 0xaa);
+    uint8_t payload = 0x5a;
+    r = p.append(p.self, 0, &hash, &payload, 1);
+    char logpath[4352], idxpath[4352];
+    snprintf(logpath, sizeof logpath, "%s/blocks.log", dir);
+    snprintf(idxpath, sizeof idxpath, "%s/blocks.idx", dir);
+    int fd = open(logpath, O_RDWR), idx = open(idxpath, O_RDWR);
+    uint8_t before[40], index_before[44];
+    off_t extent = size == 1 ? 41 : 40;
+    bool setup = r.ok && prepare_extent(fd, idx, size, extent, before, index_before);
+    BLF_CHECK("extent fixture ready", setup);
+    if (setup) failures += check_live_extent(p, hash, size);
+    block_log_file_close(h);
+    if (setup) failures += check_extent_reopen(dir, size <= 1, fd, idx, extent, before, index_before);
+    if (fd >= 0) close(fd);
+    if (idx >= 0) close(idx);
+    test_rm_rf(dir);
+    return failures;
 }
 
 int test_block_log_file(void)
@@ -306,5 +395,6 @@ int test_block_log_file(void)
         test_rm_rf(dir);
     }
 
-    return failures + ZCL_TEST_SETUP_FAILURES();
+    return failures + indexed_extent_case(0) + indexed_extent_case(1) +
+        indexed_extent_case(4096) + indexed_extent_case(UINT32_MAX) + ZCL_TEST_SETUP_FAILURES();
 }

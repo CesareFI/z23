@@ -4,6 +4,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "adapters/outbound/persistence/block_log_file.h"
+#include "base/safe_alloc.h"
 #include "platform/directory_compat.h"
 #include "platform/file_sync.h"
 #include "platform/positioned_io.h"
@@ -137,8 +138,11 @@ static struct zcl_result read_buf_reserve(struct block_log_file *h,
 {
     if (need <= h->read_cap) return ZCL_OK;
     size_t cap = h->read_cap ? h->read_cap : 4096;
-    while (cap < need) cap *= 2;
-    uint8_t *p = realloc(h->read_buf, cap);
+    while (cap < need) {
+        if (cap > SIZE_MAX / 2) { cap = need; break; }
+        cap *= 2;
+    }
+    uint8_t *p = zcl_realloc(h->read_buf, cap, "block_log_read_buf");
     if (!p)
         return ZCL_ERR(BLOCK_LOG_ERR_IO,
                        "read_buf_reserve: realloc failed (cap=%zu)", cap);
@@ -151,12 +155,19 @@ static struct zcl_result read_buf_reserve(struct block_log_file *h,
  * the offset of the payload bytes. Returns BLOCK_LOG_ERR_CORRUPT if
  * the magic is wrong or the file is too short. */
 static struct zcl_result read_log_record_header(struct block_log_file *h,
-                                                off_t off,
+                                                uint64_t off, bool complete,
                                                 struct block_hash *hash_out,
                                                 uint32_t *len_out)
 {
+    struct stat st;
+    if (fstat(h->log_fd, &st) != 0)
+        return ZCL_ERR(BLOCK_LOG_ERR_IO, "stat log: errno=%d", errno);
+    if (st.st_size < 0 || off > (uint64_t)st.st_size ||
+        (uint64_t)st.st_size - off < LOG_HEADER_BYTES)
+        return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT, "log header exceeds file extent");
+    uint64_t available = (uint64_t)st.st_size - off - LOG_HEADER_BYTES;
     uint8_t hdr[LOG_HEADER_BYTES];
-    struct zcl_result r = read_exact(h->log_fd, off, hdr, sizeof hdr);
+    struct zcl_result r = read_exact(h->log_fd, (off_t)off, hdr, sizeof hdr);
     if (!r.ok) return r;
     if (memcmp(hdr, BLK_MAGIC, 4) != 0)
         return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
@@ -164,6 +175,8 @@ static struct zcl_result read_log_record_header(struct block_log_file *h,
                        (long long)off);
     memcpy(hash_out->bytes, hdr + 4, 32);
     *len_out = get_u32_le(hdr + 4 + 32);
+    if (complete && (uint64_t)*len_out > available)
+        return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT, "log payload exceeds file extent");
     return ZCL_OK;
 }
 
@@ -212,6 +225,34 @@ static const struct idx_entry *find_by_hash(const struct block_log_file *h,
     return NULL;
 }
 
+static struct zcl_result check_existing_record(struct block_log_file *h,
+                                                const struct idx_entry *existing,
+                                                const uint8_t *bytes, size_t len)
+{
+    uint32_t stored_len;
+    struct block_hash stored_hash;
+    struct zcl_result r = read_log_record_header(
+            h, existing->offset, true, &stored_hash, &stored_len);
+    if (!r.ok) return r;
+    if (stored_len != len)
+        return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
+                       "blf_append: idempotency violated — same hash, "
+                       "stored len=%u, new len=%zu", stored_len, len);
+    if (len > 0) {
+        r = read_buf_reserve(h, len);
+        if (!r.ok) return r;
+        r = read_exact(h->log_fd,
+                       (off_t)(existing->offset + LOG_HEADER_BYTES),
+                       h->read_buf, len);
+        if (!r.ok) return r;
+        if (memcmp(h->read_buf, bytes, len) != 0)
+            return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
+                           "blf_append: idempotency violated — same "
+                           "hash, different bytes");
+    }
+    return ZCL_OK;
+}
+
 static struct zcl_result blf_append(void *self_v,
                                     uint32_t height,
                                     const struct block_hash *hash,
@@ -228,30 +269,8 @@ static struct zcl_result blf_append(void *self_v,
 
     /* Idempotency: hash collision check. */
     const struct idx_entry *existing = find_by_hash(h, hash);
-    if (existing) {
-        uint32_t stored_len;
-        struct block_hash stored_hash;
-        struct zcl_result r = read_log_record_header(
-                h, (off_t)existing->offset, &stored_hash, &stored_len);
-        if (!r.ok) return r;
-        if (stored_len != len)
-            return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
-                           "blf_append: idempotency violated — same hash, "
-                           "stored len=%u, new len=%zu", stored_len, len);
-        if (len > 0) {
-            r = read_buf_reserve(h, len);
-            if (!r.ok) return r;
-            r = read_exact(h->log_fd,
-                           (off_t)(existing->offset + LOG_HEADER_BYTES),
-                           h->read_buf, len);
-            if (!r.ok) return r;
-            if (memcmp(h->read_buf, bytes, len) != 0)
-                return ZCL_ERR(BLOCK_LOG_ERR_CORRUPT,
-                               "blf_append: idempotency violated — same "
-                               "hash, different bytes");
-        }
-        return ZCL_OK;
-    }
+    if (existing)
+        return check_existing_record(h, existing, bytes, len);
 
     /* Append a fresh record. */
     off_t end = lseek(h->log_fd, 0, SEEK_END);
@@ -294,7 +313,7 @@ static struct zcl_result blf_read_by_hash(void *self_v,
     uint32_t len;
     struct block_hash stored_hash;
     struct zcl_result r = read_log_record_header(
-            h, (off_t)e->offset, &stored_hash, &len);
+            h, e->offset, true, &stored_hash, &len);
     if (!r.ok) return r;
 
     r = read_buf_reserve(h, len ? len : 1);
@@ -418,7 +437,7 @@ static struct zcl_result scan_log_tail(struct block_log_file *h)
         uint32_t len;
         struct block_hash hash;
         struct zcl_result r = read_log_record_header(
-                h, (off_t)last->offset, &hash, &len);
+                h, last->offset, true, &hash, &len);
         if (!r.ok) return r;
         cursor = (off_t)(last->offset + LOG_HEADER_BYTES + len);
     }
@@ -433,11 +452,11 @@ static struct zcl_result scan_log_tail(struct block_log_file *h)
         }
         struct block_hash hash;
         uint32_t len;
-        struct zcl_result r = read_log_record_header(h, cursor, &hash, &len);
+        struct zcl_result r = read_log_record_header(
+                h, (uint64_t)cursor, false, &hash, &len);
         if (!r.ok) return r;
 
-        off_t need_end = cursor + (off_t)LOG_HEADER_BYTES + (off_t)len;
-        if (need_end > log_end) {
+        if ((uint64_t)len > (uint64_t)(log_end - cursor - LOG_HEADER_BYTES)) {
             /* Torn payload — truncate to start of this record. */
             if (ftruncate(h->log_fd, cursor) != 0)
                 return ZCL_ERR(BLOCK_LOG_ERR_IO,
@@ -447,7 +466,7 @@ static struct zcl_result scan_log_tail(struct block_log_file *h)
 
         r = idx_append_and_fsync(h, UINT32_MAX, &hash, (uint64_t)cursor);
         if (!r.ok) return r;
-        cursor = need_end;
+        cursor += LOG_HEADER_BYTES + (off_t)len;
     }
     return ZCL_OK;
 }
