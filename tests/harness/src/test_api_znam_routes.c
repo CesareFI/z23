@@ -79,6 +79,60 @@ static bool directory_inactive_copy_cases(struct node_db *ndb)
     return ok;
 }
 
+static bool directory_store_status_case(const char *name,
+                                       const char *status,
+                                       const char *error)
+{
+    uint8_t response[4096] = {0};
+    struct json_value root = {0};
+    size_t n = api_serve_name_service_directory(
+        name, "/api/v1/names/missing-name/services", NULL,
+        response, sizeof(response));
+    response[n < sizeof(response) ? n : sizeof(response) - 1] = '\0';
+    const char *body = api_test_body(response, n, sizeof(response));
+    bool ok = n > 0 && n < sizeof(response) &&
+              strstr((char *)response, status) == (char *)response && body &&
+              json_read(&root, body, strlen(body));
+    ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                      "zcl.rest_error.v1") == 0 &&
+         strcmp(json_get_str(json_get(&root, "error")), error) == 0;
+    json_free(&root);
+    return ok;
+}
+
+int api_directory_store_status_focused_tests(void)
+{
+    int failures = 0;
+    struct name_controller_ctx saved;
+    struct node_db ndb = {0};
+    char dbdir[256];
+    char dbpath[320];
+
+    test_make_tmpdir(dbdir, sizeof(dbdir), "api_znam", "directory_store");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+    bool opened = node_db_open(&ndb, dbpath);
+    name_controller_get_ctx(&saved);
+    rpc_name_set_state(NULL);
+    bool unavailable = directory_store_status_case(
+        "missing-name", "HTTP/1.1 503 Service Unavailable",
+        "Naming store unavailable");
+    printf("api: unavailable directory store returns 503... %s\n",
+           unavailable ? "OK" : "FAIL");
+    failures += !unavailable;
+    rpc_name_set_state(&ndb);
+    bool missing = opened && directory_store_status_case(
+        "missing-name", "HTTP/1.1 404 Not Found",
+        "Name service directory not found");
+    rpc_name_set_state(saved.ndb);
+    printf("api: missing directory name returns 404... %s\n",
+           missing ? "OK" : "FAIL");
+    failures += !missing;
+    if (opened)
+        node_db_close(&ndb);
+    failures += test_rm_rf_recursive(dbdir) != 0;
+    return failures;
+}
+
 int api_znam_routes_focused_tests(void)
 {
     int failures = 0;

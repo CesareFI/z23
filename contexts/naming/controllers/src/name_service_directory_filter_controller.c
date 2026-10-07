@@ -315,6 +315,14 @@ size_t api_serve_name_service_directory(const char *name, const char *path,
 {
     struct json_value jr = {0};
     char err[192] = {0};
+    struct name_controller_ctx ctx;
+
+    name_controller_get_ctx(&ctx);
+    if (!ctx.ndb) {
+        LOG_ERROR("name", "Name service directory: naming store unavailable");
+        return api_json_error(response, response_max, JSON_503_HEADERS,
+                              "Naming store unavailable");
+    }
 
     if (api_name_service_directory_path(name, path, &jr,
                                         err, sizeof(err))) {
