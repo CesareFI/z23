@@ -2110,3 +2110,137 @@ int test_block_index_loader(void)
     printf("=== block index loader: %d failures ===\n", failures);
     return failures + ZCL_TEST_SETUP_FAILURES();
 }
+
+/* Fill a fresh map the way a prior flat/rebuild rung can leave it. Fixed
+ * backing storage avoids an extra allocation owner. arena_out is cleared
+ * before any refusal; the map owns only its buckets. A one-bucket vacancy
+ * lets the loader insert row zero before row one exhausts the probe. */
+static bool bil_fill_map_to_capacity(struct main_state *ms, uint8_t tag,
+                                     size_t vacant,
+                                     struct block_index **arena_out)
+{
+    static struct block_index arena[4096];
+    *arena_out = NULL;
+    if (!block_map_reserve(&ms->map_block_index, 2048)) {
+        fprintf(stderr, "bil full-map fixture: map reserve failed\n");
+        return false;
+    }
+    struct block_map *bm = &ms->map_block_index;
+    if (bm->capacity != 4096 || vacant > 1) {
+        fprintf(stderr, "bil full-map fixture: unexpected capacity/vacancy\n");
+        return false;
+    }
+    memset(arena, 0, sizeof(arena));
+    for (size_t i = vacant; i < bm->capacity; i++) {
+        struct block_index *pi = &arena[i];
+        block_index_init(pi);
+        pi->hashBlock.data[0] = (uint8_t)(i & 0xFF);
+        pi->hashBlock.data[1] = (uint8_t)((i >> 8) & 0xFF);
+        pi->hashBlock.data[3] = tag;
+        pi->phashBlock = &pi->hashBlock;
+        pi->nHeight = (int32_t)i;
+        bm->buckets[i].hash = pi->hashBlock;
+        bm->buckets[i].index = pi;
+        bm->buckets[i].occupied = true;
+    }
+    bm->size = bm->capacity - vacant;
+    *arena_out = arena;
+    return true;
+}
+
+/* Save the contributed 100-row shape with static nodes: hashes are the
+ * same 0xAA-tagged hashes build_synthetic_chain uses, admitted by the flat
+ * row's hash-versus-target check. No wall-clock assertion is needed. */
+static bool bil_probe_save_fixture(const char *tmpdir)
+{
+    static struct block_index arena[100];
+    struct main_state src;
+    memset(&src, 0, sizeof(src));
+    block_map_init(&src.map_block_index);
+    active_chain_init(&src.chain_active);
+    bool ok = block_map_reserve(&src.map_block_index, 100);
+    for (int i = 0; ok && i < 100; i++) {
+        struct block_index *pi = &arena[i];
+        block_index_init(pi);
+        pi->hashBlock = make_test_hash(i);
+        pi->phashBlock = &pi->hashBlock;
+        pi->nHeight = i;
+        pi->nBits = 0x1f07ffff;
+        pi->nTime = 1000000 + (uint32_t)i * 150;
+        pi->nVersion = 4;
+        pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        pi->nTx = 1;
+        ok = block_map_insert(&src.map_block_index, &pi->hashBlock, pi);
+    }
+    struct block_index_flat_identity identity = {0};
+    if (ok)
+        ok = save_block_index_flat_identity(tmpdir, &src, &identity).ok;
+    block_map_free(&src.map_block_index);
+    return ok;
+}
+
+static int bil_flat_probe_case(const char *tmpdir, size_t vacant,
+                               bool duplicates)
+{
+    static struct block_map_entry before[4096];
+    static struct block_index nodes_before[4096];
+    int failures = 0;
+    struct main_state ms2;
+    memset(&ms2, 0, sizeof(ms2));
+    block_map_init(&ms2.map_block_index);
+    active_chain_init(&ms2.chain_active);
+    struct block_index *resident_arena = NULL;
+    bool filled = bil_fill_map_to_capacity(&ms2, duplicates ? 0xAA : 0xBB,
+                                           vacant, &resident_arena);
+    if (!filled) {
+        BIL_CHECK("bil: full-map fixture setup", false);
+        block_map_free(&ms2.map_block_index);
+        return failures;
+    }
+    memcpy(before, ms2.map_block_index.buckets, sizeof(before));
+    memcpy(nodes_before, resident_arena, sizeof(nodes_before));
+    size_t resident = ms2.map_block_index.size;
+    printf("bil: flat probe case vacant=%zu duplicates=%d\n",
+           vacant, (int)duplicates);
+    struct zcl_result r = load_block_index_flat(tmpdir, &ms2);
+    bool result_ok = duplicates ? r.ok : (!r.ok && r.code == -11);
+    BIL_CHECK("bil: flat load into a full map refuses cleanly "
+              "(no infinite probe), or skips exact duplicates", result_ok);
+    BIL_CHECK("bil: refusal rolls back partial insertion; resident buckets kept",
+              ms2.map_block_index.size == resident &&
+              ms2.map_block_index.capacity == 4096 &&
+              memcmp(before, ms2.map_block_index.buckets, sizeof(before)) == 0);
+    BIL_CHECK("bil: resident nodes retain their bytes",
+              memcmp(nodes_before, resident_arena, sizeof(nodes_before)) == 0);
+    struct block_index_flat_identity identity = {0};
+    bool have_identity = block_index_flat_verified_identity(tmpdir, &identity);
+    BIL_CHECK("bil: refused load does not retain verified flat identity",
+              have_identity == duplicates);
+    block_map_free(&ms2.map_block_index);
+    return failures;
+}
+
+/* Separate registered group keeps the existing large loader suite unchanged.
+ * The supervised group deadline detects an uncapped probe; tests inspect
+ * the refusal and retained state, without comparing a real clock. */
+int test_block_index_flat_probe(void)
+{
+    int failures = 0;
+    char tmpdir[PATH_MAX];
+    if (!test_mkdtemp(tmpdir, sizeof(tmpdir), "bil_full")) {
+        BIL_CHECK("bil: full-map directory setup", false);
+        return failures;
+    }
+    bool saved = bil_probe_save_fixture(tmpdir);
+    BIL_CHECK("bil: full-map flat fixture saved", saved);
+    if (saved) {
+        failures += bil_flat_probe_case(tmpdir, 0, false);
+        failures += bil_flat_probe_case(tmpdir, 1, false);
+        failures += bil_flat_probe_case(tmpdir, 0, true);
+    }
+    char path[PATH_MAX + 32];
+    snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+    BIL_CHECK("bil: full-map file cleanup", unlink(path) == 0);
+    BIL_CHECK("bil: full-map directory cleanup", rmdir(tmpdir) == 0);
+    return failures;
+}

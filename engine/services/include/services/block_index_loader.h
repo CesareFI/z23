@@ -101,7 +101,13 @@ bool block_index_projection_bound_covers_tip(
  * Allocates a contiguous arena for all entries, links pprev by hash,
  * recomputes nChainWork/nChainTx from pprev chain. On failure the result
  * self-describes the cause (open/fstat/mmap/format/size failures), each a
- * distinct negative code; the previous bare-bool true/false maps to .ok. */
+ * distinct negative code; the previous bare-bool true/false maps to .ok.
+ * The bulk probe visits at most capacity buckets per row. A full table
+ * refuses with -11, closes the mapping, and releases this attempt's arena.
+ * On that refusal, rows inserted by this attempt are removed; resident
+ * entries and their nodes are unchanged (reserved capacity may grow).
+ * Exact duplicate rows still skip without changing the resident node.
+ * Failed loads invalidate the verified flat identity. */
 struct zcl_result load_block_index_flat(const char *datadir, struct main_state *ms);
 
 /* Point-read one entry's block hash + sapling root straight from

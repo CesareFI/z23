@@ -242,118 +242,152 @@ void save_block_index_flat_if_mutated(const char *datadir,
         save_block_index_flat(datadir, ms);
 }
 
-struct zcl_result load_block_index_flat(const char *datadir, struct main_state *ms)
+enum bil_flat_admit {
+    BIL_FLAT_ADMIT_CLAIMED = 1,
+    BIL_FLAT_ADMIT_DUPLICATE = 0,
+    BIL_FLAT_ADMIT_FULL = -1,
+};
+
+/* Bulk-insert probe carrying the same cap block_map_insert_internal has:
+ * the resident table can already occupy every bucket when an earlier rung
+ * (rebuild-from-log) populated the map and then failed without clearing it,
+ * and an uncapped probe over a full table with no duplicate never
+ * terminates — the boot watchdog kills every retry and the node never
+ * serves. CLAIMED writes the bucket (key, index, occupied, size++). */
+static enum bil_flat_admit bil_flat_probe_claim(struct block_map *bm,
+                                                const uint8_t hash[32],
+                                                struct block_index *pindex)
 {
-    /* Identity is authority for bounded projection startup. Invalidate it
-     * before every attempt so a legacy or failed second load cannot inherit
-     * an earlier embedded snapshot's verified identity. */
-    block_index_flat_identity_forget();
-    struct block_index_flat_identity verified_identity = {0};
-    bool have_verified_identity = false;
+    uint64_t h;
+    memcpy(&h, hash, 8);
+    size_t slot = h & (bm->capacity - 1);
+    for (size_t probe = 0; probe < bm->capacity; probe++) {
+        if (!bm->buckets[slot].occupied) {
+            memcpy(bm->buckets[slot].hash.data, hash, 32);
+            bm->buckets[slot].index = pindex;
+            bm->buckets[slot].occupied = true;
+            bm->size++;
+            return BIL_FLAT_ADMIT_CLAIMED;
+        }
+        if (uint256_eq(&bm->buckets[slot].hash,
+                       (const struct uint256 *)hash))
+            return BIL_FLAT_ADMIT_DUPLICATE;
+        slot = (slot + 1) & (bm->capacity - 1);
+    }
+    return BIL_FLAT_ADMIT_FULL;
+}
+
+/* Copy one flat row into its arena block_index (Option A: phashBlock points
+ * at per-node storage; the bucket keeps its own key copy). */
+static void bil_flat_fill_pindex(struct block_index *pindex,
+                                 const struct block_index_flat *row)
+{
+    block_index_init(pindex);
+    memcpy(pindex->hashBlock.data, row->hash, 32);
+    pindex->phashBlock = &pindex->hashBlock;
+    pindex->nHeight = row->height;
+    pindex->nBits = row->n_bits;
+    pindex->nTime = row->n_time;
+    pindex->nVersion = row->n_version;
+    pindex->nStatus = row->n_status;
+    pindex->nFile = row->n_file;
+    pindex->nDataPos = row->n_data_pos;
+    pindex->nUndoPos = row->n_undo_pos;
+    pindex->nTx = row->n_tx;
+    pindex->nChainTx = row->n_chain_tx;
+    memcpy(pindex->nChainWork.pn, row->chain_work, 32);
+    pindex->nCachedBranchId = row->n_cached_branch_id;
+    memcpy(pindex->hashFinalSaplingRoot.data, row->sapling_root, 32);
+}
+
+/* The front door owns mapping/fd cleanup, including every parse refusal. */
+static struct zcl_result bil_flat_mapping_open(
+    const char *datadir, int *fd_out, struct platform_read_mapping *mapping,
+    size_t *file_size_out)
+{
+    *fd_out = -1;
+    *file_size_out = 0;
+    platform_read_mapping_init(mapping);
     char path[1024];
     snprintf(path, sizeof(path), "%s/block_index.bin", datadir);
-
-    int fd = open(path, O_RDONLY);
-    if (fd < 0)
+    *fd_out = open(path, O_RDONLY);
+    if (*fd_out < 0)
         return ZCL_ERR(-1, "block_index_flat: cannot open %s: %s",
                        path, strerror(errno));
-
     struct stat st;
-    if (fstat(fd, &st) != 0) {
-        int saved_errno = errno;
-        close(fd);
+    if (fstat(*fd_out, &st) != 0)
         return ZCL_ERR(-2, "block_index_flat: fstat failed: %s",
-                       strerror(saved_errno));
-    }
-    size_t file_size = (size_t)st.st_size;
-    if (file_size < 8) {
-        close(fd);
+                       strerror(errno));
+    if (st.st_size < 0 || (uintmax_t)st.st_size > SIZE_MAX)
+        return ZCL_ERR(-3, "block_index_flat: invalid file size (%jd bytes)",
+                       (intmax_t)st.st_size);
+    *file_size_out = (size_t)st.st_size;
+    if (*file_size_out < 8)
         return ZCL_ERR(-3, "block_index_flat: file too small (%zu bytes)",
-                       file_size);
-    }
-
-    struct platform_read_mapping mapping;
-    platform_read_mapping_init(&mapping);
-    if (!platform_read_mapping_open(&mapping, fd, file_size)) {
-        close(fd);
+                       *file_size_out);
+    if (!platform_read_mapping_open(mapping, *fd_out, *file_size_out))
         return ZCL_ERR(-4, "block_index_flat: mapping failed (%zu bytes)",
-                       file_size);
-    }
-    platform_read_mapping_advise_sequential(&mapping);
-    const uint8_t *data = mapping.data;
+                       *file_size_out);
+    platform_read_mapping_advise_sequential(mapping);
+    return ZCL_OK;
+}
 
-    /* BIIE embeds a 48-byte integrity header; legacy ZCLI begins at offset 0.
-     * Verify the embedded payload before reading any row. */
+struct bil_flat_input {
+    const struct block_index_flat *entries;
+    uint32_t count;
+    size_t expected;
+    struct block_index_flat_identity identity;
+    bool have_identity;
+};
+
+static struct zcl_result bil_flat_payload_read(
+    const char *datadir, const uint8_t *data, size_t file_size,
+    struct bil_flat_input *out)
+{
+    *out = (struct bil_flat_input){0};
+    /* BIIE embeds a 48-byte integrity header; legacy ZCLI starts at zero. */
     uint64_t payload_off = 0;
-    {
-        uint32_t lead;
-        memcpy(&lead, data, 4);
-        uint32_t embedded_magic;
-        memcpy(&embedded_magic, BII_EMBEDDED_MAGIC, 4);
-        if (lead == embedded_magic) {
-            /* Re-hash before trusting the payload. */
-            struct ssio_sidecar_header ehdr;
-            int ev = bii_verify_embedded(datadir, &ehdr, &payload_off);
-            if (ev != 0) {
-                flat_read_mapping_close(&mapping, fd);
-                return ZCL_ERR(-5, "block_index_flat: embedded integrity check "
-                               "FAILED (verdict=%d) — refusing the body", ev);
-            }
-            memcpy(verified_identity.payload_sha3, ehdr.body_sha3, 32);
-            verified_identity.payload_size = ehdr.body_size;
-            have_verified_identity = true;
-        }
-        /* Legacy ZCLI keeps payload_off=0; its sidecar gate is downstream. */
+    if (memcmp(data, BII_EMBEDDED_MAGIC, 4) == 0) {
+        struct ssio_sidecar_header ehdr;
+        int ev = bii_verify_embedded(datadir, &ehdr, &payload_off);
+        if (ev != 0)
+            return ZCL_ERR(-5, "block_index_flat: embedded integrity check "
+                           "FAILED (verdict=%d) — refusing the body", ev);
+        memcpy(out->identity.payload_sha3, ehdr.body_sha3, 32);
+        out->identity.payload_size = ehdr.body_size;
+        out->have_identity = true;
     }
-
-    uint32_t magic, count;
-    if (payload_off > file_size - 8) {
-        flat_read_mapping_close(&mapping, fd);
+    if (payload_off > file_size - 8)
         return ZCL_ERR(-6, "block_index_flat: payload offset %llu exceeds "
                        "mapped file (%zu bytes)",
                        (unsigned long long)payload_off, file_size);
-    }
+    uint32_t magic, count;
     memcpy(&magic, data + payload_off, 4);
     memcpy(&count, data + payload_off + 4, 4);
-    if (magic != 0x5A434C49) {
-        flat_read_mapping_close(&mapping, fd);
+    if (magic != 0x5A434C49)
         return ZCL_ERR(-6, "block_index_flat: bad payload magic 0x%08x "
                        "(expected 0x5A434C49)", magic);
-    }
-    if (count > 10000000) {
-        flat_read_mapping_close(&mapping, fd);
-        return ZCL_ERR(-7, "block_index_flat: count %u too large (max 10M)",
-                       count);
-    }
-    if (count == 0) {
-        /* An empty index is useless and would make entries[count-1] below an
-         * out-of-bounds read (entries[-1]); reject so the caller re-derives. */
-        flat_read_mapping_close(&mapping, fd);
+    if (count > 10000000)
+        return ZCL_ERR(-7, "block_index_flat: count %u too large (max 10M)", count);
+    if (count == 0)
         return ZCL_ERR(-8, "block_index_flat: empty index (count 0)");
-    }
-
-    size_t expected = payload_off + 8 + (size_t)count * sizeof(struct block_index_flat);
-    if (file_size < expected) {
-        flat_read_mapping_close(&mapping, fd);
+    size_t prefix = (size_t)payload_off + 8;
+    if (count > (SIZE_MAX - prefix) / sizeof(struct block_index_flat))
+        return ZCL_ERR(-9, "block_index_flat: row size overflow (%u entries)", count);
+    size_t expected = prefix + (size_t)count * sizeof(struct block_index_flat);
+    if (file_size < expected)
         return ZCL_ERR(-9, "block_index_flat: truncated — %zu bytes < %zu "
                        "expected (%u entries)", file_size, expected, count);
-    }
-    int64_t t0 = (int64_t)platform_time_wall_time_t();
-    int64_t t0_ms = platform_time_monotonic_ms();  /* ms-resolution split timer */
-    const struct block_index_flat *entries =
-        (const struct block_index_flat *)(data + payload_off + 8);
+    out->entries = (const struct block_index_flat *)(data + prefix);
+    out->count = count;
+    out->expected = expected;
+    return ZCL_OK;
+}
 
-    /* Pre-size hash map + arena. Pre-fault memory. */
-    block_map_reserve(&ms->map_block_index, count);
-    struct block_index *arena = zcl_calloc(count, sizeof(struct block_index), "block_index arena");
-    if (!arena) {
-        flat_read_mapping_close(&mapping, fd);
-        return ZCL_ERR(-10, "block_index_flat: calloc failed for %u entries "
-                       "(%zu bytes)", count,
-                       (size_t)count * sizeof(struct block_index));
-    }
-    memset(arena, 0, count * sizeof(struct block_index)); /* pre-fault */
-
+static struct zcl_result bil_flat_insert_rows(
+    struct main_state *ms, const struct block_index_flat *entries,
+    uint32_t count, struct block_index *arena)
+{
     /* Bulk insert directly into the hash table; loader is single-threaded. */
     struct block_map *bm = &ms->map_block_index;
     /* Persisted-FAILED trust boundary: the baked ROM checkpoint height. Fetched
@@ -388,43 +422,17 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
         }
 
         struct block_index *pindex = &arena[i];
-        block_index_init(pindex);
-
-        uint64_t h;
-        memcpy(&h, entries[i].hash, 8);
-        size_t slot = h & (bm->capacity - 1);
-        bool duplicate = false;
-        while (bm->buckets[slot].occupied) {
-            if (uint256_eq(&bm->buckets[slot].hash,
-                           (const struct uint256 *)entries[i].hash)) {
-                duplicate = true;
-                break;
-            }
-            slot = (slot + 1) & (bm->capacity - 1);
-        }
-        if (duplicate) continue;
-        memcpy(bm->buckets[slot].hash.data, entries[i].hash, 32);
-        bm->buckets[slot].index = pindex;
-        bm->buckets[slot].occupied = true;
-        bm->size++;
-
-        /* Option A: point phashBlock at per-node storage, not the bucket.
-         * The bucket keeps its own .hash key (memcpy above) for lookups. */
-        memcpy(pindex->hashBlock.data, entries[i].hash, 32);
-        pindex->phashBlock = &pindex->hashBlock;
-        pindex->nHeight = entries[i].height;
-        pindex->nBits = entries[i].n_bits;
-        pindex->nTime = entries[i].n_time;
-        pindex->nVersion = entries[i].n_version;
-        pindex->nStatus = entries[i].n_status;
-        pindex->nFile = entries[i].n_file;
-        pindex->nDataPos = entries[i].n_data_pos;
-        pindex->nUndoPos = entries[i].n_undo_pos;
-        pindex->nTx = entries[i].n_tx;
-        pindex->nChainTx = entries[i].n_chain_tx;
-        memcpy(pindex->nChainWork.pn, entries[i].chain_work, 32);
-        pindex->nCachedBranchId = entries[i].n_cached_branch_id;
-        memcpy(pindex->hashFinalSaplingRoot.data, entries[i].sapling_root, 32);
+        enum bil_flat_admit admit =
+            bil_flat_probe_claim(bm, entries[i].hash, pindex);
+        if (admit == BIL_FLAT_ADMIT_FULL)
+            return ZCL_ERR(-11, "block_index_flat: hash table full "
+                           "(capacity=%zu, resident=%zu) inserting row %u — "
+                           "an earlier rung left no headroom; refusing "
+                           "instead of probing forever",
+                           bm->capacity, bm->size, i);
+        if (admit == BIL_FLAT_ADMIT_DUPLICATE)
+            continue;
+        bil_flat_fill_pindex(pindex, &entries[i]);
 
         /* Reconcile the persisted FAILED verdict against the ROM checkpoint
          * before the forward pass runs (so a stripped/demoted entry does not
@@ -442,6 +450,32 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
                  "candidates (>ckpt)",
                  (long long)stripped_failed, ckpt_h, (long long)demoted_failed);
 
+    return ZCL_OK;
+}
+
+/* No pprev or forward-pass work has run on refusal. Remove only this
+ * attempt's arena pointers before releasing the arena; resident entries
+ * retain their bytes and probe chains. Integer addresses avoid relational
+ * comparisons between unrelated C objects. The caller checked arena size. */
+static void bil_flat_rollback(struct block_map *bm,
+                               struct block_index *arena, uint32_t count)
+{
+    uintptr_t start = (uintptr_t)arena;
+    size_t bytes = (size_t)count * sizeof(*arena);
+    for (size_t slot = 0; slot < bm->capacity; slot++) {
+        uintptr_t index = (uintptr_t)bm->buckets[slot].index;
+        if (bm->buckets[slot].occupied && index >= start &&
+            index - start < bytes) {
+            bm->buckets[slot] = (struct block_map_entry){0};
+            bm->size--;
+        }
+    }
+}
+
+static void bil_flat_link_rows(
+    struct block_map *bm, const struct block_index_flat *entries,
+    uint32_t count, struct block_index *arena)
+{
     /* Link pprev HASH-ONLY: resolve each entry's parent by its stored
      * prev_hash, never by a height guess. The insert loop above has already
      * fully populated the block_map (linking is a separate second pass), so a
@@ -474,21 +508,11 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
         }
     }
 
-    /* Old files end at `expected`; old readers ignore the new trailer. */
-    if (file_size > expected) {
-        struct zcl_result ar = block_index_flat_anchor_apply(
-            ms, data + expected, file_size - expected);
-        if (!ar.ok)
-            LOG_WARN("block_index_flat", "%s", ar.message);
-    }
+}
 
-    /* Timing only (no behavior change): the qsort + forward pass below is a
-     * distinct cost class from the parse/insert loop above (it sorts and walks
-     * all ~3M entries a second time). Split them so the warm-start profile can
-     * tell parse/insert time from forward-pass time. Cheap monotonic reads. */
-    int64_t t_parse_ms = platform_time_monotonic_ms() - t0_ms;
-    int64_t t_fwd_ms = platform_time_monotonic_ms();
-
+static void bil_flat_forward_rows(
+    struct block_index *arena, uint32_t count, struct block_index **sorted)
+{
     /* Recompute every pointer-graph-derived field through the canonical
      * forward pass (nChainWork, nChainTx, skip links, cached branch id,
      * failed-child propagation) — the same helper the LevelDB loader and
@@ -507,8 +531,6 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
      * so chain_advance_coordinator saw local==best_header and the reducer drive
      * converged with unfolded on-disk bodies — a live wedge. Re-deriving from
      * the pointer graph is the canonical, wedge-proof path. */
-    struct block_index **sorted =
-        zcl_malloc((size_t)count * sizeof(*sorted), "flat forward pass");
     if (sorted) {
         size_t n = 0;
         for (uint32_t i = 0; i < count; i++) {
@@ -529,7 +551,6 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
          * bit for bit as before. */
         block_index_sort_forward_pass_input(sorted, n);
         block_index_forward_pass(sorted, n);
-        free(sorted);
     } else {
         /* boot's later multi-pass nChainTx propagation still runs;
          * work/skip recompute is what we lose — log it. */
@@ -537,25 +558,92 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
                  "(%u entries) — chain stats may be stale", count);
     }
 
-    flat_read_mapping_close(&mapping, fd);
+}
 
+static bool bil_flat_allocation_sizes_valid(size_t count)
+{
+    return count <= SIZE_MAX / sizeof(struct block_index) &&
+           count <= SIZE_MAX / sizeof(struct block_index *);
+}
+
+struct zcl_result load_block_index_flat(const char *datadir, struct main_state *ms)
+{
+    /* A failed or legacy load cannot inherit a verified snapshot identity. */
+    block_index_flat_identity_forget();
+    int fd;
+    size_t file_size;
+    struct platform_read_mapping mapping;
+    struct zcl_result result = bil_flat_mapping_open(datadir, &fd, &mapping,
+                                                     &file_size);
+    if (!result.ok) {
+        flat_read_mapping_close(&mapping, fd);
+        return result;
+    }
+    struct bil_flat_input input;
+    result = bil_flat_payload_read(datadir, mapping.data, file_size, &input);
+    if (!result.ok) {
+        flat_read_mapping_close(&mapping, fd);
+        return result;
+    }
+    uint32_t count = input.count;
+    if (!bil_flat_allocation_sizes_valid(count)) {
+        flat_read_mapping_close(&mapping, fd);
+        return ZCL_ERR(-10, "block_index_flat: allocation size overflow (%u entries)",
+                       count);
+    }
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
+    int64_t t0_ms = platform_time_monotonic_ms();
+    if (!block_map_reserve(&ms->map_block_index, count)) {
+        flat_read_mapping_close(&mapping, fd);
+        return ZCL_ERR(-10, "block_index_flat: map reserve failed (%u entries)", count);
+    }
+    struct block_index *arena = zcl_calloc(count, sizeof(struct block_index), "block_index arena");
+    if (!arena) {
+        flat_read_mapping_close(&mapping, fd);
+        return ZCL_ERR(-10, "block_index_flat: calloc failed for %u entries "
+                       "(%zu bytes)", count,
+                       (size_t)count * sizeof(struct block_index));
+    }
+    memset(arena, 0, count * sizeof(struct block_index)); /* pre-fault */
+    void *release = arena;
+    int64_t t_parse_ms = 0, t_fwd_ms = 0;
+    result = bil_flat_insert_rows(ms, input.entries, count, arena);
+    if (!result.ok) {
+        bil_flat_rollback(&ms->map_block_index, arena, count);
+        goto finish;
+    }
+    bil_flat_link_rows(&ms->map_block_index, input.entries, count, arena);
+    /* Old files end at expected; old readers ignore the new trailer. */
+    if (file_size > input.expected) {
+        struct zcl_result ar = block_index_flat_anchor_apply(
+            ms, mapping.data + input.expected, file_size - input.expected);
+        if (!ar.ok)
+            LOG_WARN("block_index_flat", "%s", ar.message);
+    }
+    t_parse_ms = platform_time_monotonic_ms() - t0_ms;
+    t_fwd_ms = platform_time_monotonic_ms();
+    struct block_index **sorted =
+        zcl_malloc((size_t)count * sizeof(*sorted), "flat forward pass");
+    release = sorted; /* successful arena is retained by the map */
+    bil_flat_forward_rows(arena, count, sorted);
+finish:
+    free(release);
+    flat_read_mapping_close(&mapping, fd);
+    if (!result.ok)
+        return result;
     t_fwd_ms = platform_time_monotonic_ms() - t_fwd_ms;
     printf("[boot]   %-28s %lldms\n", "blkidx.flat_parse_insert",
            (long long)t_parse_ms);
     printf("[boot]   %-28s %lldms\n", "blkidx.flat_forward_pass",
            (long long)t_fwd_ms);
-
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
-    LOG_INFO("block_index_flat",
-             "Block index flat: loaded %u entries in %llds",
+    LOG_INFO("block_index_flat", "Block index flat: loaded %u entries in %llds",
              count, (long long)elapsed);
-
-    if (have_verified_identity) {
-        verified_identity.row_count = count;
-        block_index_flat_identity_remember(datadir, &verified_identity);
+    if (input.have_identity) {
+        input.identity.row_count = count;
+        block_index_flat_identity_remember(datadir, &input.identity);
     }
-
-    return ZCL_OK;
+    return result;
 }
 
 /* save_block_index_recent() / load_block_index_sqlite() — the SQLite
