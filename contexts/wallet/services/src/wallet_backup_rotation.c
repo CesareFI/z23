@@ -48,6 +48,12 @@ static int wbs_cmp_key_desc(const void *a, const void *b)
     return 0;
 }
 
+static bool wbs_join_path(char out[1024], const char *dir, const char *name)
+{
+    int written = snprintf(out, 1024, "%s/%s", dir, name);
+    return written >= 0 && written < 1024;
+}
+
 /* Parse "wallet_backup_<unix_ts>_<usec>{.sqlite,.sqlite.enc}" into a single
  * microsecond key. Returns false (leaving *out_us untouched) if the name
  * doesn't have the expected "<digits>_<digits>" body — the caller falls
@@ -94,7 +100,8 @@ static int wbs_scan_backup_dir(const char *dir,
         if (!is_plain && !is_enc)
             continue;
         char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+        if (!wbs_join_path(full, dir, e->d_name))
+            continue;
         struct stat st;
         if (stat(full, &st) != 0) continue;
         snprintf(out[n].name, sizeof(out[n].name), "%s", e->d_name);
@@ -133,7 +140,8 @@ int wallet_backup_rotate(const char *backup_dir, int max_versions)
     int deleted = 0;
     for (int i = max_versions; i < n; i++) {
         char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", backup_dir, files[i].name);
+        if (!wbs_join_path(full, backup_dir, files[i].name))
+            continue;
         if (unlink(full) == 0)
             deleted++;
     }

@@ -353,6 +353,100 @@ static int t_two_runs_distinct_files(void)
 
 /* ── 5. Rotation trims oldest files ────────────────────────── */
 
+static bool wb_write_blob(const char *path, const uint8_t *buf, size_t n);
+
+static bool wb_make_long_rotation_dir(char root[256], char dir[1200])
+{
+    int root_len = snprintf(root, 256, "%s/zcl_wb_long_%d",
+                            wb_test_tmp_root(), (int)getpid());
+    if (root_len < 0 || root_len >= 256 ||
+        !platform_private_directory_ensure(root))
+        return false;
+    memcpy(dir, root, (size_t)root_len + 1);
+    char segment[201];
+    memset(segment, 'd', sizeof(segment) - 1);
+    segment[sizeof(segment) - 1] = '\0';
+    for (int i = 0; i < 4; i++) {
+        size_t used = strlen(dir);
+        int written = snprintf(dir + used, 1200 - used, "/%s", segment);
+        if (written < 0 || (size_t)written >= 1200 - used ||
+            !platform_private_directory_ensure(dir))
+            return false;
+    }
+    return true;
+}
+
+static bool wb_make_long_backup_name(char out[256], int timestamp)
+{
+    int prefix_len = snprintf(out, 256, "%s%d_000000_",
+                              WALLET_BACKUP_FILENAME_PREFIX, timestamp);
+    const size_t target_len = 250;
+    const size_t suffix_len = strlen(WALLET_BACKUP_FILENAME_SUFFIX);
+    if (prefix_len < 0 || (size_t)prefix_len + suffix_len >= target_len)
+        return false;
+    memset(out + prefix_len, 'a', target_len - suffix_len - (size_t)prefix_len);
+    memcpy(out + target_len - suffix_len, WALLET_BACKUP_FILENAME_SUFFIX,
+           suffix_len + 1);
+    return true;
+}
+
+struct wb_long_rotation_fixture {
+    char root[256];
+    char dir[1200];
+    char old_path[1536];
+    char new_path[1536];
+    char old_decoy[1024];
+    char new_decoy[1024];
+};
+
+static bool wb_make_overlong_path(const char *dir, const char *name,
+                                  char exact[1536], char decoy[1024])
+{
+    int exact_len = snprintf(exact, 1536, "%s/%s", dir, name);
+    int decoy_len = snprintf(decoy, 1024, "%s/%s", dir, name);
+    return exact_len > 1023 && exact_len < 1536 && decoy_len >= 1024;
+}
+
+static bool wb_long_rotation_fixture_init(
+    struct wb_long_rotation_fixture *fixture)
+{
+    char old_name[256], new_name[256];
+    if (!wb_make_long_rotation_dir(fixture->root, fixture->dir)) return false;
+    if (!wb_make_long_backup_name(old_name, 1)) return false;
+    if (!wb_make_long_backup_name(new_name, 2)) return false;
+    if (!wb_make_overlong_path(fixture->dir, old_name, fixture->old_path,
+                               fixture->old_decoy)) return false;
+    if (!wb_make_overlong_path(fixture->dir, new_name, fixture->new_path,
+                               fixture->new_decoy)) return false;
+    const uint8_t byte = 0;
+    if (!wb_write_blob(fixture->old_path, &byte, sizeof(byte))) return false;
+    if (!wb_write_blob(fixture->new_path, &byte, sizeof(byte))) return false;
+    if (!wb_write_blob(fixture->old_decoy, &byte, sizeof(byte))) return false;
+    return wb_write_blob(fixture->new_decoy, &byte, sizeof(byte));
+}
+
+static bool wb_long_rotation_fixture_intact(
+    const struct wb_long_rotation_fixture *fixture)
+{
+    return access(fixture->old_path, F_OK) == 0 &&
+           access(fixture->new_path, F_OK) == 0 &&
+           access(fixture->old_decoy, F_OK) == 0 &&
+           access(fixture->new_decoy, F_OK) == 0;
+}
+
+static int t_rotation_refuses_truncated_delete_path(void)
+{
+    int failures = 0;
+    struct wb_long_rotation_fixture fixture;
+    bool wrote = wb_long_rotation_fixture_init(&fixture);
+    int deleted = wrote ? wallet_backup_rotate(fixture.dir, 1) : -1;
+    WB_RUN("wb: rotation never deletes a truncated-path decoy",
+           wrote && deleted == 0 && wb_long_rotation_fixture_intact(&fixture));
+
+    if (wrote) test_cleanup_tmpdir(fixture.root);
+    return failures;
+}
+
 static int t_rotation(void)
 {
     int failures = 0;
@@ -1169,6 +1263,7 @@ int test_wallet_backup(void)
     failures += t_zero_keys();
     failures += t_two_runs_distinct_files();
     failures += t_rotation();
+    failures += t_rotation_refuses_truncated_delete_path();
     failures += t_list_newest_first();
     failures += t_refuses_same_dir();
     failures += t_status_snapshot();
