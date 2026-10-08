@@ -207,6 +207,44 @@ static bool operator_needed_nonterminal(const char *payload, size_t len)
     return false;
 }
 
+/* Read a space-delimited field without crossing the event extent. */
+static const char *operator_needed_field(const char *text, size_t len,
+                                         const char *key, size_t *value_len)
+{
+    size_t key_len = strlen(key);
+    for (size_t i = 0; i < len;) {
+        if (text[i] == ' ') { i++; continue; }
+        size_t start = i;
+        while (i < len && text[i] != ' ') i++;
+        if (i - start > key_len &&
+            memcmp(text + start, key, key_len) == 0) {
+            *value_len = i - start - key_len;
+            return text + start + key_len;
+        }
+    }
+    return NULL;
+}
+
+static void operator_needed_clear_condition(const void *payload, size_t len)
+{
+    if (!payload) return;
+    const char *text = payload;
+    size_t name_len = 0, condition_len = 0;
+    const char *name = operator_needed_field(text, strnlen(text, len),
+                                            "name=", &name_len);
+    if (!name) return;
+    pthread_mutex_lock(&g_lock);
+    const char *condition = operator_needed_field(g_operator_needed_detail,
+        strlen(g_operator_needed_detail), "condition=", &condition_len);
+    if (condition && name_len == condition_len &&
+        memcmp(name, condition, name_len) == 0) {
+        atomic_store(&g_operator_needed, false);
+        atomic_store(&g_operator_needed_since_unix, 0);
+        g_operator_needed_detail[0] = '\0';
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
 static void alert_observer(enum event_type type, uint32_t peer_id,
                             const void *payload, uint32_t payload_len,
                             void *ctx)
@@ -226,10 +264,9 @@ static void alert_observer(enum event_type type, uint32_t peer_id,
         if (!operator_needed_nonterminal(payload, payload_len))
             operator_needed_set(payload, payload_len);
     }
-    /* The symptom resolved (remedy witnessed) → drop the DEGRADED latch so
-     * the node returns to healthy without operator intervention. */
+    /* Only recovery of the latched condition resolves this symptom. */
     else if (type == EV_CONDITION_CLEARED)
-        alerts_operator_needed_clear();
+        operator_needed_clear_condition(payload, payload_len);
 
     pthread_mutex_lock(&g_lock);
     for (size_t i = 0; i < g_num_rules; i++) {

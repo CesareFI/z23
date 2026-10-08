@@ -383,9 +383,33 @@ static int test_operator_needed_latch(void)
         ASSERT(contains(detail, "tip_not_advancing"));
         ASSERT(alerts_fire_count("operator_needed") == 1);
 
+        event_emitf(EV_CONDITION_CLEARED, 0,
+                    "name=other_condition cleared_count=1");
+        char retained[ALERT_OPERATOR_NEEDED_DETAIL_LEN];
+        int64_t retained_since = 0;
+        ASSERT(alerts_operator_needed(retained, sizeof(retained), &retained_since));
+        ASSERT(strcmp(retained, detail) == 0);
+        ASSERT(retained_since == since);
+        event_emitf(EV_CONDITION_CLEARED, 0,
+                    "name=tip_not_advancing_extra cleared_count=1");
+        ASSERT(alerts_operator_needed(NULL, 0, NULL));
+        const char bounded_clear[] = "X name=tip_not_advancing";
+        event_emit(EV_CONDITION_CLEARED, 0, bounded_clear, 1);
+        ASSERT(alerts_operator_needed(NULL, 0, NULL));
+        event_emitf(EV_CONDITION_CLEARED, 0,
+                    "other_name=tip_not_advancing cleared_count=1");
+        ASSERT(alerts_operator_needed(NULL, 0, NULL));
+
         /* The underlying condition resolves → latch drops automatically. */
         event_emitf(EV_CONDITION_CLEARED, 0,
                     "name=tip_not_advancing cleared_count=1");
+        ASSERT(!alerts_operator_needed(NULL, 0, NULL));
+        ASSERT(!alerts_operator_needed(retained, sizeof(retained), &retained_since));
+        ASSERT(retained[0] == '\0');
+        ASSERT(retained_since == 0);
+
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+                    "condition=tip_not_advancing terminal=0");
         ASSERT(!alerts_operator_needed(NULL, 0, NULL));
 
         const char *long_payload =
@@ -398,6 +422,8 @@ static int test_operator_needed_latch(void)
         ASSERT(strlen(long_detail) > 128);
         ASSERT(contains(long_detail, "first_hole_h=3056759"));
         ASSERT(contains(long_detail, "reducer_frontier_reconcile_light"));
+        event_emitf(EV_CONDITION_CLEARED, 0, "name=unrelated cleared_count=1");
+        ASSERT(alerts_operator_needed(NULL, 0, NULL));
 
         alerts_shutdown();
         PASS();
@@ -588,9 +614,13 @@ static int test_operator_detail_utf8(void)
         bool unchanged = alerts_operator_needed(detail, sizeof(detail), NULL);
         unchanged &= strcmp(detail, "a\\0\xe2\x82\xac") == 0;
         event_emit(EV_CONDITION_CLEARED, 0, NULL, 0);
+        bool nameless_retained = alerts_operator_needed(detail, sizeof(detail), NULL);
+        nameless_retained &= strcmp(detail, "a\\0\xe2\x82\xac") == 0;
+        alerts_operator_needed_clear();
         bool cleared = !alerts_operator_needed(NULL, 0, NULL);
         alerts_shutdown();
-        ASSERT(refused); ASSERT(retained); ASSERT(unchanged); ASSERT(cleared);
+        ASSERT(refused); ASSERT(retained); ASSERT(unchanged);
+        ASSERT(nameless_retained); ASSERT(cleared);
         PASS();
     } _test_next:;
     return failures;
