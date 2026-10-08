@@ -35,9 +35,15 @@
 #include "command/native_devagent.h"
 #include "command/native_fleet.h"
 #include "config/command_catalog.h"
+#include "controllers/agent_impact_rules.h"
+#include "devloop.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "platform/time_compat.h"
+#if defined(_WIN32)
+#include "platform/windows_path.h"
+#include <windows.h>
+#endif
 
 #include <errno.h>
 #include <limits.h>
@@ -453,6 +459,7 @@ static bool gtx_fixture(const struct wkr_job *job, struct wkr_result *res)
     char path[4096 + 32];
     FILE *f;
     gtx_count_bump();
+    if (!gtx_put(g_gtx_state, "z23/dev/task.txt", job->task)) return false;
     memset(res, 0, sizeof(*res));
     (void)snprintf(res->terminal, sizeof(res->terminal), "%s", "pass");
     res->rc = 0;
@@ -1060,16 +1067,412 @@ _test_next:;
     return failures;
 }
 
+/* Replace only the admitted row's brief; retain its authority and workspace. */
+static bool gtx_ledger_brief(const char *brief)
+{
+    char text[8192], out[8192];
+    const char *start, *end;
+    int n;
+    if (!gtx_read("queue/queue.jsonl", text, sizeof(text))) return false;
+    start = strstr(text, "\"brief\":\"");
+    if (!start || !(end = strchr(start + 9, '"'))) return false;
+    n = snprintf(out, sizeof(out), "%.*s%s%s", (int)(start + 9 - text), text, brief, end);
+    return n > 0 && (size_t)n < sizeof(out) && gtx_put(g_gtx_state, "z23/dev/queue/queue.jsonl", out);
+}
+
+/* The parent of the checkout is outside its allowed root. Mint the fixture
+ * there through the harness so test-tmp owns it, including on macOS. */
+static bool gtx_brief_isolate(char outside[PATH_MAX])
+{
+    char cwd[PATH_MAX], checkout[PATH_MAX];
+    bool ok;
+    outside[0] = '\0';
+    if (!getcwd(cwd, sizeof(cwd)) ||
+        !zcl_devagent_checkout_root(".", checkout, sizeof(checkout)))
+        return false;
+    if (chdir(checkout) != 0) return false;
+    ok = chdir("..") == 0;
+    if (ok) ok = test_mkdtemp(outside, PATH_MAX, "gtx-brief") != NULL;
+    if (ok) ok = chdir(outside) == 0;
+    if (ok) gtx_isolate("brief-path");
+    if (chdir(cwd) != 0) return false;
+    return ok;
+}
+
+static bool gtx_brief_select(int mode, const char *cwd, const char *local,
+                             char brief[PATH_MAX])
+{
+    size_t used = 0;
+    int n = snprintf(brief, PATH_MAX, "%s/outside.txt", g_gtx_base);
+    if (n < 0 || n >= PATH_MAX) return false;
+    if (mode == 0) gtx_path(brief, PATH_MAX, "receive/brief/brief-path.brief");
+    if (mode == 2) {
+        for (const char *p = cwd; *p; p++) if (*p == '/') {
+            if (used >= PATH_MAX - 3u) return false;
+            memcpy(brief + used, "../", 3);
+            used += 3;
+        }
+        n = snprintf(brief + used, PATH_MAX - used, "%s/outside.txt", g_gtx_base + 1);
+        if (n < 0 || (size_t)n >= PATH_MAX - used) return false;
+    }
+    if (mode == 3) {
+        if (symlink(brief, local) != 0) return false;
+        n = snprintf(brief, PATH_MAX, "%s", local);
+        if (n < 0 || n >= PATH_MAX) return false;
+    }
+    return true;
+}
+
+static int gtx_brief_cleanup(int mode, const char *local, const char *localdir,
+                             const char *outside)
+{
+    int failures = 0;
+    if (mode == 3 && local[0] && unlink(local) != 0) failures++;
+    if (localdir[0] && test_rm_rf_recursive(localdir) != 0) failures++;
+    if (outside[0] && test_rm_rf_recursive(outside) != 0) failures++;
+    return failures;
+}
+
+static int gtx_case_brief(int mode)
+{
+    int failures = 0;
+    bool isolated = false;
+    char local[PATH_MAX] = "", localdir[PATH_MAX] = "";
+    char outside[PATH_MAX] = "";
+    TEST("admitted brief consumption confines resolved bytes to current roots")
+    {
+        struct rcv_drive_opts ro;
+        struct wkr_drive_opts o;
+        char ws[1200], text[8192], brief[PATH_MAX];
+        char cwd[PATH_MAX];
+        ASSERT(getcwd(cwd, sizeof(cwd)) != NULL);
+        ASSERT(gtx_brief_isolate(outside));
+        isolated = true;
+        (void)snprintf(ws, sizeof(ws), "%s/wt", g_gtx_base);
+        ASSERT(gtx_checkout(ws, "1111111111111111111111111111111111111111"));
+        gtx_rcv_opts(&ro, ws);
+        ASSERT(gtx_admit(&ro, "op", "brief-path", "UNINTENDED TASK\nBRIEF TAIL"));
+        ASSERT(gtx_read("receive/brief/brief-path.brief", text, sizeof(text)));
+        ASSERT(gtx_put(g_gtx_base, "outside.txt", text));
+        ASSERT(test_mkdtemp(localdir, sizeof(localdir), "gtx-brief-link") != NULL);
+        ASSERT(snprintf(local, sizeof(local), "%s/brief", localdir) < (int)sizeof(local));
+        ASSERT(gtx_brief_select(mode, cwd, local, brief));
+        ASSERT(gtx_ledger_brief(brief));
+        gtx_opts(&o, "gtx", "brief-path");
+        ASSERT_EQ(zcl_devagent_worker_drive(&o, gtx_fixture), 1);
+        ASSERT_EQ(gtx_count_read(), mode == 0 ? 1 : 0);
+        if (mode == 0) ASSERT(gtx_has("task.txt", text));
+        else {
+            ASSERT(gtx_has("engine/brief-path/a1/run.out", "brief-outside-roots"));
+            ASSERT(gtx_has("engine/brief-path/a1/claim.json", "\"submitted\":false"));
+            ASSERT(!gtx_exists("engine/brief-path/a1/receipt.json"));
+            ASSERT(!gtx_exists("task.txt"));
+        }
+        PASS();
+    }
+_test_next:;
+    if (isolated) gtx_restore();
+    failures += gtx_brief_cleanup(mode, local, localdir, outside);
+    return failures;
+}
+
+static int gtx_case_brief_text(int mode)
+{
+    static const char *const bytes[] = {
+        "WHOLE \xE2\x82\xAC TEXT WITHOUT FINAL NEWLINE",
+        "SAFE\0UNINTENDED TASK",
+        "SAFE\xE2\x82",
+    };
+    static const size_t lengths[] = {
+        sizeof("WHOLE \xE2\x82\xAC TEXT WITHOUT FINAL NEWLINE") - 1,
+        sizeof("SAFE\0UNINTENDED TASK") - 1,
+        sizeof("SAFE\xE2\x82") - 1,
+    };
+    int failures = 0;
+    bool isolated = false;
+    TEST("contained brief validates measured bytes before string composition")
+    {
+        struct rcv_drive_opts ro;
+        struct wkr_drive_opts o;
+        char ws[1200], brief[PATH_MAX], task[8192];
+        const char *tail;
+        gtx_isolate("brief-text");
+        isolated = true;
+        (void)snprintf(ws, sizeof(ws), "%s/wt", g_gtx_base);
+        ASSERT(gtx_checkout(ws, "1111111111111111111111111111111111111111"));
+        gtx_rcv_opts(&ro, ws);
+        ASSERT(gtx_admit(&ro, "op", "brief-text", "Original admitted text."));
+        gtx_path(brief, sizeof(brief), "receive/brief/brief-text.brief");
+        ASSERT(zcl_devagent_worker_write_atomic(brief, bytes[mode], lengths[mode]));
+        gtx_opts(&o, "gtx", "brief-text");
+        ASSERT_EQ(zcl_devagent_worker_drive(&o, gtx_fixture), 1);
+        ASSERT_EQ(gtx_count_read(), mode == 0 ? 1 : 0);
+        if (mode == 0) {
+            ASSERT(gtx_read("task.txt", task, sizeof(task)));
+            tail = strstr(task, bytes[mode]);
+            ASSERT(tail != NULL);
+            ASSERT_STR_EQ(tail, bytes[mode]);
+        } else {
+            ASSERT(gtx_has("engine/brief-text/a1/run.out", "brief-unreadable"));
+            ASSERT(gtx_has("engine/brief-text/a1/claim.json", "\"submitted\":false"));
+            ASSERT(!gtx_exists("engine/brief-text/a1/receipt.json"));
+            ASSERT(!gtx_exists("task.txt"));
+        }
+        PASS();
+    }
+_test_next:;
+    if (isolated) gtx_restore();
+    return failures;
+}
+
+static int gtx_case_brief_resolution(int mode)
+{
+    int failures = 0;
+    bool isolated = false;
+    char link[PATH_MAX] = "";
+    TEST("brief resolution follows contained links and distinguishes absence")
+    {
+        struct rcv_drive_opts ro;
+        struct wkr_drive_opts o;
+        char ws[1200], brief[PATH_MAX], text[8192];
+        gtx_isolate("brief-resolve");
+        isolated = true;
+        (void)snprintf(ws, sizeof(ws), "%s/wt", g_gtx_base);
+        ASSERT(gtx_checkout(ws, "1111111111111111111111111111111111111111"));
+        gtx_rcv_opts(&ro, ws);
+        ASSERT(gtx_admit(&ro, "op", "brief-resolve", "WHOLE CONTAINED LINK TEXT"));
+        ASSERT(gtx_read("receive/brief/brief-resolve.brief", text, sizeof(text)));
+        gtx_path(brief, sizeof(brief), "receive/brief/brief-resolve.brief");
+        if (mode == 0) {
+            gtx_path(link, sizeof(link), "receive/brief/contained-link");
+            ASSERT(symlink(brief, link) == 0);
+            ASSERT(gtx_ledger_brief(link));
+        } else if (mode == 1) {
+            ASSERT(unlink(brief) == 0);
+        } else {
+            gtx_path(brief, sizeof(brief), "receive/brief/brief-resolve.brief/child");
+            ASSERT(gtx_ledger_brief(brief));
+        }
+        gtx_opts(&o, "gtx", "brief-resolve");
+        errno = mode == 1 ? 0 : ENOENT;
+        ASSERT_EQ(zcl_devagent_worker_drive(&o, gtx_fixture), 1);
+        ASSERT_EQ(gtx_count_read(), mode == 2 ? 0 : 1);
+        if (mode == 0) ASSERT(gtx_has("task.txt", text));
+        if (mode == 1) {
+            ASSERT(gtx_has("task.txt", "name=brief-resolve\n"));
+            ASSERT(!gtx_has("task.txt", "WHOLE CONTAINED LINK TEXT"));
+        }
+        if (mode == 2) {
+            ASSERT(gtx_has("engine/brief-resolve/a1/run.out", "brief-unreadable"));
+            ASSERT(gtx_has("engine/brief-resolve/a1/claim.json", "\"submitted\":false"));
+            ASSERT(!gtx_exists("engine/brief-resolve/a1/receipt.json"));
+            ASSERT(!gtx_exists("task.txt"));
+        }
+        PASS();
+    }
+_test_next:;
+    if (link[0]) (void)unlink(link);
+    if (isolated) gtx_restore();
+    return failures;
+}
+
 #endif /* !defined(_WIN32) */
+
+#if defined(_WIN32)
+static bool gtx_windows_brief_write(const char *path, const char *bytes,
+                                    size_t length)
+{
+    wchar_t wide[32768];
+    if (!platform_windows_wide_path(path, wide)) return false;
+    FILE *file = _wfopen(wide, L"wb");
+    if (!file) return false;
+    bool ok = fwrite(bytes, 1, length, file) == length;
+    return fclose(file) == 0 && ok;
+}
+
+static bool gtx_windows_brief_link(const char *link, const char *target)
+{
+    wchar_t wide_link[32768], wide_target[32768];
+    return platform_windows_wide_path(link, wide_link) &&
+           platform_windows_wide_path(target, wide_target) &&
+           CreateSymbolicLinkW(wide_link, wide_target,
+                               SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE);
+}
+
+static bool gtx_windows_brief_remove(const char *path)
+{
+    wchar_t wide[32768];
+    if (!path[0]) return true;
+    if (!platform_windows_wide_path(path, wide)) return false;
+    return DeleteFileW(wide) || GetLastError() == ERROR_FILE_NOT_FOUND;
+}
+
+static int gtx_case_windows_brief_resolution(int mode)
+{
+    char base[PATH_MAX] = "", target[PATH_MAX] = "", brief[PATH_MAX];
+    int failures = 0;
+    TEST("Windows composition refuses file ancestors and preserves absent briefs") {
+        struct wkr_job job = {0};
+        const char *prefix = "name=missing-brief\nkind=doc\nattempt=1\nmodel=fixture\n";
+        ASSERT(test_mkdtemp(base, sizeof(base), "gtx-win-resolve") != NULL);
+        ASSERT(snprintf(target, sizeof(target), "%s/brief.txt", base)
+               < (int)sizeof(target));
+        ASSERT(gtx_windows_brief_write(target, "EXISTING BRIEF", 14));
+        if (mode == 0)
+            ASSERT(snprintf(brief, sizeof(brief), "%s/child", target)
+                   < (int)sizeof(brief));
+        else if (mode == 1)
+            ASSERT(snprintf(brief, sizeof(brief), "%s/absent.brief", base)
+                   < (int)sizeof(brief));
+        else
+            ASSERT(snprintf(brief, sizeof(brief), "%s/missing-dir/absent.brief", base)
+                   < (int)sizeof(brief));
+        snprintf(job.name, sizeof(job.name), "missing-brief");
+        snprintf(job.kind, sizeof(job.kind), "doc");
+        snprintf(job.model, sizeof(job.model), "fixture");
+        job.attempt = 1;
+        const char *why = zcl_devagent_worker_test_compose_task(brief, &job);
+        if (mode == 0) {
+            ASSERT(why != NULL);
+            ASSERT_STR_EQ(why, "brief-unreadable");
+            ASSERT(job.task[0] == '\0');
+        } else {
+            ASSERT(why == NULL);
+            ASSERT_STR_EQ(job.task, prefix);
+        }
+        PASS();
+    } _test_next:;
+    if (!gtx_windows_brief_remove(target)) failures++;
+    if (base[0] && test_rm_rf_recursive(base) != 0) failures++;
+    return failures;
+}
+
+/* The ASCII link resolves to a UTF-8 target that narrow CRT operations
+ * misinterpret on an ANSI code page. Drive the real task composition,
+ * including resolution, containment, metadata, read and identity prefix. */
+static int gtx_case_windows_brief(int mode)
+{
+    static const char *const bytes[] = {
+        "WHOLE \xE2\x82\xAC TEXT WITHOUT FINAL NEWLINE",
+        "SAFE\0UNINTENDED TASK",
+        "SAFE\xE2\x82",
+    };
+    static const size_t lengths[] = {
+        sizeof("WHOLE \xE2\x82\xAC TEXT WITHOUT FINAL NEWLINE") - 1,
+        sizeof("SAFE\0UNINTENDED TASK") - 1,
+        sizeof("SAFE\xE2\x82") - 1,
+    };
+    char base[PATH_MAX] = "", target[PATH_MAX] = "", link[PATH_MAX] = "";
+    int failures = 0;
+    TEST("Windows task composition preserves Unicode link targets or refuses text") {
+        struct wkr_job job = {0};
+        const char *prefix = "name=unicode-brief\nkind=doc\nattempt=1\nmodel=fixture\n";
+        ASSERT(test_mkdtemp(base, sizeof(base), "gtx-win-brief") != NULL);
+        ASSERT(snprintf(target, sizeof(target), "%s/\xE4\xB8\xAD.brief", base)
+               < (int)sizeof(target));
+        ASSERT(snprintf(link, sizeof(link), "%s/ascii-link", base)
+               < (int)sizeof(link));
+        ASSERT(gtx_windows_brief_write(target, bytes[mode], lengths[mode]));
+        ASSERT(gtx_windows_brief_link(link, target));
+        snprintf(job.name, sizeof(job.name), "unicode-brief");
+        snprintf(job.kind, sizeof(job.kind), "doc");
+        snprintf(job.model, sizeof(job.model), "fixture");
+        job.attempt = 1;
+        const char *why = zcl_devagent_worker_test_compose_task(link, &job);
+        if (mode == 0) {
+            ASSERT(why == NULL);
+            ASSERT(strncmp(job.task, prefix, strlen(prefix)) == 0);
+            ASSERT_STR_EQ(job.task + strlen(prefix), bytes[mode]);
+        } else {
+            ASSERT(why != NULL);
+            ASSERT_STR_EQ(why, "brief-unreadable");
+            ASSERT(job.task[0] == '\0');
+        }
+        PASS();
+    } _test_next:;
+    if (!gtx_windows_brief_remove(link)) failures++;
+    if (!gtx_windows_brief_remove(target)) failures++;
+    if (base[0] && test_rm_rf_recursive(base) != 0) failures++;
+    return failures;
+}
+#endif
+
+static int gtx_case_brief_reader(int mode)
+{
+    static const char *const bytes[] = {"", "abc", "a\0b", "\xE2\x82", "abcdefgh"};
+    static const size_t lengths[] = {0, 3, 3, 2, 8};
+    char base[PATH_MAX] = "", path[PATH_MAX], out[8] = "stale";
+    int failures = 0;
+    TEST("brief reader preserves whole text and empties refused output") {
+        ASSERT(test_mkdtemp(base, sizeof(base), "gtx-reader") != NULL);
+        int n = snprintf(path, sizeof(path), "%s/brief", base);
+        ASSERT(n > 0 && (size_t)n < sizeof(path));
+        if (mode < 5) {
+#if defined(_WIN32)
+            ASSERT(gtx_windows_brief_write(path, bytes[mode], lengths[mode]));
+#else
+            ASSERT(zcl_devagent_worker_write_atomic(path, bytes[mode], lengths[mode]));
+#endif
+        }
+        size_t cap = mode < 2 ? lengths[mode] + 1 : sizeof(out);
+        ASSERT_EQ(zcl_devagent_worker_read_file(path, out, cap), mode < 2);
+        if (mode < 2) ASSERT_STR_EQ(out, bytes[mode]);
+        else ASSERT(out[0] == '\0');
+        PASS();
+    } _test_next:;
+    if (base[0] && test_rm_rf_recursive(base) != 0) failures++;
+    return failures;
+}
+
+static bool gtx_impact_has_guards(const struct agent_impact_acc *impact)
+{
+    for (size_t i = 0; i < impact->groups_len; i++)
+        if (strcmp(impact->groups[i], "devagent_worker_guards") == 0)
+            return true;
+    return false;
+}
+
+static bool gtx_plan_has_guards(const struct zcl_devloop_plan *plan)
+{
+    for (size_t i = 0; i < plan->path_groups_len; i++)
+        if (strcmp(plan->path_groups[i], "devagent_worker_guards") == 0)
+            return true;
+    return false;
+}
+
+static int gtx_case_brief_proof_mapping(void)
+{
+    int failures = 0;
+    TEST("production-only brief edits retain the worker guards regression") {
+        static const char *const paths[] = {
+            "tools/command/native_devagent_worker.c",
+            "tools/command/native_devagent_worker_run.c",
+            "tools/command/native_devagent.h",
+        };
+        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            struct agent_impact_acc impact = {0};
+            struct zcl_devloop_plan plan;
+            ASSERT(agent_impact_apply_shared_rules(paths[i], &impact));
+            ASSERT(gtx_impact_has_guards(&impact));
+            ASSERT(zcl_devloop_plan_files(&paths[i], 1, &plan));
+            ASSERT(gtx_plan_has_guards(&plan));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 
 int test_devagent_worker_guards(void);
 
 /* One proof-gap clause per function: the cyclomatic-complexity gate caps
- * every function at M<=15, so the eleven cases live in helpers above and
+ * every function at M<=15, so the cases live in helpers above and
  * this entry only sums their failures; a failing clause does not stop later ones. */
 int test_devagent_worker_guards(void)
 {
     int failures = 0;
+    failures += gtx_case_brief_proof_mapping();
+    for (int mode = 0; mode < 6; mode++) failures += gtx_case_brief_reader(mode);
 
 #if !defined(_WIN32)
 
@@ -1084,9 +1487,15 @@ int test_devagent_worker_guards(void)
     failures += gtx_case_f2();
     failures += gtx_case_f3();
     failures += gtx_case_f4();
+    for (int mode = 0; mode < 4; mode++) failures += gtx_case_brief(mode);
+    for (int mode = 0; mode < 3; mode++) failures += gtx_case_brief_text(mode);
+    for (int mode = 0; mode < 3; mode++) failures += gtx_case_brief_resolution(mode);
 
+#else
+    for (int mode = 0; mode < 3; mode++) failures += gtx_case_windows_brief(mode);
+    for (int mode = 0; mode < 3; mode++)
+        failures += gtx_case_windows_brief_resolution(mode);
 #endif /* !defined(_WIN32) */
 
     return failures;
 }
-

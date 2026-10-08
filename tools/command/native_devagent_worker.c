@@ -92,10 +92,13 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "platform/confined_process.h"
+#include "platform/directory_compat.h"
 #include "platform/directory_watcher.h"
+#include "platform/positioned_file.h"
 #include "platform/process_lock.h"
 #include "platform/state_root.h"
 #include "platform/time_compat.h"
+#include "platform/windows_path.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -128,6 +131,7 @@
  * The rc is the one reap records; it never collides with 99-101 below. */
 #define WKR_REFUSE_BRIEF_SIZE "brief-too-large"
 #define WKR_REFUSE_BRIEF_READ "brief-unreadable"
+#define WKR_REFUSE_BRIEF_PATH "brief-outside-roots"
 /* Pre-spend refusals: dead or unreadable sender authority, or a workspace
  * that moved or dirtied between admission and execution. They ride the
  * SAME refusal path as the brief refusals above (run.out rc 102 plus a
@@ -303,14 +307,114 @@ static void wkr_fill_job_from_claim(const struct wkr_sub *sub,
     job->time_cap_s = opts->time_cap_s;
 }
 
+#if defined(_WIN32)
+static bool wkr_brief_missing_parent(const wchar_t *wide)
+{
+    wchar_t full[32768];
+    DWORD n = GetFullPathNameW(wide, 32768, full, NULL);
+    if (!n || n >= 32768) return false;
+    for (;;) {
+        DWORD attrs = GetFileAttributesW(full);
+        if (attrs != INVALID_FILE_ATTRIBUTES)
+            return (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        DWORD error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND &&
+            error != ERROR_PATH_NOT_FOUND)
+            return false;
+        wchar_t *slash = wcsrchr(full, L'\\');
+        if (!slash || slash == full) return false;
+        if (slash[-1] == L':') {
+            slash[1] = L'\0';
+            attrs = GetFileAttributesW(full);
+            return attrs != INVALID_FILE_ATTRIBUTES &&
+                   (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        }
+        *slash = L'\0';
+    }
+}
+#endif
+
+static bool wkr_brief_resolve(const char *brief, char out[PATH_MAX])
+{
+    out[0] = '\0';
+#if defined(_WIN32)
+    wchar_t wide[32768];
+    struct platform_positioned_file file;
+    if (!platform_windows_wide_path(brief, wide)) {
+        errno = EINVAL;
+        return false;
+    }
+    HANDLE handle = CreateFileW(wide, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        errno = (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) &&
+            wkr_brief_missing_parent(wide)
+            ? ENOENT : EIO;
+        return false;
+    }
+    platform_positioned_file_init(&file);
+    file.native = (uintptr_t)handle;
+    bool ok = platform_positioned_file_path(&file, out, PATH_MAX);
+    platform_positioned_file_close(&file);
+    if (!ok) {
+        out[0] = '\0';
+        errno = EIO;
+    }
+    return ok;
+#else
+    return realpath(brief, out) != NULL;
+#endif
+}
+
+static bool wkr_brief_under(const char *path, const char *root)
+{
+    size_t n = strlen(root);
+    return n && strncmp(path, root, n) == 0 && (path[n] == '/' || path[n] == '\0'
+#if defined(_WIN32)
+           || path[n] == '\\'
+#endif
+        );
+}
+static bool wkr_brief_allowed(const char *path)
+{
+    char root[PATH_MAX], canonical[PATH_MAX];
+    if (zcl_devagent_checkout_root(".", root, sizeof(root)) &&
+        platform_directory_canonical_real(root, canonical, sizeof(canonical)) &&
+        wkr_brief_under(path, canonical))
+        return true;
+    return platform_state_root_existing(root, sizeof(root)) &&
+           platform_directory_canonical_real(root, canonical, sizeof(canonical)) &&
+           wkr_brief_under(path, canonical);
+}
+
 /* The brief a claimed row names, whole, into head. NULL when it loaded;
  * "" when there is no brief file (the degrade case); otherwise the named
  * refusal. A brief is never cut: its head alone is a different job. */
 static const char *wkr_brief_load(const char *brief, char *head, size_t cap)
 {
+#if defined(_WIN32)
+    struct _stat64 st;
+    wchar_t wide[32768];
+#else
     struct stat st;
+#endif
+    char resolved[PATH_MAX];
+    if (cap > 0) head[0] = '\0';
+    if (!wkr_brief_resolve(brief, resolved))
+        return errno == ENOENT ? "" : WKR_REFUSE_BRIEF_READ;
+    if (!wkr_brief_allowed(resolved))
+        return WKR_REFUSE_BRIEF_PATH;
+    brief = resolved;
+#if defined(_WIN32)
+    if (!platform_windows_wide_path(brief, wide))
+        return WKR_REFUSE_BRIEF_READ;
+    if (_wstat64(wide, &st) != 0)
+#else
     if (stat(brief, &st) != 0)
-        return "";
+#endif
+        return errno == ENOENT ? "" : WKR_REFUSE_BRIEF_READ;
     if (st.st_size < 0 || (unsigned long long)st.st_size >= cap)
         return WKR_REFUSE_BRIEF_SIZE;
     if (!zcl_devagent_worker_read_file(brief, head, cap))
@@ -354,6 +458,23 @@ static const char *wkr_compose_task(const struct wkr_sub *sub,
     memcpy(job->task + used, head, n + 1);
     return NULL;
 }
+
+#ifdef ZCL_TESTING
+const char *zcl_devagent_worker_test_compose_task(const char *brief,
+                                                struct wkr_job *job)
+{
+    struct wkr_sub sub = {0};
+    json_set_object(&sub.reply.data);
+    if (!json_push_kv_str(&sub.reply.data, "brief", brief)) {
+        json_free(&sub.reply.data);
+        job->task[0] = '\0';
+        return WKR_REFUSE_BRIEF_READ;
+    }
+    const char *why = wkr_compose_task(&sub, job);
+    json_free(&sub.reply.data);
+    return why;
+}
+#endif
 
 /* Returns 1 with job filled (and *refusal set when the claimed row must
  * be refused rather than run), 0 when the queue is empty, -1 on refusal

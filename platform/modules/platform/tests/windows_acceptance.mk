@@ -272,6 +272,7 @@ ZCL_WINDOWS_ACCEPTANCE_dev_agent_mail_LIBS := \
 ZCL_WINDOWS_ACCEPTANCE_devagent_worker_confine_SOURCES := \
 	tests/harness/src/devagent_worker_confine_windows_acceptance.c \
 	tools/command/native_devagent_worker_run.c \
+	contexts/commons/packages/zutf8/src/zutf8.c \
 	platform/modules/platform/src/confined_process.c \
 	platform/modules/platform/src/process_lifecycle.c \
 	platform/modules/platform/src/os_proc.c \
@@ -280,7 +281,7 @@ ZCL_WINDOWS_ACCEPTANCE_devagent_worker_confine_SOURCES := \
 	platform/modules/base/src/safe_alloc.c \
 	platform/modules/base/src/log_level.c
 ZCL_WINDOWS_ACCEPTANCE_devagent_worker_confine_FLAGS := \
-	-Itools
+	-Itools -Icontexts/commons/packages/zutf8/include
 ZCL_WINDOWS_ACCEPTANCE_devagent_worker_confine_LIBS := \
 	-ladvapi32 -lpsapi -lshell32 $(ZCL_WINDOWS_ACCEPTANCE_PTHREAD_LIB)
 

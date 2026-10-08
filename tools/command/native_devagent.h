@@ -316,8 +316,16 @@ long long zcl_devagent_worker_gate(const struct wkr_job *job,
                                    char *verdict, size_t cap, char *gateline,
                                    size_t gcap, wkr_group_gate_fn judge);
 
-/* Bounded small-file helpers the worker and its child share. */
+/* Bounded small-file helpers the worker and its child share. Read the whole
+ * NUL-free UTF-8 text or refuse; out is empty on refusal when out is non-NULL
+ * and cap is nonzero. */
 bool zcl_devagent_worker_read_file(const char *path, char *out, size_t cap);
+#ifdef ZCL_TESTING
+/* Isolated fixtures: feed an admitted brief path into the real task composer.
+ * The returned refusal is static; refusal empties job->task. */
+const char *zcl_devagent_worker_test_compose_task(const char *brief,
+                                                struct wkr_job *job);
+#endif
 bool zcl_devagent_worker_write_atomic(const char *path, const char *text,
                                       size_t len);
 bool zcl_devagent_worker_json_escape(const char *in, char *out, size_t cap);

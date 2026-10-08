@@ -37,6 +37,8 @@
 #include "platform/os_proc.h"
 #include "platform/process_lifecycle.h"
 #include "platform/time_compat.h"
+#include "platform/windows_path.h"
+#include "zutf8/zutf8.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -59,18 +61,31 @@ bool zcl_devagent_worker_read_file(const char *path, char *out, size_t cap)
 {
     FILE *f;
     size_t n;
+    if (out && cap > 0)
+        out[0] = '\0';
     if (!path || !out || cap == 0)
         return false;
+#if defined(_WIN32)
+    wchar_t wide[32768];
+    if (!platform_windows_wide_path(path, wide))
+        return false;
+    f = _wfopen(wide, L"rb");
+#else
     f = fopen(path, "rb");
+#endif
     if (!f)
         return false;
     n = fread(out, 1, cap - 1, f);
-    if (ferror(f) || !feof(f)) {
-        (void)fclose(f);
+    int extra = fgetc(f);
+    bool ok = extra == EOF && !ferror(f) && !memchr(out, '\0', n) &&
+              zutf8_validate_n(out, n);
+    if (fclose(f) != 0)
+        ok = false;
+    if (!ok) {
+        out[0] = '\0';
         return false;
     }
     out[n] = '\0';
-    (void)fclose(f);
     return true;
 }
 
