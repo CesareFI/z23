@@ -378,9 +378,20 @@ static bool reply_nodes(struct vcs_zcode_dht_service *s, struct service_peer *p,
   return true;
 }
 
+/* Parameter viability, including the datadir length bound. The service
+ * binds identity, record and persistence state under one prefix; a path
+ * that does not fit s->datadir must refuse before any state exists,
+ * because identity material loads from the full caller path while record
+ * storage and persistence bind the copied buffer. */
+static bool dht_service_params_unusable(
+    const struct vcs_zcode_dht_service_params *p) {
+  return !p || !p->datadir ||
+         strlen(p->datadir) >= VCS_ZCODE_DHT_SERVICE_DATADIR_CAP;
+}
+
 struct vcs_zcode_dht_service *
 vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
-  if (!p || !p->datadir)
+  if (dht_service_params_unusable(p))
     return NULL;
   struct vcs_zcode_dht_service *s =
       zcl_calloc(1, sizeof(*s), "zcode_dht_service");
