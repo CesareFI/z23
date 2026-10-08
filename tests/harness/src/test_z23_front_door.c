@@ -405,6 +405,46 @@ static int case_unreachable_list_overflow(void)
 }
 
 /* ── 4. The evidence handed to the second stage ────────────────────────── */
+static int attest_arg_boundary(const struct fd_attestation *a, const char *want)
+{
+    int failures = 0;
+    unsigned char guarded[FD_ATTEST_ARG_MAX + 2];
+    const size_t n = strlen(want) + 1;
+    char *out = (char *)&guarded[1];
+
+    memset(guarded, 0xa5, sizeof guarded);
+    FD_CHECK("exact argv capacity preserves the complete argument",
+             fd_attest_arg(a, out, n) && memcmp(out, want, n) == 0);
+    FD_CHECK("exact argv capacity preserves adjacent canaries",
+             guarded[0] == 0xa5 && guarded[n + 1] == 0xa5);
+    memset(guarded, 0xa5, sizeof guarded);
+    FD_CHECK("one-byte-short argv capacity refuses and clears",
+             !fd_attest_arg(a, out, n - 1) && out[0] == '\0');
+    FD_CHECK("short argv capacity preserves adjacent canaries",
+             guarded[0] == 0xa5 && guarded[n] == 0xa5);
+    return failures;
+}
+
+static int case_attest_arg_guards(void)
+{
+    int failures = 0;
+    struct fd_attestation a;
+    unsigned char guarded[3] = {0xa5, 0xa5, 0xa5};
+    const unsigned char want[3] = {0xa5, 0xa5, 0xa5};
+    char *out = (char *)&guarded[1];
+
+    fd_attestation_unreachable(&a, "repo", "fetch-failed");
+    FD_CHECK("NULL attestation refuses without writing",
+             !fd_attest_arg(NULL, out, 1) &&
+             memcmp(guarded, want, sizeof guarded) == 0);
+    FD_CHECK("NULL argv output refuses",
+             !fd_attest_arg(&a, NULL, 1));
+    FD_CHECK("zero argv capacity refuses without writing",
+             !fd_attest_arg(&a, out, 0) &&
+             memcmp(guarded, want, sizeof guarded) == 0);
+    return failures;
+}
+
 static int case_attest_arg(void)
 {
     int failures = 0;
@@ -416,11 +456,14 @@ static int case_attest_arg(void)
     (void)snprintf(want, sizeof want, "--attest=dns=%s", k_pin_a);
     FD_CHECK("an answered source is passed through with its pin",
              fd_attest_arg(&a, arg, sizeof arg) && strcmp(arg, want) == 0);
+    failures += attest_arg_boundary(&a, want);
 
     fd_attestation_unreachable(&a, "repo", "fetch-failed");
     FD_CHECK("an unreachable source is declared, with its reason",
              fd_attest_arg(&a, arg, sizeof arg) &&
              strcmp(arg, "--attest-unreachable=repo=fetch-failed") == 0);
+    failures += attest_arg_boundary(&a, "--attest-unreachable=repo=fetch-failed");
+    failures += case_attest_arg_guards();
 
     /* A silently truncated attestation would be a lie about the evidence. */
     char tiny[8];
