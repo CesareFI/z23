@@ -29,12 +29,14 @@
 #include "controllers/wallet_view_internal.h"  /* wv_parse_form_field */
 #include "models/database.h"
 #include "util/template.h"
+#include "views/wallet_view_node_view.h"
 #include <unistd.h>
 #include <sys/stat.h>
 #include <time.h>
 #include "test/test_wallet_view_priv.h"
 #include "command/native_command.h"
 #include "controllers/agent_impact_rules.h"
+#include "devloop.h"
 
 /* ── Hermetic fixture DB ──────────────────────────────────────
  * The data-driven render tests must never touch the live node's
@@ -429,12 +431,99 @@ static int check_wallet_token_row_bounds(void)
     return failures;
 }
 
+static bool peer_table_has_group(const char groups[][ZCL_DEVLOOP_GROUP_MAX], size_t count,
+                                 const char *wanted)
+{
+    for (size_t i = 0; i < count; i++)
+        if (strcmp(groups[i], wanted) == 0) return true;
+    return false;
+}
+
+static int check_wallet_peer_table_proof_mapping(void)
+{
+    int failures = 0;
+    const char *path = "contexts/wallet/views/src/wallet_view_node_view.c";
+    struct agent_impact_acc impact = {0};
+    ASSERT(agent_impact_apply_shared_rules(path, &impact));
+    bool wallet_view = false, lint_gates = false;
+    for (size_t i = 0; i < impact.groups_len; i++) {
+        wallet_view |= strcmp(impact.groups[i], "wallet_view") == 0;
+        lint_gates |= strcmp(impact.groups[i], "make_lint_gates") == 0;
+    }
+    ASSERT(wallet_view);
+    ASSERT(lint_gates);
+    struct zcl_devloop_plan plan;
+    ASSERT(zcl_devloop_plan_files(&path, 1, &plan));
+    ASSERT(peer_table_has_group(plan.path_groups, plan.path_groups_len, "wallet_view"));
+    ASSERT(peer_table_has_group(plan.path_groups, plan.path_groups_len, "make_lint_gates"));
+    ASSERT_EQ(plan.closure_groups_len, 0);
+_test_next:
+    return failures;
+}
+
+static int check_wallet_peer_table_capacity(size_t cap, const char *complete,
+                                            size_t len)
+{
+    int failures = 0;
+    struct { unsigned char before; char out[2048]; } guarded;
+    memset(&guarded, 0x5a, sizeof(guarded));
+    size_t got = wv_render_peer_table(guarded.out, cap, NULL, 0);
+    ASSERT_EQ(guarded.before, 0x5a);
+    ASSERT_EQ((unsigned char)guarded.out[cap], 0x5a);
+    ASSERT_EQ(got, cap == len + 1 ? len : 0);
+    if (got) { ASSERT_STR_EQ(guarded.out, complete); }
+    else { ASSERT_EQ(guarded.out[0], '\0'); }
+_test_next:
+    return failures;
+}
+
+static int check_wallet_peer_table_bounds(void)
+{
+    int failures = 0;
+    char complete[2048];
+    size_t len = wv_render_peer_table(complete, sizeof(complete), NULL, 0);
+    ASSERT(len > 32 && len < sizeof(complete));
+    ASSERT_EQ(len, strlen(complete));
+    ASSERT(strstr(complete, "Connecting to network...</td></tr></table></div>"));
+    const size_t budgets[] = {32, 1, 112, 200, len, len + 1};
+    for (size_t i = 0; i < sizeof(budgets) / sizeof(budgets[0]); i++)
+        failures += check_wallet_peer_table_capacity(budgets[i], complete, len);
+_test_next:
+    return failures;
+}
+
+static int check_wallet_peer_table_bounded_fields(void)
+{
+    int failures = 0;
+    struct wallet_view_peer_row peer = {0};
+    memset(peer.addr, '&', sizeof(peer.addr) - 1);
+    memset(peer.subver, '<', sizeof(peer.subver) - 1);
+    peer.starting_height = INT_MIN;
+    peer.inbound = 1;
+    struct { unsigned char before; char out[2048]; } guarded;
+    memset(&guarded, 0x5a, sizeof(guarded));
+    size_t len = wv_render_peer_table(guarded.out, sizeof(guarded.out) - 1, &peer, 1);
+    ASSERT(len > 0 && len < sizeof(guarded.out) - 1);
+    ASSERT_EQ(len, strlen(guarded.out));
+    ASSERT_EQ(guarded.before, 0x5a);
+    ASSERT_EQ((unsigned char)guarded.out[sizeof(guarded.out) - 1], 0x5a);
+    ASSERT(strstr(guarded.out, "&amp;"));
+    ASSERT(strstr(guarded.out, "&lt;"));
+    ASSERT(strstr(guarded.out, "-2147483648"));
+    ASSERT(strstr(guarded.out, "</table></div>"));
+_test_next:
+    return failures;
+}
+
 int test_wallet_view(void)
 {
     int failures = check_bot_rpc_balance_values();
     failures += check_bot_rpc_long_decimal();
     failures += check_bot_rpc_balance_refusals();
     failures += check_bot_rpc_impact_route();
+    failures += check_wallet_peer_table_proof_mapping();
+    failures += check_wallet_peer_table_bounds();
+    failures += check_wallet_peer_table_bounded_fields();
     failures += check_wallet_token_row_impact_route();
     failures += check_wallet_token_row_bounds();
 
