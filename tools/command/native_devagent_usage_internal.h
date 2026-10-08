@@ -15,6 +15,13 @@
  * record needs no newline. JSON construction failure or invalid derived
  * UTF-8 fails the reply and leaves reply->data an empty object. Counter
  * totals above INT64_MAX fail with USAGE_OVERFLOW and the same empty object.
+ * Codex total_token_usage is a cumulative rollout-generation snapshot, keyed
+ * by explicit account and generation and ordered by ordinal. Resets, changed
+ * coverage or conflicting checkpoints fail with USAGE_CONFLICT.
+ * Only explicit root lineage (session_id == id, no parent_thread_id) qualifies;
+ * inherited or missing lineage and malformed active-namespace records refuse.
+ * It supplies no task attribution or model attribution; by_hour is the
+ * snapshot hour, not interval usage. Missing namespace or ordinal is unkeyed.
  * `model` and `since` are the outcomes filters (NULL when absent). A call
  * without usage_log does nothing. */
 void dvu_push_usage(const struct json_value *input, const char *model,

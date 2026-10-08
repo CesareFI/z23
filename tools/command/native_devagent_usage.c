@@ -30,8 +30,21 @@
  *           reads), output_tokens, cache_read_input_tokens,
  *           cache_creation_input_tokens, output_tokens_details
  *           .thinking_tokens.
+ *   codex   event_msg payload.type == "token_count" with info.total_token_usage.
+ *           Account creator_account_id + session_meta payload.id identify a
+ *           rollout generation; ordinal orders cumulative checkpoints, including
+ *           copied files. Keep the last checkpoint, never add last_token_usage.
+ *           Unknown identity/ordinal is unkeyed. Resets, changed counter coverage
+ *           and conflicting ordinals refuse with USAGE_CONFLICT. Model remains
+ *           unknown. Only explicit root sessions (session_id == id, no parent)
+ *           qualify; inherited or missing lineage refuses with USAGE_CONFLICT.
+ *           Malformed records invalidate an active Codex namespace and refuse.
+ *           Session totals may span model switches. Counter semantics
+ *           are session_cumulative_latest; events count generations and by_hour
+ *           assigns the whole snapshot to its observation hour. This is not
+ *           interval usage, billed cost, or task attribution.
  *   uncached_input_tokens is derived per event so both formats compare:
- *   muse input - cache_read, claude input.
+ *   muse/codex input - cache_read, claude input.
  *
  * COUNTERS. A missing, negative or non-numeric counter is UNREPORTED: it is
  * never summed as 0, and each output row carries unreported[field] = the
@@ -117,9 +130,9 @@ static const char *const dvu_field_names[DVU_NF] = {
     "cache_write_tokens", "reasoning_tokens", "uncached_input_tokens",
 };
 
-enum dvu_format { DVU_MUSE, DVU_CLAUDE };
+enum dvu_format { DVU_MUSE, DVU_CLAUDE, DVU_CODEX };
 
-static const char *const dvu_format_names[] = {"muse", "claude"};
+static const char *const dvu_format_names[] = {"muse", "claude", "codex"};
 
 /* One parsed line: pointers into the parsed row, copied on keep. */
 struct dvu_fields {
@@ -128,6 +141,7 @@ struct dvu_fields {
     const char *model;
     char hour[DVU_HOUR_LEN + 1];
     int64_t v[DVU_NF];
+    int64_t ordinal;
 };
 
 struct dvu_event {
@@ -137,6 +151,7 @@ struct dvu_event {
     enum dvu_format format;
     size_t seq; /* input order: the latest line for an id wins */
     int64_t v[DVU_NF];
+    int64_t ordinal;
 };
 
 struct dvu_scan {
@@ -153,6 +168,7 @@ struct dvu_scan {
     bool truncated;
     bool alloc_failed;
     bool sum_overflow;
+    bool conflict;
     const char *model;
     const char *since;
 };
@@ -267,6 +283,52 @@ static bool dvu_parse_claude(const struct json_value *row, struct dvu_fields *f)
     return true;
 }
 
+/* Account and rollout generation identify the cumulative counter namespace.
+ * Parent-thread session_id and the current model do not identify it. */
+static bool dvu_codex_identity(const struct json_value *row, char id[300])
+{
+    const struct json_value *p = dvu_get(row, "payload");
+    const char *account = dvu_str(p, "creator_account_id");
+    const char *generation = dvu_str(p, "id");
+    if (!account || !generation || !account[0] || !generation[0] ||
+        strlen(account) > 128 || strlen(generation) > 128)
+        return false;
+    int n = snprintf(id, 300, "%zu:%s%zu:%s", strlen(account), account,
+                     strlen(generation), generation);
+    return n > 0 && n < 300;
+}
+
+static int64_t dvu_codex_counter(const struct json_value *obj, const char *key)
+{
+    const struct json_value *v = dvu_get(obj, key);
+    return v && v->type == JSON_INT && json_get_int(v) >= 0 ? json_get_int(v) : -1;
+}
+
+static bool dvu_parse_codex(const struct json_value *row, const char *id,
+                            struct dvu_fields *f)
+{
+    const char *type = dvu_str(row, "type");
+    const struct json_value *p = dvu_get(row, "payload");
+    const char *kind = dvu_str(p, "type");
+    const struct json_value *u = dvu_get(dvu_get(p, "info"), "total_token_usage");
+    if (!type || strcmp(type, "event_msg") != 0 || !kind ||
+        strcmp(kind, "token_count") != 0 || !u || u->type != JSON_OBJ)
+        return false;
+    const struct json_value *ordinal = dvu_get(row, "ordinal");
+    f->ordinal = ordinal && ordinal->type == JSON_INT ? json_get_int(ordinal) : -1;
+    f->format = DVU_CODEX;
+    f->id = f->ordinal >= 0 ? id : NULL;
+    dvu_hour_from_iso(dvu_str(row, "timestamp"), f->hour);
+    f->v[DVU_IN] = dvu_codex_counter(u, "input_tokens");
+    f->v[DVU_OUT] = dvu_codex_counter(u, "output_tokens");
+    f->v[DVU_CREAD] = dvu_codex_counter(u, "cached_input_tokens");
+    f->v[DVU_CWRITE] = dvu_codex_counter(u, "cache_write_input_tokens");
+    f->v[DVU_REASON] = dvu_codex_counter(u, "reasoning_output_tokens");
+    f->v[DVU_UNCACHED] = f->v[DVU_IN] >= f->v[DVU_CREAD] && f->v[DVU_CREAD] >= 0
+                               ? f->v[DVU_IN] - f->v[DVU_CREAD] : -1;
+    return true;
+}
+
 /* ── collection ──────────────────────────────────────────────────────── */
 
 static bool dvu_filtered_out(const struct dvu_scan *s, const struct dvu_fields *f)
@@ -283,7 +345,7 @@ static void dvu_keep(struct dvu_scan *s, const struct dvu_fields *f)
         s->unkeyed++;
         return;
     }
-    if (dvu_filtered_out(s, f))
+    if (f->format != DVU_CODEX && dvu_filtered_out(s, f))
         return;
     if (s->n >= DVU_MAX_EVENTS) {
         s->truncated = true;
@@ -313,28 +375,63 @@ static void dvu_keep(struct dvu_scan *s, const struct dvu_fields *f)
     memcpy(e->v, f->v, sizeof(e->v));
     e->format = f->format;
     e->seq = s->seq++;
+    e->ordinal = f->ordinal;
     s->n++;
 }
 
-static void dvu_line(struct dvu_scan *s, const char *line, size_t len)
+static void dvu_codex_meta(struct dvu_scan *s, char codex_id[300],
+                           const struct json_value *row)
+{
+    const char *type = dvu_str(row, "type");
+    if (!type || strcmp(type, "session_meta") != 0)
+        return;
+    char id[300] = {0};
+    (void)dvu_codex_identity(row, id);
+    const struct json_value *p = dvu_get(row, "payload");
+    const char *generation = dvu_str(p, "id");
+    const char *session = dvu_str(p, "session_id");
+    const struct json_value *parent = dvu_get(p, "parent_thread_id");
+    if (!generation || !session || strcmp(generation, session) != 0 ||
+        (parent && parent->type != JSON_NULL)) {
+        s->conflict = true;
+        id[0] = 0;
+    }
+    if (codex_id[0] && strcmp(codex_id, id))
+        s->conflict = true;
+    memcpy(codex_id, id, sizeof(id));
+}
+
+static void dvu_malformed(struct dvu_scan *s, char codex_id[300])
+{
+    s->malformed++;
+    if (codex_id[0])
+        s->conflict = true;
+    codex_id[0] = 0;
+}
+
+static void dvu_line(struct dvu_scan *s, char codex_id[300], const char *line,
+                      size_t len)
 {
     s->lines++;
     if (memchr(line, 0, len) || !zutf8_validate_n(line, len)) {
-        s->malformed++;
+        dvu_malformed(s, codex_id);
         return;
     }
-    if (!strstr(line, "\"usage\""))
+    if (!codex_id[0] && !strstr(line, "\"usage\"") && !strstr(line, "\"token_count\"") &&
+        !strstr(line, "\"session_meta\""))
         return;
     struct json_value row;
     json_init(&row);
     if (!json_read(&row, line, len) || row.type != JSON_OBJ) {
-        s->malformed++;
+        dvu_malformed(s, codex_id);
         json_free(&row);
         return;
     }
     struct dvu_fields f;
     memset(&f, 0, sizeof(f));
-    if (dvu_parse_muse(&row, &f) || dvu_parse_claude(&row, &f)) {
+    dvu_codex_meta(s, codex_id, &row);
+    if (dvu_parse_muse(&row, &f) || dvu_parse_claude(&row, &f) ||
+        dvu_parse_codex(&row, codex_id, &f)) {
         s->usage_lines++;
         dvu_keep(s, &f);
     }
@@ -390,8 +487,9 @@ static void dvu_read_file(struct dvu_scan *s, const char *path)
     }
     s->files++;
     struct dvu_linebuf lb = {0};
+    char codex_id[300] = {0};
     while (!s->alloc_failed && dvu_next_line(fp, &lb, &s->alloc_failed))
-        dvu_line(s, lb.buf, lb.len);
+        dvu_line(s, codex_id, lb.buf, lb.len);
     if (ferror(fp))
         s->unreadable++;
     free(lb.buf);
@@ -447,10 +545,43 @@ static void dvu_walk(struct dvu_scan *s, const char *dir, int depth)
 static int dvu_cmp_id(const void *a, const void *b)
 {
     const struct dvu_event *x = a, *y = b;
+    if (x->format != y->format)
+        return (int)x->format - (int)y->format;
     int c = strcmp(x->id, y->id);
     if (c)
         return c;
+    if (x->format == DVU_CODEX && x->ordinal != y->ordinal)
+        return (x->ordinal > y->ordinal) - (x->ordinal < y->ordinal);
     return (x->seq > y->seq) - (x->seq < y->seq);
+}
+
+static bool dvu_same_id(const struct dvu_event *a, const struct dvu_event *b)
+{
+    return a->format == b->format && strcmp(a->id, b->id) == 0;
+}
+
+static bool dvu_codex_conflict(const struct dvu_event *a, const struct dvu_event *b)
+{
+    if (a->format != DVU_CODEX)
+        return false;
+    if (a->ordinal == b->ordinal && strcmp(a->hour, b->hour) != 0)
+        return true;
+    /* A reset, changed coverage, or conflicting checkpoint cannot be folded. */
+    for (int f = 0; f < DVU_NF; f++) {
+        if ((a->v[f] < 0) != (b->v[f] < 0) || b->v[f] < a->v[f] ||
+            (a->ordinal == b->ordinal && a->v[f] != b->v[f]))
+            return true;
+    }
+    return false;
+}
+
+static bool dvu_codex_filtered(const struct dvu_scan *s, const struct dvu_event *e)
+{
+    if (e->format != DVU_CODEX)
+        return false;
+    struct dvu_fields f = {.model = e->model};
+    memcpy(f.hour, e->hour, sizeof(f.hour));
+    return dvu_filtered_out(s, &f);
 }
 
 /* Keep the latest line for each id; returns the number of dropped lines. */
@@ -460,16 +591,20 @@ static int64_t dvu_dedup(struct dvu_scan *s)
         return 0;
     qsort(s->ev, s->n, sizeof(*s->ev), dvu_cmp_id);
     size_t out = 0;
+    int64_t dropped = 0;
     for (size_t i = 0; i < s->n; i++) {
-        bool last = i + 1 == s->n || strcmp(s->ev[i].id, s->ev[i + 1].id) != 0;
-        if (last) {
+        bool last = i + 1 == s->n || !dvu_same_id(&s->ev[i], &s->ev[i + 1]);
+        if (!last && dvu_codex_conflict(&s->ev[i], &s->ev[i + 1]))
+            s->conflict = true;
+        if (last && !dvu_codex_filtered(s, &s->ev[i])) {
             s->ev[out++] = s->ev[i];
         } else {
+            if (!last)
+                dropped++;
             free(s->ev[i].id);
             free(s->ev[i].model);
         }
     }
-    int64_t dropped = (int64_t)(s->n - out);
     s->n = out;
     return dropped;
 }
@@ -598,7 +733,9 @@ static bool dvu_push_sum(struct json_value *row, const struct dvu_sum *t,
 static bool dvu_push_group_head(struct json_value *row, const struct dvu_event *e)
 {
     return dvu_json_str(row, "format", dvu_format_names[e->format]) &&
-           dvu_json_str(row, "model", e->model);
+           dvu_json_str(row, "model", e->model) &&
+           dvu_json_str(row, "counter_semantics", e->format == DVU_CODEX
+                           ? "session_cumulative_latest" : "event_latest");
 }
 
 static bool dvu_push_by_model(struct json_value *usage, struct dvu_scan *s)
@@ -624,7 +761,7 @@ static bool dvu_push_by_model(struct json_value *usage, struct dvu_scan *s)
         json_set_object(&row);
         ok = dvu_push_group_head(&row, &s->ev[i]) &&
              json_push_kv_bool(&row, "input_includes_cache_read",
-                               s->ev[i].format == DVU_MUSE) &&
+                               s->ev[i].format != DVU_CLAUDE) &&
              dvu_push_sum(&row, &t, true) && dvu_json_back(&arr, &row);
         json_free(&row);
         i = j;
@@ -749,6 +886,14 @@ void dvu_push_usage(const struct json_value *input, const char *model,
         return;
     }
     int64_t duplicates = dvu_dedup(&s);
+    if (s.conflict) {
+        dvu_scan_free(&s);
+        json_free(&reply->data);
+        json_set_object(&reply->data);
+        dvu_fail(reply, ZCL_COMMAND_EXIT_INVALID, "USAGE_CONFLICT",
+                 "usage_log Codex lineage, namespace or cumulative checkpoints conflict");
+        return;
+    }
     struct json_value usage;
     json_init(&usage);
     json_set_object(&usage);

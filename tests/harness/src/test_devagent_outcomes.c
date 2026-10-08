@@ -777,6 +777,197 @@ _test_next:;
     return failures;
 }
 
+/* Passive rollout envelope; values are deterministic fixture counters. */
+#define DVX_CODEX_META(account, generation) \
+    "{\"type\":\"session_meta\",\"payload\":{\"creator_account_id\":\"" account \
+    "\",\"id\":\"" generation "\",\"session_id\":\"" generation "\"}}\n"
+#define DVX_CODEX_COUNT(ordinal, counters) \
+    "{\"timestamp\":\"2026-10-08T07:48:57.820Z\",\"ordinal\":" ordinal \
+    ",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{" \
+    "\"total_token_usage\":{" counters "},\"last_token_usage\":{\"input_tokens\":999999}}}}\n"
+#define DVX_CODEX_ONE \
+    "\"input_tokens\":100,\"cached_input_tokens\":80,\"output_tokens\":10," \
+    "\"reasoning_output_tokens\":2"
+#define DVX_CODEX_TWO \
+    "\"input_tokens\":200,\"cached_input_tokens\":160,\"output_tokens\":20," \
+    "\"reasoning_output_tokens\":4"
+
+static int dvx_codex_snapshots(const char *root, const char *ledger)
+{
+    int failures = 0;
+    char path[1024];
+    (void)snprintf(path, sizeof(path), "%s/codex.jsonl", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: Codex cumulative snapshots replace, repeated last usage never adds") {
+        ASSERT(dvx_write(root, "codex.jsonl",
+            DVX_CODEX_META("account-a", "generation-a")
+            DVX_CODEX_COUNT("20", DVX_CODEX_TWO)
+            DVX_CODEX_COUNT("10", DVX_CODEX_ONE)
+            DVX_CODEX_COUNT("20", DVX_CODEX_TWO)
+            "{\"type\":\"turn_context\",\"payload\":{\"model\":\"sol\"}}\n"
+            DVX_CODEX_COUNT("21", DVX_CODEX_TWO)));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        const struct json_value *u = dvx_usage(&c);
+        const struct json_value *m = dvx_usage_model(&c, "codex", "");
+        ASSERT(m != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(m, "counter_semantics")),
+                      "session_cumulative_latest");
+        ASSERT(json_get_bool(json_get(m, "input_includes_cache_read")));
+        ASSERT_EQ(dvx_entry_int(u, "events"), 1);
+        ASSERT_EQ(dvx_entry_int(u, "duplicate_lines"), 3);
+        ASSERT_EQ(dvx_entry_int(m, "input_tokens"), 200);
+        ASSERT_EQ(dvx_entry_int(m, "output_tokens"), 20);
+        ASSERT_EQ(dvx_entry_int(m, "uncached_input_tokens"), 40);
+        ASSERT_EQ(dvx_unreported(m, "cache_write_tokens"), 1);
+        PASS();
+    } _test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_codex_namespaces(const char *root, const char *ledger)
+{
+    int failures = 0;
+    char dir[1024];
+    (void)snprintf(dir, sizeof(dir), "%s/codex-namespaces", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, dir, NULL);
+    TEST("usage: copied Codex logs dedup while accounts and generations remain distinct") {
+        ASSERT(dvx_mkdir(dir));
+        const char *first = DVX_CODEX_META("a", "g") DVX_CODEX_COUNT("10", DVX_CODEX_ONE);
+        ASSERT(dvx_write(dir, "first.jsonl", first));
+        ASSERT(dvx_write(dir, "copy.jsonl", first));
+        ASSERT(dvx_write(dir, "other-account.jsonl",
+            DVX_CODEX_META("b", "g") DVX_CODEX_COUNT("10", DVX_CODEX_ONE)));
+        ASSERT(dvx_write(dir, "other-generation.jsonl",
+            DVX_CODEX_META("a", "h") DVX_CODEX_COUNT("10", DVX_CODEX_ONE)));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        const struct json_value *m = dvx_usage_model(&c, "codex", "");
+        ASSERT(m != NULL);
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "events"), 3);
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "duplicate_lines"), 1);
+        ASSERT_EQ(dvx_entry_int(m, "input_tokens"), 300);
+        dvx_end(&c);
+        dvx_usage_call(&c, ledger, dir, "sol");
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "events"), 0);
+        PASS();
+    } _test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_codex_refusals(const char *root, const char *ledger)
+{
+    static const struct { const char *name; const char *text; } rows[] = {
+        {"usage: Codex cumulative reset refuses",
+         DVX_CODEX_META("a", "g") DVX_CODEX_COUNT("10", DVX_CODEX_TWO)
+         DVX_CODEX_COUNT("20", DVX_CODEX_ONE)},
+        {"usage: Codex conflicting ordinal refuses",
+         DVX_CODEX_META("a", "g") DVX_CODEX_COUNT("10", DVX_CODEX_ONE)
+         DVX_CODEX_COUNT("10", DVX_CODEX_TWO)},
+        {"usage: Codex counter coverage change refuses",
+         DVX_CODEX_META("a", "g") DVX_CODEX_COUNT("10", DVX_CODEX_ONE)
+         DVX_CODEX_COUNT("20", DVX_CODEX_TWO ",\"cache_write_input_tokens\":0")},
+        {"usage: Codex namespace change inside one file refuses",
+         DVX_CODEX_META("a", "g") DVX_CODEX_COUNT("10", DVX_CODEX_ONE)
+         DVX_CODEX_META("b", "g") DVX_CODEX_COUNT("20", DVX_CODEX_TWO)},
+        {"usage: Codex inherited totals refuse instead of adding generations",
+         "{\"type\":\"session_meta\",\"payload\":{\"creator_account_id\":\"a\","
+         "\"id\":\"child\",\"session_id\":\"parent\",\"parent_thread_id\":\"parent\"}}\n"
+         DVX_CODEX_COUNT("20", DVX_CODEX_TWO)},
+        {"usage: Codex missing lineage refuses",
+         "{\"type\":\"session_meta\",\"payload\":{\"creator_account_id\":\"a\",\"id\":\"g\"}}\n"
+         DVX_CODEX_COUNT("20", DVX_CODEX_TWO)},
+        {"usage: truncated metadata invalidates an established Codex namespace",
+         DVX_CODEX_META("a", "g") DVX_CODEX_COUNT("10", DVX_CODEX_ONE)
+         "{\"type\":\"session_me\n" DVX_CODEX_COUNT("20", DVX_CODEX_TWO)},
+        {"usage: invalid UTF-8 metadata invalidates an established Codex namespace",
+         DVX_CODEX_META("a", "g") DVX_CODEX_COUNT("10", DVX_CODEX_ONE)
+         "{\"type\":\"session_meta\",\"payload\":\"\xff\"}\n"
+         DVX_CODEX_COUNT("20", DVX_CODEX_TWO)},
+    };
+    int failures = 0;
+    char path[1024];
+    (void)snprintf(path, sizeof(path), "%s/codex-refusal.jsonl", root);
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        struct dvx_call c;
+        dvx_usage_call(&c, ledger, path, NULL);
+        TEST(rows[i].name) {
+            ASSERT(dvx_write(root, "codex-refusal.jsonl", rows[i].text));
+            ASSERT(dvx_run(&c) && !dvx_ok(&c));
+            ASSERT_STR_EQ(c.reply.error.code, "USAGE_CONFLICT");
+            ASSERT_EQ(c.reply.data.num_children, 0);
+            PASS();
+        } _test_next:;
+        dvx_end(&c);
+    }
+    return failures;
+}
+
+static int dvx_codex_nul_metadata(const char *root, const char *ledger)
+{
+    static const char bytes[] =
+        DVX_CODEX_META("a", "g") DVX_CODEX_COUNT("10", DVX_CODEX_ONE)
+        "{\"type\":\"session_meta\",\"payload\":\"new\0namespace\"}\n"
+        DVX_CODEX_COUNT("20", DVX_CODEX_TWO);
+    int failures = 0;
+    char path[1024];
+    (void)snprintf(path, sizeof(path), "%s/codex-nul.jsonl", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: NUL metadata invalidates an established Codex namespace") {
+        FILE *fp = fopen(path, "wb");
+        ASSERT(fp != NULL);
+        bool wrote = fwrite(bytes, 1, sizeof(bytes) - 1, fp) == sizeof(bytes) - 1;
+        bool closed = fclose(fp) == 0;
+        ASSERT(wrote && closed);
+        ASSERT(dvx_run(&c) && !dvx_ok(&c));
+        ASSERT_STR_EQ(c.reply.error.code, "USAGE_CONFLICT");
+        ASSERT_EQ(c.reply.data.num_children, 0);
+        PASS();
+    } _test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_codex_unknowns(const char *root, const char *ledger)
+{
+    int failures = 0;
+    char path[1024];
+    (void)snprintf(path, sizeof(path), "%s/codex-unknown.jsonl", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: Codex missing identity and ordinal are unkeyed, invalid counters stay unknown") {
+        ASSERT(dvx_write(root, "codex-unknown.jsonl",
+            DVX_CODEX_COUNT("10", DVX_CODEX_ONE)
+            DVX_CODEX_META("a", "g")
+            DVX_CODEX_COUNT("null", DVX_CODEX_ONE)
+            DVX_CODEX_COUNT("20", "\"input_tokens\":1.5,\"cached_input_tokens\":-1,"
+                                  "\"output_tokens\":\"20\",\"reasoning_output_tokens\":null")
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":null}}\n"));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "unkeyed"), 2);
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "events"), 1);
+        const struct json_value *m = dvx_usage_model(&c, "codex", "");
+        ASSERT(m != NULL);
+        ASSERT_EQ(dvx_unreported(m, "input_tokens"), 1);
+        ASSERT_EQ(dvx_unreported(m, "output_tokens"), 1);
+        ASSERT_EQ(dvx_unreported(m, "cache_read_tokens"), 1);
+        ASSERT_EQ(dvx_unreported(m, "reasoning_tokens"), 1);
+        ASSERT_EQ(dvx_unreported(m, "uncached_input_tokens"), 1);
+        PASS();
+    } _test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+#undef DVX_CODEX_META
+#undef DVX_CODEX_COUNT
+#undef DVX_CODEX_ONE
+#undef DVX_CODEX_TWO
+
 static bool dvx_group_in(const char (*groups)[ZCL_DEVLOOP_GROUP_MAX],
                           size_t len, const char *name)
 {
@@ -996,6 +1187,11 @@ int test_devagent_outcomes(void)
     }
 
     failures += dvx_usage_checks(root, ledger);
+    failures += dvx_codex_snapshots(root, ledger);
+    failures += dvx_codex_namespaces(root, ledger);
+    failures += dvx_codex_refusals(root, ledger);
+    failures += dvx_codex_nul_metadata(root, ledger);
+    failures += dvx_codex_unknowns(root, ledger);
     failures += dvx_usage_path_floor();
     failures += dvx_sort_boundaries(root, ledger);
     failures += dvx_byte_boundaries(root, ledger);

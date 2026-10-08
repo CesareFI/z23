@@ -63,6 +63,17 @@ void bfw_attach_publish_checked(
                   action ? action->action_id : "?", published.message);
 }
 
+static bool bfw_spawn_cancelled(zcl_spawn_cancel_fn should_cancel,
+    void *cancel_ctx, bool *cancelled, char *capture, size_t capture_cap,
+    struct zcl_spawn_measure *measure)
+{
+    if (!should_cancel || !should_cancel(cancel_ctx)) return false;
+    if (cancelled) *cancelled = true;
+    if (capture && capture_cap) capture[0] = '\0';
+    if (measure) memset(measure, 0, sizeof(*measure));
+    return true;
+}
+
 int bfw_attach_spawn(
     const char *workspace, const char *selected_verifier,
     uint8_t work_kind, bool package_action, const char *const argv[],
@@ -71,6 +82,12 @@ int bfw_attach_spawn(
     struct build_fabric_executor_identity *identity, bool *stable,
     struct zcl_spawn_measure *measure)
 {
+    *stable = false;
+    if (bfw_spawn_cancelled(should_cancel, cancel_ctx, cancelled,
+                           capture, capture_cap, measure)) {
+        LOG_ERROR("build.fabric", "executor ownership or cancellation check refused before identity probes");
+        return -1;
+    }
     struct bfat_verifier_snapshot snapshot = { .fd = -1 };
     if (work_kind == VCS_ZCODE_WORK_BUILD && !package_action) {
         struct zcl_result opened = bfat_verifier_snapshot_open(
@@ -82,6 +99,13 @@ int bfw_attach_spawn(
     *stable = bfw_attach_identity_capture(workspace, selected_verifier,
                                           &snapshot, work_kind,
                                           package_action, identity);
+    if (bfw_spawn_cancelled(should_cancel, cancel_ctx, cancelled,
+                           capture, capture_cap, measure)) {
+        *stable = false;
+        bfat_verifier_snapshot_close(&snapshot);
+        LOG_ERROR("build.fabric", "executor ownership or cancellation check refused after identity probes");
+        return -1;
+    }
     int rc = snapshot.fd >= 0
         ? zcl_spawn_capture_cancelable_fd_measured(
             snapshot.fd, argv, capture, capture_cap, timeout_ms,

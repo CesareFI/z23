@@ -352,6 +352,62 @@ void engine_prompt_template_sha3(const char *kind, uint8_t out[32])
     sha3_256_finalize(&ctx, out);
 }
 
+static bool template_wire_size(const char *kind, size_t *bytes,
+                               uint32_t *rows)
+{
+    *bytes = 4;
+    *rows = 0;
+    for (size_t i = 0; i < template_row_count(); i++) {
+        if (strcmp(k_templates[i].kind, kind) != 0)
+            continue;
+        const size_t sn = strlen(k_templates[i].section);
+        const size_t bn = strlen(k_templates[i].body);
+        if (sn > ENGINE_PROMPT_TEMPLATE_MAX_BYTES - 8u ||
+            bn > ENGINE_PROMPT_TEMPLATE_MAX_BYTES - 8u - sn ||
+            *bytes > ENGINE_PROMPT_TEMPLATE_MAX_BYTES - 8u - sn - bn)
+            LOG_FAIL("engine", "selected template exceeds its wire cap");
+        *bytes += 8u + sn + bn;
+        (*rows)++;
+    }
+    return true;
+}
+
+bool engine_prompt_template_serialize(const char *kind, uint8_t **wire,
+                                      size_t *wire_len)
+{
+    if (wire) *wire = NULL;
+    if (wire_len) *wire_len = 0;
+    if (!wire || !wire_len || !kind || !kind[0])
+        LOG_FAIL("engine", "template serialization requires kind and outputs");
+    if (!engine_prompt_kind_is_complete(kind))
+        LOG_FAIL("engine", "template serialization requires a complete kind");
+    size_t bytes;
+    uint32_t rows;
+    if (!template_wire_size(kind, &bytes, &rows))
+        LOG_FAIL("engine", "cannot size selected template wire");
+    uint8_t *out = zcl_malloc(bytes, "engine_template_wire");
+    if (!out)
+        LOG_FAIL("engine", "cannot allocate selected template wire");
+    zcl_write_u32_be(out, rows);
+    size_t used = 4;
+    for (size_t i = 0; i < template_row_count(); i++) {
+        if (strcmp(k_templates[i].kind, kind) != 0)
+            continue;
+        const size_t sn = strlen(k_templates[i].section);
+        const size_t bn = strlen(k_templates[i].body);
+        zcl_write_u32_be(out + used, (uint32_t)sn);
+        zcl_write_u32_be(out + used + 4, (uint32_t)bn);
+        used += 8;
+        memcpy(out + used, k_templates[i].section, sn);
+        used += sn;
+        memcpy(out + used, k_templates[i].body, bn);
+        used += bn;
+    }
+    *wire = out;
+    *wire_len = bytes;
+    return true;
+}
+
 const char *engine_prompt_kind_from_header(const char *task)
 {
     static char kind[64];

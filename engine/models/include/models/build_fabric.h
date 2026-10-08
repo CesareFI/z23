@@ -246,8 +246,9 @@ int db_build_task_candidate_next(struct node_db *ndb, const char *task,
     const char *after, char out[BUILD_FABRIC_ID_HEX + 1]);
 
 /* Lease writes are compare-and-swap operations. A queued action can be
- * claimed once; every later mutation must present the exact lease id and
- * expected state. Expired reads are bounded and ordered for crash recovery. */
+ * claimed once; every later mutation compares the observed state, lease id,
+ * worker, attempt, expiry and heartbeat. Expired reads are bounded and ordered
+ * for crash recovery. */
 int db_build_actions_queued(struct node_db *ndb,
                             struct db_build_action *out, size_t max);
 int db_build_actions_expired(struct node_db *ndb, int64_t now,
@@ -256,8 +257,17 @@ bool db_build_action_claim_queued(struct node_db *ndb,
                                   const struct db_build_action *next);
 bool db_build_action_save_leased(struct node_db *ndb,
                                  const struct db_build_action *next,
-                                 const char *expected_state,
-                                 const char *expected_lease_id);
+                                 const struct db_build_action *expected);
+/* Recovery may clear only the exact expired lease snapshot it observed.
+ * A concurrent renewal or new attempt leaves the action untouched. */
+bool db_build_action_requeue_expired(struct node_db *ndb,
+    const struct db_build_action *next,
+    const struct db_build_action *expected, int64_t now);
+/* Renewal retains the same lease generation and compares its observed
+ * expiry and heartbeat, so a delayed writer cannot replace a newer renewal. */
+bool db_build_action_renew_lease(struct node_db *ndb,
+    const struct db_build_action *next,
+    const struct db_build_action *expected);
 /* Bind the request-scoped content carrier after foreground admission. The
  * immutable action identity excludes this root; a nonempty different root is
  * never overwritten while an action is active. */

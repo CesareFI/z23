@@ -467,8 +467,7 @@ static struct zcl_result bf_leased_transition(
     next.updated_at = now;
     if (!node_db_begin(ndb))
         return ZCL_ERR(-1, "cannot begin leased transition");
-    bool ok = db_build_action_save_leased(ndb, &next, expected_state,
-                                          lease_id);
+    bool ok = db_build_action_save_leased(ndb, &next, &action);
     if (ok) {
         (void)snprintf(job.state, sizeof(job.state), "%s", next_state);
         job.updated_at = now;
@@ -519,12 +518,11 @@ struct zcl_result build_fabric_heartbeat(
         action.lease_expires_at == 0 || now >= action.lease_expires_at ||
         !bf_action_identity_current(&job, &action))
         return ZCL_ERR(-1, "heartbeat lease, authority, or identity is stale");
-    char prior[BUILD_FABRIC_STATE_MAX + 1];
-    (void)snprintf(prior, sizeof(prior), "%s", action.state);
+    const struct db_build_action expected = action;
     action.lease_heartbeat_at = now;
     action.lease_expires_at = now + lease_seconds;
     action.updated_at = now;
-    if (!db_build_action_save_leased(ndb, &action, prior, lease_id))
+    if (!db_build_action_renew_lease(ndb, &action, &expected))
         return ZCL_ERR(-1, "heartbeat lost lease ownership");
     return ZCL_OK;
 }
@@ -546,12 +544,6 @@ struct zcl_result build_fabric_recover_expired(
         struct db_build_job job;
         if (!db_build_job_find(ndb, expired[i].job_id, &job))
             continue;
-        char prior_state[BUILD_FABRIC_STATE_MAX + 1];
-        char prior_lease[BUILD_FABRIC_ID_HEX + 1];
-        (void)snprintf(prior_state, sizeof(prior_state), "%s",
-                       expired[i].state);
-        (void)snprintf(prior_lease, sizeof(prior_lease), "%s",
-                       expired[i].lease_id);
         struct db_build_action next = expired[i];
         (void)snprintf(next.state, sizeof(next.state), "QUEUED");
         next.outcome[0] = '\0';
@@ -564,8 +556,7 @@ struct zcl_result build_fabric_recover_expired(
         next.updated_at = now;
         if (!node_db_begin(ndb)) { free(expired); return ZCL_ERR(
             -1, "cannot begin expired-lease recovery"); }
-        bool ok = db_build_action_save_leased(ndb, &next, prior_state,
-                                              prior_lease);
+        bool ok = db_build_action_requeue_expired(ndb, &next, &expired[i], now);
         if (ok) {
             (void)snprintf(job.state, sizeof(job.state), "QUEUED");
             job.updated_at = now;
@@ -602,8 +593,7 @@ struct zcl_result build_fabric_finish_leased(
          strcmp(action.state, "VERIFYING") != 0) ||
         strcmp(action.lease_id, lease_id) != 0)
         return ZCL_ERR(-1, "leased finish owner or state is stale");
-    char prior[BUILD_FABRIC_STATE_MAX + 1];
-    (void)snprintf(prior, sizeof(prior), "%s", action.state);
+    const struct db_build_action expected = action;
     (void)snprintf(action.state, sizeof(action.state), "%s", outcome);
     (void)snprintf(action.outcome, sizeof(action.outcome), "%s", outcome);
     (void)snprintf(action.last_error, sizeof(action.last_error), "%s", detail);
@@ -611,7 +601,7 @@ struct zcl_result build_fabric_finish_leased(
     action.updated_at = now;
     if (!node_db_begin(ndb))
         return ZCL_ERR(-1, "cannot begin leased terminal transition");
-    bool ok = db_build_action_save_leased(ndb, &action, prior, lease_id);
+    bool ok = db_build_action_save_leased(ndb, &action, &expected);
     if (ok) {
         (void)snprintf(job.state, sizeof(job.state), "%s", outcome);
         (void)snprintf(job.outcome, sizeof(job.outcome), "%s", outcome);
@@ -763,6 +753,7 @@ struct zcl_result build_fabric_receipt_accept(
         !ed25519_verify(sig, id, sizeof(id), pubkey))
         return ZCL_ERR(-1, "receipt Ed25519 signature is invalid");
     const bool passed = receipt->exit_status == 0;
+    const struct db_build_action expected = action;
     (void)snprintf(action.state, sizeof(action.state), "%s",
                    passed ? "ACCEPTED" : "FAILED");
     (void)snprintf(action.outcome, sizeof(action.outcome), "%s",
@@ -779,8 +770,7 @@ struct zcl_result build_fabric_receipt_accept(
     if (!node_db_begin(ndb))
         return ZCL_ERR(-1, "cannot begin receipt acceptance transaction");
     bool ok = db_build_receipt_save(ndb, receipt) &&
-              db_build_action_save_leased(ndb, &action, "VERIFYING",
-                                           receipt->lease_id);
+              db_build_action_save_leased(ndb, &action, &expected);
     struct db_build_action *actions = bf_actions_scratch("build.receipt.actions");
     int count = actions && ok ? db_build_job_actions(
         ndb, receipt->job_id, actions, BUILD_FABRIC_ACTION_LIMIT) : 0;

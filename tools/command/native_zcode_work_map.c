@@ -13,6 +13,7 @@
 #include "platform/time_compat.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 struct zcl_result zcl_native_work_map_evaluate(
@@ -286,6 +287,27 @@ static bool map_selected_facts(struct json_value *observed, const char *workspac
             map_proof_retention(workspace, evaluation->proof_set_root_sha3));
 }
 
+static bool map_selected_lifecycle(struct json_value *observed,
+    const struct db_build_action *action)
+{
+    struct json_value lifecycle;
+    json_init(&lifecycle); json_set_object(&lifecycle);
+    bool ok = json_push_kv_str(&lifecycle, "source", "local_action_record") &&
+        json_push_kv_str(&lifecycle, "snapshot_scope", "local_record_not_transactional") &&
+        json_push_kv_str(&lifecycle, "timestamp_semantics", "recorded_unix_zero_unreported") &&
+        json_push_kv_str(&lifecycle, "state", action->state) &&
+        json_push_kv_int(&lifecycle, "attempt_count", action->attempt_count) &&
+        json_push_kv_int(&lifecycle, "claimed_at", action->claimed_at) &&
+        json_push_kv_int(&lifecycle, "started_at", action->started_at) &&
+        json_push_kv_int(&lifecycle, "finished_at", action->finished_at) &&
+        json_push_kv_int(&lifecycle, "updated_at", action->updated_at) &&
+        json_push_kv_int(&lifecycle, "lease_heartbeat_at", action->lease_heartbeat_at) &&
+        json_push_kv_int(&lifecycle, "lease_expires_at", action->lease_expires_at) &&
+        json_push_kv(observed, "lifecycle", &lifecycle);
+    json_free(&lifecycle);
+    return ok;
+}
+
 static bool map_accepted_observation(struct json_value *observed,
     struct node_db *ndb, const char *workspace,
     const struct map_selection *selection, const struct db_build_action *action,
@@ -349,7 +371,8 @@ static bool map_selected_observation(struct json_value *data,
     json_init(&observed); json_set_object(&observed);
     bool ok = map_selected_identity(&observed, selection, now);
     if (result.ok)
-        ok = ok && map_selected_facts(&observed, workspace, &action, &evaluation);
+        ok = ok && map_selected_facts(&observed, workspace, &action, &evaluation) &&
+            map_selected_lifecycle(&observed, &action);
     else
         ok = ok && json_push_kv_str(&observed, "evidence_resolution", "unavailable") &&
             json_push_kv_str(&observed, "reason", result.message);
@@ -359,6 +382,87 @@ static bool map_selected_observation(struct json_value *data,
     ok = ok && json_push_kv(data, "selected_evidence", &observed);
     json_free(&observed);
     return ok;
+}
+
+static bool map_definition_counts(struct json_value *data,
+    const struct zcl_work_map_node *nodes, size_t count)
+{
+    size_t kinds[4] = {0}, dependencies = 0, parents = 0;
+    for (size_t i = 0; i < count; i++) {
+        kinds[nodes[i].kind]++;
+        dependencies += nodes[i].dependency_count;
+        parents += nodes[i].parent != ZCL_WORK_MAP_NO_PARENT;
+    }
+    struct json_value definition;
+    json_init(&definition); json_set_object(&definition);
+    bool ok = json_push_kv_str(&definition, "scope", "admitted_map") &&
+        json_push_kv_int(&definition, "milestones", (int64_t)kinds[ZCL_WORK_MAP_MILESTONE]) &&
+        json_push_kv_int(&definition, "features", (int64_t)kinds[ZCL_WORK_MAP_FEATURE]) &&
+        json_push_kv_int(&definition, "loops", (int64_t)kinds[ZCL_WORK_MAP_LOOP]) &&
+        json_push_kv_int(&definition, "dependency_edges", (int64_t)dependencies) &&
+        json_push_kv_int(&definition, "parent_edges", (int64_t)parents) &&
+        json_push_kv(data, "definition_counts", &definition);
+    json_free(&definition);
+    return ok;
+}
+
+static bool map_forecast(struct json_value *data)
+{
+    static const char *const missing[] = {
+        "workflow_history", "cost_attribution", "whole_map_acceptance"
+    };
+    struct json_value forecast, reasons, value;
+    json_init(&forecast); json_set_object(&forecast);
+    json_init(&reasons); json_set_array(&reasons);
+    json_init(&value);
+    bool ok = true;
+    for (size_t i = 0; ok && i < sizeof(missing) / sizeof(missing[0]); i++) {
+        json_set_str(&value, missing[i]);
+        ok = json_push_back(&reasons, &value);
+    }
+    ok = ok && json_push_kv_str(&forecast, "status", "unknown") &&
+        json_push_kv(&forecast, "missing_evidence", &reasons) &&
+        json_push_kv(data, "forecast", &forecast);
+    json_free(&value); json_free(&reasons); json_free(&forecast);
+    return ok;
+}
+
+static bool map_page_coverage(struct json_value *data, const struct json_value *page)
+{
+    size_t verified = 0, expired = 0, count = json_size(page);
+    for (size_t i = 0; i < count; i++) {
+        const struct json_value *row = json_at(page, i);
+        verified += strcmp(json_get_str(json_get(row, "task_resolution")), "verified") == 0;
+        expired += json_get_bool(json_get(row, "task_expired"));
+    }
+    struct json_value coverage;
+    json_init(&coverage); json_set_object(&coverage);
+    bool ok = json_push_kv_str(&coverage, "scope", "returned_page") &&
+        json_push_kv_int(&coverage, "tasks", (int64_t)count) &&
+        json_push_kv_int(&coverage, "verified", (int64_t)verified) &&
+        json_push_kv_int(&coverage, "unobserved", (int64_t)(count - verified)) &&
+        json_push_kv_int(&coverage, "expired_verified", (int64_t)expired) &&
+        json_push_kv(data, "task_coverage", &coverage);
+    json_free(&coverage);
+    return ok;
+}
+
+static bool map_page_text(struct json_value *data, const struct json_value *page)
+{
+    char text[512] = "Returned page: definition only; acceptance UNKNOWN\n";
+    size_t used = strlen(text);
+    for (size_t i = 0; i < json_size(page); i++) {
+        const struct json_value *row = json_at(page, i);
+        int n = snprintf(text + used, sizeof(text) - used,
+            "%lld %s UNKNOWN task=%s%s\n",
+            (long long)json_get_int(json_get(row, "index")),
+            json_get_str(json_get(row, "kind")),
+            json_get_str(json_get(row, "task_resolution")),
+            json_get_bool(json_get(row, "task_expired")) ? " expired" : "");
+        if (n < 0 || (size_t)n >= sizeof(text) - used) return false;
+        used += (size_t)n;
+    }
+    return json_push_kv_str(data, "text", text);
 }
 
 static bool map_page_fit(struct json_value *data, const struct json_value *base,
@@ -377,7 +481,8 @@ static bool map_page_fit(struct json_value *data, const struct json_value *base,
         size_t end = offset + returned;
         ok = ok && json_push_kv_int(data, "returned", (int64_t)returned) &&
             json_push_kv_int(data, "next_offset", end < count ? (int64_t)end : -1) &&
-            json_push_kv(data, "nodes", &page);
+            json_push_kv(data, "nodes", &page) &&
+            map_page_coverage(data, &page) && map_page_text(data, &page);
         json_free(&page);
         if (!ok) return false;
         if (json_write(data, NULL, 0) < 4096) return true;
@@ -402,6 +507,7 @@ static bool map_render(struct zcl_command_reply *reply, const char *root,
         ok = map_row(&rows, &nodes[i], i, workspace, datadir, now);
     ok = ok && json_push_kv_str(&base, "map_root", root) &&
         json_push_kv_int(&base, "total", (int64_t)count) &&
+        map_definition_counts(&base, nodes, count) && map_forecast(&base) &&
         map_observation(&base, now) &&
         map_selected_observation(&base, workspace, datadir, nodes, selection, now) &&
         map_page_fit(&reply->data, &base, &rows, offset, count);

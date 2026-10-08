@@ -97,6 +97,10 @@ from a hash, signature, test, or reproduction receipt.
 
 ## Change the code
 
+- [`work/AGENT_FLEET.md`](work/AGENT_FLEET.md) — implementation contract for
+  measured agent cost, passive Codex accounting, qualified routing and durable
+  execution; includes source seams, provider contracts, cache experiments,
+  statistical accuracy gates and the ordered implementation handoff.
 - [`../AGENTS.md`](../AGENTS.md) — durable priorities, authority boundaries,
   initial commands, and continuation behavior.
 - [`DEVELOPING.md`](DEVELOPING.md) — navigation, reflex feedback, focused tests,

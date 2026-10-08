@@ -23,6 +23,7 @@
 #include "vcs/proof_reuse.h"
 #include "vcs/vcs_object.h"
 #include "../../../engine/services/src/build_fabric_observation_internal.h"
+#include "../../../engine/services/src/build_fabric_worker_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1577,11 +1578,145 @@ static int test_bf_attach_reproduction_never_attaches(void)
     return failures;
 }
 
+#if !defined(_WIN32)
+struct att_owner_race {
+    struct node_db *ndb;
+    struct db_build_action expected;
+    struct db_build_action replacement;
+    unsigned checks, replace_at;
+    bool read_error, named_cancel, expire, changed;
+};
+
+static void att_replace_owner(void *opaque)
+{
+    struct att_owner_race *race = opaque;
+    if (++race->checks != race->replace_at) return;
+    if (race->read_error) {
+        race->ndb->open = false;
+        race->changed = true;
+        return;
+    }
+    if (race->named_cancel) {
+        race->changed = build_fabric_cancel(race->ndb,
+            race->expected.job_id, (int64_t)platform_time_wall_unix()).ok;
+        return;
+    }
+    if (race->expire) {
+        struct db_build_action current = {0};
+        race->changed = db_build_action_find(race->ndb,
+            race->expected.action_id, &current);
+        current.lease_expires_at = (int64_t)platform_time_wall_unix();
+        race->changed = race->changed && db_build_action_save(race->ndb, &current);
+        return;
+    }
+    size_t recovered = 0;
+    int64_t now = race->expected.lease_expires_at + 1;
+    bool claimed = false;
+    race->changed = build_fabric_recover_expired(race->ndb, now,
+        &recovered).ok && recovered == 1 && build_fabric_claim(race->ndb,
+        race->expected.worker_id, att_lease_b, now, 300,
+        &race->replacement, &claimed).ok && claimed;
+}
+
+static bool att_owner_fixture(struct node_db *ndb, const char *dir,
+    uint8_t secret[32], uint8_t pubkey[32], struct db_build_action *claimed)
+{
+    uint8_t input_root[32], capsule_root[32], seed[32];
+    char capsule_hex[65], worker_id[65];
+    struct vcs_toolchain_capsule_v1 capsule;
+    struct db_build_job job;
+    struct db_build_action action;
+    sha3_256(att_unit, sizeof(att_unit) - 1u, input_root);
+    if (!vcs_object_store_init(dir) ||
+        !vcs_object_put_addressed(dir, input_root, att_unit,
+                                 sizeof(att_unit) - 1u) ||
+        !vcs_toolchain_capsule_v1_capture(&capsule) ||
+        !vcs_toolchain_capsule_v1_root(&capsule, capsule_root)) return false;
+    zcl_hex_encode(capsule_root, 32, capsule_hex);
+    memset(seed, 37, sizeof(seed));
+    ed25519_keypair(pubkey, secret, seed);
+    int64_t now = (int64_t)platform_time_wall_unix();
+    bool got = false;
+    att_worker_id_from_pubkey(pubkey, worker_id);
+    return att_approve_worker(ndb, pubkey, now) &&
+        att_plan_request(ndb, dir, att_id_b, att_id_c, capsule_hex,
+            input_root, "dev-x86-64-v3", &job, &action) &&
+        build_fabric_claim(ndb, worker_id, att_id_d, now, 300,
+                           claimed, &got).ok && got;
+}
+
+struct att_owner_case {
+    unsigned replace_at, launches, extra_attempts;
+    bool read_error, named_cancel, expire;
+    const char *detail, *state, *lease;
+};
+
+static int test_bf_worker_owner_boundary(const struct att_owner_case *which)
+{
+    int failures = 0;
+    struct node_db ndb = {0};
+    char dir[256] = {0}, path[320];
+    struct att_owner_race race = {
+        .ndb = &ndb, .replace_at = which->replace_at,
+        .read_error = which->read_error, .named_cancel = which->named_cancel,
+        .expire = which->expire
+    };
+    TEST("build_fabric_attach: stale and unreadable owners stop before launch and during capture") {
+        ASSERT(att_open(&ndb, dir, sizeof(dir), path, sizeof(path), "owner-boundary"));
+        uint8_t secret[32], pubkey[32];
+        ASSERT(att_owner_fixture(&ndb, dir, secret, pubkey, &race.expected));
+        struct db_build_receipt receipt = {0};
+        struct build_fabric_host_accounting accounting;
+        build_fabric_worker_test_before_owner_check(att_replace_owner, &race);
+        struct zcl_result executed = build_fabric_worker_execute(&ndb,
+            dir, dir, race.expected.action_id, att_id_d, secret, pubkey,
+            &receipt, NULL, &accounting);
+        build_fabric_worker_test_before_owner_check(NULL, NULL);
+        if (race.read_error) ndb.open = true;
+        ASSERT(race.changed && !executed.ok);
+        ASSERT_STR_EQ(executed.message, which->detail);
+        ASSERT_EQ(accounting.host_executor_launches, which->launches);
+        ASSERT(receipt.receipt_id[0] == '\0');
+        struct db_build_action current;
+        ASSERT(db_build_action_find(&ndb, race.expected.action_id, &current));
+        ASSERT_STR_EQ(current.state, which->state);
+        ASSERT_STR_EQ(current.lease_id, which->lease);
+        ASSERT_EQ(current.attempt_count, race.expected.attempt_count + which->extra_attempts);
+        ASSERT_EQ(att_build_work_entries(dir), 0);
+        PASS();
+    } _test_next:;
+    build_fabric_worker_test_before_owner_check(NULL, NULL);
+    if (race.read_error && race.changed) ndb.open = true;
+    node_db_close(&ndb);
+    if (dir[0]) test_rm_rf(dir);
+    return failures;
+}
+
+static int test_bf_worker_owner_cases(void)
+{
+    const struct att_owner_case cases[] = {
+        {1, 0, 1, false, false, false, "fixed action ownership lost before executor launch", "CLAIMED", att_lease_b},
+        {2, 0, 1, false, false, false, "fixed action ownership lost before executor launch", "CLAIMED", att_lease_b},
+        {3, 1, 1, false, false, false, "fixed action ownership lost; executor interrupted", "CLAIMED", att_lease_b},
+        {1, 0, 0, true, false, false, "fixed action ownership lost before executor launch", "RUNNING", att_id_d},
+        {1, 0, 0, false, true, false, "fixed action cancelled; named outcome CANCELLED", "CANCELLED", att_id_d},
+        {2, 0, 0, false, false, true, "fixed action ownership lost before executor launch", "RUNNING", att_id_d}
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+        failures += test_bf_worker_owner_boundary(&cases[i]);
+    return failures;
+}
+#endif
+
 int test_build_fabric_attach(void)
 {
     int failures = 0;
 #if defined(__linux__)
     failures += test_bf_attach_sealed_verifier_aba();
+#endif
+#if !defined(_WIN32)
+    failures += test_bf_worker_owner_cases();
 #endif
     failures += test_bf_attach_executor_key_binds_tool_bytes();
     failures += test_bf_attach_miss_and_poisoned_record();

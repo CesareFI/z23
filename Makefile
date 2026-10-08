@@ -4778,9 +4778,13 @@ zcode-development-acceptance:
 
 # No-model proof that the native CLI can independently check every prerequisite
 # for the fixed, confined Codex adapter across the frozen twelve-task corpus.
-zcode-adapter-readiness-acceptance: $(BIN_DIR)/z23 \
+zcode-adapter-readiness-acceptance: zcode-adapter-usage-selftest $(BIN_DIR)/z23 \
 		$(BIN_DIR)/zclassic23-zcode-adapter-runner
 	@tools/dev/zcode_adapter_benchmark.sh preflight
+
+.PHONY: zcode-adapter-usage-selftest
+zcode-adapter-usage-selftest: $(BIN_DIR)/jsonq
+	@bash tools/dev/zcode-adapter-usage-selftest.sh
 
 # One product proof for the C23 Commons Alpha. The two exact groups remain the
 # owners of their generic, data-driven scenarios: package_registry proves all
@@ -12613,6 +12617,7 @@ $(MUTATION_CAMPAIGN_BIN): $(MUTATION_CAMPAIGN_SRCS)
 # it consults no certificate authority.
 ENGINE_UNIT_BIN = $(BIN_DIR)/zclassic23-engine-unit
 ENGINE_UNIT_SRCS = tools/engine_unit.c \
+	contexts/commons/modules/vcs/src/vcs_object.c \
 	contexts/commons/packages/zutf8/src/zutf8.c \
 	tools/acme/tls_client.c \
 	engine/modules/engine/src/engine_registry.c \
@@ -12633,24 +12638,31 @@ ENGINE_UNIT_SRCS = tools/engine_unit.c \
 	platform/modules/base/src/result.c \
 	platform/modules/base/src/safe_alloc.c \
 	platform/modules/platform/src/clock.c \
+	platform/modules/platform/src/private_directory.c \
+	platform/modules/platform/src/private_acl_internal.c \
+	platform/modules/platform/src/file_metadata.c \
+	platform/modules/platform/src/os_proc.c \
 	platform/modules/platform/src/directory_compat.c \
 	platform/modules/platform/src/private_destination.c \
 	platform/modules/platform/src/private_file.c \
 	platform/modules/platform/src/positioned_file.c
 ENGINE_UNIT_INCLUDES = -Iplatform/modules/base/include -Iengine/modules/engine/include -Iplatform/modules/json/include \
+	-Icontexts/commons/modules/vcs/include \
 	-Icontexts/commons/packages/zutf8/include \
 	-Iplatform/modules/sha3/include \
 	-Iplatform/modules/platform/include -Iplatform/modules/util/include -Itools/acme -Ivendor/include
 .PHONY: engine-unit
 engine-unit: $(ENGINE_UNIT_BIN)
-$(ENGINE_UNIT_BIN): $(ENGINE_UNIT_SRCS) $(NODE_VENDOR_LIBS)
+$(ENGINE_UNIT_BIN): $(ENGINE_UNIT_SRCS) $(NODE_VENDOR_LIBS) \
+    engine/composition/prompt_templates.def \
+    engine/modules/engine/include/engine/prompt_sections.def
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE $(ZCL_PLATFORM_CPPFLAGS) \
 	    $(ENGINE_UNIT_INCLUDES) \
 	    -o $@ $(ENGINE_UNIT_SRCS) \
 	    vendor/lib/libssl.a vendor/lib/libcrypto.a -lpthread -lm \
-	    $(if $(ZCL_HOST_WINDOWS),-lws2_32 -lbcrypt -lcrypt32 -ladvapi32 -luserenv,)
+	    $(if $(ZCL_HOST_WINDOWS),-lws2_32 -lbcrypt -lcrypt32 -ladvapi32 -luserenv -lshell32,)
 
 # ── Sealed consensus core (Wave 1.1 / W0) ───────────────────────────────────
 # core_seal is a tiny build-time C tool (no external deps: it links the in-tree

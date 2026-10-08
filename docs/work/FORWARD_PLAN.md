@@ -38,6 +38,11 @@ Existing design records supply scoped implementation detail; they do not reorder
 this mission. Requirements below are acceptance targets, not claims of completed
 implementation or measured performance.
 
+The [measured fleet development contract](AGENT_FLEET.md) specifies passive
+Codex accounting, qualified cost routing and durable executor recovery for this
+mission. Its delivery sequence does not reorder the continuation queue below;
+automatic dispatch and publication retain their explicit qualification gates.
+
 ## Invariants and authority
 
 P0 consensus, wallet custody and public-node correctness retain absolute

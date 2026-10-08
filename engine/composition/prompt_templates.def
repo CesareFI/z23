@@ -133,4 +133,85 @@ ENGINE_PROMPT_TEMPLATE(review, judging,
     "This kind is dispatched with --no-group and is recorded UNVERIFIED, "
     "which is not a pass. A person reads it and decides.")
 
+/* C23 procedures are selected individually through --kind or the task header.
+ * Exemplar paths are navigation hints, not qualification of a new patch. */
+ENGINE_PROMPT_TEMPLATE(c23-byte-validator, rules,
+    "Implement a bounded C23 byte validator. Inputs required in the task: "
+    "owned path, entry caller, byte extent, refusal contract, registered group. "
+    "If one is absent, report the missing input before proposing code.")
+ENGINE_PROMPT_TEMPLATE(c23-byte-validator, task,
+    "Reuse first: inspect contexts/commons/packages/zutf8/src/zutf8.c "
+    "(zutf8_decode_n). Procedure: validate pointer and measured length; check "
+    "capacity and arithmetic before access; validate framing and bytes before "
+    "parsing; publish outputs only after complete admission. Embedded NUL "
+    "policy must come from the caller contract; strlen is not a byte extent.")
+ENGINE_PROMPT_TEMPLATE(c23-byte-validator, protocol,
+    "Read only the named caller and relevant reusable helper first. Keep "
+    "ownership and cleanup explicit, log refusal context, and preserve the "
+    "documented output state on failure. Change only the claimed surface.")
+ENGINE_PROMPT_TEMPLATE(c23-byte-validator, judging,
+    "Exercise the production caller with empty, boundary, over-limit, "
+    "truncated and malformed bytes plus valid input. Record the exact group "
+    "and source identity; helper-only success does not prove caller refusal.")
+
+ENGINE_PROMPT_TEMPLATE(c23-command-handler, rules,
+    "Implement a native C23 command handler. Inputs required in the task: "
+    "owned leaf, typed schema, authority, output contract, registered group. "
+    "If one is absent, report the missing input before proposing code.")
+ENGINE_PROMPT_TEMPLATE(c23-command-handler, task,
+    "Reuse first: inspect tools/command/native_code_have_command.c "
+    "(zcl_native_handle_code_have) and the owned command definition. "
+    "Procedure: decode typed inputs; reject before side effects; invoke the "
+    "existing service; fill the bounded reply; release every owned resource. "
+    "Use zcl_command_reply_fail with an explanatory body on every failure.")
+ENGINE_PROMPT_TEMPLATE(c23-command-handler, protocol,
+    "Keep policy and mutation in their existing service owners. Register "
+    "schema and dispatch through existing command definitions; regenerate "
+    "references through canonical targets. Never widen deployment or custody "
+    "authority to make a command succeed.")
+ENGINE_PROMPT_TEMPLATE(c23-command-handler, judging,
+    "Test the real dispatch leaf for valid, absent, wrong-type and boundary "
+    "inputs, structured refusal and unchanged state on rejection. Verify the "
+    "generated schema and focused registered group; record NOTRUN honestly.")
+
+ENGINE_PROMPT_TEMPLATE(c23-model-save, rules,
+    "Implement a C23 ActiveRecord write. Inputs required in the task: owned "
+    "model, invariants, hooks, transaction boundary, registered group. If one "
+    "is absent, report the missing input before proposing code.")
+ENGINE_PROMPT_TEMPLATE(c23-model-save, task,
+    "Reuse first: inspect engine/models/src/contact.c (db_contact_save) "
+    "and the owned model's callbacks. Procedure: validate arguments; obtain "
+    "callbacks; AR_BEGIN_SAVE; prepare and bind; step; finalize on every "
+    "prepared-statement path; AR_FINISH_SAVE only after success. Preserve "
+    "before/after-save hooks and the existing transaction contract.")
+ENGINE_PROMPT_TEMPLATE(c23-model-save, protocol,
+    "Use existing AR helpers and checked allocations. Log database failure "
+    "context. Keep projection effects in their registered lifecycle owner; "
+    "do not bypass validation with a second SQL write path.")
+ENGINE_PROMPT_TEMPLATE(c23-model-save, judging,
+    "In an isolated database, assert valid persistence, invalid refusal, "
+    "hook ordering, failure cleanup and transaction behavior through the "
+    "public save caller. Record the exact focused group and source identity.")
+
+ENGINE_PROMPT_TEMPLATE(c23-regression-fixture, rules,
+    "Implement a C23 regression fixture. Inputs required in the task: "
+    "production entry, invariant, fault or mutation, registered group, "
+    "cleanup contract. If one is absent, report the missing input before "
+    "proposing code. Fixtures must never use operator state.")
+ENGINE_PROMPT_TEMPLATE(c23-regression-fixture, task,
+    "Reuse first: inspect tests/harness/src/test_engine_rules.c "
+    "(case_rewrite) and existing cases in the selected group. Procedure: "
+    "create test_mkdtemp-owned state; arrange the exact production-boundary "
+    "fault; invoke the real caller; assert the invariant and refusal state; "
+    "restore fault controls and remove only fixture-owned resources.")
+ENGINE_PROMPT_TEMPLATE(c23-regression-fixture, protocol,
+    "Extend the existing registered group and impact closure. Bound waits, "
+    "sizes and descendants; every setup failure must remain a failure. "
+    "Keep cleanup effective after failed assertions.")
+ENGINE_PROMPT_TEMPLATE(c23-regression-fixture, judging,
+    "Show fixed pass, intended production mutation failure, restored pass "
+    "when execution is authorized. Record source and mutation identities "
+    "and actual groups run. Mark unavailable stages NOTRUN; never infer "
+    "mutation sensitivity from a green final state.")
+
 /* clang-format on */

@@ -1376,14 +1376,15 @@ bool db_build_action_claim_queued(struct node_db *ndb,
     AR_FINISH_SAVE(build_action_callbacks_ready(), next, ok);
 }
 
-bool db_build_action_save_leased(struct node_db *ndb,
+static bool build_action_save_lease_snapshot(struct node_db *ndb,
                                  const struct db_build_action *next,
                                  const char *expected_state,
-                                 const char *expected_lease_id)
+                                 const char *expected_lease_id,
+                                 const struct db_build_action *snapshot)
 {
     sqlite3_stmt *st = NULL;
     if (!ndb || !ndb->open || !next || !expected_state ||
-        !expected_lease_id)
+        !expected_lease_id || !snapshot)
         LOG_FAIL("model", "db_build_action_save_leased: bad args");
     AR_BEGIN_SAVE(build_action_callbacks_ready(), "build_action", next,
                   db_build_action_validate);
@@ -1392,7 +1393,9 @@ bool db_build_action_save_leased(struct node_db *ndb,
         "worker_id=?,lease_id=?,last_error=?,lease_expires_at=?,"
         "lease_heartbeat_at=?,attempt_count=?,claimed_at=?,started_at=?,"
         "finished_at=?,updated_at=? WHERE action_id=? AND state=? "
-        "AND lease_id=? AND EXISTS (SELECT 1 FROM build_jobs j "
+        "AND lease_id=? AND attempt_count=? "
+        "AND lease_expires_at=? AND lease_heartbeat_at=? AND worker_id=? "
+        "AND EXISTS (SELECT 1 FROM build_jobs j "
         "WHERE j.job_id=build_actions.job_id AND j.cancel_requested=0 "
         "AND j.state<>'CANCELLED')");
     AR_BIND_TEXT(st, 1, next->state);
@@ -1411,8 +1414,54 @@ bool db_build_action_save_leased(struct node_db *ndb,
     AR_BIND_TEXT(st, 14, next->action_id);
     AR_BIND_TEXT(st, 15, expected_state);
     AR_BIND_TEXT(st, 16, expected_lease_id);
+    AR_BIND_INT(st, 17, snapshot->attempt_count);
+    AR_BIND_INT(st, 18, snapshot->lease_expires_at);
+    AR_BIND_INT(st, 19, snapshot->lease_heartbeat_at);
+    AR_BIND_TEXT(st, 20, snapshot->worker_id);
     bool ok = false;
     AR_FINALIZE_STEP_DONE(st, ok);
     ok = ok && sqlite3_changes(ndb->db) == 1;
     AR_FINISH_SAVE(build_action_callbacks_ready(), next, ok);
+}
+
+bool db_build_action_save_leased(struct node_db *ndb,
+    const struct db_build_action *next, const struct db_build_action *expected)
+{
+    if (!next || !expected || !expected->lease_id[0] ||
+        strcmp(next->action_id, expected->action_id) != 0 ||
+        strcmp(next->lease_id, expected->lease_id) != 0 ||
+        strcmp(next->worker_id, expected->worker_id) != 0 ||
+        next->attempt_count != expected->attempt_count)
+        LOG_FAIL("model", "db_build_action_save_leased: invalid generation");
+    return build_action_save_lease_snapshot(ndb, next, expected->state,
+                                            expected->lease_id, expected);
+}
+
+bool db_build_action_requeue_expired(struct node_db *ndb,
+    const struct db_build_action *next,
+    const struct db_build_action *expected, int64_t now)
+{
+    if (!next || !expected || now < 0 || expected->lease_expires_at <= 0 ||
+        expected->lease_expires_at > now || !expected->lease_id[0] ||
+        strcmp(next->action_id, expected->action_id) != 0 ||
+        strcmp(next->state, "QUEUED") != 0 || next->lease_id[0] ||
+        next->lease_expires_at != 0)
+        LOG_FAIL("model", "db_build_action_requeue_expired: invalid recovery");
+    return build_action_save_lease_snapshot(ndb, next, expected->state,
+                                            expected->lease_id, expected);
+}
+
+bool db_build_action_renew_lease(struct node_db *ndb,
+    const struct db_build_action *next,
+    const struct db_build_action *expected)
+{
+    if (!next || !expected || !expected->lease_id[0] ||
+        strcmp(next->action_id, expected->action_id) != 0 ||
+        strcmp(next->state, expected->state) != 0 ||
+        strcmp(next->lease_id, expected->lease_id) != 0 ||
+        strcmp(next->worker_id, expected->worker_id) != 0 ||
+        next->attempt_count != expected->attempt_count)
+        LOG_FAIL("model", "db_build_action_renew_lease: invalid generation");
+    return build_action_save_lease_snapshot(ndb, next, expected->state,
+                                            expected->lease_id, expected);
 }

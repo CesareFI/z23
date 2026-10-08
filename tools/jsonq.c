@@ -14,6 +14,7 @@
  *   printf '%s' "$json" | jsonq raw data
  *   printf '%s' "$json" | jsonq type state.tracked
  *   printf '%s' "$json" | jsonq keys data
+ *   printf '%s' "$json" | jsonq key-count data usage
  *   printf '%s' "$json" | jsonq unwrap
  *
  * PATH: dotted keys and [index] from the document root. Leading '.' is
@@ -22,6 +23,8 @@
  * get/raw print the value and exit 0. Missing path exits 1. Malformed
  * JSON or usage exits 2. unwrap prints result when the envelope is a
  * JSON-RPC object with a null/absent error; a present error exits 2.
+ * key-count counts direct decoded keys exactly matching the literal KEY
+ * argument. Zero matches succeeds; a selected non-object exits 1.
  */
 #include "zjsonp/zjsonp.h"
 
@@ -65,6 +68,7 @@ typedef enum {
     CMD_EQ,
     CMD_COUNT,
     CMD_KEYS,
+    CMD_KEY_COUNT,
     CMD_UNWRAP
 } cmd_kind;
 
@@ -78,6 +82,7 @@ static int g_depth;
 static void usage(void)
 {
     fputs("usage: jsonq get|raw|type|has|eq|count|keys PATH\n"
+          "       jsonq key-count PATH KEY\n"
           "       jsonq unwrap\n"
           "Read one JSON document from stdin.\n",
           stderr);
@@ -277,21 +282,24 @@ static int count_container(zjsonp *p, const zjsonp_event *open,
     }
 }
 
-/* Prints each key of an object, one per line. Keys of nested containers
- * are not keys of the selected object, so nested containers are skipped
- * whole. */
+/* List direct decoded keys, or count exact byte matches when wanted is set.
+ * Nested containers are skipped whole; key delimiters never affect counting. */
 static int keys_container(zjsonp *p, const char *text,
-                          const zjsonp_event *open, unsigned open_depth)
+                          const zjsonp_event *open, unsigned open_depth,
+                          const char *wanted)
 {
     if (open->kind != ZJRP_OBJ_OPEN)
         return 1;
+    size_t matches = 0, wanted_len = wanted ? strlen(wanted) : 0;
     for (;;) {
         zjsonp_event ev;
         zjsonp_status st = zjsonp_next(p, &ev);
         if (st != ZJRP_OK)
             return 2;
-        if (is_close_event(p, &ev, open_depth))
+        if (is_close_event(p, &ev, open_depth)) {
+            if (wanted) printf("%zu\n", matches);
             return 0;
+        }
         if (ev.kind == ZJRP_OBJ_OPEN || ev.kind == ZJRP_ARR_OPEN) {
             if (skip_container(p, p->depth) != 0)
                 return 2;
@@ -301,8 +309,13 @@ static int keys_container(zjsonp *p, const char *text,
             size_t kn = 0;
             if (!decode_key(text, &ev, g_decode, sizeof g_decode, &kn))
                 return 2;
-            fwrite(g_decode, 1, kn, stdout);
-            fputc('\n', stdout);
+            if (wanted) {
+                if (kn == wanted_len && memcmp(g_decode, wanted, kn) == 0)
+                    matches++;
+            } else {
+                fwrite(g_decode, 1, kn, stdout);
+                fputc('\n', stdout);
+            }
         }
     }
 }
@@ -313,7 +326,6 @@ static int finish_matched_container(zjsonp *p, const char *text,
 {
     unsigned open_depth = p->depth;
     size_t start = open->off;
-    (void)eq;
     switch (cmd) {
     case CMD_HAS:
         return 0;
@@ -330,7 +342,9 @@ static int finish_matched_container(zjsonp *p, const char *text,
     case CMD_COUNT:
         return count_container(p, open, open_depth);
     case CMD_KEYS:
-        return keys_container(p, text, open, open_depth);
+        return keys_container(p, text, open, open_depth, NULL);
+    case CMD_KEY_COUNT:
+        return keys_container(p, text, open, open_depth, eq);
     default:
         return 2;
     }
@@ -345,7 +359,7 @@ static int handle_matched_scalar(const char *text, const zjsonp_event *ev,
         puts(kind_type(ev->kind));
         return 0;
     }
-    if (cmd == CMD_COUNT || cmd == CMD_KEYS)
+    if (cmd == CMD_COUNT || cmd == CMD_KEYS || cmd == CMD_KEY_COUNT)
         return 1;
     if (cmd == CMD_GET)
         return emit_scalar(text, ev, false);
@@ -547,53 +561,42 @@ static bool read_document(size_t *len)
     return true;
 }
 
+static bool parse_command(int argc, char **argv, cmd_kind *cmd)
+{
+    static const struct {
+        const char *name;
+        cmd_kind kind;
+        int argc;
+    } commands[] = {
+        { "get", CMD_GET, 3 },
+        { "raw", CMD_RAW, 3 },
+        { "type", CMD_TYPE, 3 },
+        { "has", CMD_HAS, 3 },
+        { "eq", CMD_EQ, 4 },
+        { "count", CMD_COUNT, 3 },
+        { "keys", CMD_KEYS, 3 },
+        { "key-count", CMD_KEY_COUNT, 4 },
+        { "unwrap", CMD_UNWRAP, 2 }
+    };
+    if (argc < 2) return false;
+    for (size_t i = 0; i < sizeof commands / sizeof commands[0]; i++) {
+        if (strcmp(argv[1], commands[i].name) != 0) continue;
+        if (argc != commands[i].argc) return false;
+        *cmd = commands[i].kind;
+        return true;
+    }
+    return false;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc < 2) {
-        usage();
-        return 2;
-    }
     cmd_kind cmd;
-    const char *path = NULL;
-    const char *eq = NULL;
-    if (strcmp(argv[1], "unwrap") == 0) {
-        if (argc != 2) {
-            usage();
-            return 2;
-        }
-        cmd = CMD_UNWRAP;
-    } else if (strcmp(argv[1], "get") == 0 || strcmp(argv[1], "raw") == 0 ||
-               strcmp(argv[1], "type") == 0 || strcmp(argv[1], "has") == 0 ||
-               strcmp(argv[1], "count") == 0 || strcmp(argv[1], "keys") == 0) {
-        if (argc != 3) {
-            usage();
-            return 2;
-        }
-        path = argv[2];
-        if (argv[1][0] == 'g')
-            cmd = CMD_GET;
-        else if (argv[1][0] == 'r')
-            cmd = CMD_RAW;
-        else if (argv[1][0] == 't')
-            cmd = CMD_TYPE;
-        else if (argv[1][0] == 'h')
-            cmd = CMD_HAS;
-        else if (argv[1][0] == 'c')
-            cmd = CMD_COUNT;
-        else
-            cmd = CMD_KEYS;
-    } else if (strcmp(argv[1], "eq") == 0) {
-        if (argc != 4) {
-            usage();
-            return 2;
-        }
-        cmd = CMD_EQ;
-        path = argv[2];
-        eq = argv[3];
-    } else {
+    if (!parse_command(argc, argv, &cmd)) {
         usage();
         return 2;
     }
+    const char *path = argc > 2 ? argv[2] : NULL;
+    const char *eq = argc > 3 ? argv[3] : NULL;
 
     size_t len = 0;
     if (!read_document(&len)) return 2;

@@ -319,22 +319,50 @@ static bool bfw_native_relocatable(const uint8_t *bytes, size_t len)
 }
 struct bfw_cancel_context {
     struct node_db *ndb;
-    const char *action_id;
+    const struct db_build_action *expected;
     bool named_cancel;
 };
+
+#ifdef ZCL_TESTING
+static void (*bfw_test_before_owner_check)(void *);
+static void *bfw_test_owner_context;
+void build_fabric_worker_test_before_owner_check(void (*hook)(void *),
+                                                void *context)
+{
+    bfw_test_before_owner_check = hook;
+    bfw_test_owner_context = context;
+}
+#endif
 
 static bool bfw_cancel_requested(void *opaque)
 {
     struct bfw_cancel_context *ctx = opaque;
     struct db_build_action action;
     struct db_build_job job;
-    if (!ctx || !db_build_action_find(ctx->ndb, ctx->action_id, &action) ||
+#ifdef ZCL_TESTING
+    if (bfw_test_before_owner_check)
+        bfw_test_before_owner_check(bfw_test_owner_context);
+#endif
+    if (!ctx || !ctx->expected ||
+        !db_build_action_find(ctx->ndb, ctx->expected->action_id, &action) ||
         !db_build_job_find(ctx->ndb, action.job_id, &job))
-        return false;
+        return true;
     ctx->named_cancel = strcmp(action.state, "CANCELLED") == 0 ||
                         strcmp(job.state, "CANCELLED") == 0 ||
                         job.cancel_requested;
-    return ctx->named_cancel;
+    return ctx->named_cancel || strcmp(action.state, "RUNNING") != 0 ||
+           strcmp(action.lease_id, ctx->expected->lease_id) != 0 ||
+           strcmp(action.worker_id, ctx->expected->worker_id) != 0 ||
+           strcmp(action.job_id, ctx->expected->job_id) != 0 ||
+           action.attempt_count != ctx->expected->attempt_count ||
+           action.lease_expires_at == 0 ||
+           (int64_t)platform_time_wall_unix() >= action.lease_expires_at;
+}
+
+static const char *bfw_owner_loss_detail(bool launched)
+{
+    return launched ? "fixed action ownership lost; executor interrupted"
+                    : "fixed action ownership lost before executor launch";
 }
 
 static struct zcl_result bfw_fail(struct node_db *ndb,
@@ -576,7 +604,7 @@ struct zcl_result build_fabric_worker_execute(
     }
     struct bfw_cancel_context cancel_context = {
         .ndb = ndb,
-        .action_id = action_id,
+        .expected = &action,
     };
     bool spawn_cancelled = false;
     struct build_fabric_executor_identity checked_identity;
@@ -603,7 +631,7 @@ struct zcl_result build_fabric_worker_execute(
         return ZCL_ERR(-1, "%s",
                        cancel_context.named_cancel
                            ? "fixed action cancelled; named outcome CANCELLED"
-                           : "fixed action execution interrupted");
+                           : bfw_owner_loss_detail(measure.launched));
     }
     const char *success_marker = package_action ? "zbuild-package-ok=1"
                                  : fuzz_action ? "zbuild-fuzz-ok=1"

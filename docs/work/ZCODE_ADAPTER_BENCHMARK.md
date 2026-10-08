@@ -1,3 +1,5 @@
+<!-- Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. -->
+
 # ZCode adapter benchmark
 
 This is the measured decision record for the Codex adapter experiments. The
@@ -5,6 +7,52 @@ native Z23 CLI remains the product surface and the existing ephemeral adapter
 remains the control and fallback. This work does not add a general external
 tool server, expose the command registry as tools, or create a second
 task/candidate authority.
+
+## Report schema migration
+
+The current executable report is `zcl.zcode_adapter_benchmark.v2`; preflight
+is `zcl.zcode_adapter_preflight_acceptance.v2`. Packet analysis retains
+`zcl.zcode_packet_benchmark.v1`. Historical observations below retain their
+original v1 keys and values; they are not current schema examples.
+
+Consumers must replace `calls.model_requests` with
+`calls.adapter_invocations` in executable reports, and `model_requests` with
+`adapter_invocations` in preflight reports. These count outer adapter launches,
+not provider requests or internal retries. Executable `calls.provider_requests`
+is `null` because this harness does not observe that count. Preflight reports
+`provider_requests: 0` because it does not launch a model adapter.
+
+`expected_refusal_success` counts completed expected-refusal cases with no
+observed workspace changes. Such cases still contribute to `verified_success`
+and `first_pass_success`, but never to `exact_reproduction`. Reproduction
+counts only the non-refusal path that reaches native `PROVEN` acceptance and
+status. These counters do not establish cost per accepted task or savings.
+
+Missing token counters remain `null`; `coverage` distinguishes reported from
+unreported counters, and `reported_sum` preserves only observed contributions.
+Explicit reported zero remains measured. Malformed or overflowing counters
+refuse rather than producing totals. App-server v1 counters remain unavailable
+because its output does not distinguish absent notification data from zero.
+
+Scope comparison inventories every descendant of the declared candidate
+workspace, including extra files, empty directories, permissions, symlink
+targets, deletions, and type changes. It does not follow symlinks or observe
+writes outside that workspace. Unsupported entry types refuse. Harness-owned
+entries are created before the first snapshot; subsequent changes remain
+subject to declared write scopes. A scope violation prevents success or
+admission accounting. This is before/after observation, not proof that no
+transient write occurred. Inventory uses GNU filesystem tools; macOS execution
+is unverified.
+
+Offline acceptance calls the production usage, scope, and report builders:
+
+```bash
+bash tools/dev/zcode-adapter-usage-selftest.sh
+```
+
+It requires `build/bin/jsonq` and `jq`, uses synthetic fixtures, and makes no
+model requests. Report fixtures are synthetic observations, not benchmark
+results.
 
 ## Frozen baseline
 

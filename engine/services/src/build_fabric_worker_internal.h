@@ -20,6 +20,11 @@
 struct zcl_result bfw_worker_path(const char *workspace, char *out,
                                   size_t cap);
 
+#ifdef ZCL_TESTING
+void build_fabric_worker_test_before_owner_check(void (*hook)(void *),
+                                                void *context);
+#endif
+
 struct build_fabric_executor_identity;
 struct vcs_package_store;
 void bfw_attach_publish_checked(

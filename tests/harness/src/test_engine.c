@@ -25,6 +25,9 @@
 #include "engine/engine_state.h"
 #include "engine/engine_verdict.h"
 #include "engine/engine_wire.h"
+#include "base/hex.h"
+#include "sha3/sha3.h"
+#include "vcs/vcs_object.h"
 #include "platform/private_file.h"
 #if defined(_WIN32)
 #include "platform/windows_path.h"
@@ -2001,6 +2004,94 @@ static const char *select_kind(const char *flag, const char *task)
     return engine_prompt_kind_from_header(task);
 }
 
+static int case_c23_prompt_selection(void)
+{
+    static const struct {
+        const char *kind;
+        const char *exemplar;
+    } patterns[] = {
+        {"c23-byte-validator", "zutf8_decode_n"},
+        {"c23-command-handler", "zcl_native_handle_code_have"},
+        {"c23-model-save", "db_contact_save"},
+        {"c23-regression-fixture", "case_rewrite"},
+    };
+    int failures = 0;
+    uint8_t previous[32] = {0};
+    for (size_t i = 0; i < sizeof(patterns) / sizeof(patterns[0]); i++) {
+        char header[128];
+        (void)snprintf(header, sizeof(header), "kind: %s\n\nowned task\n",
+                       patterns[i].kind);
+        const char *selected = select_kind(NULL, header);
+        EN_CHECK("C23 task header selects a complete dispatch kind",
+                 selected && strcmp(selected, patterns[i].kind) == 0 &&
+                 engine_prompt_kind_is_complete(selected));
+        const char *task = engine_prompt_template_body(selected, "task");
+        const char *rules = engine_prompt_template_body(selected, "rules");
+        EN_CHECK("selected procedure binds an exemplar and required inputs",
+                 task && strstr(task, patterns[i].exemplar) && rules &&
+                 strstr(rules, "report the missing input"));
+        size_t bytes = 0;
+        for (size_t s = 0; s < engine_prompt_section_count(); s++) {
+            const struct engine_prompt_section *sec = engine_prompt_section_at(s);
+            const char *body = engine_prompt_template_body(selected, sec->id);
+            if (body) bytes += strlen(body);
+        }
+        EN_CHECK("selected C23 procedure stays within 1800 text bytes",
+                 bytes > 0 && bytes <= 1800);
+        uint8_t digest[32];
+        engine_prompt_template_sha3(selected, digest);
+        EN_CHECK("receipt template identity distinguishes selected procedures",
+                 memcmp(previous, digest, sizeof(digest)) != 0);
+        memcpy(previous, digest, sizeof(previous));
+        for (size_t j = 0; task && j < sizeof(patterns) / sizeof(patterns[0]); j++)
+            EN_CHECK("selection excludes other procedures' exemplar bodies",
+                     i == j || strstr(task, patterns[j].exemplar) == NULL);
+    }
+    return failures;
+}
+
+static int case_template_wire(void)
+{
+    int failures = 0;
+    for (size_t i = 0; i < engine_prompt_kind_count(); i++) {
+        const char *kind = engine_prompt_kind_at(i);
+        uint8_t *wire = NULL;
+        size_t len = 0, expected_len = 4;
+        uint32_t rows = 0;
+        for (size_t s = 0; s < engine_prompt_section_count(); s++) {
+            const struct engine_prompt_section *sec = engine_prompt_section_at(s);
+            const char *body = engine_prompt_template_body(kind, sec->id);
+            if (!body) continue;
+            rows++;
+            expected_len += 8 + strlen(sec->id) + strlen(body);
+        }
+        bool serialized = engine_prompt_template_serialize(kind, &wire, &len);
+        EN_CHECK("template wire length includes only canonical framing and rows",
+                 serialized && len == expected_len &&
+                 len <= ENGINE_PROMPT_TEMPLATE_MAX_BYTES &&
+                 wire[0] == 0 && wire[1] == 0 && wire[2] == 0 &&
+                 wire[3] == rows);
+        if (serialized) {
+            uint8_t historical[32], actual[32];
+            engine_prompt_template_sha3(kind, historical);
+            zcl_sha3_256(wire, len, actual);
+            EN_CHECK("canonical template bytes preserve historical receipt root",
+                     memcmp(historical, actual, sizeof(actual)) == 0);
+        }
+        free(wire);
+    }
+    uint8_t sentinel = 0;
+    uint8_t *wire = &sentinel;
+    size_t len = 7;
+    EN_CHECK("unknown template clears serialization outputs",
+             !engine_prompt_template_serialize("absent", &wire, &len) &&
+             wire == NULL && len == 0);
+    EN_CHECK("missing serialization output is refused",
+             !engine_prompt_template_serialize("fix-gate", NULL, &len) &&
+             len == 0);
+    return failures;
+}
+
 static int case_prompt_templates(void)
 {
     int failures = 0;
@@ -2278,6 +2369,94 @@ static bool read_whole_file(const char *path, char *out, size_t out_cap)
     return true;
 }
 
+static bool template_cas_matches(const char *workspace, const char *kind)
+{
+    uint8_t *expected = NULL, *actual = NULL;
+    size_t expected_len = 0, actual_len = 0;
+    uint8_t root[32], observed[32];
+    bool ok = engine_prompt_template_serialize(kind, &expected, &expected_len);
+    engine_prompt_template_sha3(kind, root);
+    ok = ok && vcs_object_load_raw_bounded(
+        workspace, root, ENGINE_PROMPT_TEMPLATE_MAX_BYTES,
+        &actual, &actual_len) == 0;
+    if (ok) {
+        zcl_sha3_256(actual, actual_len, observed);
+        ok = actual_len == expected_len &&
+             memcmp(root, observed, sizeof(root)) == 0 &&
+             memcmp(actual, expected, expected_len) == 0;
+    }
+    free(expected);
+    free(actual);
+    return ok;
+}
+
+static bool unit_fixture_completed(int rc)
+{
+#if defined(_WIN32)
+    return rc == 1;
+#else
+    return rc >= 0 && WIFEXITED(rc) && WEXITSTATUS(rc) == 1;
+#endif
+}
+
+static int case_template_cas_corruption(const char *cmd, const char *object_path,
+                                       const char *chain_path,
+                                       const char *log_path)
+{
+    int failures = 0;
+    struct stat before, after;
+    bool measured = stat(chain_path, &before) == 0;
+    bool corrupted = write_whole_file(object_path, "invalid-template");
+    int rc = system(cmd);
+    char log[8192] = {0};
+    EN_CHECK("corrupt existing CAS refuses before any provider receipt",
+             corrupted && measured && !unit_fixture_completed(rc) &&
+             stat(chain_path, &after) == 0 &&
+             before.st_size == after.st_size &&
+             read_whole_file(log_path, log, sizeof(log)) &&
+             strstr(log, "refusing before provider dispatch"));
+    EN_CHECK("refusal preserves conflicting CAS bytes",
+             read_whole_file(object_path, log, sizeof(log)) &&
+             strcmp(log, "invalid-template") == 0);
+    return failures;
+}
+
+static int case_template_cas_dispatch(const char *cmd, const char *workspace,
+                                      const char *chain_path,
+                                      const char *log_path)
+{
+    int failures = 0;
+    const char *kind = "fix-gate";
+    EN_CHECK("dispatch persists exact selected template in existing CAS",
+             template_cas_matches(workspace, kind));
+    uint8_t root[32];
+    char hex[65], object_path[1024];
+    engine_prompt_template_sha3(kind, root);
+    zcl_hex_encode(root, sizeof(root), hex);
+    int n = snprintf(object_path, sizeof(object_path),
+                      "%s/.zvcs/objects/%.2s/%s", workspace, hex, hex + 2);
+    if (n < 0 || (size_t)n >= sizeof(object_path)) {
+        EN_CHECK("template fixture object path fits", false);
+        return failures;
+    }
+    struct stat first, repeated;
+    bool first_stat = stat(object_path, &first) == 0;
+    int repeated_rc = system(cmd);
+    EN_CHECK("repeated dispatch retains exact existing template object",
+             unit_fixture_completed(repeated_rc) && first_stat &&
+             stat(object_path, &repeated) == 0 &&
+             first.st_ino == repeated.st_ino &&
+             template_cas_matches(workspace, kind));
+    bool removed = unlink(object_path) == 0;
+    int missing_rc = system(cmd);
+    EN_CHECK("missing selected template is restored from canonical local bytes",
+             unit_fixture_completed(missing_rc) && removed &&
+             template_cas_matches(workspace, kind));
+    failures += case_template_cas_corruption(cmd, object_path, chain_path,
+                                             log_path);
+    return failures;
+}
+
 static int case_engine_unit_state_e2e(void)
 {
     int failures = 0;
@@ -2408,6 +2587,9 @@ static int case_engine_unit_state_e2e(void)
              strstr(chain, "\"total_invocation_elapsed_ms\":") &&
              strstr(chain, "\"cumulative_proof_ms\":0") &&
              strstr(chain, "\"unit_elapsed_ms\":"));
+
+    failures += case_template_cas_dispatch(cmd, worktree, chain_path,
+                                           run_log_path);
 
     /* Remove the worktree path so a killed run leaves no registered
      * worktree under test-tmp. Best-effort. */
@@ -3365,6 +3547,8 @@ int test_engine(void)
     failures += case_prompt();
     failures += case_prompt_shape();
     failures += case_prompt_templates();
+    failures += case_c23_prompt_selection();
+    failures += case_template_wire();
     failures += case_cli_argv();
     failures += case_cli_observation();
     failures += case_default_engine();

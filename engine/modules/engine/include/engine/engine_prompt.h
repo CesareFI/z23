@@ -128,6 +128,14 @@ bool engine_prompt_kind_is_complete(const char *kind);
  * something that is not true. Writes 32 zero bytes for an unknown kind. */
 void engine_prompt_template_sha3(const char *kind, uint8_t out[32]);
 
+/* Exact preimage of template_sha3, bounded independently of dispatch text.
+ * Caller frees *wire. Refusal clears both outputs; unknown or incomplete
+ * kinds are refused. The address is SHA3-256 of these bytes, without a CAS
+ * tag. Addressed CAS readers must independently recompute it. */
+#define ENGINE_PROMPT_TEMPLATE_MAX_BYTES (64u * 1024u)
+bool engine_prompt_template_serialize(const char *kind, uint8_t **wire,
+                                      size_t *wire_len);
+
 /* The kind a task file declares for itself.
  *
  * A `kind:` line in the first few lines of `task`, before any blank line —

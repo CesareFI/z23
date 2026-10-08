@@ -67,6 +67,46 @@ static int test_jsonq_count_and_keys(void)
     return failures;
 }
 
+static int test_jsonq_key_count(void)
+{
+    static const struct {
+        const char *document, *path, *key, *output;
+        int status;
+    } cases[] = {
+        {"{\"usage\":1,\"\\u0075sage\":2}", "", "usage", "2" JSONQ_FIXTURE_EOL, 0},
+        {"{\"usage\":1,\"metadata\\nusage\":2}", "", "usage", "1" JSONQ_FIXTURE_EOL, 0},
+        {"{\"usage\":{\"input_tokens\":1,\"\\u0069nput_tokens\":2,"
+         "\"nested\":{\"input_tokens\":3},\"items\":[{\"input_tokens\":4}]}}",
+         "usage", "input_tokens", "2" JSONQ_FIXTURE_EOL, 0},
+        {"{\"usage\":{\"input_tokens\":1,\"note\\ninput_tokens\":2}}",
+         "usage", "input_tokens", "1" JSONQ_FIXTURE_EOL, 0},
+        {"{\"input\":1,\"input\\u0000\":2}", "", "input", "1" JSONQ_FIXTURE_EOL, 0},
+        {"{\"a\\nb\":1,\"a\\u000ab\":2}", "", "a\nb", "2" JSONQ_FIXTURE_EOL, 0},
+        {"{\"\":1,\"other\":2}", "", "", "1" JSONQ_FIXTURE_EOL, 0},
+        {"{\"rows\":[{\"usage\":1},{\"usage\":2,\"usage\":3}]}",
+         "rows[1]", "usage", "2" JSONQ_FIXTURE_EOL, 0},
+        {"{}", "", "usage", "0" JSONQ_FIXTURE_EOL, 0},
+        {"{\"nested\":{\"usage\":1}}", "", "usage", "0" JSONQ_FIXTURE_EOL, 0},
+        {"{}", "missing", "usage", "", 1},
+        {"[]", "", "usage", "", 1},
+        {"{\"usage\":1}", "usage", "input_tokens", "", 1},
+        {"{\"usage\":1} junk", "", "usage", "", 2},
+        {"{\"usage\":1,", "", "usage", "", 2},
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char buf[512] = {0};
+        TEST("jsonq: key-count preserves decoded identity and direct-member scope") {
+            ASSERT_EQ(jsonq_fixture_run(cases[i].document,
+                (const char *const[]){JSONQ_FIXTURE_BIN, "key-count",
+                    cases[i].path, cases[i].key, NULL}, buf, sizeof(buf)), cases[i].status);
+            ASSERT_STR_EQ(buf, cases[i].output);
+            PASS();
+        } _test_next:;
+    }
+    return failures;
+}
+
 static int test_jsonq_scalar_paths(void)
 {
     int failures = 0;
@@ -127,6 +167,7 @@ int test_jsonq(void)
         return 1;
     }
     failures += test_jsonq_count_and_keys();
+    failures += test_jsonq_key_count();
     failures += test_jsonq_scalar_paths();
     failures += test_jsonq_unwrap();
     return failures;

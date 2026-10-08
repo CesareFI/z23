@@ -1809,6 +1809,275 @@ static int test_bf_local_enrollment(void)
     } _test_next:;
     return failures;
 }
+struct bf_renewal_race {
+    struct node_db *other;
+    char action_id[65];
+    bool fired;
+    bool renewed;
+};
+
+static bool bf_renew_before_recovery(void *record, void *context)
+{
+    const struct db_build_action *action = record;
+    struct bf_renewal_race *race = context;
+    if (!race->fired && strcmp(action->state, "QUEUED") == 0) {
+        race->fired = true;
+        race->renewed = build_fabric_heartbeat(race->other, race->action_id,
+                                               id_d, 129, 20).ok;
+    }
+    return true;
+}
+
+static bool bf_prepare_renewal_race(struct node_db *ndb, char action_id[65],
+                                   bool running)
+{
+    struct db_build_job job;
+    struct db_build_action action;
+    struct db_build_worker worker;
+    bf_job(&job);
+    bf_action(&action);
+    bf_worker(&worker);
+    if (!bf_canonicalize(&job, &action) ||
+        !build_fabric_plan(ndb, &job, &action).ok ||
+        !build_fabric_submit(ndb, job.job_id, 110).ok ||
+        !build_fabric_worker_approve(ndb, &worker, 111).ok)
+        return false;
+    bool claimed = false;
+    if (!build_fabric_claim(ndb, worker.worker_id, id_d, 120, 10,
+                            &action, &claimed).ok || !claimed)
+        return false;
+    (void)snprintf(action_id, 65, "%s", action.action_id);
+    return !running || build_fabric_start(ndb, action_id, id_d, 121).ok;
+}
+
+static int test_bf_recovery_renewal_race(void)
+{
+    int failures = 0;
+    struct node_db ndb = {0}, other = {0};
+    char dir[256] = {0}, path[320];
+    TEST("build_fabric: recovery preserves a concurrently renewed same lease") {
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "renewal-race"));
+        struct bf_renewal_race race = {.other = &other};
+        ASSERT(bf_prepare_renewal_race(&ndb, race.action_id, true));
+        ASSERT(node_db_open(&other, path));
+        struct ar_callbacks *callbacks = db_build_action_callbacks();
+        struct ar_callbacks saved = *callbacks;
+        ASSERT(ar_register_before_save(callbacks, bf_renew_before_recovery));
+        ar_callbacks_set_ctx(callbacks, &race);
+        size_t requeued = 99;
+        struct zcl_result result = build_fabric_recover_expired(&ndb, 131, &requeued);
+        *callbacks = saved;
+        ASSERT(result.ok && race.fired && race.renewed);
+        ASSERT_EQ(requeued, 0);
+        struct db_build_action action;
+        struct db_build_job job;
+        ASSERT(db_build_action_find(&ndb, race.action_id, &action));
+        ASSERT(db_build_job_find(&ndb, action.job_id, &job));
+        ASSERT_STR_EQ(action.state, "RUNNING");
+        ASSERT_STR_EQ(job.state, "RUNNING");
+        ASSERT_STR_EQ(action.lease_id, id_d);
+        ASSERT_EQ(action.lease_expires_at, 149);
+        ASSERT_EQ(action.attempt_count, 1);
+        ASSERT(build_fabric_recover_expired(&ndb, 149, &requeued).ok);
+        ASSERT_EQ(requeued, 1);
+        ASSERT(db_build_action_find(&ndb, race.action_id, &action));
+        ASSERT_STR_EQ(action.state, "QUEUED");
+        ASSERT_EQ(action.attempt_count, 1);
+        PASS();
+    } _test_next:;
+    node_db_close(&other);
+    node_db_close(&ndb);
+    if (dir[0]) test_rm_rf(dir);
+    return failures;
+}
+
+static bool bf_renew_before_heartbeat(void *record, void *context)
+{
+    (void)record;
+    struct bf_renewal_race *race = context;
+    if (!race->fired) {
+        race->fired = true;
+        race->renewed = build_fabric_heartbeat(race->other, race->action_id,
+                                               id_d, 129, 30).ok;
+    }
+    return true;
+}
+
+static int test_bf_heartbeat_renewal_race(void)
+{
+    int failures = 0;
+    struct node_db ndb = {0}, other = {0};
+    char dir[256] = {0}, path[320];
+    TEST("build_fabric: delayed heartbeat preserves a newer same-lease renewal") {
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "heartbeat-race"));
+        struct bf_renewal_race race = {.other = &other};
+        ASSERT(bf_prepare_renewal_race(&ndb, race.action_id, true));
+        ASSERT(node_db_open(&other, path));
+        struct ar_callbacks *callbacks = db_build_action_callbacks();
+        struct ar_callbacks saved = *callbacks;
+        ASSERT(ar_register_before_save(callbacks, bf_renew_before_heartbeat));
+        ar_callbacks_set_ctx(callbacks, &race);
+        struct zcl_result result = build_fabric_heartbeat(&ndb,
+            race.action_id, id_d, 125, 20);
+        *callbacks = saved;
+        ASSERT(race.fired && race.renewed && !result.ok);
+        struct db_build_action action;
+        struct db_build_job job;
+        ASSERT(db_build_action_find(&ndb, race.action_id, &action));
+        ASSERT(db_build_job_find(&ndb, action.job_id, &job));
+        ASSERT_STR_EQ(action.state, "RUNNING");
+        ASSERT_STR_EQ(job.state, "RUNNING");
+        ASSERT_STR_EQ(action.lease_id, id_d);
+        ASSERT_EQ(action.lease_expires_at, 159);
+        ASSERT_EQ(action.lease_heartbeat_at, 129);
+        ASSERT_EQ(action.attempt_count, 1);
+        ASSERT(build_fabric_heartbeat(&ndb, race.action_id, id_d, 130, 30).ok);
+        ASSERT(db_build_action_find(&ndb, race.action_id, &action));
+        ASSERT_EQ(action.lease_expires_at, 160);
+        PASS();
+    } _test_next:;
+    node_db_close(&other);
+    node_db_close(&ndb);
+    if (dir[0]) test_rm_rf(dir);
+    return failures;
+}
+
+static struct zcl_result bf_transition_for_race(struct node_db *ndb,
+    const char *action_id, bool start, const char *outcome, int64_t now)
+{
+    if (outcome)
+        return build_fabric_finish_leased(ndb, action_id, id_d, outcome,
+                                          "fixture-terminal-outcome", now);
+    return start ? build_fabric_start(ndb, action_id, id_d, now)
+                 : build_fabric_begin_verify(ndb, action_id, id_d, now);
+}
+
+static int test_bf_transition_renewal_race(bool start, const char *outcome)
+{
+    int failures = 0;
+    struct node_db ndb = {0}, other = {0};
+    char dir[256] = {0}, path[320], name[128];
+    const char *prior = start ? "CLAIMED" : "RUNNING";
+    const char *next = outcome ? outcome : start ? "RUNNING" : "VERIFYING";
+    (void)snprintf(name, sizeof(name),
+                   "build_fabric: %s to %s preserves a concurrent renewal", prior, next);
+    TEST(name) {
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "transition-race"));
+        struct bf_renewal_race race = {.other = &other};
+        ASSERT(bf_prepare_renewal_race(&ndb, race.action_id, !start));
+        ASSERT(node_db_open(&other, path));
+        struct ar_callbacks *callbacks = db_build_action_callbacks();
+        struct ar_callbacks saved = *callbacks;
+        ASSERT(ar_register_before_save(callbacks, bf_renew_before_heartbeat));
+        ar_callbacks_set_ctx(callbacks, &race);
+        struct zcl_result result = bf_transition_for_race(
+            &ndb, race.action_id, start, outcome, 125);
+        *callbacks = saved;
+        ASSERT(race.fired && race.renewed && !result.ok);
+        struct db_build_action action;
+        struct db_build_job job;
+        ASSERT(db_build_action_find(&ndb, race.action_id, &action));
+        ASSERT(db_build_job_find(&ndb, action.job_id, &job));
+        ASSERT_STR_EQ(action.state, prior);
+        ASSERT_STR_EQ(job.state, prior);
+        ASSERT_STR_EQ(action.lease_id, id_d);
+        ASSERT_EQ(action.lease_expires_at, 159);
+        ASSERT_EQ(action.lease_heartbeat_at, 129);
+        ASSERT_EQ(action.attempt_count, 1);
+        ASSERT_EQ(action.finished_at, 0);
+        ASSERT(action.outcome[0] == '\0' && job.outcome[0] == '\0');
+        ASSERT_EQ(job.cancel_requested, 0);
+        size_t requeued = 99;
+        ASSERT(build_fabric_recover_expired(&ndb, 131, &requeued).ok);
+        ASSERT_EQ(requeued, 0);
+        ASSERT(bf_transition_for_race(&ndb, race.action_id, start, outcome, 132).ok);
+        ASSERT(db_build_action_find(&ndb, race.action_id, &action));
+        ASSERT(db_build_job_find(&ndb, action.job_id, &job));
+        ASSERT_STR_EQ(action.state, next);
+        ASSERT_STR_EQ(job.state, next);
+        ASSERT_EQ(action.lease_expires_at, 159);
+        PASS();
+    } _test_next:;
+    node_db_close(&other);
+    node_db_close(&ndb);
+    if (dir[0]) test_rm_rf(dir);
+    return failures;
+}
+
+static bool bf_signed_race_receipt(struct node_db *ndb, const char *action_id,
+    int exit_status, struct db_build_receipt *receipt)
+{
+    uint8_t seed[32], pubkey[32], secret[32], digest[32], signature[64];
+    memset(seed, 7, sizeof(seed));
+    ed25519_keypair(pubkey, secret, seed);
+    struct db_build_worker worker;
+    struct db_build_action action;
+    bf_worker(&worker);
+    zcl_hex_encode(pubkey, sizeof(pubkey), worker.signer_pubkey);
+    if (!build_fabric_worker_approve(ndb, &worker, 124).ok ||
+        !db_build_action_find(ndb, action_id, &action)) return false;
+    bf_receipt(receipt);
+    (void)snprintf(receipt->action_id, sizeof(receipt->action_id), "%s", action_id);
+    (void)snprintf(receipt->action_sha3, sizeof(receipt->action_sha3), "%s", action_id);
+    (void)snprintf(receipt->job_id, sizeof(receipt->job_id), "%s", action.job_id);
+    receipt->exit_status = exit_status;
+    receipt->created_at = 125;
+    if (!build_fabric_receipt_id(receipt, receipt->receipt_id).ok ||
+        !zcl_hex_decode_lower(receipt->receipt_id, digest, sizeof(digest))) return false;
+    ed25519_sign(signature, digest, sizeof(digest), secret, pubkey);
+    zcl_hex_encode(signature, sizeof(signature), receipt->signature);
+    return true;
+}
+
+static int test_bf_receipt_renewal_race(int exit_status)
+{
+    int failures = 0;
+    struct node_db ndb = {0}, other = {0};
+    char dir[256] = {0}, path[320];
+    TEST("build_fabric: receipt acceptance rolls back when the lease is renewed") {
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "receipt-race"));
+        struct bf_renewal_race race = {.other = &other};
+        ASSERT(bf_prepare_renewal_race(&ndb, race.action_id, true));
+        ASSERT(build_fabric_begin_verify(&ndb, race.action_id, id_d, 122).ok);
+        struct db_build_receipt receipt, stored;
+        ASSERT(bf_signed_race_receipt(&ndb, race.action_id, exit_status, &receipt));
+        ASSERT(node_db_open(&other, path));
+        /* Renew before the receipt insert acquires the transaction's write lock. */
+        struct ar_callbacks *callbacks = db_build_receipt_callbacks();
+        struct ar_callbacks saved = *callbacks;
+        ASSERT(ar_register_before_save(callbacks, bf_renew_before_heartbeat));
+        ar_callbacks_set_ctx(callbacks, &race);
+        struct zcl_result result = build_fabric_receipt_accept(&ndb, &receipt, 125);
+        *callbacks = saved;
+        ASSERT(race.fired && race.renewed && !result.ok);
+        ASSERT(!db_build_receipt_find(&ndb, receipt.receipt_id, &stored));
+        struct db_build_action action;
+        struct db_build_job job;
+        ASSERT(db_build_action_find(&ndb, race.action_id, &action));
+        ASSERT(db_build_job_find(&ndb, action.job_id, &job));
+        ASSERT_STR_EQ(action.state, "VERIFYING");
+        ASSERT_STR_EQ(job.state, "VERIFYING");
+        ASSERT_EQ(action.lease_expires_at, 159);
+        ASSERT_EQ(action.lease_heartbeat_at, 129);
+        ASSERT_EQ(action.attempt_count, 1);
+        ASSERT_EQ(action.finished_at, 0);
+        ASSERT(action.outcome[0] == '\0' && job.outcome[0] == '\0');
+        ASSERT(action.output_root_sha3[0] == '\0');
+        ASSERT(build_fabric_receipt_accept(&ndb, &receipt, 130).ok);
+        ASSERT(db_build_receipt_find(&ndb, receipt.receipt_id, &stored));
+        ASSERT(db_build_action_find(&ndb, race.action_id, &action));
+        ASSERT(db_build_job_find(&ndb, action.job_id, &job));
+        ASSERT_STR_EQ(action.state, exit_status == 0 ? "ACCEPTED" : "FAILED");
+        ASSERT_STR_EQ(job.state, action.state);
+        ASSERT_EQ(action.lease_expires_at, 159);
+        PASS();
+    } _test_next:;
+    node_db_close(&other);
+    node_db_close(&ndb);
+    if (dir[0]) test_rm_rf(dir);
+    return failures;
+}
+
 static int test_bf_leases(void)
 {
     int failures = 0;
@@ -3735,6 +4004,20 @@ static int test_bf_map_selected_action(struct node_db *ndb,
         ASSERT_STR_EQ(json_get_str(json_get(observed, "proof_policy_root")), action->proof_policy_root_sha3);
         ASSERT_STR_EQ(json_get_str(json_get(observed, "observation_scope")), "selected_action");
         ASSERT_EQ(json_get_bool(json_get(observed, "policy_satisfied")), qualified);
+        const struct json_value *lifecycle = json_get(observed, "lifecycle");
+        ASSERT_STR_EQ(json_get_str(json_get(lifecycle, "source")), "local_action_record");
+        ASSERT_STR_EQ(json_get_str(json_get(lifecycle, "snapshot_scope")),
+                      "local_record_not_transactional");
+        ASSERT_STR_EQ(json_get_str(json_get(lifecycle, "timestamp_semantics")),
+                      "recorded_unix_zero_unreported");
+        ASSERT_STR_EQ(json_get_str(json_get(lifecycle, "state")), action->state);
+        ASSERT_EQ(json_get_int(json_get(lifecycle, "attempt_count")), action->attempt_count);
+        ASSERT_EQ(json_get_int(json_get(lifecycle, "claimed_at")), action->claimed_at);
+        ASSERT_EQ(json_get_int(json_get(lifecycle, "started_at")), action->started_at);
+        ASSERT_EQ(json_get_int(json_get(lifecycle, "finished_at")), action->finished_at);
+        ASSERT_EQ(json_get_int(json_get(lifecycle, "updated_at")), action->updated_at);
+        ASSERT_EQ(json_get_int(json_get(lifecycle, "lease_heartbeat_at")), action->lease_heartbeat_at);
+        ASSERT_EQ(json_get_int(json_get(lifecycle, "lease_expires_at")), action->lease_expires_at);
         if (qualified) {
             ASSERT_EQ(strlen(json_get_str(json_get(observed, "derived_proof_set_root"))), 64);
             ASSERT(json_get_int(json_get(observed, "valid_receipts")) > 0);
@@ -3754,12 +4037,109 @@ static int test_bf_map_selected_action(struct node_db *ndb,
     return failures;
 }
 
+static bool bf_map_coverage_is(const struct json_value *data, int64_t tasks,
+    int64_t verified, int64_t expired)
+{
+    const struct json_value *coverage = json_get(data, "task_coverage");
+    const struct json_value *forecast = json_get(data, "forecast");
+    const struct json_value *missing = json_get(forecast, "missing_evidence");
+    return coverage && forecast &&
+        strcmp(json_get_str(json_get(coverage, "scope")), "returned_page") == 0 &&
+        json_get_int(json_get(coverage, "tasks")) == tasks &&
+        json_get_int(json_get(coverage, "verified")) == verified &&
+        json_get_int(json_get(coverage, "unobserved")) == tasks - verified &&
+        json_get_int(json_get(coverage, "expired_verified")) == expired &&
+        strcmp(json_get_str(json_get(forecast, "status")), "unknown") == 0 &&
+        json_size(missing) == 3 &&
+        strcmp(json_get_str(json_at(missing, 0)), "workflow_history") == 0 &&
+        strcmp(json_get_str(json_at(missing, 1)), "cost_attribution") == 0 &&
+        strcmp(json_get_str(json_at(missing, 2)), "whole_map_acceptance") == 0;
+}
+
+static int test_bf_map_recorded_times(struct node_db *ndb, struct json_value *input,
+    const struct db_build_action *action, bool qualified)
+{
+    int failures = 0;
+    bool changed = false;
+    TEST("work map: recorded lifecycle times add no acceptance credit") {
+        struct db_build_action recorded = *action;
+        recorded.attempt_count = 3;
+        recorded.claimed_at = 120;
+        recorded.started_at = 130;
+        recorded.finished_at = 140;
+        recorded.updated_at = 150;
+        recorded.lease_heartbeat_at = 135;
+        recorded.lease_expires_at = 190;
+        changed = db_build_action_save(ndb, &recorded);
+        ASSERT(changed);
+        failures += test_bf_map_selected_action(ndb, input, &recorded, qualified);
+        PASS();
+    } _test_next:;
+    if (changed && !db_build_action_save(ndb, action)) failures++;
+    return failures;
+}
+
+static int test_bf_map_expired_page(struct node_db *ndb, const char *workspace,
+    const char *ledger, const char *root)
+{
+    int failures = 0;
+    TEST("work map: expired and empty returned pages retain unknown completion") {
+        int changes = sqlite3_total_changes(ndb->db);
+        for (int offset = 2; offset <= 3; offset++) {
+            struct json_value input;
+            json_init(&input); json_set_object(&input);
+            ASSERT(json_push_kv_str(&input, "workspace", workspace));
+            ASSERT(json_push_kv_str(&input, "proof_datadir", ledger));
+            ASSERT(json_push_kv_str(&input, "map_root", root));
+            ASSERT(json_push_kv_int(&input, "offset", offset));
+            ASSERT(json_push_kv_int(&input, "limit", 1));
+            struct zcl_command_request request = { .input = &input };
+            struct zcl_command_reply reply;
+            zcl_command_reply_init(&reply, "zcl.zcode_work_map.v1");
+            zcl_native_handle_zcode_work_map(&request, &reply);
+            json_free(&input);
+            ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_PASSED);
+            ASSERT(bf_map_coverage_is(&reply.data, offset == 2, offset == 2, offset == 2));
+            ASSERT_EQ(json_get_int(json_get(&reply.data, "next_offset")), -1);
+            ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "acceptance_coverage")), "unobserved");
+            const struct json_value *rows = json_get(&reply.data, "nodes");
+            ASSERT_EQ(json_size(rows), offset == 2);
+            if (offset == 2) {
+                const struct json_value *row = json_at(rows, 0);
+                ASSERT_STR_EQ(json_get_str(json_get(row, "status")), "UNKNOWN");
+                ASSERT(json_get_bool(json_get(row, "task_expired")));
+            }
+            ASSERT(json_get(&reply.data, "selected_evidence") == NULL);
+            ASSERT(json_write(&reply.data, NULL, 0) < 4096);
+            ASSERT_EQ(sqlite3_total_changes(ndb->db), changes);
+            zcl_command_reply_free(&reply);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static size_t bf_map_verified_page(size_t total, size_t visited, size_t returned)
+{
+    if (total != ZCL_WORK_MAP_MAX_NODES) return returned;
+    if (visited >= 6) return 0;
+    return returned < 6 - visited ? returned : 6 - visited;
+}
+
+static size_t bf_map_text_lines(const char *text)
+{
+    size_t lines = 0;
+    for (const char *p = text; *p; p++) lines += *p == '\n';
+    return lines;
+}
+
 static int test_bf_map_traversal(const char *dir, const char *ledger, const char *root,
     const struct db_build_action *action, size_t total)
 {
     int failures = 0;
     TEST("work map: byte-limited continuation visits every node exactly once") {
         size_t visited = 0;
+        bool shortened = false;
         while (visited < total) {
             struct json_value input;
             json_init(&input); json_set_object(&input);
@@ -3782,6 +4162,20 @@ static int test_bf_map_traversal(const char *dir, const char *ledger, const char
             size_t returned = json_size(rows);
             ASSERT(returned > 0 && returned <= 4 && returned <= total - visited);
             ASSERT_EQ(json_get_int(json_get(&reply.data, "returned")), (int64_t)returned);
+            shortened |= total - visited >= 4 && returned < 4;
+            size_t verified = bf_map_verified_page(total, visited, returned);
+            ASSERT(bf_map_coverage_is(&reply.data, (int64_t)returned, (int64_t)verified, 0));
+            const struct json_value *definition = json_get(&reply.data, "definition_counts");
+            ASSERT_STR_EQ(json_get_str(json_get(definition, "scope")), "admitted_map");
+            ASSERT_EQ(json_get_int(json_get(definition, "milestones")), 1);
+            ASSERT_EQ(json_get_int(json_get(definition, "features")), 1);
+            ASSERT_EQ(json_get_int(json_get(definition, "loops")), (int64_t)total - 2);
+            ASSERT_EQ(json_get_int(json_get(definition, "parent_edges")), (int64_t)total - 1);
+            ASSERT_EQ(json_get_int(json_get(definition, "dependency_edges")),
+                      total == ZCL_WORK_MAP_MAX_NODES ? 64 : 0);
+            const char *text = json_get_str(json_get(&reply.data, "text"));
+            ASSERT(text && strncmp(text, "Returned page:", 14) == 0);
+            ASSERT_EQ(bf_map_text_lines(text), returned + 1);
             for (size_t i = 0; i < returned; i++) {
                 const struct json_value *row = json_at(rows, i);
                 ASSERT_EQ(json_get_int(json_get(row, "index")), (int64_t)(visited + i));
@@ -3802,6 +4196,7 @@ static int test_bf_map_traversal(const char *dir, const char *ledger, const char
             } else ASSERT(selected == NULL);
             zcl_command_reply_free(&reply);
         }
+        if (action && total == ZCL_WORK_MAP_MAX_NODES) ASSERT(shortened);
         PASS();
     } _test_next:;
     return failures;
@@ -3857,6 +4252,7 @@ static int test_bf_map_candidate_page(struct node_db *ndb, const char *dir,
         ASSERT_EQ(sqlite3_total_changes(ndb->db), changes);
         zcl_command_reply_free(&reply);
         failures += test_bf_map_selected_action(ndb, &input, action, false);
+        failures += test_bf_map_recorded_times(ndb, &input, action, false);
         /* Candidate discovery must expose truncation without pretending the
          * displayed index roots are verified CAS candidates. */
         for (unsigned i = 0; i < 2; i++) {
@@ -3991,6 +4387,7 @@ static int test_bf_map_selection_refusals(const char *workspace, const char *led
                 ASSERT(!json_get_bool(json_get(selected, "acceptance_qualified")));
                 ASSERT(json_get(selected, "policy_satisfied") == NULL);
                 ASSERT(json_get(selected, "derived_proof_set_root") == NULL);
+                ASSERT(json_get(selected, "lifecycle") == NULL);
             }
             zcl_command_reply_free(&reply);
         }
@@ -4030,6 +4427,28 @@ static int test_bf_map_maximum(struct node_db *ndb, const char *workspace,
         zcl_hex_encode(root, 32, hex);
         failures += test_bf_map_traversal(workspace, ledger, hex, action, ZCL_WORK_MAP_MAX_NODES);
         failures += test_bf_map_traversal(workspace, ledger, hex, NULL, ZCL_WORK_MAP_MAX_NODES);
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&input, "proof_datadir", ledger));
+        ASSERT(json_push_kv_str(&input, "map_root", hex));
+        ASSERT(json_push_kv_int(&input, "offset", ZCL_WORK_MAP_MAX_NODES));
+        ASSERT(json_push_kv_str(&input, "action_id", action->action_id));
+        ASSERT(json_push_kv_int(&input, "node_index", 2));
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_map.v1");
+        zcl_native_handle_zcode_work_map(&request, &reply);
+        json_free(&input);
+        ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(bf_map_coverage_is(&reply.data, 0, 0, 0));
+        ASSERT_EQ(json_size(json_get(&reply.data, "nodes")), 0);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "next_offset")), -1);
+        const struct json_value *selected = json_get(&reply.data, "selected_evidence");
+        ASSERT_STR_EQ(json_get_str(json_get(selected, "action_root")), action->action_id);
+        ASSERT(!json_get_bool(json_get(selected, "acceptance_qualified")));
+        ASSERT(json_write(&reply.data, NULL, 0) < 4096);
+        zcl_command_reply_free(&reply);
         PASS();
     } _test_next:;
     return failures;
@@ -4168,6 +4587,7 @@ static int test_bf_map_qualified(const char *workspace,
         ASSERT(json_push_kv_str(&input, "proof_datadir", dir));
         ASSERT(json_push_kv_str(&input, "map_root", hex));
         failures += test_bf_map_selected_action(&ndb, &input, &package_action, true);
+        failures += test_bf_map_recorded_times(&ndb, &input, &package_action, true);
         failures += test_bf_map_retention(&ndb, workspace, &input, &package_action);
         json_free(&input);
         failures += test_bf_map_maximum(&ndb, workspace, dir, nodes,
@@ -4181,6 +4601,7 @@ static int test_bf_map_qualified(const char *workspace,
         char expired_hex[65];
         zcl_hex_encode(root, 32, expired_hex);
         failures += test_bf_map_selection_refusals(workspace, dir, hex, expired_hex, &package_action);
+        failures += test_bf_map_expired_page(&ndb, workspace, dir, expired_hex);
         PASS();
     } _test_next:;
     if (ndb.db) node_db_close(&ndb);
@@ -4960,6 +5381,15 @@ int test_build_fabric(void)
     failures += test_bf_service();
     failures += test_bf_reproduction_plan();
     failures += test_bf_leases();
+    failures += test_bf_recovery_renewal_race();
+    failures += test_bf_heartbeat_renewal_race();
+    failures += test_bf_transition_renewal_race(true, NULL);
+    failures += test_bf_transition_renewal_race(false, NULL);
+    failures += test_bf_transition_renewal_race(false, "FAILED");
+    failures += test_bf_transition_renewal_race(false, "LOCAL_FALLBACK");
+    failures += test_bf_transition_renewal_race(false, "CANCELLED");
+    failures += test_bf_receipt_renewal_race(0);
+    failures += test_bf_receipt_renewal_race(23);
     failures += test_bf_local_enrollment();
     failures += test_bf_toolchain_capture_cache();
     failures += test_bf_assembler_identity_is_version();

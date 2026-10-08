@@ -4,6 +4,286 @@
 
 set -euo pipefail
 
+repo_root=$(cd "$(dirname "$0")/../.." && pwd -P)
+jsonq_bin="$repo_root/build/bin/jsonq"
+usage_sum=(0 0 0)
+usage_reported=(0 0 0)
+usage_unreported=(0 0 0)
+usage_names=(input cached_input output)
+
+usage_fail() {
+    printf 'benchmark usage: %s\n' "$*" >&2
+    return 65
+}
+
+# jsonq preserves the number's source lexeme. Neither jq's floating-point
+# representation nor unchecked shell arithmetic qualifies integer counters.
+usage_add() {
+    local field=$1 value=$2 maximum=9223372036854775807
+    local LC_ALL=C
+    if [[ $value == null ]]; then
+        usage_unreported[field]=$((usage_unreported[field] + 1))
+        return
+    fi
+    if [[ ! $value =~ ^(0|[1-9][0-9]*)$ ]] ||
+       ((${#value} > ${#maximum})) ||
+       [[ ${#value} -eq ${#maximum} && $value > $maximum ]]; then
+        usage_fail "invalid or overflowing ${usage_names[field]} counter"
+        return 65
+    fi
+    if ((usage_sum[field] > maximum - value)); then
+        usage_fail "${usage_names[field]} total exceeds INT64_MAX"
+        return 65
+    fi
+    usage_sum[field]=$((usage_sum[field] + value))
+    usage_reported[field]=$((usage_reported[field] + 1))
+}
+
+usage_value() {
+    local document=$1 path=$2 value rc
+    if value=$("$jsonq_bin" raw "$path" <<<"$document"); then
+        printf '%s\n' "$value"
+    else
+        rc=$?
+        if [[ $rc == 1 ]]; then printf 'null\n'; else return "$rc"; fi
+    fi
+}
+
+usage_unique_fields() {
+    local document=$1 path=$2 field matches
+    shift 2
+    for field in "$@"; do
+        if ! matches=$("$jsonq_bin" key-count "$path" "$field" <<<"$document"); then
+            usage_fail "cannot count ${field} members in ${path:-root} object"
+            return 65
+        fi
+        if [[ ! $matches =~ ^[0-9]+$ ]]; then
+            usage_fail "invalid ${field} member count in ${path:-root} object"
+            return 65
+        fi
+        if ((matches > 1)); then
+            usage_fail "duplicate ${field} member in ${path:-root} object"
+            return 65
+        fi
+    done
+}
+
+usage_check_unique_if_object() {
+    local document=$1 path=$2 type rc
+    shift 2
+    if type=$("$jsonq_bin" type "$path" <<<"$document"); then
+        [[ $type != object ]] || usage_unique_fields "$document" "$path" "$@"
+        return $?
+    else
+        rc=$?
+        [[ $rc == 1 ]] && return 0
+        return 65
+    fi
+}
+
+usage_file_valid() {
+    local file=$1
+    # Bash read discards NUL bytes; reject them before reading any JSONL row.
+    cmp -s "$file" <(LC_ALL=C tr -d '\000' <"$file") || {
+        usage_fail 'unreadable or NUL-containing event stream'; return 65;
+    }
+}
+
+usage_exec_file() {
+    local file=$1 line type root_type terminal=0
+    [[ -x $jsonq_bin ]] || { usage_fail 'build/bin/jsonq is unavailable'; return 69; }
+    usage_file_valid "$file" || return 65
+    while IFS= read -r line || [[ -n $line ]]; do
+        root_type=$("$jsonq_bin" type '' <<<"$line") || return 65
+        [[ $root_type == object ]] || { usage_fail 'event is not an object'; return 65; }
+        usage_unique_fields "$line" '' type usage || return 65
+        type=$(usage_value "$line" type) || return 65
+        if [[ $type == '"turn.completed"' ]]; then
+            terminal=$((terminal + 1))
+            [[ $terminal == 1 ]] || {
+                usage_fail 'multiple terminal usage events have no deduplication identity'; return 65;
+            }
+            usage_check_unique_if_object "$line" usage \
+                input_tokens cached_input_tokens output_tokens || return 65
+            # Exec wire names differ from the benchmark's existing output keys.
+            local field value paths=(input_tokens cached_input_tokens output_tokens)
+            for field in 0 1 2; do
+                value=$(usage_value "$line" "usage.${paths[field]}") || return 65
+                usage_add "$field" "$value" || return 65
+            done
+        fi
+    done <"$file"
+    if [[ $terminal == 0 ]]; then
+        usage_add 0 null; usage_add 1 null; usage_add 2 null
+    fi
+}
+
+usage_app_document() {
+    local document=$1 field value
+    [[ -x $jsonq_bin ]] || { usage_fail 'build/bin/jsonq is unavailable'; return 69; }
+    local root_type
+    root_type=$("$jsonq_bin" type '' <<<"$document") || return 65
+    [[ $root_type == object ]] || { usage_fail 'app-server response is not an object'; return 65; }
+    usage_unique_fields "$document" '' tokens || return 65
+    usage_check_unique_if_object "$document" tokens input cached_input output || return 65
+    # The v1 helper always emits initialized zero counters even when the
+    # notification is absent. Validate its numbers, but do not qualify coverage.
+    for field in 0 1 2; do
+        value=$(usage_value "$document" "tokens.${usage_names[field]}") || return 65
+        local saved_sum=${usage_sum[field]} saved_reported=${usage_reported[field]}
+        usage_add "$field" "$value" || return 65
+        usage_sum[field]=$saved_sum
+        usage_reported[field]=$saved_reported
+        [[ $value == null ]] || usage_unreported[field]=$((usage_unreported[field] + 1))
+    done
+}
+
+usage_summary() {
+    local state=measured any_reported=0 any_unreported=0 field
+    local values=() reported=() unreported=() sums=()
+    for field in 0 1 2; do
+        ((usage_reported[field] == 0)) || any_reported=1
+        ((usage_unreported[field] == 0)) || any_unreported=1
+        values[field]=${usage_sum[field]}
+        if ((usage_unreported[field] > 0 || usage_reported[field] == 0)); then
+            values[field]=null
+        fi
+        reported[field]="\"${usage_names[field]}\":${usage_reported[field]}"
+        unreported[field]="\"${usage_names[field]}\":${usage_unreported[field]}"
+        sums[field]="\"${usage_names[field]}\":${usage_sum[field]}"
+    done
+    if [[ $any_reported == 0 ]]; then state=unavailable;
+    elif [[ $any_unreported == 1 ]]; then state=partial; fi
+    printf '{"state":"%s","input":%s,"cached_input":%s,"output":%s,' \
+        "$state" "${values[0]}" "${values[1]}" "${values[2]}"
+    printf '"reported_sum":{%s,%s,%s},"coverage":{"reported":{%s,%s,%s},"unreported":{%s,%s,%s}}}\n' \
+        "${sums[@]}" "${reported[@]}" "${unreported[@]}"
+}
+
+snapshot_project() {
+    local candidate=$1 output=$2 path relative kind digest mode listing
+    : >"$output"
+    find "$candidate" -mindepth 1 -print0 >"$output.paths"
+    LC_ALL=C sort -z "$output.paths" -o "$output.paths"
+    while IFS= read -r -d '' path; do
+        relative=${path#"$candidate/"}
+        listing=$(LC_ALL=C ls -ld "$path") || {
+            echo 'benchmark: cannot read workspace entry mode' >&2
+            return 65
+        }
+        mode=${listing:0:10}
+        [[ ${#mode} == 10 ]] || {
+            echo 'benchmark: invalid workspace entry mode' >&2
+            return 65
+        }
+        digest=''
+        if [[ -L $path ]]; then
+            kind=symlink
+            digest=$(readlink -z -- "$path" | sha256sum | cut -d' ' -f1)
+        elif [[ -f $path ]]; then
+            kind=file
+            digest=$(sha256sum <"$path" | cut -d' ' -f1)
+        elif [[ -d $path ]]; then
+            kind=directory
+        else
+            echo 'benchmark: unsupported workspace entry type' >&2
+            return 65
+        fi
+        jq -cn --arg path "$relative" --arg kind "$kind" --arg digest "$digest" \
+            --arg mode "$mode" '{path:$path,kind:$kind,digest:$digest,mode:$mode}' >>"$output"
+    done <"$output.paths"
+    rm -- "$output.paths"
+}
+
+verify_scope() {
+    local before=$1 after=$2 scopes_json=$3 changed_file=$4
+    jq -cs 'group_by(.path)[] | select(length == 1 or .[0] != .[1]) | .[0].path' \
+        "$before" "$after" >"$changed_file"
+    jq -se --argjson scopes "$scopes_json" \
+        'all(.[]; . as $path | any($scopes[]; . as $scope | $path == $scope or ($path | startswith($scope + "/"))))' \
+        "$changed_file" >/dev/null
+}
+
+emit_preflight_report() {
+    jq -cn \
+        --arg schema zcl.zcode_adapter_preflight_acceptance.v2 \
+        --argjson tasks "$task_limit" \
+        --argjson verified "$preflight_verified" \
+        --argjson calls "$native_calls" \
+        --argjson output_bytes "$tool_output_bytes" \
+        --argjson elapsed_us "$elapsed_us" \
+        '{schema:$schema,tasks:$tasks,preflight_verified:$verified,adapter_invocations:0,provider_requests:0,native_tool_calls:$calls,native_tool_output_bytes:$output_bytes,elapsed_us:$elapsed_us}'
+}
+
+emit_benchmark_report() {
+if [[ $arm == control ]]; then
+    token_summary='{"state":"unavailable_no_model_request","input":null,"cached_input":null,"output":null}'
+else
+    token_summary=$(usage_summary)
+fi
+benchmark_output=$(jq -cn \
+    --arg schema zcl.zcode_adapter_benchmark.v2 \
+    --arg arm "$arm" \
+    --argjson tasks "$task_limit" \
+    --argjson packet_bytes "$packet_bytes" \
+    --argjson tool_output_bytes "$tool_output_bytes" \
+    --argjson native_tool_calls "$native_calls" \
+    --argjson model_calls "$model_calls" \
+    --argjson retries "$retries" \
+    --argjson elapsed_us "$elapsed_us" \
+    --argjson scope_errors "$scope_errors" \
+    --argjson verified_success "$verified_success" \
+    --argjson adapter_unavailable "$unavailable" \
+    --argjson model_tool_output_bytes "$model_tool_output_bytes" \
+    --argjson model_tool_calls "$model_tool_calls" \
+    --argjson first_pass_success "$first_pass_success" \
+    --argjson exact_reproduction "$exact_reproduction" \
+    --argjson expected_refusal_success "$expected_refusal_success" \
+    --argjson model_failures "$model_failures" \
+    --argjson sandbox_failures "$sandbox_failures" \
+    '{schema:$schema,arm:$arm,tasks:$tasks,tokens:"Z23_TOKEN_SUMMARY",packet_bytes:$packet_bytes,tool_output_bytes:{native:$tool_output_bytes,model:$model_tool_output_bytes},calls:{native:$native_tool_calls,adapter_invocations:$model_calls,provider_requests:null,model_tools:$model_tool_calls},retries:$retries,elapsed_us:$elapsed_us,scope_errors:$scope_errors,sandbox_failures:$sandbox_failures,first_pass_success:$first_pass_success,verified_success:$verified_success,exact_reproduction:$exact_reproduction,expected_refusal_success:$expected_refusal_success,model_failures:$model_failures,adapter_unavailable:$adapter_unavailable}')
+# Keep integer totals exact; passing them back through jq can round INT64 values.
+printf '%s\n' "${benchmark_output/\"Z23_TOKEN_SUMMARY\"/$token_summary}"
+}
+
+# Deterministic acceptance exercises the same extraction caller without any
+# node operation, credential access, or model request.
+if [[ ${1:-} == --report-fixture ]]; then
+    [[ $# == 2 && ($2 == benchmark || $2 == preflight) ]] || exit 64
+    # Synthetic observations exercise the production builders, not a model.
+    arm=fixture task_limit=2 preflight_verified=2 native_calls=0
+    tool_output_bytes=0 elapsed_us=0 packet_bytes=0 model_calls=2 retries=0
+    scope_errors=0 verified_success=1 unavailable=0 model_tool_output_bytes=0
+    model_tool_calls=0 first_pass_success=1 exact_reproduction=0
+    expected_refusal_success=1 model_failures=0 sandbox_failures=0
+    if [[ $2 == preflight ]]; then emit_preflight_report; else emit_benchmark_report; fi
+    exit 0
+fi
+if [[ ${1:-} == --scope-fixture ]]; then
+    [[ $# == 6 ]] || exit 64
+    snapshot_project "$2" "$4"
+    snapshot_project "$3" "$5"
+    verify_scope "$4" "$5" "$6" "$5.changed"
+    exit $?
+fi
+if [[ ${1:-} == --usage-fixture ]]; then
+    [[ $# -ge 3 ]] || { usage_fail 'fixture needs format and input file'; exit 64; }
+    format=${2:-}
+    shift 2
+    [[ $# -gt 0 ]] || { usage_fail 'fixture needs an input file'; exit 64; }
+    for fixture in "$@"; do
+        case "$format" in
+            exec) usage_exec_file "$fixture" ;;
+            appserver)
+                usage_file_valid "$fixture"
+                usage_app_document "$(cat "$fixture")" ;;
+            *) usage_fail 'fixture format must be exec or appserver'; exit 64 ;;
+        esac
+    done
+    usage_summary
+    exit 0
+fi
+
 arm=${1:-}
 case "$arm" in
     control|preflight|packet-analysis|ephemeral-full|ephemeral-index|ephemeral-hybrid|ephemeral-hybrid-stable|appserver-hybrid-stable) ;;
@@ -13,7 +293,6 @@ case "$arm" in
     ;;
 esac
 
-repo_root=$(cd "$(dirname "$0")/../.." && pwd -P)
 z23_bin="$repo_root/build/bin/z23"
 app_server_benchmark="$repo_root/build/bin/zclassic23-zcode-app-server-benchmark"
 case_source="$repo_root/tests/harness/src/test_zcode_package_dev.c"
@@ -86,13 +365,11 @@ packet_bytes=0
 scope_errors=0
 verified_success=0
 unavailable=0
-input_tokens=0
-cached_input_tokens=0
-output_tokens=0
 model_tool_output_bytes=0
 model_tool_calls=0
 first_pass_success=0
 exact_reproduction=0
+expected_refusal_success=0
 model_failures=0
 sandbox_failures=0
 preflight_verified=0
@@ -114,18 +391,6 @@ if [[ $arm == ephemeral-* || $arm == appserver-* ]] &&
     exit 64
 fi
 
-snapshot_project() {
-    local candidate=$1 output=$2 path
-    : >"$output"
-    for path in LICENSE include/x.h src/x.c tests/test.c zcode-package.json; do
-        if [[ -f $candidate/$path ]]; then
-            sha256sum "$candidate/$path" |
-                sed "s#  $candidate/#  #" >>"$output"
-        else
-            printf 'MISSING  %s\n' "$path" >>"$output"
-        fi
-    done
-}
 
 source_index() {
     local candidate=$1 include_content=$2 path bytes digest
@@ -224,26 +489,6 @@ run_ephemeral_model() {
     return "$rc"
 }
 
-verify_scope() {
-    local before=$1 after=$2 scopes_json=$3 changed_file=$4 line path ok
-    : >"$changed_file"
-    while IFS= read -r line; do
-        path=${line#*  }
-        printf '%s\n' "$path" >>"$changed_file"
-    done < <(diff --old-group-format='%<' --new-group-format='%>' \
-                    --changed-group-format='%>' --unchanged-group-format='' \
-                    "$before" "$after" || true)
-    ok=true
-    while IFS= read -r path; do
-        [[ -z $path ]] && continue
-        if ! jq -e --arg path "$path" \
-            'any(.[]; $path == . or ($path | startswith(. + "/")))' \
-            >/dev/null <<<"$scopes_json"; then
-            ok=false
-        fi
-    done <"$changed_file"
-    [[ $ok == true ]]
-}
 
 case_index=0
 for row in "${cases[@]}"; do
@@ -362,19 +607,25 @@ for row in "${cases[@]}"; do
     changed="$bench_root/changed-$case_index"
     prompt="$bench_root/prompt-$case_index.json"
     events="$bench_root/events-$case_index.jsonl"
-    snapshot_project "$candidate" "$before"
     packet_for_arm "$packet" "$candidate" "$prompt"
-    packet_bytes=$((packet_bytes + $(wc -c <"$prompt")))
-    model_calls=$((model_calls + 1))
+    # Create harness-owned entries before observing any adapter writes.
+    mkdir -p "$candidate/.zcode-adapter-tmp"
     if [[ $arm == appserver-hybrid-stable ]]; then
         app_packet="$candidate/.zcode-adapter-packet.json"
         cp "$prompt" "$app_packet"
         chmod 0600 "$app_packet"
+    fi
+    snapshot_project "$candidate" "$before"
+    packet_bytes=$((packet_bytes + $(wc -c <"$prompt")))
+    model_calls=$((model_calls + 1))
+    if [[ $arm == appserver-hybrid-stable ]]; then
         set +e
-        app_output=$("$app_server_benchmark" \
-            "$candidate" "$app_packet" "$benchmark_model")
+        "$app_server_benchmark" \
+            "$candidate" "$app_packet" "$benchmark_model" >"$events"
         app_rc=$?
         set -e
+        usage_file_valid "$events"
+        app_output=$(cat "$events")
         if [[ $app_rc -eq 0 ]] &&
            jq -e '.completed == true and .turn_status == "completed" and
                   .server_requests_denied == 0 and .forbidden_tool_calls == 0' \
@@ -384,9 +635,7 @@ for row in "${cases[@]}"; do
             model_ok=false
             model_failures=$((model_failures + 1))
         fi
-        input_tokens=$((input_tokens + $(jq -r '.tokens.input // 0' <<<"$app_output")))
-        cached_input_tokens=$((cached_input_tokens + $(jq -r '.tokens.cached_input // 0' <<<"$app_output")))
-        output_tokens=$((output_tokens + $(jq -r '.tokens.output // 0' <<<"$app_output")))
+        usage_app_document "$app_output"
         model_tool_calls=$((model_tool_calls + $(jq -r '.tool_calls // 0' <<<"$app_output")))
         model_tool_output_bytes=$((model_tool_output_bytes + $(jq -r '.tool_output_bytes // 0' <<<"$app_output")))
         if jq -e '.diagnostic.bwrap_loopback_failure == true' >/dev/null \
@@ -400,9 +649,7 @@ for row in "${cases[@]}"; do
         model_failures=$((model_failures + 1))
     fi
     if [[ $arm != appserver-hybrid-stable ]]; then
-        input_tokens=$((input_tokens + $(jq -s '[.[] | select(.type == "turn.completed") | .usage.input_tokens // 0] | add // 0' "$events")))
-        cached_input_tokens=$((cached_input_tokens + $(jq -s '[.[] | select(.type == "turn.completed") | .usage.cached_input_tokens // 0] | add // 0' "$events")))
-        output_tokens=$((output_tokens + $(jq -s '[.[] | select(.type == "turn.completed") | .usage.output_tokens // 0] | add // 0' "$events")))
+        usage_exec_file "$events"
         model_tool_calls=$((model_tool_calls + $(jq -s '[.[] | select(.type == "item.completed" and .item.type == "command_execution")] | length' "$events")))
         model_tool_output_bytes=$((model_tool_output_bytes + $(jq -s '[.[] | select(.type == "item.completed" and .item.type == "command_execution") | (.item.aggregated_output // "" | utf8bytelength)] | add // 0' "$events")))
         retries=$((retries + $(jq -s '[.[] | select((.type // "") | test("retry"; "i"))] | length' "$events")))
@@ -413,6 +660,7 @@ for row in "${cases[@]}"; do
     snapshot_project "$candidate" "$after"
     if ! verify_scope "$before" "$after" "$scopes_json" "$changed"; then
         scope_errors=$((scope_errors + 1))
+        continue
     fi
     changed_count=$(wc -l <"$changed")
 
@@ -420,7 +668,7 @@ for row in "${cases[@]}"; do
         if [[ $model_ok == true && $changed_count -eq 0 ]]; then
             verified_success=$((verified_success + 1))
             first_pass_success=$((first_pass_success + 1))
-            exact_reproduction=$((exact_reproduction + 1))
+            expected_refusal_success=$((expected_refusal_success + 1))
         fi
         continue
     fi
@@ -459,14 +707,7 @@ done
 
 elapsed_us=$((($(date +%s%N) - started_ns) / 1000))
 if [[ $arm == preflight ]]; then
-    jq -cn \
-        --arg schema zcl.zcode_adapter_preflight_acceptance.v1 \
-        --argjson tasks "$task_limit" \
-        --argjson verified "$preflight_verified" \
-        --argjson calls "$native_calls" \
-        --argjson output_bytes "$tool_output_bytes" \
-        --argjson elapsed_us "$elapsed_us" \
-        '{schema:$schema,tasks:$tasks,preflight_verified:$verified,model_requests:0,native_tool_calls:$calls,native_tool_output_bytes:$output_bytes,elapsed_us:$elapsed_us}'
+    emit_preflight_report
     exit 0
 fi
 if [[ $arm == packet-analysis ]]; then
@@ -486,38 +727,4 @@ if [[ $arm == packet-analysis ]]; then
         '{schema:$schema,tasks:$tasks,packet_bytes:{full:$full,index_only:$index,hybrid:$hybrid,hybrid_stable:$stable},global_common_prefix_bytes:{hybrid_current:$hybrid_prefix,hybrid_stable:$stable_prefix},native_tool_calls:$native_calls,native_tool_output_bytes:$tool_output_bytes,elapsed_us:$elapsed_us}'
     exit 0
 fi
-if [[ $arm == control ]]; then
-    token_state=unavailable_no_model_request
-    input_json=null
-    cached_json=null
-    output_json=null
-else
-    token_state=measured
-    input_json=$input_tokens
-    cached_json=$cached_input_tokens
-    output_json=$output_tokens
-fi
-jq -cn \
-    --arg schema zcl.zcode_adapter_benchmark.v1 \
-    --arg arm "$arm" \
-    --arg token_state "$token_state" \
-    --argjson tasks "$task_limit" \
-    --argjson input_tokens "$input_json" \
-    --argjson cached_input_tokens "$cached_json" \
-    --argjson output_tokens "$output_json" \
-    --argjson packet_bytes "$packet_bytes" \
-    --argjson tool_output_bytes "$tool_output_bytes" \
-    --argjson native_tool_calls "$native_calls" \
-    --argjson model_calls "$model_calls" \
-    --argjson retries "$retries" \
-    --argjson elapsed_us "$elapsed_us" \
-    --argjson scope_errors "$scope_errors" \
-    --argjson verified_success "$verified_success" \
-    --argjson adapter_unavailable "$unavailable" \
-    --argjson model_tool_output_bytes "$model_tool_output_bytes" \
-    --argjson model_tool_calls "$model_tool_calls" \
-    --argjson first_pass_success "$first_pass_success" \
-    --argjson exact_reproduction "$exact_reproduction" \
-    --argjson model_failures "$model_failures" \
-    --argjson sandbox_failures "$sandbox_failures" \
-    '{schema:$schema,arm:$arm,tasks:$tasks,tokens:{state:$token_state,input:$input_tokens,cached_input:$cached_input_tokens,output:$output_tokens},packet_bytes:$packet_bytes,tool_output_bytes:{native:$tool_output_bytes,model:$model_tool_output_bytes},calls:{native:$native_tool_calls,model_requests:$model_calls,model_tools:$model_tool_calls},retries:$retries,elapsed_us:$elapsed_us,scope_errors:$scope_errors,sandbox_failures:$sandbox_failures,first_pass_success:$first_pass_success,verified_success:$verified_success,exact_reproduction:$exact_reproduction,model_failures:$model_failures,adapter_unavailable:$adapter_unavailable}'
+emit_benchmark_report

@@ -93,6 +93,7 @@
 #include "tls_client.h"
 #include "json/json.h"
 #include "util/spawn.h"
+#include "vcs/vcs_object.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -2351,6 +2352,49 @@ static bool dispatch_with_retries(const struct engine_vendor *v,
              budget + 1, engine_err_name(dr->err));
 }
 
+static bool template_object_store(const char *workspace, const char *kind)
+{
+    if (!kind || !kind[0])
+        return true;
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (!engine_prompt_template_serialize(kind, &wire, &wire_len))
+        LOG_FAIL("engine_unit", "cannot serialize selected template object");
+    uint8_t root[32], expected[32];
+    zcl_sha3_256(wire, wire_len, root);
+    engine_prompt_template_sha3(kind, expected);
+    bool stored = memcmp(root, expected, sizeof(root)) == 0 &&
+        vcs_object_store_init(workspace) &&
+        vcs_object_put_addressed(workspace, root, wire, wire_len);
+    uint8_t *readback = NULL;
+    size_t readback_len = 0;
+    stored = stored && vcs_object_load_raw_bounded(
+        workspace, root, ENGINE_PROMPT_TEMPLATE_MAX_BYTES,
+        &readback, &readback_len) == 0;
+    if (stored) {
+        zcl_sha3_256(readback, readback_len, expected);
+        stored = readback_len == wire_len &&
+            memcmp(root, expected, sizeof(root)) == 0 &&
+            memcmp(wire, readback, wire_len) == 0;
+    }
+    free(readback);
+    free(wire);
+    if (!stored)
+        LOG_FAIL("engine_unit", "selected template CAS write/readback refused; "
+                 "refusing before provider dispatch");
+    return true;
+}
+
+static bool dispatch_workspace_prepare(const struct unit_opts *o, char *out,
+                                       size_t out_len)
+{
+    if (!worktree_prepare(o, out, out_len))
+        LOG_FAIL("engine_unit", "cannot prepare isolated dispatch workspace");
+    if (!template_object_store(out, o->kind))
+        LOG_FAIL("engine_unit", "cannot bind selected template in workspace");
+    return true;
+}
+
 static int fail_setup(const char *why)
 {
     engine_emit(stderr, "engine_unit: %s\n", why);
@@ -2582,7 +2626,7 @@ int main(int argc, char **argv)
         engine_secret_clear();
         return 2;
     }
-    if (!worktree_prepare(&o, workdir, sizeof(workdir))) {
+    if (!dispatch_workspace_prepare(&o, workdir, sizeof(workdir))) {
         free(prompt);
         free(task);
         free(brief);
