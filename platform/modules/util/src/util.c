@@ -172,7 +172,35 @@ static bool config_split(char *s, char key[MAX_ARG_LEN],
     const char *v = eq + 1;
     while (*v == ' ' || *v == '\t')
         v++;
+    if (strlen(v) >= MAX_ARG_LEN)
+        return false;
     snprintf(value, MAX_ARG_LEN, "%s", v);
+    return true;
+}
+
+/* Discard an overlong physical record, including its continuation. Short
+ * final records need no newline, matching ordinary text configuration. */
+static bool config_read_line(FILE *f, char line[MAX_ARG_LEN * 2])
+{
+    size_t n = 0;
+    bool seen = false, invalid = false;
+    int c;
+    while ((c = fgetc(f)) != EOF) {
+        seen = true;
+        if (c == '\n')
+            break;
+        if (c == '\0')
+            invalid = true;
+        if (n < MAX_ARG_LEN * 2 - 1)
+            line[n++] = (char)c;
+        else
+            invalid = true;
+    }
+    if (ferror(f) || !seen) {
+        line[0] = '\0';
+        return false;
+    }
+    line[invalid ? 0 : n] = '\0';
     return true;
 }
 
@@ -186,7 +214,7 @@ int ReadConfigFile(const char *path)
 
     int applied = 0;
     char line[MAX_ARG_LEN * 2];
-    while (fgets(line, sizeof(line), f)) {
+    while (config_read_line(f, line)) {
         char key[MAX_ARG_LEN];
         char value[MAX_ARG_LEN];
         char *s = config_line_text(line);

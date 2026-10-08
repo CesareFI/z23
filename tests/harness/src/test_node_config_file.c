@@ -32,16 +32,22 @@
 
 /* Write `body` to <dir>/z23.conf; false on failure so a filesystem problem
  * cannot masquerade as the missing-file path. */
-static bool ncf_write_conf(const char *dir, const char *body)
+static bool ncf_write_bytes(const char *dir, const char *body, size_t length)
 {
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s", dir, ZCL_NODE_CONFIG_FILENAME);
     FILE *f = fopen(path, "we");
     if (!f)
         return false;
-    fputs(body, f);
-    fclose(f);
-    return true;
+    bool written = fwrite(body, 1, length, f) == length;
+    if (fclose(f) != 0)
+        written = false;
+    return written;
+}
+
+static bool ncf_write_conf(const char *dir, const char *body)
+{
+    return ncf_write_bytes(dir, body, strlen(body));
 }
 
 /* Reset the argument table via ParseParameters(), the production entry
@@ -148,6 +154,175 @@ static int test_line_shapes(void)
         PASS();
     } _test_next:;
 
+    return failures;
+}
+
+static int test_comment_continuation(void)
+{
+    int failures = 0;
+    TEST("node-config: overlong comments discard setting continuations") {
+        char dir[512], path[1024], body[MAX_ARG_LEN * 3];
+        test_make_tmpdir(dir, sizeof(dir), "node_conf", "comment_continuation");
+        snprintf(path, sizeof(path), "%s/%s", dir, ZCL_NODE_CONFIG_FILENAME);
+        const char *argv[] = { "z23" };
+        body[0] = '#';
+        memset(body + 1, 'a', MAX_ARG_LEN * 2 - 2);
+        snprintf(body + MAX_ARG_LEN * 2 - 1,
+                 sizeof(body) - (MAX_ARG_LEN * 2 - 1),
+                 "packagehost=1\nbuildworker=1\n");
+        ASSERT(ncf_write_conf(dir, body));
+        ncf_set_argv(argv, 1);
+        ASSERT_EQ(ReadConfigFile(path), 1);
+        ASSERT_STR_EQ(GetArg("-packagehost", "absent"), "absent");
+        ASSERT_STR_EQ(GetArg("-buildworker", ""), "1");
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_oversized_value(void)
+{
+    int failures = 0;
+    TEST("node-config: oversized values insert no truncated setting") {
+        char dir[512], path[1024], body[MAX_ARG_LEN * 3];
+        test_make_tmpdir(dir, sizeof(dir), "node_conf", "oversized_value");
+        snprintf(path, sizeof(path), "%s/%s", dir, ZCL_NODE_CONFIG_FILENAME);
+        const char *argv[] = { "z23" };
+        memcpy(body, "packagehost=", 12);
+        memset(body + 12, 'a', MAX_ARG_LEN);
+        snprintf(body + 12 + MAX_ARG_LEN, sizeof(body) - 12 - MAX_ARG_LEN,
+                 "\nbuildworker=1\n");
+        ASSERT(ncf_write_conf(dir, body));
+        ncf_set_argv(argv, 1);
+        ASSERT_EQ(ReadConfigFile(path), 1);
+        ASSERT_STR_EQ(GetArg("-packagehost", "absent"), "absent");
+        ASSERT_STR_EQ(GetArg("-buildworker", ""), "1");
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_spanning_value(void)
+{
+    int failures = 0;
+    TEST("node-config: values spanning records insert no fragments") {
+        char dir[512], path[1024], body[MAX_ARG_LEN * 3];
+        test_make_tmpdir(dir, sizeof(dir), "node_conf", "spanning_value");
+        snprintf(path, sizeof(path), "%s/%s", dir, ZCL_NODE_CONFIG_FILENAME);
+        const char *argv[] = { "z23" };
+        memcpy(body, "packagehost=", 12);
+        memset(body + 12, 'a', MAX_ARG_LEN * 2);
+        snprintf(body + 12 + MAX_ARG_LEN * 2,
+                 sizeof(body) - 12 - MAX_ARG_LEN * 2, "\nbuildworker=1\n");
+        ASSERT(ncf_write_conf(dir, body));
+        ncf_set_argv(argv, 1);
+        ASSERT_EQ(ReadConfigFile(path), 1);
+        ASSERT_STR_EQ(GetArg("-packagehost", "absent"), "absent");
+        ASSERT_STR_EQ(GetArg("-buildworker", ""), "1");
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_representable_value(void)
+{
+    int failures = 0;
+    TEST("node-config: representable values and short EOF records apply") {
+        char dir[512], path[1024], body[MAX_ARG_LEN * 3];
+        test_make_tmpdir(dir, sizeof(dir), "node_conf", "representable_value");
+        snprintf(path, sizeof(path), "%s/%s", dir, ZCL_NODE_CONFIG_FILENAME);
+        const char *argv[] = { "z23" };
+        memcpy(body, "packagehost=", 12);
+        memset(body + 12, 'a', MAX_ARG_LEN - 1);
+        snprintf(body + 12 + MAX_ARG_LEN - 1,
+                 sizeof(body) - 12 - (MAX_ARG_LEN - 1), "\nbuildworker=1");
+        ASSERT(ncf_write_conf(dir, body));
+        ncf_set_argv(argv, 1);
+        ASSERT_EQ(ReadConfigFile(path), 2);
+        ASSERT_EQ(strlen(GetArg("-packagehost", "")), MAX_ARG_LEN - 1);
+        ASSERT_STR_EQ(GetArg("-buildworker", ""), "1");
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_maximum_record(void)
+{
+    int failures = 0;
+    TEST("node-config: maximum key and value fit at newline and EOF") {
+        char dir[512], path[1024], body[MAX_ARG_LEN * 3];
+        test_make_tmpdir(dir, sizeof(dir), "node_conf", "maximum_record");
+        snprintf(path, sizeof(path), "%s/%s", dir, ZCL_NODE_CONFIG_FILENAME);
+        const char *argv[] = { "z23" };
+        body[0] = '-';
+        memset(body + 1, 'k', MAX_ARG_LEN - 2);
+        body[MAX_ARG_LEN - 1] = '=';
+        memset(body + MAX_ARG_LEN, 'v', MAX_ARG_LEN - 1);
+        body[MAX_ARG_LEN * 2 - 1] = '\0';
+        ASSERT(ncf_write_conf(dir, body));
+        ncf_set_argv(argv, 1);
+        ASSERT_EQ(ReadConfigFile(path), 1);
+        ASSERT_EQ(strlen(g_args[0].key), MAX_ARG_LEN - 1);
+        ASSERT_EQ(strlen(g_args[0].value), MAX_ARG_LEN - 1);
+        body[MAX_ARG_LEN * 2 - 1] = '\n';
+        body[MAX_ARG_LEN * 2] = '\0';
+        ASSERT(ncf_write_conf(dir, body));
+        ncf_set_argv(argv, 1);
+        ASSERT_EQ(ReadConfigFile(path), 1);
+        ASSERT_EQ(strlen(g_args[0].key), MAX_ARG_LEN - 1);
+        ASSERT_EQ(strlen(g_args[0].value), MAX_ARG_LEN - 1);
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_nul_record(void)
+{
+    int failures = 0;
+    TEST("node-config: NUL-bearing records discard hidden trailing bytes") {
+        char dir[512], path[1024];
+        static const char body[] = "packagehost=1\0junk\nbuildworker=1\n";
+        test_make_tmpdir(dir, sizeof(dir), "node_conf", "nul_record");
+        snprintf(path, sizeof(path), "%s/%s", dir, ZCL_NODE_CONFIG_FILENAME);
+        ASSERT(ncf_write_bytes(dir, body, sizeof(body) - 1));
+        const char *argv[] = { "z23" };
+        ncf_set_argv(argv, 1);
+        ASSERT_EQ(ReadConfigFile(path), 1);
+        ASSERT_STR_EQ(GetArg("-packagehost", "absent"), "absent");
+        ASSERT_STR_EQ(GetArg("-buildworker", ""), "1");
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_nul_boundary(void)
+{
+    int failures = 0;
+    TEST("node-config: NUL before the read boundary cannot expose a setting") {
+        char dir[512], path[1024], body[MAX_ARG_LEN * 3];
+        static const char tail[] = "packagehost=1\nbuildworker=1\n";
+        test_make_tmpdir(dir, sizeof(dir), "node_conf", "nul_boundary");
+        snprintf(path, sizeof(path), "%s/%s", dir, ZCL_NODE_CONFIG_FILENAME);
+        memset(body, 'a', MAX_ARG_LEN * 2 - 1);
+        body[0] = '#';
+        body[1] = '\0';
+        memcpy(body + MAX_ARG_LEN * 2 - 1, tail, sizeof(tail) - 1);
+        ASSERT(ncf_write_bytes(dir, body,
+                              MAX_ARG_LEN * 2 - 1 + sizeof(tail) - 1));
+        const char *argv[] = { "z23" };
+        ncf_set_argv(argv, 1);
+        ASSERT_EQ(ReadConfigFile(path), 1);
+        ASSERT_STR_EQ(GetArg("-packagehost", "absent"), "absent");
+        ASSERT_STR_EQ(GetArg("-buildworker", ""), "1");
+        test_cleanup_tmpdir(dir);
+        PASS();
+    } _test_next:;
     return failures;
 }
 
@@ -433,6 +608,13 @@ int test_node_config_file(void)
     failures += test_command_line_always_wins();
     failures += test_file_cannot_move_the_datadir();
     failures += test_line_shapes();
+    failures += test_comment_continuation();
+    failures += test_oversized_value();
+    failures += test_spanning_value();
+    failures += test_representable_value();
+    failures += test_maximum_record();
+    failures += test_nul_record();
+    failures += test_nul_boundary();
     failures += test_missing_file_changes_nothing();
     failures += test_path_resolution_creates_nothing();
     failures += test_path_falls_back_to_the_argument_table();
