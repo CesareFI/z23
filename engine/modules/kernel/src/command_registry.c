@@ -2,6 +2,7 @@
 
 #include "kernel/command_registry.h"
 
+#include "base/cleanse.h"
 #include "command_registry_internal.h"
 
 #include "crypto/sha256.h"
@@ -768,11 +769,16 @@ size_t zcl_command_registry_execute_json(
         next_registry, spec, &reply, invoked_by_alias, sequence, elapsed_us,
         budget_bytes, execute_session_presented(context), &policy, out,
         out_size);
-    if (result == 0)
+    if (result == 0) {
+        if ((spec->traits & ZCL_COMMAND_TRAIT_SECRET_OUTPUT) != 0 && out)
+            memory_cleanse(out, out_size);
         result = execute_fallback(out, out_size, budget_bytes, &reply);
+    }
     if (exit_code)
         *exit_code = reply.exit_code;
     handler_snapshot_release(held);
+    if ((spec->traits & ZCL_COMMAND_TRAIT_SECRET_OUTPUT) != 0)
+        json_cleanse_strings(&reply.data);
     zcl_command_reply_free(&reply);
     return result;
 }

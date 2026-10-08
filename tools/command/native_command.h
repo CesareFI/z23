@@ -34,6 +34,11 @@ bool zcl_native_dev_events_step_for_test(const char *root, int64_t *after,
  * it even for NULL/empty input; caller releases it with json_free(). */
 bool zcl_native_next_input_read_for_test(const char *next_input,
                                         struct json_value *parsed);
+
+/* Exercise the exact buffer-cleanse half of the native renderer's retirement
+ * helper without freeing caller-owned test storage. */
+void zcl_native_retire_secret_buffer_for_test(
+    const struct zcl_command_spec *spec, void *buffer, size_t buffer_size);
 #endif
 
 /* Resolve argv under a canonical root through the registry and print exactly

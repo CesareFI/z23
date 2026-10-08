@@ -14,6 +14,7 @@
 #include "controllers/wallet_native_handlers.h"
 #include "controllers/wallet_shielded_controller.h"
 
+#include "base/cleanse.h"
 #include "json/json.h"
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
@@ -57,6 +58,20 @@
  * broadcast twice. */
 
 #define WNH_TAG "native.wallet"
+
+static bool wnh_method_returns_key_material(const char *method)
+{
+    return method && (strcmp(method, "dumpprivkey") == 0 ||
+                      strcmp(method, "z_exportkey") == 0 ||
+                      strcmp(method, "z_exportviewingkey") == 0);
+}
+
+static void wnh_retire_rpc_raw(const char *method, char *raw)
+{
+    if (raw && wnh_method_returns_key_material(method))
+        memory_cleanse(raw, strlen(raw) + 1);
+    free(raw);
+}
 
 /* Detect a JSON-RPC failure body: {"error":{...}} / {"error":"..."} or a bare
  * {"code":int,"message":str} (the shape node_rpc_call returns on transport
@@ -108,7 +123,7 @@ static bool wnh_call_rpc_common(struct zcl_command_reply *reply,
     }
     if (!json_read(out, raw, strlen(raw))) {
         json_free(out);
-        free(raw);
+        wnh_retire_rpc_raw(method, raw);
         LOG_ERROR(WNH_TAG, "RPC %s returned an unparseable body", method);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "BAD_RPC_BODY",
@@ -117,7 +132,7 @@ static bool wnh_call_rpc_common(struct zcl_command_reply *reply,
                                method);
         return false;
     }
-    free(raw);
+    wnh_retire_rpc_raw(method, raw);
     const char *emsg = NULL;
     if (wnh_body_is_error(out, &emsg)) {
         LOG_ERROR(WNH_TAG, "RPC %s reported an error: %s", method,
@@ -441,6 +456,7 @@ void zcl_native_handle_wallet_address_export_key(
         return;
     const char *wif = wnh_string_result(&body);
     if (!wif) {
+        json_cleanse_strings(&body);
         json_free(&body);
         wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "NO_KEY",
                  "dumpprivkey did not return a private key", addr);
@@ -451,6 +467,7 @@ void zcl_native_handle_wallet_address_export_key(
     (void)json_push_kv_str(&reply->data, "address", addr);
     (void)json_push_kv_str(&reply->data, "privkey", wif);
     (void)json_push_kv_str(&reply->data, "plan_token", token);
+    json_cleanse_strings(&body);
     json_free(&body);
 }
 

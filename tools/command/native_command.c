@@ -19,6 +19,7 @@
 #define _GNU_SOURCE
 #include "command/native_command.h"
 #include "command/native_command_priv.h"
+#include "base/cleanse.h"
 #include "base/hex.h"
 
 #include "config/command_catalog.h"
@@ -4421,6 +4422,52 @@ static bool nc_main_execute(struct nc_main_state *st,
  * one-line error contract (docs/NATIVE_COMMAND_INTERFACE.md).
  * Returns true when this call is fully handled (*rc holds the process
  * exit code); false means fall through to the ordinary rendering below. */
+static bool nc_spec_has_secret_output(const struct zcl_command_spec *spec)
+{
+    return spec &&
+           (spec->traits & ZCL_COMMAND_TRAIT_SECRET_OUTPUT) != 0;
+}
+
+static void nc_main_retire_json(const struct zcl_command_spec *spec,
+                                struct json_value *value)
+{
+    if (nc_spec_has_secret_output(spec))
+        json_cleanse_strings(value);
+    json_free(value);
+}
+
+static void nc_main_cleanse_buffer(const struct zcl_command_spec *spec,
+                                   void *buffer, size_t buffer_size)
+{
+    if (buffer && nc_spec_has_secret_output(spec))
+        memory_cleanse(buffer, buffer_size);
+}
+
+static void nc_main_retire_buffer(const struct zcl_command_spec *spec,
+                                  void *buffer, size_t buffer_size)
+{
+    nc_main_cleanse_buffer(spec, buffer, buffer_size);
+    free(buffer);
+}
+
+#ifdef ZCL_TESTING
+void zcl_native_retire_secret_buffer_for_test(
+    const struct zcl_command_spec *spec, void *buffer, size_t buffer_size)
+{
+    nc_main_cleanse_buffer(spec, buffer, buffer_size);
+}
+#endif
+
+static void nc_main_retire_prose_buffers(
+    const struct zcl_command_spec *spec, char *text, size_t text_size,
+    char *colored, size_t colored_size)
+{
+    if (!nc_spec_has_secret_output(spec))
+        return;
+    memory_cleanse(text, text_size);
+    memory_cleanse(colored, colored_size);
+}
+
 static bool nc_main_apply_field_selection(const struct zcl_command_spec *spec,
                                           const char *field_csv, char *out,
                                           size_t n, size_t out_cap,
@@ -4438,7 +4485,7 @@ static bool nc_main_apply_field_selection(const struct zcl_command_spec *spec,
             nc_print_error(spec->path, "ALLOCATION_FAILED", "render",
                            "could not allocate bounded field selection", spec->path,
                            "", "", "");
-            json_free(&env);
+            nc_main_retire_json(spec, &env);
             *rc = ZCL_COMMAND_EXIT_INTERNAL;
             return true;
         }
@@ -4453,14 +4500,14 @@ static bool nc_main_apply_field_selection(const struct zcl_command_spec *spec,
                    "error=UNKNOWN_FIELD detail=%s try=%s\n",
                    data ? selerr : "this result has no selectable data",
                    spec->path);
-            json_free(&env);
-            free(sel);
+            nc_main_retire_json(spec, &env);
+            nc_main_retire_buffer(spec, sel, out_cap);
             *rc = ZCL_COMMAND_EXIT_INVALID;
             return true;
         }
-        free(sel);
+        nc_main_retire_buffer(spec, sel, out_cap);
     }
-    json_free(&env);
+    nc_main_retire_json(spec, &env);
     if (handled) {
         *rc = (int)exit_code;
         return true;
@@ -4512,12 +4559,14 @@ static bool nc_main_render_prose(const struct zcl_command_spec *spec,
                            ? json_get_str_or(data, "next_action",
                                              "z23 core status brief")
                            : zcl_native_status_brief_next_command(data));
-            json_free(&env);
+            nc_main_retire_prose_buffers(spec, text, sizeof(text), colored,
+                                         sizeof(colored));
+            nc_main_retire_json(spec, &env);
             *rc = (int)exit_code;
             return true;
         }
     }
-    json_free(&env);
+    nc_main_retire_json(spec, &env);
     return false;
 }
 
@@ -4582,23 +4631,23 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     size_t n = 0;
     enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
     if (!nc_main_execute(&st, reg, out, out_cap, &n, &exit_code, &rc)) {
-        free(out);
+        nc_main_retire_buffer(st.spec, out, out_cap);
         return rc;
     }
 
     if (nc_main_apply_field_selection(st.spec, st.field_csv, out, n, out_cap,
                                       exit_code, &rc)) {
-        free(out);
+        nc_main_retire_buffer(st.spec, out, out_cap);
         return rc;
     }
 
     if (nc_main_render_prose(st.spec, st.seen_format, st.suggest_next, out, n,
                              exit_code, &rc)) {
-        free(out);
+        nc_main_retire_buffer(st.spec, out, out_cap);
         return rc;
     }
 
     nc_print_doc(out, st.spec->path);
-    free(out);
+    nc_main_retire_buffer(st.spec, out, out_cap);
     return (int)exit_code;
 }

@@ -3776,14 +3776,14 @@ test_unknown_trait_bit_registry(struct zcl_command_spec out_specs[2])
         .allowed_lanes = ZCL_COMMAND_LANE_LOCAL,
         .transports = ZCL_COMMAND_TRANSPORT_NATIVE,
         .handler = contract_noop_handler,
-        .traits = 1U << 7,
+        .traits = 1U << 8,
     };
     out_specs[0] = branch;
     out_specs[1] = leaf;
     return (struct zcl_command_registry){ .commands = out_specs, .count = 2 };
 }
 
-/* A trait bit above ZCL_COMMAND_TRAIT_PROSE is not one the registry knows
+/* A trait bit above ZCL_COMMAND_TRAIT_SECRET_OUTPUT is not one the registry knows
  * about; validate() must refuse it rather than let an unrecognized bit ride
  * through into a real catalog undetected. */
 static int test_unknown_trait_bit_rejected(void)
@@ -3792,7 +3792,7 @@ static int test_unknown_trait_bit_rejected(void)
     struct zcl_command_spec specs[2];
     struct zcl_command_registry reg = test_unknown_trait_bit_registry(specs);
     char why[128] = { 0 };
-    TEST("validate rejects a trait bit above ZCL_COMMAND_TRAIT_PROSE") {
+    TEST("validate rejects a trait bit above SECRET_OUTPUT") {
         ASSERT(!zcl_command_registry_validate(&reg, why, sizeof(why)));
         PASS();
     } _test_next:;
@@ -3855,6 +3855,10 @@ static int test_describe_emits_semantics(void)
             reg, "app.presentation.show", out, sizeof(out));
         ASSERT(n > 0);
         ASSERT(strstr(out, "\"display_only\":true") != NULL);
+        n = zcl_command_registry_describe_json(
+            reg, "core.wallet.address.export-key", out, sizeof(out));
+        ASSERT(n > 0);
+        ASSERT(strstr(out, "\"secret_output\":true") != NULL);
         PASS();
     } _test_next:;
     return failures;

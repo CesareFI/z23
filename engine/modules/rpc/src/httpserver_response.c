@@ -14,9 +14,19 @@
 #include "rpc/httpserver.h"
 
 #include "json/json.h"
+#include "support/cleanse.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include <stdlib.h>
+#include <string.h>
+
+static bool rpc_http_method_returns_key_material(const char *method)
+{
+    if (!method) return false;
+    return strcmp(method, "dumpprivkey") == 0 ||
+           strcmp(method, "z_exportkey") == 0 ||
+           strcmp(method, "z_exportviewingkey") == 0;
+}
 
 /* Upper bound on a single serialized JSON-RPC response body. Generous
  * enough for the largest legitimate responses (gettxoutsetinfo, a full
@@ -120,4 +130,17 @@ bool rpc_http_test_serialize_response(const struct json_value *response,
     *out_buf = buf;
     *out_len = wrote;
     return true;
+}
+
+void rpc_http_retire_response_copies(const char *method,
+                                     struct json_value *rpc_result,
+                                     struct json_value *response,
+                                     char *serialized, size_t serialized_size)
+{
+    if (!rpc_http_method_returns_key_material(method))
+        return;
+    json_cleanse_strings(rpc_result);
+    json_cleanse_strings(response);
+    if (serialized && serialized_size > 0)
+        memory_cleanse(serialized, serialized_size);
 }

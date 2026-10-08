@@ -14,6 +14,78 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+static bool rpc_span_is_zero(const char *span, size_t size)
+{
+    if (!span) return false;
+    for (size_t i = 0; i < size; i++)
+        if (span[i] != 0) return false;
+    return true;
+}
+
+static bool rpc_secret_response_copies_retire(const char *method)
+{
+    static const char secret[] = "synthetic-private-result";
+    struct json_value result, id, response;
+    json_init(&result);
+    json_init(&id);
+    json_init(&response);
+    json_set_str(&result, secret);
+    json_set_int(&id, 11);
+    bool ok = rpc_http_test_build_response_envelope(
+        true, method, &result, &id, &response);
+    char *buf = NULL;
+    size_t len = 0;
+    ok = ok && rpc_http_test_serialize_response(&response, &buf, &len);
+    struct json_value *copied = (struct json_value *)json_get(
+        &response, "result");
+    char *result_span = result.val.s;
+    char *copied_span = copied ? copied->val.s : NULL;
+    rpc_http_retire_response_copies(
+        method, &result, &response, buf, buf ? len + 1 : 0);
+    ok = ok && rpc_span_is_zero(result_span, sizeof(secret));
+    ok = ok && rpc_span_is_zero(copied_span, sizeof(secret));
+    ok = ok && rpc_span_is_zero(buf, buf ? len + 1 : 0);
+    free(buf);
+    json_free(&response);
+    json_free(&result);
+    json_free(&id);
+    return ok;
+}
+
+static bool rpc_ordinary_response_copies_remain(void)
+{
+    struct json_value result, response;
+    json_init(&result);
+    json_init(&response);
+    json_set_str(&result, "pong");
+    char buf[] = "pong";
+    rpc_http_retire_response_copies(
+        "ping", &result, &response, buf, sizeof(buf));
+    bool ok = strcmp(json_get_str(&result), "pong") == 0 &&
+              strcmp(buf, "pong") == 0;
+    json_free(&response);
+    json_free(&result);
+    return ok;
+}
+
+static int rpc_secret_retirement_cases(void)
+{
+    int failures = 0;
+    printf("dumpprivkey response copies retire after send... ");
+    if (rpc_secret_response_copies_retire("dumpprivkey")) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    printf("z_exportkey response copies retire after send... ");
+    if (rpc_secret_response_copies_retire("z_exportkey")) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    printf("z_exportviewingkey response copies retire after send... ");
+    if (rpc_secret_response_copies_retire("z_exportviewingkey")) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    printf("ordinary RPC response copies remain available... ");
+    if (rpc_ordinary_response_copies_remain()) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    return failures;
+}
+
 int test_rpc_error_envelope(void)
 {
     int failures = 0;
@@ -357,6 +429,8 @@ int test_rpc_error_envelope(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    failures += rpc_secret_retirement_cases();
+
     printf("serialize_response NULL args fail safely... ");
     {
         char *buf = (char *)0x1; /* poison: must be cleared to NULL */
@@ -369,6 +443,6 @@ int test_rpc_error_envelope(void)
     }
 
     printf("\n%d rpc error envelope tests, %d failed\n",
-           18, failures);
+           22, failures);
     return failures;
 }
