@@ -224,8 +224,10 @@ static bool focus_add_name(char (*table)[SPECIALIST_GROUP_MAX], size_t cap,
         if (strcmp(table[i], name) == 0)
             return true;
     }
-    if (*count >= cap)
-        return true;
+    if (*count >= cap) {
+        LOG_ERROR(FOCUS_TAG, "recorded name table full (%zu): %s", cap, name);
+        return false;
+    }
     int n = snprintf(table[*count], SPECIALIST_GROUP_MAX, "%s", name);
     if (n < 0 || (size_t)n >= SPECIALIST_GROUP_MAX) {
         LOG_ERROR(FOCUS_TAG, "recorded name too long: %s", name);

@@ -185,6 +185,65 @@ static int test_focus_missing_run(void)
     return failures;
 }
 
+static bool focus_write_boundary(bool gates, size_t cap, int extra)
+{
+    char raw[4096];
+    int n = snprintf(raw, sizeof(raw), "{\"%s\":[", gates ? "gates" : "groups");
+    if (n < 0 || (size_t)n >= sizeof(raw))
+        return false;
+    size_t used = (size_t)n;
+    size_t rows = cap + (extra != 0);
+    for (size_t i = 0; i < rows; i++) {
+        size_t id = extra == 2 && i == cap ? 0 : i;
+        n = snprintf(raw + used, sizeof(raw) - used,
+                     "%s{\"name\":\"failure_%zu\",\"rc\":1}", i ? "," : "", id);
+        if (n < 0 || (size_t)n >= sizeof(raw) - used)
+            return false;
+        used += (size_t)n;
+    }
+    n = snprintf(raw + used, sizeof(raw) - used, "]}");
+    if (n < 0 || (size_t)n >= sizeof(raw) - used)
+        return false;
+    return focus_mk_write(FOCUS_FIX, gates ? ".cache/lint-timing/last-run.json"
+                                          : ".cache/test-timing/last-run.json", raw);
+}
+
+static int focus_test_failure_capacity(bool gates)
+{
+    int failures = 0;
+    TEST(gates ? "code_focus: 32 gates fit, duplicates fit, gate 33 refuses"
+               : "code_focus: 64 groups fit, duplicates fit, group 65 refuses") {
+        size_t cap = gates ? SPECIALIST_FOCUS_GATE_CAP : SPECIALIST_FOCUS_FAILED_CAP;
+        bool (*load)(const char *, struct specialist_focus_evidence *) = gates
+            ? specialist_focus_load_failed_gates : specialist_focus_load_failed_groups;
+        ASSERT(focus_write_boundary(gates, cap, 0));
+        struct specialist_focus_evidence ev, full;
+        specialist_focus_evidence_clear(&ev);
+        ASSERT(load(FOCUS_FIX, &ev));
+        ASSERT((gates ? ev.gates_run : ev.tests_run) == SPECIALIST_FOCUS_ARTIFACT_RECORDED);
+        ASSERT((gates ? ev.failed_gate_count : ev.failed_count) == cap);
+        for (size_t i = 0; i < cap; i++) {
+            char name[SPECIALIST_GROUP_MAX];
+            int n = snprintf(name, sizeof(name), "failure_%zu", i);
+            ASSERT(n > 0 && (size_t)n < sizeof(name));
+            ASSERT(strcmp(gates ? ev.failed_gates[i] : ev.failed[i], name) == 0);
+        }
+        memcpy(&full, &ev, sizeof(full));
+        ASSERT(focus_write_boundary(gates, cap, 2));
+        specialist_focus_evidence_clear(&ev);
+        ASSERT(load(FOCUS_FIX, &ev));
+        ASSERT(memcmp(&ev, &full, sizeof(ev)) == 0);
+        ASSERT(focus_write_boundary(gates, cap, 1));
+        specialist_focus_evidence_clear(&ev);
+        ASSERT(!load(FOCUS_FIX, &ev));
+        /* Present artifact remains RECORDED; the bounded prefix and every
+         * unrelated evidence field survive refusal without an extra name. */
+        ASSERT(memcmp(&ev, &full, sizeof(ev)) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_focus_lint_gates(void)
 {
     int failures = 0;
@@ -470,6 +529,8 @@ int test_code_focus(void)
     failures += test_focus_list();
     failures += test_focus_unknown();
     failures += test_focus_missing_run();
+    failures += focus_test_failure_capacity(false);
+    failures += focus_test_failure_capacity(true);
     failures += test_focus_recorded_run();
     failures += test_focus_lint_gates();
     failures += test_focus_work_cap();
