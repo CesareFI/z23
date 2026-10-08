@@ -47,6 +47,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <math.h>
 #if !defined(_WIN32)
 #include <netinet/in.h>
 #include <poll.h>
@@ -1061,6 +1062,64 @@ static int test_wallet_security_refusal_flags(void)
     g_security_rpc_success = false;
     return failures;
 }
+static bool wallet_send_amount_result(const struct zcl_command_reply *reply,
+                                     bool valid)
+{
+    if (!valid)
+        return reply->exit_code == ZCL_COMMAND_EXIT_INVALID &&
+            strcmp(reply->error.code, "INVALID_AMOUNT") == 0 &&
+            json_get(&reply->data, "stage") == NULL &&
+            json_get(&reply->data, "commit_input") == NULL;
+    const char *stage = json_get_str(json_get(&reply->data, "stage"));
+    const char *commit = json_get_str(json_get(&reply->data, "commit_input"));
+    return reply->exit_code == ZCL_COMMAND_EXIT_OK &&
+        stage && strcmp(stage, "plan") == 0 && commit && commit[0];
+}
+
+static int test_wallet_send_amount_admission(void)
+{
+    int failures = 0;
+    const struct zcl_command_spec *spec =
+        find_spec(zcl_command_catalog(), "core.wallet.transaction.send");
+    TEST("wallet send preview refuses non-finite amounts before planning") {
+        ASSERT(spec != NULL);
+        const char *texts[] = {"1e999", "inf", "nan", "1junk", "-1",
+                               "", "1.25", "0", "1e-999"};
+        const double reals[] = {INFINITY, NAN, -INFINITY, -1.0, 1.25, 0.0};
+        const int sends_before = g_wallet_send_calls;
+        node_rpc_client_set_test_hook(wallet_stub_rpc);
+        bool rows_ok = true;
+        for (size_t i = 0; i < 15; ++i) {
+            struct json_value input;
+            json_init(&input);
+            json_set_object(&input);
+            (void)json_push_kv_str(&input, "address",
+                                  "t1Dest0000000000000000000000000000");
+            (void)json_push_kv_bool(&input, "confirm", false);
+            if (i < 9)
+                (void)json_push_kv_str(&input, "amount", texts[i]);
+            else
+                (void)json_push_kv_real(&input, "amount", reals[i - 9]);
+            struct zcl_command_request req = {
+                .spec = spec, .input = &input, .view = "normal",
+            };
+            struct zcl_command_reply reply;
+            zcl_command_reply_init(&reply, spec->output_schema);
+            zcl_native_handle_wallet_transaction_send(&req, &reply);
+            bool valid = (i >= 6 && i < 9) || i >= 13;
+            bool row_ok = wallet_send_amount_result(&reply, valid);
+            rows_ok &= row_ok && !reply.error.mutated &&
+                g_wallet_send_calls == sends_before;
+            zcl_command_reply_free(&reply);
+            json_free(&input);
+        }
+        node_rpc_client_set_test_hook(NULL);
+        ASSERT(rows_ok);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_wallet_mutating_native_e2e(void)
 {
     int failures = 0;
@@ -3346,6 +3405,7 @@ int test_native_api_contract(void)
     failures += test_missing_required_input_fails_closed_structured();
     failures += test_dev_failure_native_api();
     failures += test_native_app_catalog_uses_strict_builtin_source();
+    failures += test_wallet_send_amount_admission();
     failures += test_wallet_mutating_native_e2e();
     failures += test_wallet_security_refusal_flags();
     failures += test_raw_native_pipeline_mines_exact_signed_bytes();

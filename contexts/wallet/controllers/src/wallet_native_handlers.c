@@ -28,6 +28,7 @@
 #include "wallet/sapling_keys.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -166,7 +167,8 @@ void wnh_plan_token(char out[17], const char *a, const char *b,
 }
 
 /* Coerce an `amount` JSON value (int / real / decimal string) to a
- * non-negative double. Sets *ok=false on any other shape or a negative. */
+ * finite non-negative double. Sets *ok=false on any other shape,
+ * a negative, or a non-finite result. */
 static double wnh_amount_real(const struct json_value *amt, bool *ok)
 {
     *ok = false;
@@ -174,7 +176,7 @@ static double wnh_amount_real(const struct json_value *amt, bool *ok)
         return 0.0;
     if (amt->type == JSON_REAL) {
         double v = json_get_real(amt);
-        *ok = v >= 0.0;
+        *ok = isfinite(v) && v >= 0.0;
         return v;
     }
     if (amt->type == JSON_INT) {
@@ -188,7 +190,7 @@ static double wnh_amount_real(const struct json_value *amt, bool *ok)
             return 0.0;
         char *end = NULL;
         double v = strtod(s, &end);
-        if (end && !*end && v >= 0.0) {
+        if (end && !*end && isfinite(v) && v >= 0.0) {
             *ok = true;
             return v;
         }
