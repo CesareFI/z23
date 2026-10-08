@@ -2856,19 +2856,127 @@ static int mr_exec_restore_pass(void)
     return failures;
 }
 
-/* A restore that rewrites byte-identical content must also settle the index
- * stat cache. The receiver's intake reads stat only (size, mode, mtime
- * seconds); after `git apply -R` plus `git restore --staged` the index holds
- * the pre-turn stat, so the next admitted job would refuse DIRTY.
- *
- * Drives the restore entry directly: the fake-turn rig's core.fsmonitor hook
- * rewrites the index on every `git status` and would hide the staleness. */
+/* Drive the production restore directly, without the fake-turn fsmonitor.
+ * Git's other commands may also refresh stat data: observe the explicit
+ * refresh itself, not just whether the next intake happens to be clean. */
+static bool mr_restore_seed_index(const struct mr_dirs *d, const char *path)
+{
+    char index_stat[1024] = "";
+    struct stat seeded_stat;
+    struct rcv_workspace w = {0};
+    const struct timespec old_times[2] = {
+        { .tv_sec = 946684800, .tv_nsec = 0 },
+        { .tv_sec = 946684800, .tv_nsec = 0 }
+    };
+    /* Pin the cached baseline to an old second so restore's rewrite cannot
+     * accidentally match it merely because the test ran in one second. */
+    return utimensat(AT_FDCWD, path, old_times, 0) == 0 &&
+        stat(path, &seeded_stat) == 0 && seeded_stat.st_mtime == 946684800 &&
+        mr_git3(d->wt, "update-index", "--refresh", NULL) &&
+        muse_git_line(index_stat, sizeof(index_stat), d->wt, "ls-files",
+            "--debug", "src/sum.c") &&
+        strstr(index_stat, "\n  mtime: 946684800:0\n") != NULL &&
+        zcl_devagent_workspace_observe(d->wt, true, &w) && w.directory &&
+        w.resolved && w.checkout && w.dirty == 0;
+}
+
+struct mr_restore_shim {
+    char old_path[16384];
+    bool installed;
+};
+
+static bool mr_restore_shell_literal(const char *s)
+{
+    return s && !strchr(s, '\'') && !strchr(s, '\n') && !strchr(s, '\r');
+}
+
+/* Pass through to the configured executable search path with no inherited
+ * Git selectors. Only this fixture's explicit refresh writes the witness. */
+static bool mr_restore_watch_refresh(const struct mr_dirs *d,
+    struct mr_restore_shim *shim)
+{
+    const char *orig = getenv("PATH");
+    char dir[8192], path[8192], marker[8192], next[24576], text[49152];
+    if (!mr_restore_shell_literal(orig) ||
+        !mr_restore_shell_literal(d->wt) ||
+        !mr_restore_shell_literal(d->run))
+        return false;
+    int n = snprintf(shim->old_path, sizeof(shim->old_path), "%s", orig);
+    if (n < 0 || (size_t)n >= sizeof(shim->old_path)) return false;
+    if (!mr_path_in(d->root, "refresh-shim", dir, sizeof(dir)) ||
+        !mr_path_in(dir, "git", path, sizeof(path)) ||
+        !mr_path_in(d->run, "refresh.ok", marker, sizeof(marker)))
+        return false;
+    n = snprintf(next, sizeof(next), "%s:%s", dir, orig);
+    if (n < 0 || (size_t)n >= sizeof(next)) return false;
+    n = snprintf(text, sizeof(text),
+        "#!/bin/sh\nunset ENV BASH_ENV\nPATH='%s'\nexport PATH\n"
+        "if [ \"$1\" = '-C' ] && [ \"$2\" = '%s' ] && "
+        "[ \"$3\" = 'update-index' ] && [ \"$4\" = '--refresh' ]; then\n"
+        "  if [ -e '%s.refuse' ]; then exit 73; fi\n"
+        "  env -i PATH=\"$PATH\" HOME=\"${HOME:-/}\" LC_ALL=C "
+        "GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git \"$@\" || "
+        "exit \"$?\"\n"
+        "  printf 'refreshed\\n' > '%s' || exit 74\n  exit 0\nfi\n"
+        "exec env -i PATH=\"$PATH\" HOME=\"${HOME:-/}\" LC_ALL=C "
+        "GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git \"$@\"\n",
+        orig, d->wt, marker, marker);
+    if (n < 0 || (size_t)n >= sizeof(text)) return false;
+    shim->installed = mr_mkdir_p(dir) && mr_write(path, text, 0755) &&
+        setenv("PATH", next, 1) == 0;
+    return shim->installed;
+}
+
+static int mr_restore_intake_checks(const struct mr_dirs *d, const char *path)
+{
+    int failures = 0;
+    struct rcv_workspace w = {0};
+    MR_CHECK("settle explicit refresh completed",
+        mr_file_is(d->run, "refresh.ok", "refreshed\n"));
+    MR_CHECK("settle content", mr_file_is(d->wt, "src/sum.c", "orig\n"));
+    MR_CHECK("settle intake-clean",
+        zcl_devagent_workspace_observe(d->wt, true, &w) && w.directory &&
+        w.resolved && w.checkout && w.dirty == 0);
+    /* A size change distinguishes real dirt without consulting a clock. */
+    MR_CHECK("settle re-dirty", mr_write(path, "orig\nREAL DIRT\n", 0));
+    memset(&w, 0, sizeof(w));
+    MR_CHECK("settle dirt seen",
+        zcl_devagent_workspace_observe(d->wt, true, &w) && w.dirty != 0);
+    return failures;
+}
+
+static int mr_restore_refresh_refusal(const struct mr_dirs *d,
+    const struct muse_restore_in *in, const char *path)
+{
+    int failures = 0;
+    char marker[8192], reason[256] = "";
+    bool half = true;
+    bool ready = mr_path_in(d->run, "refresh.ok", marker, sizeof(marker)) &&
+        (unlink(marker) == 0 || errno == ENOENT) &&
+        mr_path_in(d->run, "refresh.ok.refuse", marker, sizeof(marker)) &&
+        mr_write(marker, "refuse\n", 0) && mr_write(path, "orig\nTURN\n", 0);
+    MR_CHECK("settle refresh-refusal fixture", ready);
+    if (!ready) return failures;
+    /* Recreate the same candidate bytes; the verified artifact is unchanged. */
+    MR_CHECK("settle refresh failure refuses restore",
+        !muse_restore_workspace(in, reason, sizeof(reason), &half));
+    MR_CHECK("settle refresh refusal is named",
+        strcmp(reason, "incomplete: the index stat cache could not be "
+            "refreshed") == 0);
+    MR_CHECK("settle refresh refusal is not half-undone", !half);
+    MR_CHECK("settle refresh refusal keeps base bytes",
+        mr_file_is(d->wt, "src/sum.c", "orig\n"));
+    MR_CHECK("settle refused refresh has no success witness",
+        !mr_exists(d->run, "refresh.ok"));
+    return failures;
+}
+
 static int mr_exec_restore_settles_index(void)
 {
     int failures = 0;
-    struct mr_dirs d;
+    struct mr_dirs d = {0};
+    struct mr_restore_shim shim = {0};
     struct muse_restore_in in;
-    struct rcv_workspace w;
     char base[64] = "";
     char hex[64] = "";
     char *fold = NULL;
@@ -2880,13 +2988,18 @@ static int mr_exec_restore_settles_index(void)
     bool half = true;
     bool restored_ok;
     memset(&in, 0, sizeof(in));
-    memset(&w, 0, sizeof(w));
     MR_CHECK("settle lane", mr_lane(&d));
     MR_CHECK("settle seed", mr_seed_committed(&d, "src/sum.c", "orig\n"));
     MR_CHECK("settle base", muse_head_at(d.wt, base, sizeof(base)));
-    /* Force a second boundary between commit and restore so a stale index stat cannot match by luck. */
-    sleep(1);
     (void)snprintf(path, sizeof(path), "%s/src/sum.c", d.wt);
+    MR_CHECK("settle cached baseline and pre-intake-clean",
+        mr_restore_seed_index(&d, path));
+    if (failures) goto cleanup;
+    MR_CHECK("settle refresh witness installed", mr_restore_watch_refresh(&d,
+        &shim));
+    MR_CHECK("settle refresh witness starts absent",
+        !mr_exists(d.run, "refresh.ok"));
+    if (failures) goto cleanup;
     MR_CHECK("settle turn", mr_write(path, "orig\nTURN\n", 0));
     MR_CHECK("settle fold",
         muse_candidate_fold(d.wt, d.run, hex, sizeof(hex), &fold, why,
@@ -2903,18 +3016,17 @@ static int mr_exec_restore_settles_index(void)
     in.candidate = hex;
     in.candidate_file = cf;
     in.pre_clean = true;
+    if (failures) goto cleanup;
     restored_ok = muse_restore_workspace(&in, reason, sizeof(reason), &half);
     MR_CHECK("settle restored", restored_ok && !half);
-    MR_CHECK("settle content", mr_file_is(d.wt, "src/sum.c", "orig\n"));
-    MR_CHECK("settle intake-clean",
-        zcl_devagent_workspace_observe(d.wt, true, &w) && w.directory &&
-        w.resolved && w.checkout && w.dirty == 0);
-    /* Real byte changes still refuse; the size change makes this deterministic. */
-    MR_CHECK("settle re-dirty",
-        mr_write(path, "orig\nREAL DIRT\n", 0));
-    memset(&w, 0, sizeof(w));
-    MR_CHECK("settle dirt seen",
-        zcl_devagent_workspace_observe(d.wt, true, &w) && w.dirty != 0);
+    failures += mr_restore_intake_checks(&d, path);
+    failures += mr_restore_refresh_refusal(&d, &in, path);
+cleanup:
+    if (shim.installed)
+        MR_CHECK("settle executable search path restored",
+            setenv("PATH", shim.old_path, 1) == 0);
+    if (d.root[0])
+        MR_CHECK("settle fixture removed", test_rm_rf_recursive(d.root) == 0);
     return failures;
 }
 
