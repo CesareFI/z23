@@ -8,6 +8,7 @@
 #include "views/wallet_view_coins_view.h"
 #include "views/format_helpers.h"
 #include "util/template.h"
+#include "util/log_macros.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -116,6 +117,8 @@ size_t wv_render_token_rows(char *out, size_t outmax,
                             int n)
 {
     size_t tr_off = 0;
+    if (!out || outmax == 0)
+        LOG_RETURN(0, "wallet_view", "token rows: invalid output buffer");
 
     for (int i = 0; tokens && i < n; i++) {
         const char *ticker = tokens[i].ticker;
@@ -133,7 +136,12 @@ size_t wv_render_token_rows(char *out, size_t outmax,
             esc_ticker[0] ? esc_ticker : "\xe2\x80\x94",
             esc_name[0] ? esc_name : "\xe2\x80\x94",
             decimals, disp);
-        if (nn > 0) tr_off += (size_t)nn;
+        if (nn < 0 || (size_t)nn >= outmax - tr_off) {
+            out[0] = '\0';
+            LOG_RETURN(0, "wallet_view", "token rows: row %d exceeds output capacity %zu",
+                       i, outmax);
+        }
+        tr_off += (size_t)nn;
     }
     out[tr_off] = '\0';
     return tr_off;

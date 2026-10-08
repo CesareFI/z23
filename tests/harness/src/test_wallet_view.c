@@ -25,6 +25,7 @@
 #include "platform/time_compat.h"
 #include "test/test_core.h"
 #include "controllers/wallet_view_controller.h"
+#include "views/wallet_view_coins_view.h"
 #include "controllers/wallet_view_internal.h"  /* wv_parse_form_field */
 #include "models/database.h"
 #include "util/template.h"
@@ -366,12 +367,76 @@ static int check_bot_rpc_balance_refusals(void)
     return failures;
 }
 
+static bool wallet_token_row_guards_intact(const unsigned char *guarded,
+                                          size_t budget, size_t backing_size)
+{
+    if (guarded[0] != 0xa5) return false;
+    for (size_t j = budget + 1; j < backing_size; j++)
+        if (guarded[j] != 0xa5) return false;
+    return true;
+}
+
+static int check_wallet_token_row_impact_route(void)
+{
+    struct agent_impact_acc acc = {0};
+    bool consensus_risk = false;
+    const char *route = zcl_native_code_route_for_path(
+        "contexts/wallet/views/src/wallet_view_coins_view.c",
+        &acc, &consensus_risk);
+    bool wallet_view = false;
+    bool lint_gates = false;
+    for (size_t i = 0; i < acc.groups_len; i++) {
+        wallet_view |= strcmp(acc.groups[i], "wallet_view") == 0;
+        lint_gates |= strcmp(acc.groups[i], "make_lint_gates") == 0;
+    }
+    if (!route || !wallet_view || !lint_gates || consensus_risk ||
+        acc.groups_lost || acc.shared_rule_hits == 0) {
+        printf("wallet_view: token renderer-only native impact route FAILED\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int check_wallet_token_row_bounds(void)
+{
+    int failures = 0;
+    const struct wallet_view_token_balance token = {
+        .ticker = "TOK", .name = "Token", .decimals = 0, .balance = 1
+    };
+    const char expected[] =
+        "<tr><td><span class='pill pill-z'>TOK</span></td>"
+        "<td>Token</td>"
+        "<td class='zcl' style='color:#a78bfa'>1</td></tr>";
+    const size_t budgets[] = {64, sizeof(expected), sizeof(expected) - 1};
+    /* Large backing storage keeps the old terminal write observable even
+     * without sanitizers; only the selected budget belongs to the caller. */
+    unsigned char guarded[512];
+    for (size_t i = 0; i < sizeof(budgets) / sizeof(budgets[0]); i++) {
+        memset(guarded, 0xa5, sizeof(guarded));
+        char *out = (char *)guarded + 1;
+        size_t len = wv_render_token_rows(out, budgets[i], &token, 1);
+        bool ok = wallet_token_row_guards_intact(guarded, budgets[i],
+                                                sizeof(guarded));
+        if (budgets[i] == sizeof(expected))
+            ok = ok && len == sizeof(expected) - 1 &&
+                 memcmp(out, expected, sizeof(expected)) == 0;
+        else
+            ok = ok && len == 0 && out[0] == '\0';
+        printf("wallet_view: token rows capacity %zu: %s\n",
+               budgets[i], ok ? "OK" : "FAIL");
+        if (!ok) failures++;
+    }
+    return failures;
+}
+
 int test_wallet_view(void)
 {
     int failures = check_bot_rpc_balance_values();
     failures += check_bot_rpc_long_decimal();
     failures += check_bot_rpc_balance_refusals();
     failures += check_bot_rpc_impact_route();
+    failures += check_wallet_token_row_impact_route();
+    failures += check_wallet_token_row_bounds();
 
     /* Initialize with no datadir — tests DB-unavailable paths.
      * This is intentional: we want to verify graceful degradation. */
