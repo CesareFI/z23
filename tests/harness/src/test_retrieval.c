@@ -377,6 +377,85 @@ static int case_poisoned(void)
 
 /* ── 6. the surface refuses nonsense ───────────────────────────────── */
 
+static int allocation_refused_state(struct zcl_retrieval *r, size_t count)
+{
+    int failures = 0;
+    struct zcl_retrieval_hit hit = {.doc = 99, .score = -1.0};
+    size_t hits = 99;
+    RT_CHECK("failed insertion preserves committed count",
+             zcl_retrieval_count(r) == count);
+    RT_CHECK("failed insertion publishes no name",
+             zcl_retrieval_name(r, (uint32_t)(count + 1)) == NULL);
+    RT_CHECK("failed insertion publishes no text",
+             zcl_retrieval_text(r, (uint32_t)(count + 1)) == NULL);
+    RT_CHECK("failed insertion poisons the index", !zcl_retrieval_ok(r));
+    RT_CHECK("checked query refuses a poisoned index",
+             !zcl_retrieval_query_checked(r, "seed", &hit, 1, &hits));
+    RT_CHECK("refused checked query resets the count", hits == 0);
+    RT_CHECK("poison survives a later insertion",
+             zcl_retrieval_add(r, "later", "seed") == 0);
+    return failures;
+}
+
+static int allocation_insert_row(const char *label, size_t docs,
+                                 const char *seed)
+{
+    int failures = 0;
+    struct zcl_retrieval *r = zcl_retrieval_create();
+    RT_CHECK(label, r != NULL);
+    if (!r)
+        return failures;
+    for (size_t i = 0; i < docs; i++)
+        RT_CHECK(label, zcl_retrieval_add(r, "kept", seed) == i + 1);
+    RT_CHECK("seed index is healthy", zcl_retrieval_ok(r));
+    struct zcl_retrieval_hit hit;
+    RT_CHECK("seed index answers before refusal",
+             zcl_retrieval_query(r, "seed", &hit, 1) == 1);
+    zcl_alloc_fault_fail_next(label);
+    uint32_t id = zcl_retrieval_add(r, "abandoned", "novel seed");
+    RT_CHECK(label, zcl_alloc_fault_armed_label() == NULL);
+    zcl_alloc_fault_clear();
+    RT_CHECK(label, id == 0);
+    failures += allocation_refused_state(r, docs);
+    RT_CHECK("committed name survives refusal",
+             zcl_retrieval_name(r, 1) != NULL);
+    RT_CHECK("committed text survives refusal",
+             zcl_retrieval_text(r, 1) != NULL);
+    if (zcl_retrieval_name(r, 1) && zcl_retrieval_text(r, 1)) {
+        RT_CHECK("committed name is unchanged",
+                 strcmp(zcl_retrieval_name(r, 1), "kept") == 0);
+        RT_CHECK("committed text is unchanged",
+                 strcmp(zcl_retrieval_text(r, 1), seed) == 0);
+    }
+    zcl_retrieval_destroy(r);
+    return failures;
+}
+
+static int case_allocation_failures(void)
+{
+    int failures = 0;
+    static const char *const create_tags[] = {
+        "retrieval_index", "retrieval_docs", "retrieval_toks"
+    };
+    for (size_t i = 0; i < sizeof(create_tags) / sizeof(create_tags[0]); i++) {
+        zcl_alloc_fault_fail_next(create_tags[i]);
+        struct zcl_retrieval *r = zcl_retrieval_create();
+        RT_CHECK(create_tags[i], zcl_alloc_fault_armed_label() == NULL);
+        zcl_alloc_fault_clear();
+        RT_CHECK(create_tags[i], r == NULL);
+        zcl_retrieval_destroy(r);
+    }
+    failures += allocation_insert_row("retrieval_docs_grow", 7, "seed");
+    /* Exactly 32 distinct terms: the next insertion crosses half of 64. */
+    failures += allocation_insert_row("retrieval_toks_grow", 1,
+        "seed t01 t02 t03 t04 t05 t06 t07 t08 t09 t10 t11 t12 t13 t14 t15 "
+        "t16 t17 t18 t19 t20 t21 t22 t23 t24 t25 t26 t27 t28 t29 t30 t31");
+    failures += allocation_insert_row("retrieval_token", 1, "seed");
+    failures += allocation_insert_row("retrieval_doc_name", 1, "seed");
+    failures += allocation_insert_row("retrieval_doc_text", 1, "seed");
+    return failures;
+}
+
 static int case_surface(void)
 {
     int failures = 0;
@@ -745,6 +824,7 @@ int test_retrieval(void)
     failures += case_reproducible();
     failures += case_tokenizer();
     failures += case_poisoned();
+    failures += case_allocation_failures();
     failures += case_surface();
     failures += case_checked_refusals();
     failures += case_gold_metrics();

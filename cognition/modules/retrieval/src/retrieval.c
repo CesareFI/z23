@@ -78,6 +78,18 @@ static char ascii_lower(char c)
 
 /* ── lifecycle ─────────────────────────────────────────────────────── */
 
+static char *retrieval_strdup(const char *text, const char *label)
+{
+    size_t len = strlen(text);
+    if (len == SIZE_MAX)
+        LOG_NULL("retrieval", "string size overflow for '%s'", label);
+    char *copy = zcl_malloc(len + 1, label);
+    if (!copy)
+        return NULL;
+    memcpy(copy, text, len + 1);
+    return copy;
+}
+
 struct zcl_retrieval *zcl_retrieval_create(void)
 {
     struct zcl_retrieval *r =
@@ -168,7 +180,7 @@ static struct token_entry *tok_slot(struct zcl_retrieval *r, const char *token)
             return &r->toks[idx];
         idx = (idx + 1) % r->cap_toks;
     }
-    r->toks[idx].token = zcl_strdup(token, "retrieval_token");
+    r->toks[idx].token = retrieval_strdup(token, "retrieval_token");
     if (!r->toks[idx].token)
         LOG_NULL("retrieval", "token '%s' could not be stored", token);
     r->n_toks++;
@@ -308,8 +320,8 @@ uint32_t zcl_retrieval_add(struct zcl_retrieval *r, const char *name,
      * postings instead would mean walking every posting list on a failure
      * path that has just been told it cannot allocate. */
     uint32_t id = (uint32_t)r->count;
-    char *dup_name = zcl_strdup(name, "retrieval_doc_name");
-    char *dup_text = zcl_strdup(text, "retrieval_doc_text");
+    char *dup_name = retrieval_strdup(name, "retrieval_doc_name");
+    char *dup_text = retrieval_strdup(text, "retrieval_doc_text");
     struct add_ctx ctx = { .r = r, .doc = id, .len = 0 };
     if (!dup_name || !dup_text ||
         !zcl_retrieval_tokenize(text, add_emit, &ctx)) {
