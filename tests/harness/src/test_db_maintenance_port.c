@@ -9,8 +9,9 @@
  *
  * Asserts each op succeeds on a WAL-mode DB, TRUNCATE shrinks the WAL to
  * zero, success clears the error buffer while NULL-conn ops fill it and
- * return false, and wal_size_bytes is false for :memory: and true once a
- * file-backed WAL exists. NULL-arg guards round it out.
+ * return false, and wal_size_bytes matches the file size after committed
+ * writes and preserves its output for absent WALs and :memory: connections.
+ * NULL-arg guards round it out.
  *
  * test_db_maintenance.c covers the full db_maintenance_run_now() service
  * separately. This file is hermetic.
@@ -83,6 +84,42 @@ static int64_t wal_file_size(const char *db_path)
     snprintf(wal, sizeof wal, "%s-wal", db_path);
     if (stat(wal, &st) != 0) return -1;
     return (int64_t)st.st_size;
+}
+
+static int t_wal_size_commits(void)
+{
+    int failures = 0;
+    char path[256];
+    sqlite3 *db = NULL;
+    bool ready = make_file_db(&db, path, sizeof path);
+    DBMP_CHECK("file db builds (walsize)", ready);
+    if (!ready) { clean_file_db(db, path); return failures; }
+    struct db_maintenance_sqlite_ctx ctx;
+    struct db_maintenance_port port = {0};
+    DBMP_CHECK("wal_size bind", db_maintenance_sqlite_bind(&ctx, db, &port));
+    DBMP_CHECK("disable automatic checkpoint", exec_sql(db, "PRAGMA wal_autocheckpoint=0;"));
+    const char *writes[] = {
+        "INSERT INTO kv VALUES(4, zeroblob(64));",
+        "UPDATE kv SET v=zeroblob(128) WHERE k=4;"
+    };
+    int64_t previous = wal_file_size(path);
+    for (size_t i = 0; i < 2; ++i) {
+        DBMP_CHECK("distinct WAL write commits", exec_sql(db, writes[i]));
+        int64_t expected = wal_file_size(path);
+        DBMP_CHECK("committed write grows real WAL", expected > 0 && expected > previous);
+        int64_t bytes = -1;
+        bool got = port.wal_size_bytes(port.self, &bytes);
+        DBMP_CHECK("wal_size file-backed ok", got);
+        DBMP_CHECK("wal_size equals real stat after commit", got && bytes == expected);
+        previous = expected;
+    }
+    DBMP_CHECK("switch to DELETE journal", exec_sql(db, "PRAGMA journal_mode=DELETE;"));
+    DBMP_CHECK("WAL file absent", wal_file_size(path) == -1);
+    int64_t bytes = 12345;
+    DBMP_CHECK("wal_size absent WAL false", !port.wal_size_bytes(port.self, &bytes));
+    DBMP_CHECK("wal_size absent WAL preserves sentinel", bytes == 12345);
+    clean_file_db(db, path);
+    return failures;
 }
 
 /* ── wal_ckpt_classify ─────────────────────────────────────────────────
@@ -501,24 +538,7 @@ int test_db_maintenance_port(void)
         clean_file_db(db, path);
     }
 
-    /* ---- wal_size_bytes: file-backed DB -> true and >= 0 ---- */
-    {
-        char path[256];
-        sqlite3 *db = NULL;
-        DBMP_CHECK("file db builds (walsize)",
-                   make_file_db(&db, path, sizeof path));
-
-        struct db_maintenance_sqlite_ctx ctx;
-        struct db_maintenance_port port = {0};
-        db_maintenance_sqlite_bind(&ctx, db, &port);
-
-        int64_t bytes = -1;
-        bool got = port.wal_size_bytes(port.self, &bytes);
-        DBMP_CHECK("wal_size file-backed ok", got);
-        DBMP_CHECK("wal_size >= 0", !got || bytes >= 0);
-
-        clean_file_db(db, path);
-    }
+    failures += t_wal_size_commits();
 
     /* ---- wal_size_bytes: in-memory has no on-disk path -> false ---- */
     {
