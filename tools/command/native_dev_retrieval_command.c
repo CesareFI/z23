@@ -17,6 +17,7 @@
 #include "sha3/sha3.h"
 #include "vcs/vcs_index.h"
 #include "vcs/vcs_manifest.h"
+#include "zutf8/zutf8.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -896,44 +897,35 @@ static bool rb_render_data(
     return ok;
 }
 
-static bool rb_compute(const struct json_value *input, const char *workspace,
-                       struct rb_computation *computed,
-                       struct zcl_command_reply *reply)
+static bool rb_text_valid(const char *text, size_t maximum)
 {
-    const char *expected_hex = json_get_str(json_get(input,
-                                                     "expected_vcs_root"));
-    const char *task_id = json_get_str(json_get(input, "task_id"));
-    const char *query = json_get_str(json_get(input, "query"));
-    if (!task_id || !task_id[0] || strlen(task_id) > 128 || !query ||
-        !query[0] || strlen(query) > 4096) {
-        rb_fail(reply, "INVALID_TASK", "input",
-                "task_id and bounded non-empty query are required", "task");
-        return false;
-    }
-    if (!expected_hex || !expected_hex[0]) {
-        rb_fail(reply, "EXPECTED_VCS_ROOT_REQUIRED", "bind",
-                "expected_vcs_root is required for observational ranking",
-                "expected_vcs_root");
-        return false;
-    }
-    uint8_t expected[32];
-    char expected_err[128];
-    if (!zcl_native_require_hex64("expected_vcs_root", expected_hex, expected,
-                                  expected_err, sizeof(expected_err))) {
-        rb_fail(reply, "INVALID_VCS_ROOT", "bind", expected_err,
-                "expected_vcs_root");
-        return false;
-    }
+    size_t length = strlen(text);
+    return length <= maximum && zutf8_validate_n(text, length);
+}
 
-    memset(computed, 0, sizeof(*computed));
-    (void)snprintf(computed->workspace, sizeof(computed->workspace), "%s",
-                   workspace);
-    (void)snprintf(computed->task_id, sizeof(computed->task_id), "%s",
-                   task_id);
-    (void)snprintf(computed->query, sizeof(computed->query), "%s", query);
-    (void)snprintf(computed->expected_hex, sizeof(computed->expected_hex),
-                   "%s", expected_hex);
+static bool rb_compute_ranks(struct codeindex *ci, const char *query,
+                             const struct vcs_manifest *pre,
+                             struct rb_computation *computed,
+                             uint8_t codeindex_root[32],
+                             uint8_t retrieval_projection_root[32])
+{
+    return ci && codeindex_source_root_sha3(ci, codeindex_root) &&
+        codeindex_retrieval_projection_root_sha3(
+            ci, retrieval_projection_root) &&
+        rb_literal_rank(ci, query, pre, &computed->literal) &&
+        rb_bm25_rank(ci, query, pre, &computed->bm25,
+                     &computed->corpus_files) &&
+        rb_identifier_graph_rank(
+            ci, query, &computed->bm25, pre,
+            &computed->identifier_graph, &computed->identifier_seed_symbols,
+            &computed->graph_files, &computed->query_lookup_saturated,
+            computed->graph_fallback_reason);
+}
 
+static bool rb_compute_source(const char *workspace, const uint8_t expected[32],
+                               struct rb_computation *computed,
+                               struct zcl_command_reply *reply)
+{
     struct vcs_manifest pre = {0};
     uint8_t pre_root[32];
     struct vcs_index *index = rb_index_open(workspace);
@@ -949,7 +941,7 @@ static bool rb_compute(const struct json_value *input, const char *workspace,
         return false;
     }
     zcl_hex_encode(pre_root, sizeof(pre_root), computed->pre_hex);
-    if (memcmp(expected, pre_root, sizeof(expected)) != 0) {
+    if (memcmp(expected, pre_root, sizeof(pre_root)) != 0) {
         vcs_manifest_free(&pre);
         vcs_index_close(index);
         rb_fail(reply, "SOURCE_ROOT_MISMATCH", "bind",
@@ -970,17 +962,8 @@ static bool rb_compute(const struct json_value *input, const char *workspace,
 #endif
     struct codeindex *ci = codeindex_open_retrieval_view(workspace);
     uint8_t codeindex_root[32], retrieval_projection_root[32];
-    bool ranked = ci && codeindex_source_root_sha3(ci, codeindex_root) &&
-        codeindex_retrieval_projection_root_sha3(
-            ci, retrieval_projection_root) &&
-        rb_literal_rank(ci, query, &pre, &computed->literal) &&
-        rb_bm25_rank(ci, query, &pre, &computed->bm25,
-                     &computed->corpus_files) &&
-        rb_identifier_graph_rank(
-            ci, query, &computed->bm25, &pre,
-            &computed->identifier_graph, &computed->identifier_seed_symbols,
-            &computed->graph_files, &computed->query_lookup_saturated,
-            computed->graph_fallback_reason);
+    bool ranked = rb_compute_ranks(ci, computed->query, &pre, computed,
+                                   codeindex_root, retrieval_projection_root);
     if (!ranked) {
         codeindex_close(ci);
         vcs_manifest_free(&pre);
@@ -1040,6 +1023,47 @@ static bool rb_compute(const struct json_value *input, const char *workspace,
                    sizeof(retrieval_projection_root),
                    computed->retrieval_projection_hex);
     return true;
+}
+
+static bool rb_compute(const struct json_value *input, const char *workspace,
+                       struct rb_computation *computed,
+                       struct zcl_command_reply *reply)
+{
+    const char *expected_hex = json_get_str(json_get(input,
+                                                     "expected_vcs_root"));
+    const char *task_id = json_get_str(json_get(input, "task_id"));
+    const char *query = json_get_str(json_get(input, "query"));
+    if (!task_id || !task_id[0] || !rb_text_valid(task_id, 128) || !query ||
+        !query[0] || !rb_text_valid(query, 4096)) {
+        rb_fail(reply, "INVALID_TASK", "input",
+                "task_id and bounded non-empty query must be valid UTF-8", "task");
+        return false;
+    }
+    if (!expected_hex || !expected_hex[0]) {
+        rb_fail(reply, "EXPECTED_VCS_ROOT_REQUIRED", "bind",
+                "expected_vcs_root is required for observational ranking",
+                "expected_vcs_root");
+        return false;
+    }
+    uint8_t expected[32];
+    char expected_err[128];
+    if (!zcl_native_require_hex64("expected_vcs_root", expected_hex, expected,
+                                  expected_err, sizeof(expected_err))) {
+        rb_fail(reply, "INVALID_VCS_ROOT", "bind", expected_err,
+                "expected_vcs_root");
+        return false;
+    }
+
+    memset(computed, 0, sizeof(*computed));
+    (void)snprintf(computed->workspace, sizeof(computed->workspace), "%s",
+                   workspace);
+    (void)snprintf(computed->task_id, sizeof(computed->task_id), "%s",
+                   task_id);
+    (void)snprintf(computed->query, sizeof(computed->query), "%s", query);
+    (void)snprintf(computed->expected_hex, sizeof(computed->expected_hex),
+                   "%s", expected_hex);
+
+    return rb_compute_source(workspace, expected, computed, reply);
 }
 
 static bool rb_render_fitted(struct zcl_command_reply *reply,

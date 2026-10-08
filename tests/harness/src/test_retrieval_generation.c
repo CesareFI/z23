@@ -7,6 +7,7 @@
 #include "command/native_command.h"
 #include "command/native_dev_retrieval_stream.h"
 #include "config/file_ops.h"
+#include "controllers/agent_impact_rules.h"
 #include "json/json.h"
 #include "platform/directory_compat.h"
 #include "platform/private_directory.h"
@@ -391,7 +392,137 @@ static int case_aba_generation_join(void)
     return failures;
 }
 
+static FILE *rg_text_output(void)
+{
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof(path), "rg-text-stream");
+    if (fd < 0) return NULL;
+    FILE *out = fdopen(fd, "w+b");
+    if (!out) (void)close(fd);
+    if (unlink(path) != 0) {
+        if (out) (void)fclose(out);
+        return NULL;
+    }
+    return out;
+}
+
+static bool rg_text_roundtrip(FILE *out, const char *task, const char *query)
+{
+    char line[8192];
+    struct json_value page;
+    json_init(&page);
+    rewind(out);
+    bool parsed = fgets(line, sizeof(line), out) &&
+        json_read(&page, line, strlen(line));
+    const struct json_value *data = json_get(&page, "data");
+    const char *actual_task = json_get_str(json_get(data, "task_id"));
+    const char *actual_query = json_get_str(json_get(data, "query"));
+    bool ok = parsed && actual_task && actual_query &&
+        strcmp(actual_task, task) == 0 && strcmp(actual_query, query) == 0;
+    json_free(&page);
+    return ok;
+}
+
+static bool rg_text_refused(FILE *out, int rc, const char *code,
+                             const char *message)
+{
+    return out && rc == ZCL_COMMAND_EXIT_INVALID &&
+        strcmp(code, "INVALID_TASK") == 0 && message[0] && ftell(out) == 0;
+}
+
+static int rg_stream_text(const char *workspace, const char *expected_hex,
+                          const char *task, const char *query, bool valid)
+{
+    int failures = 0;
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    bool ready = json_push_kv_str(&input, "workspace", workspace) &&
+        json_push_kv_str(&input, "expected_vcs_root", expected_hex) &&
+        json_push_kv_str(&input, "task_id", task) &&
+        json_push_kv_str(&input, "query", query);
+    FILE *out = rg_text_output();
+    char code[64] = {0}, message[256] = {0};
+    int rc = ready && out ? zcl_native_dev_retrieval_stream_jsonl(
+        &input, 4096u, out, code, sizeof(code), message, sizeof(message))
+        : ZCL_COMMAND_EXIT_INTERNAL;
+    if (valid) {
+        RG_CHECK("UTF-8 and escaped text survive stream round trip",
+                 rc == ZCL_COMMAND_EXIT_OK && out && rg_text_roundtrip(out, task, query));
+    } else {
+        RG_CHECK("malformed UTF-8 refuses before writing JSONL",
+                 rg_text_refused(out, rc, code, message));
+    }
+    if (out) RG_CHECK("text stream closes", fclose(out) == 0);
+    json_free(&input);
+    return failures;
+}
+
+static int case_stream_utf8(void)
+{
+    int failures = 0;
+    char temporary[PLATFORM_TEMP_PATH_MAX] = {0};
+    char workspace[PLATFORM_TEMP_PATH_MAX] = {0};
+    uint8_t expected[32];
+    char expected_hex[65];
+    bool created = test_mkdtemp(temporary, sizeof(temporary), "rg-text") != NULL;
+    bool ready = created &&
+        platform_directory_canonical_real(temporary, workspace, sizeof(workspace)) &&
+        rg_write(workspace, "lib/net/src/generation.c", rg_source_a) &&
+        rg_manifest_root(workspace, expected);
+    RG_CHECK("text stream fixture is source bound", ready);
+    if (ready) {
+        zcl_hex_encode(expected, sizeof(expected), expected_hex);
+        static const char *const bad[] = {
+            "\xff", "\x80", "\xc0\xaf", "\xe2\x82", "\xed\xa0\x80", "\xf4\x90\x80\x80"
+        };
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+            char task[8], query[8];
+            (void)snprintf(task, sizeof(task), "t%s", bad[i]);
+            (void)snprintf(query, sizeof(query), "g%s", bad[i]);
+            failures += rg_stream_text(workspace, expected_hex, task,
+                                       "generation function", false);
+            failures += rg_stream_text(workspace, expected_hex, "text-task",
+                                       query, false);
+        }
+        failures += rg_stream_text(workspace, expected_hex,
+            "t\xc2\xa2\xe2\x82\xac\xf4\x8f\xbf\xbf\"\\",
+            "generation \xc2\xa2\xe2\x82\xac\xf0\x90\x80\x80\"\\", true);
+    }
+    if (created)
+        RG_CHECK("text fixture removes", test_rm_rf_recursive(temporary) == 0);
+    return failures;
+}
+
+static bool rg_impact_has_group(const struct agent_impact_acc *impact,
+                                const char *group)
+{
+    for (size_t i = 0; i < impact->groups_len; i++)
+        if (strcmp(impact->groups[i], group) == 0) return true;
+    return false;
+}
+
+static int case_text_proof_mapping(void)
+{
+    int failures = 0;
+    static const char *const paths[] = {
+        "tools/command/native_dev_retrieval_command.c",
+        "tools/command/native_dev_retrieval_stream.h"
+    };
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        struct agent_impact_acc impact = {0};
+        RG_CHECK("text seam selects generation proof",
+                 agent_impact_apply_shared_rules(paths[i], &impact));
+        RG_CHECK("text seam includes generation group",
+                 rg_impact_has_group(&impact, "retrieval_generation"));
+        RG_CHECK("text seam includes source gates",
+                 rg_impact_has_group(&impact, "make_lint_gates"));
+    }
+    return failures;
+}
+
 int test_retrieval_generation(void)
 {
-    return case_projection_binding() + case_aba_generation_join();
+    return case_projection_binding() + case_aba_generation_join() + case_stream_utf8() +
+        case_text_proof_mapping();
 }
