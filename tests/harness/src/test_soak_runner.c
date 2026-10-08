@@ -11,6 +11,139 @@
 #include <sys/stat.h>
 
 #if !defined(_WIN32)
+#include <signal.h>
+#include <sys/wait.h>
+
+static unsigned soak_wait_calls, soak_wait_interrupts;
+static int soak_wait_error;
+static bool soak_wait_owned;
+static pid_t *soak_owned_pid;
+
+static pid_t soak_cleanup_wait(pid_t pid, int *status, int options)
+{
+    soak_wait_calls++;
+    soak_wait_owned = soak_wait_owned && *soak_owned_pid == pid;
+    if (soak_wait_calls <= soak_wait_interrupts) {
+        errno = EINTR;
+        return -1;
+    }
+    if (soak_wait_error == ECHILD && waitpid(pid, status, options) != pid)
+        return -1;
+    if (soak_wait_error) {
+        errno = soak_wait_error;
+        return -1;
+    }
+    return waitpid(pid, status, options);
+}
+
+#define SOAK_CLEANUP_TEST
+#define waitpid soak_cleanup_wait
+#include "../../../tools/soak/main.c"
+#undef waitpid
+#undef SOAK_CLEANUP_TEST
+
+static pid_t soak_cleanup_child(void)
+{
+    int ready[2];
+    if (pipe(ready) != 0) { perror("soak cleanup fixture: pipe"); return -1; }
+    pid_t child = fork();
+    if (child == 0) {
+        close(ready[0]);
+        char ok = setsid() >= 0 ? 'y' : 'n';
+        if (write(ready[1], &ok, 1) != 1) _exit(1);
+        close(ready[1]);
+        for (;;) pause();
+    }
+    close(ready[1]);
+    char ok = 0;
+    ssize_t n;
+    do { n = read(ready[0], &ok, 1); } while (n < 0 && errno == EINTR);
+    close(ready[0]);
+    if (child > 0 && n == 1 && ok == 'y') return child;
+    if (child > 0) {
+        (void)kill(child, SIGKILL);
+        while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}
+    }
+    fprintf(stderr, "soak cleanup fixture: child setup failed\n");
+    return -1;
+}
+
+static int soak_cleanup_row(unsigned interrupts, int error)
+{
+    int failures = 0;
+    TEST("soak_runner: cleanup observes reap and retains failed ownership") {
+        pid_t child = soak_cleanup_child();
+        ASSERT(child > 0);
+        struct spawn_cfg sp = {.pid = child};
+        soak_owned_pid = &sp.pid;
+        soak_wait_calls = 0;
+        soak_wait_interrupts = interrupts;
+        soak_wait_error = error;
+        soak_wait_owned = true;
+        kill_spawned_node(&sp);
+        pid_t retained = sp.pid;
+        unsigned calls = soak_wait_calls;
+        /* Reap any child left by a failed wait or a restored defect. */
+        pid_t remaining;
+        do { remaining = waitpid(child, NULL, 0); }
+        while (remaining < 0 && errno == EINTR);
+        int reap_error = errno;
+        ASSERT(calls == interrupts + 1);
+        ASSERT(soak_wait_owned);
+        ASSERT(retained == (error == EIO ? child : 0));
+        ASSERT(error || (remaining == -1 && reap_error == ECHILD));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int soak_cleanup_retry(void)
+{
+    int failures = 0;
+    TEST("soak_runner: retained ownership permits another cleanup") {
+        pid_t child = soak_cleanup_child();
+        ASSERT(child > 0);
+        struct spawn_cfg sp = {.pid = child};
+        soak_owned_pid = &sp.pid;
+        soak_wait_calls = soak_wait_interrupts = 0;
+        soak_wait_error = EIO;
+        soak_wait_owned = true;
+        kill_spawned_node(&sp);
+        pid_t retained = sp.pid;
+        soak_wait_error = 0;
+        kill_spawned_node(&sp);
+        pid_t remaining;
+        do { remaining = waitpid(child, NULL, 0); }
+        while (remaining < 0 && errno == EINTR);
+        ASSERT(retained == child);
+        ASSERT(sp.pid == 0);
+        ASSERT(soak_wait_calls == 2);
+        ASSERT(soak_wait_owned);
+        ASSERT(remaining == -1 && errno == ECHILD);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_soak_runner_cleanup(void)
+{
+    int failures = 0;
+    static const struct { unsigned interrupts; int error; } rows[] = {
+        {0, 0}, {1, 0}, {2, 0}, {0, ECHILD}, {2, ECHILD}, {0, EIO},
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++)
+        failures += soak_cleanup_row(rows[i].interrupts, rows[i].error);
+    failures += soak_cleanup_retry();
+    TEST("soak_runner: empty cleanup performs no wait") {
+        struct spawn_cfg empty = {0};
+        soak_wait_calls = 0;
+        kill_spawned_node(&empty);
+        ASSERT(soak_wait_calls == 0 && empty.pid == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 #define SOAK_RUNNER_BIN "build/bin/soak_runner"
 
 /* 699 chars: over every fixed path buffer the runner copies into. */
@@ -258,6 +391,7 @@ int test_soak_runner(void)
                "make soak_runner)\n");
         return 1;
     }
+    failures += test_soak_runner_cleanup();
     failures += test_soak_runner_datadir_refused();
     failures += test_soak_runner_log_refused();
     failures += test_soak_runner_connect_refused();

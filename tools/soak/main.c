@@ -65,6 +65,7 @@
  *     --ci-proxy            use the accelerated CI-proxy thresholds
  */
 
+#if !defined(SOAK_CLEANUP_TEST)
 #define _POSIX_C_SOURCE 200809L
 
 #include "platform/time_compat.h"
@@ -86,6 +87,8 @@
 static volatile sig_atomic_t g_stop = 0;
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
 
+#endif
+
 /* ── Spawn-mode config (the hermetic CI-proxy path) ──────────────
  *
  * When node_datadir is non-empty the runner OWNS the node: it forks
@@ -104,6 +107,7 @@ struct spawn_cfg {
     pid_t pid;           /* the owned child (the ONLY pid we sample) */
 };
 
+#if !defined(SOAK_CLEANUP_TEST)
 static const char *rpc_space(const char *p)
 {
     return p + strspn(p, " \t\n\r");
@@ -338,18 +342,27 @@ static bool spawn_node(struct spawn_cfg *sp)
     return true;
 }
 
-/* SIGKILL the spawned node's whole process group (no orphan survives).
- * Idempotent: safe to call when sp->pid is already reaped. */
+#endif
+
+/* Send SIGKILL to the spawned node's process group, falling back on ESRCH.
+ * Clear the owned pid only after reap or confirmed absence of a child. */
 static void kill_spawned_node(struct spawn_cfg *sp)
 {
     if (!sp || sp->pid <= 0) return;
     if (kill(-sp->pid, SIGKILL) != 0 && errno == ESRCH)
         kill(sp->pid, SIGKILL);
     int status;
-    (void)waitpid(sp->pid, &status, 0);
-    sp->pid = 0;
+    pid_t waited;
+    do { waited = waitpid(sp->pid, &status, 0); }
+    while (waited < 0 && errno == EINTR);
+    if (waited == sp->pid || (waited < 0 && errno == ECHILD))
+        sp->pid = 0;
+    else
+        fprintf(stderr, "soak: waitpid(%d) failed: %s\n",
+                (int)sp->pid, strerror(errno));
 }
 
+#if !defined(SOAK_CLEANUP_TEST)
 /* Poll the isolated RPC until getblockcount answers, or timeout. */
 static bool spawn_wait_ready(struct spawn_cfg *sp, const char *rpc_bin,
                             int timeout_sec)
@@ -734,3 +747,4 @@ int main(int argc, char **argv)
 
     return (int)v;
 }
+#endif
