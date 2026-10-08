@@ -299,6 +299,14 @@ static _Atomic bool g_probe_stop;
 static configured_sync_peer_prober_fn g_test_threaded_prober;
 static int64_t (*g_test_clock_ms)(void);
 
+void configured_sync_peers_start(const struct net_manager *nm)
+{
+    pthread_mutex_lock(&g_probe_thread_lock);
+    atomic_store(&g_probe_stop, false);
+    configured_sync_peers_attach_network(nm);
+    pthread_mutex_unlock(&g_probe_thread_lock);
+}
+
 static int64_t probe_now_ms(void)
 {
     if (g_test_clock_ms)
@@ -613,8 +621,8 @@ void configured_sync_peers_stop(void)
     pthread_mutex_lock(&g_probe_thread_lock);
     probe_join_locked();
     atomic_store(&g_probe_busy, false);
-    pthread_mutex_unlock(&g_probe_thread_lock);
     configured_sync_peers_attach_network(NULL);
+    pthread_mutex_unlock(&g_probe_thread_lock);
 }
 
 /* ── test seams ───────────────────────────────────────────────────────── */
