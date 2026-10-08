@@ -264,8 +264,10 @@ void fd_agree(const struct fd_attestation *att, size_t count,
         if (!a->answered) {
             if (!unreachable_append(out->unreachable, sizeof out->unreachable,
                                     a->origin, a->reason)) {
-                copy_bounded(out->unreachable, sizeof out->unreachable,
-                             "unreachable-list-too-long");
+                (void)snprintf(out->unreachable, sizeof out->unreachable,
+                               "missing-source list overflow at entry %zu; "
+                               "buffer %zu bytes; reduce the list",
+                               i + 1, sizeof out->unreachable);
                 out->verdict = FD_VERDICT_NO_QUORUM;
                 return;
             }

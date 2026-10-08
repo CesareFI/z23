@@ -388,12 +388,16 @@ static int case_unreachable_list_overflow(void)
     FD_CHECK("four maximal missing sources report list overflow",
              got.verdict == FD_VERDICT_NO_QUORUM && got.total == 4 &&
              got.answered == 0 && got.agreed.text[0] == '\0' &&
-             strcmp(got.unreachable, "unreachable-list-too-long") == 0);
+             strcmp(got.unreachable,
+                    "missing-source list overflow at entry 4; "
+                    "buffer 160 bytes; reduce the list") == 0);
     fd_agree(att, 6, &got);
     FD_CHECK("list overflow refuses even with two agreeing answers",
              got.verdict == FD_VERDICT_NO_QUORUM && got.total == 6 &&
              got.answered == 2 && got.agreed.text[0] == '\0' &&
-             strcmp(got.unreachable, "unreachable-list-too-long") == 0);
+             strcmp(got.unreachable,
+                    "missing-source list overflow at entry 6; "
+                    "buffer 160 bytes; reduce the list") == 0);
     return failures;
 }
 
