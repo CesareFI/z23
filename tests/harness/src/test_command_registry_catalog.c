@@ -20,6 +20,7 @@
 #include "util/boot_status.h"
 #include "util/boot_phase.h"
 #include "platform/clock.h"
+#include "platform/time_compat.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -813,6 +814,132 @@ static int test_bootwait_requires_live_datadir_owner(void)
     if (owner_fd >= 0) (void)close(owner_fd);
     if (dir) {
         if (path[0]) (void)unlink(path);
+        (void)snprintf(path, sizeof(path), "%s/%s", dir,
+                       ZCL_BOOT_STATUS_FILENAME);
+        (void)unlink(path);
+        (void)rmdir(dir);
+    }
+    boot_status_init(NULL);
+    return failures;
+}
+#endif
+
+#ifndef _WIN32
+/* bootwait range fixtures: drive zcl_command_registry_execute_json, which
+ * (unlike the CLI front door) does not run the input validator. */
+enum bw_kind { BW_INT, BW_STR };
+
+static bool bw_dispatch(const struct zcl_command_spec *spec, const char *dir,
+                        const char *key, enum bw_kind kind, int64_t val,
+                        enum zcl_command_exit *code, char *code_str,
+                        size_t code_str_sz, bool *msg_nonempty, int64_t *ms)
+{
+    static char out[8192];
+    struct zcl_command_context ctx = {
+        .registry = zcl_command_catalog(),
+        .granted_capabilities = ~(uint64_t)0,
+        .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+    };
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "datadir", dir);
+    if (kind == BW_INT)
+        (void)json_push_kv_int(&input, key, val);
+    else
+        (void)json_push_kv_str(&input, key, "abc");
+    if (strcmp(key, "heartbeat_ms") == 0)
+        (void)json_push_kv_int(&input, "timeout_ms", 300);
+    int64_t t0 = platform_time_monotonic_ms();
+    size_t n = zcl_command_registry_execute_json(
+        ctx.registry, spec, &ctx, &input, false, spec->path, "normal", 0, 0,
+        NULL, out, sizeof(out), code);
+    *ms = platform_time_monotonic_ms() - t0;
+    json_free(&input);
+    code_str[0] = '\0';
+    *msg_nonempty = false;
+    struct json_value env;
+    if (n == 0 || !json_read(&env, out, n))
+        return false;
+    const struct json_value *err = json_get(&env, "error");
+    const char *c = err ? json_get_str(json_get(err, "code")) : NULL;
+    const char *m = err ? json_get_str(json_get(err, "message")) : NULL;
+    if (c)
+        (void)snprintf(code_str, code_str_sz, "%s", c);
+    *msg_nonempty = m && m[0] && strstr(m, key) != NULL;
+    json_free(&env);
+    return true;
+}
+
+static int test_bootwait_input_ranges_through_dispatch(void)
+{
+    static const struct { const char *key; int64_t lo, hi; } keys[] = {
+        { "timeout_ms", 1, 300000 }, { "heartbeat_ms", 100, 60000 },
+    };
+    int failures = 0;
+    char tmpl[512] = {0};
+    char *dir = NULL;
+    char path[560] = {0};
+    int owner_fd = -1;
+    TEST("bootwait refuses out-of-range and mistyped timeout_ms/heartbeat_ms") {
+        const struct zcl_command_spec *spec =
+            find_spec(zcl_command_catalog(), "core.node.bootwait");
+        ASSERT(spec != NULL);
+        dir = test_mkdtemp(tmpl, sizeof(tmpl), "zcl_native_bootwait_rng");
+        ASSERT(dir != NULL);
+        /* A serving beacon with a live owner, so every accepted request
+         * returns at once and a missed refusal cannot hang the test. */
+        boot_status_init(dir);
+        boot_status_note_stage((int)BOOT_STAGE_READY);
+        boot_status_init(NULL);
+        ASSERT(snprintf(path, sizeof(path), "%s/zclassic23.pid", dir) > 0);
+        owner_fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+        ASSERT(owner_fd >= 0);
+        ASSERT(flock(owner_fd, LOCK_EX | LOCK_NB) == 0);
+        for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+            const int64_t bad[] = { keys[k].lo - 1, keys[k].hi + 1, -1 };
+            for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+                enum zcl_command_exit code = ZCL_COMMAND_EXIT_OK;
+                char cs[64];
+                bool msg = false;
+                int64_t ms = 0;
+                ASSERT(bw_dispatch(spec, dir, keys[k].key, BW_INT, bad[i],
+                                   &code, cs, sizeof(cs), &msg, &ms));
+                ASSERT_EQ(code, ZCL_COMMAND_EXIT_INVALID);
+                ASSERT_STR_EQ(cs, "INVALID_INPUT");
+                ASSERT(msg);
+                ASSERT(ms < 200);
+            }
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_OK;
+            char cs[64];
+            bool msg = false;
+            int64_t ms = 0;
+            ASSERT(bw_dispatch(spec, dir, keys[k].key, BW_STR, 0, &code, cs,
+                               sizeof(cs), &msg, &ms));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_INVALID);
+            ASSERT_STR_EQ(cs, "INVALID_INPUT");
+            ASSERT(msg);
+            ASSERT(ms < 200);
+        }
+        /* Minimum and maximum of each key reach the existing behaviour. */
+        for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+            const int64_t good[] = { keys[k].lo, keys[k].hi };
+            for (size_t i = 0; i < 2; i++) {
+                enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+                char cs[64];
+                bool msg = false;
+                int64_t ms = 0;
+                ASSERT(bw_dispatch(spec, dir, keys[k].key, BW_INT, good[i],
+                                   &code, cs, sizeof(cs), &msg, &ms));
+                ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+            }
+        }
+        PASS();
+    } _test_next:;
+    if (owner_fd >= 0) (void)close(owner_fd);
+    if (dir) {
+        (void)snprintf(path, sizeof(path), "%s/zclassic23.pid", dir);
+        (void)unlink(path);
         (void)snprintf(path, sizeof(path), "%s/%s", dir,
                        ZCL_BOOT_STATUS_FILENAME);
         (void)unlink(path);
@@ -4839,6 +4966,9 @@ int test_command_registry_catalog(void)
     failures += test_bootstatus_projects_recovery_and_blocker();
 #ifndef _WIN32
     failures += test_bootwait_requires_live_datadir_owner();
+#endif
+#ifndef _WIN32
+    failures += test_bootwait_input_ranges_through_dispatch();
 #endif
     failures += test_bridge_replacement_rejects_non_bridge_leaf();
     failures += test_messaging_inbox_wraps_rpc_array();

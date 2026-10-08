@@ -2358,6 +2358,30 @@ void zcl_native_handle_core_node_bootstatus(
     reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }
 
+/* Absent keeps *out; a present key must be a JSON integer in [lo, hi]. */
+static bool nc_bootwait_bounded_int(const struct json_value *input,
+                                    const char *key, int64_t lo, int64_t hi,
+                                    int64_t *out, struct zcl_command_reply *reply)
+{
+    const struct json_value *v = json_get(input, key);
+    if (!v)
+        return true;
+    int64_t n = v->type == JSON_INT ? json_get_int(v) : lo - 1;
+    if (v->type == JSON_INT && n >= lo && n <= hi) {
+        *out = n;
+        return true;
+    }
+    char msg[160];
+    (void)snprintf(msg, sizeof(msg),
+                   "%s must be a JSON integer in the range %lld..%lld", key,
+                   (long long)lo, (long long)hi);
+    zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                           ZCL_COMMAND_EXIT_INVALID, "INVALID_INPUT",
+                           "normalize", false, false, msg,
+                           "core.node.bootwait");
+    return false;
+}
+
 void zcl_native_handle_core_node_bootwait(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply)
@@ -2374,16 +2398,17 @@ void zcl_native_handle_core_node_bootwait(
         return;
     }
 
-    /* Bounded poll: default 60s budget, 500ms cadence. The validator already
-     * range-checks these (timeout_ms 1..300000, heartbeat_ms 100..60000). */
+    /* Bounded poll: default 60s budget, 500ms cadence. The CLI front door
+     * range-checks these, but zcl_command_registry_execute_json does not, so
+     * the handler enforces timeout_ms 1..300000 and heartbeat_ms 100..60000
+     * itself, before any datadir read or sleep. */
     int64_t timeout_ms = 60000;
     int64_t poll_ms = 500;
-    const struct json_value *tmo = json_get(request->input, "timeout_ms");
-    if (tmo && tmo->type == JSON_INT)
-        timeout_ms = json_get_int(tmo);
-    const struct json_value *hb = json_get(request->input, "heartbeat_ms");
-    if (hb && hb->type == JSON_INT)
-        poll_ms = json_get_int(hb);
+    if (!nc_bootwait_bounded_int(request->input, "timeout_ms", 1, 300000,
+                                 &timeout_ms, reply) ||
+        !nc_bootwait_bounded_int(request->input, "heartbeat_ms", 100, 60000,
+                                 &poll_ms, reply))
+        return;
 
     int64_t t0_ms = platform_time_monotonic_ms();
     struct boot_status_snapshot snap;
