@@ -973,29 +973,16 @@ static enum zcl_fleet_status replicate_row_links(
     return zcl_fleet_row_verify(row);
 }
 
-enum zcl_fleet_status zcl_fleet_ledger_replicate(
-    struct zcl_fleet_ledger *ledger,
+/* Validation reads an existing head or an empty one; it owns no peer slot. */
+static enum zcl_fleet_status replicate_validate(
+    const struct fleet_box *box,
     const uint8_t peer_box_id[ZCL_FLEET_ID_BYTES],
     const uint8_t peer_signer[ZCL_FLEET_ID_BYTES], const uint8_t *rows,
-    size_t len, size_t *accepted)
+    size_t len, struct zcl_fleet_row batch[ZCL_FLEET_BATCH_MAX],
+    size_t *validated)
 {
-    if (!ledger_writable(ledger) || !peer_box_id || !peer_signer || (!rows && len))
-        return ZCL_FLEET_ARGUMENT;
-    if (accepted)
-        *accepted = 0;
-    if (ledger->have_self &&
-        memcmp(peer_box_id, ledger->self_id, ZCL_FLEET_ID_BYTES) == 0)
-        return ZCL_FLEET_PEER_UNPAIRED; /* nobody replicates our own chain */
-
-    struct fleet_box *box = box_intern(ledger, peer_box_id, false);
-    if (!box)
-        return ZCL_FLEET_FULL;
-
-    /* PASS ONE: decode and check everything. Not one byte is written until
-     * the entire batch has been proven, so a forged row late in a batch
-     * leaves the replica exactly as it was. */
-    struct zcl_fleet_row batch[ZCL_FLEET_BATCH_MAX];
     size_t count = 0;
+    *validated = 0;
     size_t offset = 0;
     uint8_t expect[ZCL_FLEET_HASH_BYTES];
     memcpy(expect, box->head_hash, ZCL_FLEET_HASH_BYTES);
@@ -1029,10 +1016,19 @@ enum zcl_fleet_status zcl_fleet_ledger_replicate(
         batch[count++] = row;
         next_seq++;
     }
-    if (count == 0)
-        return ZCL_FLEET_OK;
+    *validated = count;
+    return ZCL_FLEET_OK;
+}
 
-    /* PASS TWO: write. */
+/* Reserve storage only after the complete nonempty batch has qualified. */
+static enum zcl_fleet_status replicate_store(
+    struct zcl_fleet_ledger *ledger,
+    const uint8_t peer_box_id[ZCL_FLEET_ID_BYTES],
+    const struct zcl_fleet_row *batch, size_t count, size_t *accepted)
+{
+    struct fleet_box *box = box_intern(ledger, peer_box_id, false);
+    if (!box)
+        return ZCL_FLEET_FULL;
     char path[600];
     if (!chain_path(ledger, peer_box_id, path, sizeof path))
         return ZCL_FLEET_ARGUMENT;
@@ -1078,6 +1074,33 @@ enum zcl_fleet_status zcl_fleet_ledger_replicate(
     if (status == ZCL_FLEET_OK && accepted)
         *accepted = stored;
     return status;
+}
+
+enum zcl_fleet_status zcl_fleet_ledger_replicate(
+    struct zcl_fleet_ledger *ledger,
+    const uint8_t peer_box_id[ZCL_FLEET_ID_BYTES],
+    const uint8_t peer_signer[ZCL_FLEET_ID_BYTES], const uint8_t *rows,
+    size_t len, size_t *accepted)
+{
+    if (!ledger_writable(ledger) || !peer_box_id || !peer_signer || (!rows && len))
+        return ZCL_FLEET_ARGUMENT;
+    if (accepted)
+        *accepted = 0;
+    if (ledger->have_self &&
+        memcmp(peer_box_id, ledger->self_id, ZCL_FLEET_ID_BYTES) == 0)
+        return ZCL_FLEET_PEER_UNPAIRED;
+
+    struct fleet_box empty = { 0 };
+    struct fleet_box *box = box_find(ledger, peer_box_id);
+    if (!box)
+        box = &empty;
+    struct zcl_fleet_row batch[ZCL_FLEET_BATCH_MAX];
+    size_t count = 0;
+    enum zcl_fleet_status status = replicate_validate(
+        box, peer_box_id, peer_signer, rows, len, batch, &count);
+    if (status != ZCL_FLEET_OK || count == 0)
+        return status;
+    return replicate_store(ledger, peer_box_id, batch, count, accepted);
 }
 
 /* ── querying ────────────────────────────────────────────────────────── */

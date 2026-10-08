@@ -30,6 +30,10 @@
 #include "chain/chainparams.h"
 #include "command/native_command.h"
 #include "crypto/ed25519.h"
+#include "controllers/agent_impact_rules.h"
+#include "devloop.h"
+#include "test/selection_build_needs.h"
+#include "test_group_host_need.h"
 #include "fleetledger/fleet_ledger.h"
 #include "platform/private_file.h"
 #include "json/json.h"
@@ -383,9 +387,115 @@ static int fl_open_refusal_location(void)
     return failures;
 }
 
-static int test_fleet_ledger_observation(void)
+/* The admission regression is selected for a production-only edit even when
+ * no dependency graph is available. Keep this check in its focused group. */
+static bool fl_admission_routes(void)
+{
+    const char *path = "engine/modules/fleetledger/src/fleet_ledger.c";
+    struct agent_impact_acc impact = {0};
+    if (!agent_impact_apply_shared_rules(path, &impact) || impact.groups_lost)
+        return false;
+    bool admission = false, lint = false;
+    for (size_t i = 0; i < impact.groups_len; i++) {
+        admission |= strcmp(impact.groups[i], "fleet_ledger") == 0;
+        lint |= strcmp(impact.groups[i], "make_lint_gates") == 0;
+    }
+    struct zcl_devloop_plan plan;
+    if (!zcl_devloop_plan_files(&path, 1, &plan))
+        return false;
+    bool planned = false;
+    for (size_t i = 0; i < plan.path_groups_len; i++)
+        planned |= strcmp(plan.path_groups[i], "fleet_ledger") == 0;
+    struct zcl_test_group_host_need needs[1];
+    size_t count = 99;
+    bool selected = zcl_test_selection_build_needs("test_fleet_ledger", true,
+                                                  NULL, needs, 1, &count);
+    return admission && lint && planned && selected && count == 0 &&
+           plan.closure_groups_len == 0 &&
+           plan.dims[ZCL_DEVLOOP_DIM_SEMANTIC].status ==
+               ZCL_DEVLOOP_DIM_UNAVAILABLE &&
+           plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].status ==
+               ZCL_DEVLOOP_DIM_UNAVAILABLE;
+}
+
+/* Exercise admission independently of the large wire fixture and wall time. */
+static int fl_admission_regression(void)
 {
     int failures = 0;
+    char root[256];
+    test_make_tmpdir(root, sizeof root, "fleet_ledger", "admission");
+    struct zcl_fleet_report report;
+    struct zcl_fleet_ledger *ledger = zcl_fleet_ledger_open(root, NULL, NULL,
+                                                         &report);
+    zcl_fleet_role_checker_install_permissive_for_testing();
+    TEST("fleet ledger: rejected batches leave peer capacity available") {
+        ASSERT(fl_admission_routes());
+        ASSERT(ledger != NULL);
+        ASSERT_EQ(report.status, ZCL_FLEET_OK);
+        struct zcl_fleet_box_status boxes[ZCL_FLEET_BOXES_MAX];
+        const uint8_t malformed[] = { 0xff };
+        uint8_t peer[ZCL_FLEET_ID_BYTES];
+        uint8_t seed[32] = { 0x11 }, signer[32], secret[32];
+        zcl_ed25519_keypair(signer, secret, seed);
+        size_t accepted = 99;
+        for (size_t i = 0; i < ZCL_FLEET_BOXES_MAX; i++) {
+            memset(peer, (int)(0x80u + i), sizeof peer);
+            ASSERT_EQ(zcl_fleet_ledger_replicate(ledger, peer, signer,
+                      malformed, sizeof malformed, &accepted),
+                      ZCL_FLEET_MALFORMED);
+            ASSERT_EQ(accepted, (size_t)0);
+            ASSERT_EQ(zcl_fleet_ledger_boxes(ledger, boxes,
+                      ZCL_FLEET_BOXES_MAX), (size_t)0);
+        }
+        /* An empty pull from an unknown peer consumes no capacity. */
+        accepted = 99;
+        ASSERT_EQ(zcl_fleet_ledger_replicate(ledger, peer, signer, NULL, 0,
+                  &accepted), ZCL_FLEET_OK);
+        ASSERT_EQ(accepted, (size_t)0);
+        ASSERT_EQ(zcl_fleet_ledger_boxes(ledger, boxes, ZCL_FLEET_BOXES_MAX),
+                  (size_t)0);
+        struct zcl_fleet_row first = { 0 };
+        first.version = ZCL_FLEET_ROW_VERSION;
+        first.kind = ZCL_FLEET_KIND_USAGE;
+        first.subject = ZCL_FLEET_PROVIDER_GROK;
+        first.seq = 1;
+        first.ts_unix = FL_AUTHORITY_NOW;
+        memset(first.box_id, 0x21, sizeof first.box_id);
+        memcpy(first.signer, signer, sizeof signer);
+        ASSERT_EQ(zcl_fleet_row_sign(&first, seed), ZCL_FLEET_OK);
+        uint8_t rows[ZCL_FLEET_ROW_MAX_BYTES];
+        size_t len = zcl_fleet_row_encode(&first, rows, sizeof rows);
+        ASSERT(len > 0);
+        ASSERT_EQ(zcl_fleet_ledger_replicate(ledger, first.box_id, signer,
+                  rows, len, &accepted), ZCL_FLEET_OK);
+        ASSERT_EQ(accepted, (size_t)1);
+        for (size_t i = 0; i < 2; i++) {
+            /* Duplicate and empty pulls preserve the existing peer. */
+            accepted = 99;
+            ASSERT_EQ(zcl_fleet_ledger_replicate(ledger, first.box_id, signer,
+                      rows, i == 0 ? len : 0, &accepted), ZCL_FLEET_OK);
+            ASSERT_EQ(accepted, (size_t)0);
+            ASSERT_EQ(zcl_fleet_ledger_boxes(ledger, boxes,
+                      ZCL_FLEET_BOXES_MAX), (size_t)1);
+            ASSERT(memcmp(boxes[0].box_id, first.box_id,
+                          sizeof first.box_id) == 0);
+            ASSERT_EQ(boxes[0].last_seq, UINT64_C(1));
+            ASSERT_EQ(boxes[0].rows, UINT64_C(1));
+            ASSERT_EQ(zcl_fleet_ledger_peer_seq(ledger, first.box_id),
+                      UINT64_C(1));
+        }
+        PASS();
+    }
+_test_next:
+    zcl_fleet_ledger_close(ledger);
+    zcl_fleet_role_checker_install(NULL);
+    test_rm_rf_recursive(root);
+    return failures;
+}
+
+static int test_fleet_ledger_observation(void)
+{
+    int failures = fl_admission_regression();
     failures += fl_open_refusal_location();
     char root[256], dir[320], peer[352], self[352];
     struct stat info;

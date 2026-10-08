@@ -1872,7 +1872,6 @@ engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_append:27
 engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_experiment_stats:42
 engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_open:1
 engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_query:30
-engine/modules/fleetledger/src/fleet_ledger.c:zcl_fleet_ledger_replicate:29
 engine/modules/fleetledger/src/fleet_ledger_row.c:zcl_fleet_row_decode:20
 engine/modules/fleetledger/src/fleet_ledger_row.c:zcl_fleet_row_validate:36
 engine/modules/framework/src/app_checkpoint.c:validate_and_digest_chunks:16
