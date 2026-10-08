@@ -175,14 +175,20 @@ static bool ic_host_need_bare_root(const char *dir)
 }
 
 /* A tree shaped like a dev box: the runtime binary the pairing group needs is
- * present, so the group's host need is met. */
+ * present, so the group's host need is met. The sentinel archive behind
+ * test_onion_persistence's real-Tor gate is present too: a full host links
+ * real Tor, and without the file the "full" fixture would silently stop
+ * being full the moment the gate row landed. */
 static bool ic_host_need_full_root(const char *dir)
 {
     char rm[4096];
     (void)snprintf(rm, sizeof(rm), "rm -rf %s", dir);
     system(rm);
     return ic_write(dir, "Makefile", "# dev execution tree\n") &&
-           ic_write(dir, "build/bin/z23", "#!/bin/sh\n");
+           ic_write(dir, "build/bin/z23", "#!/bin/sh\n") &&
+           ic_write(dir,
+                    "vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a",
+                    "archive\n");
 }
 
 static bool ic_fuzz_host_ready(void)
@@ -197,6 +203,7 @@ static bool ic_bare_host_excludes(const char *group, bool fuzz_ready)
 {
     return zcl_test_group_is_umbrella(group) ||
            strcmp(group, "test_onion_pair_watch_live") == 0 ||
+           strcmp(group, "test_onion_persistence") == 0 ||
            strcmp(group, "test_self_folded_anchor_heavy") == 0 ||
            (!fuzz_ready && strcmp(group, "test_semantic_facts_fuzz") == 0);
 }
@@ -1031,8 +1038,9 @@ static int test_ic_capacity_bound_runs_everything(void)
         ASSERT(zcl_test_group_catalog_count() > 2);
         bool fuzz_ready = ic_fuzz_host_ready();
         ASSERT(ic_selector_is_universal(selector, selected,
-                                        fuzz_ready ? 2 : 3));
+                                        fuzz_ready ? 3 : 4));
         ASSERT(!ic_selector_has(selector, "test_onion_pair_watch_live"));
+        ASSERT(!ic_selector_has(selector, "test_onion_persistence"));
         ASSERT(!ic_selector_has(selector, "test_self_folded_anchor_heavy"));
         ASSERT(ic_selector_has(selector, "test_semantic_facts_fuzz") ==
                fuzz_ready);
@@ -1050,6 +1058,10 @@ static int test_ic_capacity_bound_runs_everything(void)
                (unsigned)selected, gated[0] ? gated : "-");
         ASSERT(strstr(gated,
                       "test_onion_pair_watch_live:file:build/bin/z23") != NULL);
+        ASSERT(strstr(gated,
+                      "test_onion_persistence:file:"
+                      "vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a") !=
+               NULL);
         ASSERT(strstr(gated, "test_self_folded_anchor_heavy:env:"
                              "ZCL_SELF_FOLD_ANCHOR_FIXTURE") != NULL);
         ASSERT((strstr(gated, "test_semantic_facts_fuzz:toolchain:"
@@ -1193,6 +1205,17 @@ static int test_ic_host_need_table_is_closed(void)
         ASSERT(!zcl_test_group_host_need_selectable(IC_FIX_HOST_BARE, &need));
         ASSERT(zcl_test_group_host_need_selectable(IC_FIX_HOST_FULL, &need));
         ASSERT(!zcl_test_group_host_need_selectable(IC_FIX_HOST_FULL, NULL));
+        /* The real-Tor gate is the same FILE shape: a stub-linked bare host
+         * cannot run the group, a real-linked full host can. */
+        memset(&need, 0, sizeof(need));
+        ASSERT(zcl_test_group_host_need("test_onion_persistence", &need));
+        ASSERT(need.kind == ZCL_HOST_NEED_FILE);
+        ASSERT(need.target == NULL);
+        ASSERT(strcmp(need.value,
+                      "vendor/tor/src/ext/keccak-tiny/libkeccak-tiny.a") ==
+               0);
+        ASSERT(!zcl_test_group_host_need_selectable(IC_FIX_HOST_BARE, &need));
+        ASSERT(zcl_test_group_host_need_selectable(IC_FIX_HOST_FULL, &need));
 
         /* An ordinary group declares nothing and is never gated. */
         memset(&need, 0, sizeof(need));
