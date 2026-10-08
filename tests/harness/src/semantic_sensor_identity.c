@@ -118,13 +118,17 @@ static bool ssi_line(const char *text, const char *needle, const char *also,
     return false;
 }
 
+/* SIZE_MAX signals overflow; a prefix is not a complete argv. */
 static size_t ssi_split(char *s, char **tok, size_t cap)
 {
     size_t n = 0;
     char *save = NULL;
-    for (char *t = strtok_r(s, " \t", &save); t != NULL && n < cap;
-         t = strtok_r(NULL, " \t", &save))
+    for (char *t = strtok_r(s, " \t", &save); t != NULL;
+         t = strtok_r(NULL, " \t", &save)) {
+        if (n == cap)
+            return SIZE_MAX;
         tok[n++] = t;
+    }
     return n;
 }
 
@@ -162,6 +166,17 @@ static bool ssi_same_flags(const char *src, char *const *o, size_t on,
     return on == zn;
 }
 
+/* Report whether the object recipe names the sensor's compiler. */
+static bool ssi_same_cc(const char *src, char *const *o, size_t on,
+                        size_t at, const char *cc)
+{
+    bool same = on > at && cc != NULL && strcmp(o[at], cc) == 0;
+    if (!same)
+        printf("  argv %s: object compiler %s, sensor --cc %s\n", src,
+               on > at ? o[at] : "(none)", cc != NULL ? cc : "(none)");
+    return same;
+}
+
 /* Compare one source's object recipe and facts recipe. A compiler mismatch
  * is reported and the flags are still compared. */
 static bool ssi_same_argv(const char *src, char *obj, char *zsm)
@@ -174,14 +189,17 @@ static bool ssi_same_argv(const char *src, char *obj, char *zsm)
         const char *cc = ssi_sensor_cc(zsm, ztail);
         size_t on = ssi_split(otail + 4, o, SSI_TOKENS);
         size_t zn = ssi_split(ztail + 4, z, SSI_TOKENS);
+        if (on == SIZE_MAX || zn == SIZE_MAX) {
+            printf("  argv %s: token capacity exceeded\n", src);
+            ok = false;
+            goto done;
+        }
         size_t at = on > 0 && ssi_wrapper(o[0]) ? 1 : 0;
-        bool same_cc = on > at && cc != NULL && strcmp(o[at], cc) == 0;
-        if (!same_cc)
-            printf("  argv %s: object compiler %s, sensor --cc %s\n", src,
-                   on > at ? o[at] : "(none)", cc != NULL ? cc : "(none)");
+        bool same_cc = ssi_same_cc(src, o, on, at, cc);
         ok = on > at && ssi_same_flags(src, o + at + 1, on - at - 1, z, zn) &&
              same_cc;
     }
+done:
     free(o);
     free(z);
     return ok;
@@ -497,9 +515,77 @@ static int ssi_t_argv(void)
     return failures;
 }
 
+/* Fixed recipes leave room for extra flags and the terminating NUL. */
+struct ssi_capacity_recipes {
+    char obj[SSI_TOKENS * 6 + 64];
+    char zsm[SSI_TOKENS * 6 + 64];
+};
+
+static void ssi_capacity_init(struct ssi_capacity_recipes *r)
+{
+    size_t on = strlen(r->obj), zn = strlen(r->zsm);
+    for (size_t k = 0; k < SSI_TOKENS - 1; k++) {
+        memcpy(r->obj + on, "-DA=1 ", 6);
+        memcpy(r->zsm + zn, "-DA=1 ", 6);
+        on += 6;
+        zn += 6;
+    }
+    r->obj[on] = '\0';
+    r->zsm[zn] = '\0';
+}
+
+static int ssi_t_argv_capacity(void)
+{
+    int failures = 0;
+    struct ssi_capacity_recipes r = {"object -- gcc ", "sensor --cc gcc -- "};
+    struct ssi_capacity_recipes copy;
+    ssi_capacity_init(&r);
+    TEST_CASE("semantic_manifest: complete argv compares equal and excess object flag refuses") {
+        copy = r;
+        ASSERT(ssi_same_argv("capacity.c", copy.obj, copy.zsm));
+        char small_o[] = "object -- gcc -DA=1";
+        char small_z[] = "sensor --cc gcc -- -DA=1";
+        ASSERT(ssi_same_argv("small.c", small_o, small_z));
+        memcpy(r.obj + strlen(r.obj), "-DB=2", sizeof("-DB=2"));
+        copy = r;
+        ASSERT(!ssi_same_argv("overflow.c", copy.obj, copy.zsm));
+    } TEST_END
+    return failures;
+}
+
+static int ssi_t_split_capacity(void)
+{
+    int failures = 0;
+    struct ssi_capacity_recipes r = {"object -- gcc ", "sensor --cc gcc -- "};
+    struct ssi_capacity_recipes copy;
+    char *tok[SSI_TOKENS];
+    ssi_capacity_init(&r);
+    TEST_CASE("semantic_manifest: token counts preserve capacity and signal overflow") {
+        copy = r;
+        ASSERT_EQ(ssi_split(strstr(copy.obj, " -- ") + 4, tok, SSI_TOKENS),
+                  SSI_TOKENS);
+        ASSERT_EQ(ssi_split(strstr(copy.zsm, " -- ") + 4, tok, SSI_TOKENS),
+                  SSI_TOKENS - 1);
+        memcpy(r.obj + strlen(r.obj), "-DB=2", sizeof("-DB=2"));
+        copy = r;
+        ASSERT(!ssi_same_argv("overflow-count.c", copy.obj, copy.zsm));
+        memcpy(r.zsm + strlen(r.zsm), "-DB=2 ", sizeof("-DB=2 "));
+        copy = r;
+        ASSERT_EQ(ssi_split(strstr(copy.zsm, " -- ") + 4, tok, SSI_TOKENS),
+                  SSI_TOKENS);
+        ASSERT_EQ(ssi_split(strstr(copy.obj, " -- ") + 4, tok, SSI_TOKENS),
+                  SIZE_MAX);
+        memcpy(r.zsm + strlen(r.zsm), "-DC=3", sizeof("-DC=3"));
+        copy = r;
+        ASSERT_EQ(ssi_split(strstr(copy.zsm, " -- ") + 4, tok, SSI_TOKENS),
+                  SIZE_MAX);
+    } TEST_END
+    return failures;
+}
+
 int semantic_sensor_argv_tests(void)
 {
-    return ssi_t_argv();
+    return ssi_t_argv_capacity() + ssi_t_split_capacity() + ssi_t_argv();
 }
 
 /* ── resense: a compile change rewrites the manifest ────────────────────── */
