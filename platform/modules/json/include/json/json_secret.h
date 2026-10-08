@@ -1,3 +1,4 @@
+/* purpose: Retire owned strings in secret-bearing JSON trees before release. */
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #ifndef ZCL_JSON_SECRET_H
