@@ -90,6 +90,15 @@ static int64_t days_from_civil(int64_t y, int m, int d)
     return era * 146097 + doe - 719468;
 }
 
+static int fo_days_in_month(int y, int mo)
+{
+    static const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+
+    if (mo == 2 && y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))
+        return 29;
+    return days[mo - 1];
+}
+
 bool fo_parse_iso8601(const char *s, int64_t *out)
 {
     int y, mo, d, h, mi, se;
@@ -101,7 +110,8 @@ bool fo_parse_iso8601(const char *s, int64_t *out)
         !digits(s + 11, 2, &h) || s[13] != ':' || !digits(s + 14, 2, &mi) ||
         s[16] != ':' || !digits(s + 17, 2, &se) || s[19] != 'Z')
         return false;
-    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || se > 60)
+    if (mo < 1 || mo > 12 || d < 1 || d > fo_days_in_month(y, mo) ||
+        h > 23 || mi > 59 || se > 60)
         return false;
     *out = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se;
     return true;

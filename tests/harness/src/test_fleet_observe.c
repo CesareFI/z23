@@ -299,6 +299,52 @@ _test_next:;
     return failures;
 }
 
+static int test_fleet_observe_calendar(void)
+{
+    int failures = 0;
+    static const struct {
+        const char *stamp;
+        bool valid;
+        int64_t unix_seconds;
+    } cases[] = {
+        {"2026-02-29T00:00:00Z", false, 0},
+        {"2026-04-31T00:00:00Z", false, 0},
+        {"2024-02-29T00:00:00Z", true, 1709164800},
+        {"2000-02-29T00:00:00Z", true, 951782400},
+        {"1900-02-29T00:00:00Z", false, 0},
+        {"2026-02-28T00:00:00Z", true, 1772236800},
+        {"2026-04-30T00:00:00Z", true, 1777507200},
+        {"1900-02-28T00:00:00Z", true, -2203977600LL},
+        {"2026-01-31T00:00:00Z", true, 1769817600},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        TEST(cases[i].stamp) {
+            int64_t seconds = -1;
+            struct fo_row row;
+            char line[256], err[128];
+            int n = snprintf(line, sizeof(line),
+                "%s\tresult\tnode1\tt1\tverify\tstory\t"
+                "mac\tharness\tfixture\thigh\t1\t1\t1\t0\t1\t1\t1\t"
+                "LAND\t0\t0\t0\tnote", cases[i].stamp);
+
+            ASSERT(n > 0 && (size_t)n < sizeof(line));
+            ASSERT_EQ(fo_parse_iso8601(cases[i].stamp, &seconds), cases[i].valid);
+            ASSERT_EQ(seconds, cases[i].valid ? cases[i].unix_seconds : -1);
+            ASSERT_EQ(fo_parse_line(line, 42, &row, err, sizeof(err)), cases[i].valid);
+            if (cases[i].valid) {
+                ASSERT_EQ(row.ts_unix, cases[i].unix_seconds);
+            } else {
+                ASSERT_EQ(row.ts_unix, (int64_t)0);
+                ASSERT(strstr(err, "rows.tsv:42: ts is not a valid") != NULL);
+            }
+            PASS();
+        }
+_test_next:;
+    }
+    return failures;
+}
+
 /* ── --check drift detection ──────────────────────────────────────────── */
 
 static int test_fleet_observe_check(void)
@@ -542,6 +588,7 @@ int test_fleet_observe(void)
     failures += test_fleet_observe_classify();
     failures += test_fleet_observe_ready_accounting();
     failures += test_fleet_observe_parse();
+    failures += test_fleet_observe_calendar();
     failures += test_fleet_observe_check();
     failures += test_fleet_observe_records();
     failures += test_fleet_observe_dev_know();
