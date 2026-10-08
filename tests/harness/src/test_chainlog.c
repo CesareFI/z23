@@ -824,6 +824,66 @@ static bool append_snapshot(const char *path, uint8_t buf[256], long *size)
     return fclose(f) == 0 && ok;
 }
 
+static bool sequence_refusal(const struct zcl_chainlog_report *rep, const uint8_t seed[32])
+{
+    return rep->status == ZCL_CHAINLOG_SEQUENCE && rep->first_bad_seq == 2 &&
+        rep->records == 0 && rep->torn_bytes == 0 && memcmp(rep->head, seed, 32) == 0;
+}
+
+static bool sequence_bytes_match(const char *path, const uint8_t before[256], long size)
+{
+    uint8_t after[256];
+    long after_size = 0;
+    return append_snapshot(path, after, &after_size) && after_size == size &&
+        memcmp(before, after, (size_t)size) == 0;
+}
+
+static int case_dense_sequence(void)
+{
+    int failures = 0;
+    char dir[256], path[320];
+    test_make_tmpdir(dir, sizeof dir, "chainlog", "sequence");
+    (void)snprintf(path, sizeof path, "%s/log", dir);
+    uint8_t before[256], seed[32];
+    long size = 0;
+    bool built = build_log(path, k_stream_a, 1, NULL);
+    CL_CHECK("sequence fixture built", built);
+    if (!built) goto cleanup;
+    struct zcl_chainlog_report rep;
+    struct zcl_chainlog *log = zcl_chainlog_open(path, k_stream_a, &rep);
+    CL_CHECK("normal sequence one accepted", log && rep.status == ZCL_CHAINLOG_OK &&
+        rep.records == 1 && rep.first_bad_seq == 0 && rep.torn_bytes == 0);
+    zcl_chainlog_close(log);
+    bool saved = append_snapshot(path, before, &size);
+    CL_CHECK("single alpha frame snapshot", saved && size == 133);
+    if (!saved || size != 133) goto cleanup;
+    /* Keep the existing frame layout and commit sentinel; only seq changes.
+     * Rehash independently so the hash check cannot mask the sequence check. */
+    zcl_write_u64_be(before + 64 + 4, 2);
+    struct sha3_256_ctx hash;
+    sha3_256_init(&hash);
+    sha3_256_write(&hash, before, 64);
+    sha3_256_finalize(&hash, seed);
+    sha3_256_init(&hash);
+    sha3_256_write(&hash, seed, sizeof seed);
+    sha3_256_write(&hash, before + 64, 16 + 5);
+    sha3_256_finalize(&hash, before + 64 + 16 + 5);
+    bool written = file_spill(path, before, (size_t)size);
+    CL_CHECK("hash-valid sequence two fixture written", written);
+    if (!written) goto cleanup;
+    log = zcl_chainlog_open(path, k_stream_a, &rep);
+    CL_CHECK("hash-valid sequence gap refuses open", !log && sequence_refusal(&rep, seed));
+    zcl_chainlog_close(log);
+    CL_CHECK("sequence refusal preserves every byte", sequence_bytes_match(path, before, size));
+    enum zcl_chainlog_status status = zcl_chainlog_verify(path, k_stream_a, &rep);
+    CL_CHECK("hash-valid sequence gap refuses verify", status == ZCL_CHAINLOG_SEQUENCE &&
+        sequence_refusal(&rep, seed));
+    CL_CHECK("sequence audit preserves every byte", sequence_bytes_match(path, before, size));
+cleanup:
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int failed_append_retry(struct zcl_chainlog *log, const char *path)
 {
     int failures = 0;
@@ -889,6 +949,7 @@ static int case_failed_append(void)
 int test_chainlog(void)
 {
     int failures = 0;
+    failures += case_dense_sequence();
     failures += case_failed_append();
     failures += case_observation_lock();
     char readonly_dir[256];
