@@ -281,6 +281,78 @@ static struct zcl_result ti_overlay_publish(
     return ZCL_OK;
 }
 
+static bool ti_effect_envelope_matches(const struct json_value *result)
+{
+    struct json_value envelope;
+    json_init(&envelope);
+    vault_intent_error_response(&envelope, "INVALID_EFFECT", "control");
+    const char *fields[] = {
+        "code", "error_code", "current_state", "next_action"
+    };
+    bool checked = !json_get_bool(json_get(result, "ok")) &&
+        !json_get_bool(json_get(result, "retryable")) &&
+        json_get_bool(json_get(result, "human_action_required"));
+    for (size_t f = 0; f < 4; f++) {
+        const char *actual = json_get_str(json_get(result, fields[f]));
+        const char *control = json_get_str(json_get(&envelope, fields[f]));
+        checked = checked && actual && control && strcmp(actual, control) == 0;
+    }
+    json_free(&envelope);
+    return checked;
+}
+
+static bool ti_effect_location_case(const char *input, const char *expected)
+{
+    struct json_value params, result;
+    json_init(&params); json_init(&result);
+    bool called = json_read(&params, input, strlen(input)) &&
+        vault_intent_plan_transparent_fanout_continuation(&params, &result);
+    const char *message = json_get_str(json_get(&result, "message"));
+    bool checked = called && message && strstr(message, expected);
+    checked = ti_effect_envelope_matches(&result) && checked;
+    json_free(&params); json_free(&result);
+    return checked;
+}
+
+static bool ti_effect_location_cases(void)
+{
+    const char *address = "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn";
+    const char *bad[] = {
+        "{\"asset\":\"ZCL\",\"to\":\"%s\",\"amount\":\"bad\"}",
+        "{\"asset\":\"ZCL\",\"to\":\"bad\",\"amount\":\"0.001\"}",
+        "{\"asset\":\"BAD\",\"to\":\"%s\",\"amount\":\"0.001\"}",
+        "7"
+    };
+    const char *suffix[] = { ".amount", ".to", ".asset", " must be an object" };
+    struct node_db db; memset(&db, 0, sizeof(db));
+    if (!node_db_open(&db, ":memory:")) return false;
+    struct wallet_rpc_context saved = g_wallet_ctx;
+    memset(&g_wallet_ctx, 0, sizeof(g_wallet_ctx));
+    g_wallet_ctx.node_db = &db;
+    bool checked = true;
+    for (size_t index = 0; index < 2; index++) {
+        for (size_t kind = 0; kind < 4; kind++) {
+            char invalid[192], valid[192], input[640], expected[64];
+            snprintf(invalid, sizeof(invalid), bad[kind], address);
+            snprintf(valid, sizeof(valid),
+                "{\"asset\":\"ZCL\",\"to\":\"%s\",\"amount\":\"0.001\"}", address);
+            snprintf(input, sizeof(input),
+                "[{\"wallet_scope\":\"dev\",\"route\":\"transparent\","
+                "\"idempotency_key\":\"effect-location\",\"effects\":[%s,%s]}]",
+                index == 0 ? invalid : valid, index == 0 ? valid : invalid);
+            snprintf(expected, sizeof(expected), "effects[%zu]%s", index, suffix[kind]);
+            checked = ti_effect_location_case(input, expected) && checked;
+        }
+    }
+    struct vault_intent_row row;
+    checked = !vault_intent_find_application_idempotency(
+        &db, "dev", VAULT_INTENT_TRANSPARENT_APPLICATION,
+        "effect-location", &row) && checked;
+    g_wallet_ctx = saved;
+    node_db_close(&db);
+    return checked;
+}
+
 static int ti_validation_cases(void)
 {
     int failures = 0;
@@ -350,6 +422,11 @@ static int ti_validation_cases(void)
         ASSERT(strstr(json_get_str(json_get(&error, "next_action")),
                       "same idempotency_key") != NULL);
         json_free(&error);
+        PASS();
+    }
+
+    TEST("transparent intent refusals locate the invalid effect field") {
+        ASSERT(ti_effect_location_cases());
         PASS();
     }
 

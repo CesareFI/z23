@@ -223,6 +223,36 @@ bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
                                 struct json_value *out)
 { return vi_context_ready(ctx, out, true); }
 
+static const char *vi_effect_correction(const struct json_value *e,
+                                       const char *asset, const char *to,
+                                       int64_t amount, int64_t total)
+{
+    if (!e || e->type != JSON_OBJ) return " must be an object";
+    if (!asset || strcmp(asset, "ZCL")) return ".asset must be ZCL";
+    if (!to || strlen(to) > VI_ADDR_MAX)
+        return ".to must be a transparent address";
+    /* The parser writes a positive amount only on success. Earlier
+     * short-circuit failures have already been identified above. */
+    if (amount == 0)
+        return ".amount must be a positive, in-range decimal string";
+    if (total > INT64_MAX - amount)
+        return ".amount must keep the total within range";
+    return ".to must be a transparent address";
+}
+
+static bool vi_effect_fields_valid(const struct json_value *e,
+                                   const char *asset, const char *to,
+                                   int64_t *amount,
+                                   struct tx_destination *dest)
+{
+    return e && e->type == JSON_OBJ && asset &&
+        strcmp(asset, "ZCL") == 0 && to && strlen(to) <= VI_ADDR_MAX &&
+        json_get(e, "amount") && json_get(e, "amount")->type == JSON_STR &&
+        vault_intent_parse_zcl_amount(
+            json_get_str(json_get(e, "amount")), amount) &&
+        wallet_decode_address(to, dest);
+}
+
 static bool vi_effects(const struct json_value *input, struct vi_payload *p,
                        struct json_value *out)
 {
@@ -249,14 +279,12 @@ static bool vi_effects(const struct json_value *input, struct vi_payload *p,
         const char *to = e ? json_get_str(json_get(e, "to")) : NULL;
         int64_t amount = 0;
         struct tx_destination dest;
-        if (!e || e->type != JSON_OBJ || !asset || strcmp(asset, "ZCL") ||
-            !to || strlen(to) > VI_ADDR_MAX ||
-            !json_get(e, "amount") || json_get(e, "amount")->type != JSON_STR ||
-            !vault_intent_parse_zcl_amount(
-                json_get_str(json_get(e, "amount")), &amount) ||
-            !wallet_decode_address(to, &dest) || // raw-return-ok:invalid recipient is reported below
+        if (!vi_effect_fields_valid(e, asset, to, &amount, &dest) ||
             total > INT64_MAX - amount) {
-            vi_error(out, "INVALID_EFFECT", "each effect needs asset=ZCL, a transparent address, and a decimal-string amount");
+            char message[128];
+            snprintf(message, sizeof(message), "effects[%zu]%s", i,
+                     vi_effect_correction(e, asset, to, amount, total));
+            vi_error(out, "INVALID_EFFECT", message);
             return false; // raw-return-ok:invalid_effect_reported
         }
         snprintf(p->effects[i].to, sizeof(p->effects[i].to), "%s", to);
