@@ -57,3 +57,44 @@ buffer: the dump must still report present=true, parsed=false, current_pass=fals
 The fixture does not change process cwd and removes its descriptor-relative tree.
 This exact Linux pathname witness is not a macOS or Windows runtime claim.
 Restoring observation assignment after the path-size refusal must fail it.
+
+## Linux production-boundary qualification
+
+On 2026-10-08, isolated development peer r1 ran candidate
+`70a173e0a5f244b92265648507e908289b5bd427`, parent
+`e0aa31975b9fcd30c11125ab50f3fadf6fafa931`, through installed
+`devbuild --wait`. Toolchain: Ubuntu GCC 14.2.0; CPU: AMD Ryzen 9 7950X3D.
+Admission granted 28 jobs and 24 GiB. The registered cold
+`canary_sentinel_watch` group passed: one group executed, zero cached,
+zero failures, zero skips, 6.2 seconds test wall time.
+
+The intended production mutation moved `slot->present = true` after the
+concatenated path-size refusal. The cold group then failed precisely at
+`observed filename survives full-path read refusal`: one group executed,
+one failed, zero skips, 13.3 seconds test wall time, make status 2.
+Mutation patch SHA-256:
+`ed00cd5b3b6ced10ea8ffef281b8b85c6b64ed465c30a01d5b7293ca68b88d33`.
+
+Restoration recovered the exact service SHA-256
+`2ef55c5be00b9d5ef3f631fb4e5c4102a8d996fa9b50c21a0fc828de75cbf0b8`
+and clean candidate checkout. The restored cold group passed: one executed,
+zero cached, zero failures, zero skips, 20.8 seconds test wall time. All three
+runs reported zero environment-unobserved and load-flaky groups. The earlier
+C8 reporter worktree remained clean and unchanged. No production node or
+consensus operation ran.
+
+Retained r1 stage logs and their matching transferred local copies reside in
+the external private proof directory named
+z23-canary-proof-70a173e0a-20261008. SHA-256 identities:
+
+| Stage | Log SHA-256 |
+| --- | --- |
+| Fixed | `d7a2600f74f3baa55b3cc200b1c58d8c0088b1ff85d6264d173523073f38ddb6` |
+| Mutated | `b6dc1553766ebd98ee599f6290bd9afe4ab62a5f4f71cc72285b466e05a4b0d9` |
+| Restored | `4e69af72ee6223a04402346b1357a079316ec871fbba6a82daa4298b3d0240d7` |
+
+This evidence supersedes initial NOTRUN entries only for the named Linux group
+and presence-boundary mutation on candidate 70a173e0a. Reset-removal and
+PASS-authority mutations, macOS and Windows execution, whole integration
+proof, fresh canary timestamp policy, and C8's retained 168-hour window remain
+unqualified. Subsequent documentation or source changes receive new identities.
