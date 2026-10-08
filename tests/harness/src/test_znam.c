@@ -85,12 +85,14 @@ static bool znam_text_input_bounds(struct node_db *ndb)
     return true;
 }
 
+static int znam_text_save_bounds(void);
+
 static int znam_text_input_bounds_report(struct node_db *ndb)
 {
     bool ok = znam_text_input_bounds(ndb);
     printf("znam DB text input bounds and unchanged prefix row... %s\n",
            ok ? "OK" : "FAIL");
-    return !ok;
+    return !ok + znam_text_save_bounds();
 }
 
 static int znam_count_step_interrupted(void *stmt)
@@ -160,6 +162,52 @@ static bool open_test_names_db(sqlite3 **db_out, struct node_db *ndb_out)
     ndb_out->db = db;
     ndb_out->open = true;
     return true;
+}
+
+/* Original text arguments must fit before persistence can copy them. */
+static int znam_text_save_bounds(void)
+{
+    sqlite3 *db = NULL;
+    struct node_db ndb = {0};
+    printf("znam DB text save rejects original overlong arguments... ");
+    if (!open_test_names_db(&db, &ndb)) {
+        if (db) sqlite3_close(db);
+        printf("FAIL (fixture)\n");
+        return 1;
+    }
+    char name[ZNAM_NAME_MAX + 2], key[ZNAM_TEXT_KEY_MAX + 2];
+    char value[ZNAM_TEXT_VAL_MAX + 2], out[ZNAM_TEXT_VAL_MAX + 1] = {0};
+    memset(name, 'a', sizeof(name)); name[sizeof(name) - 1] = '\0';
+    memset(key, 'k', sizeof(key)); key[sizeof(key) - 1] = '\0';
+    memset(value, 'v', sizeof(value)); value[sizeof(value) - 1] = '\0';
+    name[ZNAM_NAME_MAX] = '\0';
+    key[ZNAM_TEXT_KEY_MAX] = '\0';
+    bool ok = db_znam_text_save(&ndb, name, "email", "old");
+    ok &= db_znam_text_save(&ndb, "alice", key, "old");
+    name[ZNAM_NAME_MAX] = 'a';
+    key[ZNAM_TEXT_KEY_MAX] = 'k';
+    ok &= !db_znam_text_save(&ndb, name, "email", "new");
+    ok &= !db_znam_text_save(&ndb, "alice", key, "new");
+    ok &= !db_znam_text_save(&ndb, "alice", "url", value);
+    ok &= db_znam_text_count(&ndb, name) == 0;
+    name[ZNAM_NAME_MAX] = '\0';
+    key[ZNAM_TEXT_KEY_MAX] = '\0';
+    ok &= db_znam_text_get(&ndb, name, "email", out, sizeof(out));
+    ok &= strcmp(out, "old") == 0;
+    ok &= db_znam_text_get(&ndb, "alice", key, out, sizeof(out));
+    ok &= strcmp(out, "old") == 0;
+    ok &= db_znam_text_count(&ndb, name) == 1;
+    ok &= db_znam_text_count(&ndb, "alice") == 1;
+    value[ZNAM_TEXT_VAL_MAX] = '\0';
+    ok &= db_znam_text_save(&ndb, name, key, value);
+    ok &= db_znam_text_get(&ndb, name, key, out, sizeof(out));
+    ok &= strcmp(out, value) == 0;
+    ok &= db_znam_text_save(&ndb, name, key, "");
+    ok &= db_znam_text_get(&ndb, name, key, out, sizeof(out));
+    ok &= out[0] == '\0';
+    sqlite3_close(db);
+    printf(ok ? "OK\n" : "FAIL\n");
+    return ok ? 0 : 1;
 }
 
 static int znam_addr_save_bounds(void)
