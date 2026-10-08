@@ -174,7 +174,9 @@ struct zcl_result science_commit_prelude(
     if (strcmp(plan->kind, kind) != 0)
         return ZCL_ERR(-1, "science-plan-kind-mismatch");
     if (now >= plan->expires_unix)
-        return ZCL_ERR(-1, "science-plan-expired");
+        return ZCL_ERR(-1, "science-plan-expired: plan=%s deadline=%lld now=%lld; "
+                       "replan with a new request", plan->plan_root,
+                       (long long)plan->expires_unix, (long long)now);
     if (strlen(plan->wire_hex) != wire_len * 2u) /* exact plan binding */
         return ZCL_ERR(-1, "science-plan-wire-mismatch");
     uint8_t *planned = zcl_malloc(wire_len, "science_plan_wire");

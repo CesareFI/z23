@@ -489,13 +489,28 @@ static int test_zstore_expiry(void)
                   VCS_ZCODE_SCIENCE_OK);
         struct zcode_science_plan_out plan;
         struct zcode_science_commit_out commit;
-        /* Expired plan: commit after plan.expires_unix is refused. */
+        /* Expired plans refuse at the deadline and afterward, with recovery. */
         ASSERT(zcode_science_study_plan(&ndb, dir, wire, sizeof(wire), 1500,
                                         &plan).ok);
-        ASSERT(!zcode_science_study_commit(&ndb, dir, wire, sizeof(wire),
-                                           true,
-                                           plan.expires_unix + 1,
-                                           &commit).ok);
+        for (int offset = 0; offset < 2; offset++) {
+            int64_t now = plan.expires_unix + offset;
+            struct zcl_result expired = zcode_science_study_commit(
+                &ndb, dir, wire, sizeof(wire), true, now, &commit);
+            ASSERT(!expired.ok);
+            ASSERT_EQ(expired.code, -1);
+            char expected[256];
+            int n = snprintf(expected, sizeof(expected),
+                "science-plan-expired: plan=%s deadline=%lld now=%lld; "
+                "replan with a new request", plan.plan_root,
+                (long long)plan.expires_unix, (long long)now);
+            ASSERT(n > 0 && (size_t)n < sizeof(expected));
+            ASSERT_STR_EQ(expired.message, expected);
+            ASSERT_EQ(zstore_cas_object_count(dir), 0);
+        }
+        /* The last instant before expiry still permits the exact request. */
+        ASSERT(zcode_science_study_commit(&ndb, dir, wire, sizeof(wire),
+                                          true, plan.expires_unix - 1,
+                                          &commit).ok);
         /* Commit inside the plan TTL but after the study window closes is
          * refused — the window gates NEW submissions. */
         struct vcs_zcode_study_spec_v1 short_study;
