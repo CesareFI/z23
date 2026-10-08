@@ -200,11 +200,12 @@ static int focus_read_file(const char *path, size_t cap, char **buf_out,
         return FOCUS_READ_ERR;
     }
     size_t n = fread(buf, 1, cap, f);
+    int extra = fgetc(f);
     int err = ferror(f);
     fclose(f);
-    if (err) {
+    if (err || extra != EOF) {
         free(buf);
-        LOG_ERROR(FOCUS_TAG, "read %s", path);
+        LOG_ERROR(FOCUS_TAG, "read incomplete or exceeds %zu bytes: %s", cap, path);
         return FOCUS_READ_ERR;
     }
     buf[n] = '\0';

@@ -523,6 +523,59 @@ static int test_focus_rank(void)
     return failures;
 }
 
+static bool focus_write_capped_notes(const char *tail)
+{
+    if (!focus_mk_write(FOCUS_FIX, "docs/agent/LESSONS.md", ""))
+        return false;
+    FILE *f = fopen(FOCUS_FIX "/docs/agent/LESSONS.md", "wb");
+    if (!f)
+        return false;
+    char spaces[4096];
+    memset(spaces, ' ', sizeof spaces);
+    bool ok = true;
+    for (size_t i = 0; i < 64 && ok; i++)
+        ok = fwrite(spaces, 1, sizeof spaces, f) == sizeof spaces;
+    size_t n = strlen(tail);
+    if (ok)
+        ok = fwrite(tail, 1, n, f) == n;
+    if (fclose(f) != 0)
+        ok = false;
+    return ok;
+}
+
+static int test_focus_notes_read_cap(void)
+{
+    int failures = 0;
+    TEST("code_focus: notes beyond the read cap refuse without changing evidence") {
+        system("rm -rf " FOCUS_FIX);
+        ASSERT(focus_write_capped_notes("`contexts/net/src/tail.c`\n"));
+        struct specialist_focus_evidence ev;
+        specialist_focus_evidence_clear(&ev);
+        ASSERT(!specialist_focus_load_notes(FOCUS_FIX, &ev));
+        ASSERT(ev.notes_count == 0);
+        ASSERT(ev.notes[0].path[0] == '\0');
+        ASSERT(ev.notes[0].source[0] == '\0');
+        ASSERT(focus_mk_write(FOCUS_FIX, "docs/agent/LESSONS.md",
+                              "`contexts/net/src/small.c`\n"));
+        ASSERT(specialist_focus_load_notes(FOCUS_FIX, &ev));
+        ASSERT(ev.notes_count == 1);
+        ASSERT(strcmp(ev.notes[0].path, "contexts/net/src/small.c") == 0);
+        ASSERT(strcmp(ev.notes[0].source, "docs/agent/LESSONS.md") == 0);
+        ASSERT(focus_write_capped_notes("`contexts/net/src/tail.c`\n"));
+        ASSERT(!specialist_focus_load_notes(FOCUS_FIX, &ev));
+        ASSERT(ev.notes_count == 1);
+        ASSERT(strcmp(ev.notes[0].path, "contexts/net/src/small.c") == 0);
+        ASSERT(strcmp(ev.notes[0].source, "docs/agent/LESSONS.md") == 0);
+        ASSERT(focus_write_capped_notes(""));
+        specialist_focus_evidence_clear(&ev);
+        ASSERT(specialist_focus_load_notes(FOCUS_FIX, &ev));
+        ASSERT(ev.notes_count == 0);
+        system("rm -rf " FOCUS_FIX);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_code_focus(void)
 {
     int failures = 0;
@@ -535,5 +588,6 @@ int test_code_focus(void)
     failures += test_focus_lint_gates();
     failures += test_focus_work_cap();
     failures += test_focus_rank();
+    failures += test_focus_notes_read_cap();
     return failures;
 }
