@@ -22,6 +22,7 @@
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "zutf8/zutf8.h"
 
 #include <sqlite3.h>
 #include <limits.h>
@@ -690,7 +691,15 @@ bool db_znam_addr_get(struct node_db *ndb, const char *name,
         AR_BIND_TEXT(s, 1, name);
         AR_BIND_INT(s, 2, coin_type),
         const char *a = (const char *)sqlite3_column_text(s, 0);
-        if (a) snprintf(addr_out, max, "%s", a));
+        int bytes = sqlite3_column_bytes(s, 0);
+        if (!a || bytes < 0 || (size_t)bytes >= max ||
+            memchr(a, '\0', (size_t)bytes) != NULL ||
+            !zutf8_validate_n(a, (size_t)bytes)) {
+            AR_FINALIZE(s);
+            LOG_RETURN(false, "znam", "db_znam_addr_get: invalid value or insufficient capacity");
+        }
+        memcpy(addr_out, a, (size_t)bytes);
+        addr_out[(size_t)bytes] = '\0');
 }
 
 static void row_to_znam_addr(sqlite3_stmt *s, struct znam_addr_record *out)

@@ -101,6 +101,94 @@ static int znam_count_step_interrupted(void *stmt)
     return SQLITE_INTERRUPT;
 }
 
+/* Deliberately corrupt a saved fixture row: the C-string save API cannot
+ * create these stored values. Keep explicit TEXT extents for embedded NUL. */
+static int znam_addr_get_invalid_cases(struct node_db *ndb)
+{
+    static const struct {
+        const char *value;
+        int bytes;
+        size_t max;
+    } cases[] = {
+        {"a\0b", 3, 2},
+        {"a\0b", 3, 8},
+        {"\xc0\xaf", 2, 8},
+        {NULL, 0, 8},
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        sqlite3_stmt *s = NULL;
+        int rc = sqlite3_prepare_v2(ndb->db,
+            "UPDATE znam_addr_records SET address=? WHERE name='addr-bounds'",
+            -1, &s, NULL);
+        if (rc == SQLITE_OK)
+            rc = sqlite3_bind_text(s, 1, cases[i].value, cases[i].bytes,
+                                   SQLITE_STATIC);
+        if (rc == SQLITE_OK) rc = sqlite3_step(s);
+        int final_rc = sqlite3_finalize(s);
+        if (rc != SQLITE_DONE || final_rc != SQLITE_OK ||
+            sqlite3_changes(ndb->db) != 1) {
+            printf("znam DB addr invalid fixture %zu... FAIL\n", i);
+            failures++;
+            continue;
+        }
+        char out[8], expected[8];
+        memset(out, '!', sizeof(out));
+        memset(expected, '!', sizeof(expected));
+        bool got = db_znam_addr_get(ndb, "addr-bounds", ZNAM_TYPE_BTC,
+                                    out, cases[i].max);
+        bool ok = !got && memcmp(out, expected, sizeof(out)) == 0 &&
+                  sqlite3_next_stmt(ndb->db, NULL) == NULL;
+        printf("znam DB addr invalid %zu... %s\n", i, ok ? "OK" : "FAIL");
+        if (!ok) failures++;
+    }
+    return failures;
+}
+
+static int znam_addr_get_capacity_cases(struct node_db *ndb)
+{
+    static const struct {
+        const char *name;
+        size_t max;
+        bool expected;
+    } cases[] = {
+        {"addr-bounds", 4, false},
+        {"addr-bounds", 8, true},
+        {"addr-bounds", 1, false},
+        {"addr-bounds", 0, false},
+        {"addr-missing", 8, false},
+    };
+    int failures = 0;
+    if (!db_znam_addr_save(ndb, "addr-bounds", ZNAM_TYPE_BTC, "1abcdef")) {
+        printf("znam DB addr capacity fixture... FAIL\n");
+        return 1;
+    }
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char out[8];
+        memset(out, '!', sizeof(out));
+        char expected[8];
+        memset(expected, '!', sizeof(expected));
+        if (cases[i].expected) memcpy(expected, "1abcdef", sizeof(expected));
+        bool got = db_znam_addr_get(ndb, cases[i].name, ZNAM_TYPE_BTC,
+                                    out, cases[i].max);
+        printf("znam DB addr capacity %zu (%s)... ", cases[i].max, cases[i].name);
+        if (got == cases[i].expected && memcmp(out, expected, sizeof(out)) == 0) {
+            printf("OK\n");
+        } else {
+            printf("FAIL (get=%d expected=%d)\n", got, cases[i].expected);
+            failures++;
+        }
+    }
+    failures += znam_addr_get_invalid_cases(ndb);
+    if (sqlite3_exec(ndb->db,
+                     "DELETE FROM znam_addr_records WHERE name='addr-bounds'",
+                     NULL, NULL, NULL) != SQLITE_OK) {
+        printf("znam DB addr capacity cleanup... FAIL\n");
+        failures++;
+    }
+    return failures;
+}
+
 static bool znam_list_payload_matches(const struct znam_entry *rows, int count,
                                       const struct znam_entry *expected)
 {
@@ -161,6 +249,13 @@ static bool open_test_names_db(sqlite3 **db_out, struct node_db *ndb_out)
     *db_out = db;
     ndb_out->db = db;
     ndb_out->open = true;
+    /* Both registered znam RPC fixture paths propagate this failure. */
+    if (znam_addr_get_capacity_cases(ndb_out) != 0) {
+        sqlite3_close(db);
+        *db_out = NULL;
+        memset(ndb_out, 0, sizeof(*ndb_out));
+        return false;
+    }
     return true;
 }
 
