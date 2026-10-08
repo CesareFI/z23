@@ -327,8 +327,11 @@ size_t api_serve_name_service_directory(const char *name, const char *path,
     name_controller_get_ctx(&ctx);
     if (!ctx.ndb) {
         LOG_ERROR("name", "Name service directory: naming store unavailable");
+        snprintf(err, sizeof(err),
+                 "Naming store unavailable for '%.63s'; inspect node readiness then retry this name",
+                 name ? name : "");
         return api_json_error(response, response_max, JSON_503_HEADERS,
-                              "Naming store unavailable");
+                              err);
     }
 
     if (api_name_service_directory_path(name, path, &jr,
@@ -351,6 +354,8 @@ size_t api_serve_name_service_directory(const char *name, const char *path,
         return n;
     }
 
-    return api_json_error(response, response_max, JSON_404_HEADERS,
-                          "Name service directory not found");
+    snprintf(err, sizeof(err),
+             "Name service directory not found for '%.63s'; list names or resolve this name first",
+             name ? name : "");
+    return api_json_error(response, response_max, JSON_404_HEADERS, err);
 }

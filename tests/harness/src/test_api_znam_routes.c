@@ -95,8 +95,34 @@ static bool directory_store_status_case(const char *name,
               json_read(&root, body, strlen(body));
     ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                       "zcl.rest_error.v1") == 0 &&
+         root.num_children == 3 &&
+         strcmp(json_get_str(json_get(&root, "api_version")), "v1") == 0 &&
          strcmp(json_get_str(json_get(&root, "error")), error) == 0;
     json_free(&root);
+    return ok;
+}
+
+static bool directory_diagnostic_bounds(const char *status, const char *action)
+{
+    char name[80], expected[192];
+    memset(name, 'x', sizeof(name));
+    name[0] = '"';
+    name[1] = '\\';
+    memcpy(name + 63, "omitted-tail", sizeof("omitted-tail"));
+    snprintf(expected, sizeof(expected), "%s for '%.63s'; %s",
+             status, name, action);
+    const char *http = strcmp(status, "Naming store unavailable") == 0
+        ? "HTTP/1.1 503 Service Unavailable" : "HTTP/1.1 404 Not Found";
+    bool ok = directory_store_status_case(name, http, expected);
+    static const size_t caps[] = {0, 1, 32, 256};
+    for (size_t i = 0; i < sizeof(caps) / sizeof(caps[0]); i++) {
+        uint8_t response[257];
+        memset(response, 0xa5, sizeof(response));
+        size_t n = api_serve_name_service_directory(name, "/api/v1/names/missing-name/services",
+                                                   NULL, response, caps[i]);
+        ok = ok && response[caps[i]] == 0xa5 &&
+             (caps[i] ? n < caps[i] && response[n] == '\0' : n == 0);
+    }
     return ok;
 }
 
@@ -115,14 +141,18 @@ int api_directory_store_status_focused_tests(void)
     rpc_name_set_state(NULL);
     bool unavailable = directory_store_status_case(
         "missing-name", "HTTP/1.1 503 Service Unavailable",
-        "Naming store unavailable");
+        "Naming store unavailable for 'missing-name'; inspect node readiness then retry this name");
+    unavailable = directory_diagnostic_bounds("Naming store unavailable",
+        "inspect node readiness then retry this name") && unavailable;
     printf("api: unavailable directory store returns 503... %s\n",
            unavailable ? "OK" : "FAIL");
     failures += !unavailable;
     rpc_name_set_state(&ndb);
     bool missing = opened && directory_store_status_case(
         "missing-name", "HTTP/1.1 404 Not Found",
-        "Name service directory not found");
+        "Name service directory not found for 'missing-name'; list names or resolve this name first");
+    missing = directory_diagnostic_bounds("Name service directory not found",
+        "list names or resolve this name first") && missing;
     rpc_name_set_state(saved.ndb);
     printf("api: missing directory name returns 404... %s\n",
            missing ? "OK" : "FAIL");
