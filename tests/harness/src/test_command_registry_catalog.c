@@ -19,6 +19,10 @@
 #include "controllers/rpc_client.h"
 #include "util/boot_status.h"
 #include "util/boot_phase.h"
+#include "platform/clock.h"
+#include <pthread.h>
+#include <stdatomic.h>
+#include <time.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -4047,6 +4051,104 @@ int command_registry_ready_read_latency_contract(void)
     return failures;
 }
 
+static pthread_mutex_t latency_gate_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t latency_gate_cond = PTHREAD_COND_INITIALIZER;
+static unsigned latency_gate_arrivals;
+static bool latency_gate_enabled, latency_gate_failed, latency_poison;
+static _Atomic unsigned latency_dispatches;
+static _Thread_local bool latency_wait, latency_finished;
+static struct zcl_command_spec latency_specs[ZCL_COMMAND_LATENCY_TABLE_MAX];
+static const struct zcl_command_registry latency_registry = {
+    .commands = latency_specs, .count = ZCL_COMMAND_LATENCY_TABLE_MAX };
+static int64_t latency_race_monotonic(void *self)
+{
+    (void)self; return latency_finished ? 1321000 : 1000000;
+}
+static int64_t latency_race_wall(void *self)
+{
+    (void)self;
+    if (!latency_wait) return latency_poison ? -1 : 1700000000000;
+    latency_wait = false;
+    struct timespec deadline;
+    int rc = clock_gettime(CLOCK_REALTIME, &deadline);
+    if (rc == 0) deadline.tv_sec += 10;
+    pthread_mutex_lock(&latency_gate_lock);
+    latency_gate_arrivals++;
+    pthread_cond_broadcast(&latency_gate_cond);
+    while (rc == 0 && latency_gate_arrivals < 2 && !latency_gate_failed)
+        rc = pthread_cond_timedwait(&latency_gate_cond, &latency_gate_lock,
+                                    &deadline);
+    latency_gate_failed |= rc != 0;
+    pthread_cond_broadcast(&latency_gate_cond);
+    pthread_mutex_unlock(&latency_gate_lock);
+    return 1700000000000;
+}
+static void latency_race_handler(const struct zcl_command_request *request,
+                                 struct zcl_command_reply *reply)
+{
+    (void)request; (void)reply;
+    atomic_fetch_add(&latency_dispatches, 1);
+    latency_finished = true;
+    latency_wait = latency_gate_enabled;
+}
+static void *latency_race_dispatch(void *raw)
+{
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+    latency_finished = false;
+    *(bool *)raw = exec_leaf(&latency_registry,
+        &latency_specs[ZCL_COMMAND_LATENCY_TABLE_MAX - 1], out, sizeof(out), &code)
+        && code == ZCL_COMMAND_EXIT_OK;
+    return NULL;
+}
+static bool latency_race_observed(int64_t samples, int64_t p99)
+{
+    char out[ZCL_COMMAND_SPEC_BUDGET + 1];
+    size_t n = zcl_command_registry_describe_json(&latency_registry,
+        "latency.race", out, sizeof(out));
+    struct json_value root;
+    if (!n || !json_read(&root, out, n)) return false;
+    const struct json_value *policy = json_get(&root, "policy");
+    bool ok = json_get_int(json_get(policy, "observed_samples")) == samples &&
+              json_get_int(json_get(policy, "observed_p99_us")) == p99;
+    json_free(&root);
+    return ok;
+}
+static bool latency_race_qualify(void)
+{
+    static const clock_iface_t clock = {
+        .now_monotonic_ns = latency_race_monotonic,
+        .now_wall_ms = latency_race_wall };
+    for (size_t i = 0; i < ZCL_COMMAND_LATENCY_TABLE_MAX; i++)
+        latency_specs[i].path = "";
+    struct zcl_command_spec *leaf = &latency_specs[ZCL_COMMAND_LATENCY_TABLE_MAX - 1];
+    *leaf = *find_spec(zcl_command_catalog(), "discover.help");
+    leaf->path = "latency.race"; leaf->handler = latency_race_handler;
+    const clock_iface_t *saved = clock_default();
+    clock_set_default(&clock);
+    latency_gate_enabled = false; latency_gate_arrivals = 0;
+    latency_gate_failed = false; latency_poison = false;
+    atomic_store(&latency_dispatches, 0);
+    bool ok = latency_race_observed(0, 0), dispatch[2] = {false, false};
+    for (unsigned i = 0; i < 63; i++)
+        { latency_race_dispatch(&dispatch[0]); ok &= dispatch[0]; }
+    ok &= latency_race_observed(63, 321);
+    latency_gate_enabled = true;
+    pthread_t writers[2];
+    int a = pthread_create(&writers[0], NULL, latency_race_dispatch, &dispatch[0]);
+    int b = pthread_create(&writers[1], NULL, latency_race_dispatch, &dispatch[1]);
+    if (a == 0) ok &= pthread_join(writers[0], NULL) == 0;
+    if (b == 0) ok &= pthread_join(writers[1], NULL) == 0;
+    latency_gate_enabled = false;
+    ok &= a == 0 && b == 0 && dispatch[0] && dispatch[1];
+    ok &= !latency_gate_failed && latency_gate_arrivals == 2;
+    ok &= atomic_load(&latency_dispatches) == 65;
+    ok &= latency_race_observed(64, 321);
+    latency_poison = true;
+    ok &= latency_race_observed(0, 0);
+    latency_poison = false; clock_set_default(saved);
+    return ok;
+}
 static int test_describe_emits_observed_p99(void)
 {
     int failures = 0;
@@ -4073,6 +4175,8 @@ static int test_describe_emits_observed_p99(void)
         int64_t samples = json_get_int(json_get(policy, "observed_samples"));
         ASSERT(samples >= (int64_t)10);
         json_free(&root);
+        ASSERT(reg->count < ZCL_COMMAND_LATENCY_TABLE_MAX);
+        ASSERT(latency_race_qualify());
         PASS();
     } _test_next:;
     return failures;

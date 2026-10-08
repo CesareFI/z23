@@ -77,8 +77,15 @@ static void latency_ring_record(const struct zcl_command_registry *registry,
                           memory_order_relaxed);
     uint32_t filled = atomic_load_explicit(&ring->filled,
                                            memory_order_relaxed);
-    if (filled < ZCL_COMMAND_LATENCY_RING_CAP)
-        atomic_fetch_add_explicit(&ring->filled, 1, memory_order_relaxed);
+#ifdef ZCL_TESTING
+    /* Injected clock rendezvous after the initial count observation. */
+    if (filled == ZCL_COMMAND_LATENCY_RING_CAP - 1)
+        (void)clock_now_wall_ms();
+#endif
+    while (filled < ZCL_COMMAND_LATENCY_RING_CAP &&
+           !atomic_compare_exchange_weak_explicit(&ring->filled, &filled,
+               filled + 1, memory_order_relaxed, memory_order_relaxed))
+        ;
 }
 
 static int latency_cmp_i64(const void *a, const void *b)
@@ -106,7 +113,10 @@ bool command_registry_latency_ring_p99(
     struct zcl_command_latency_ring *ring = &g_latency_rings[idx];
     uint32_t filled = atomic_load_explicit(&ring->filled,
                                            memory_order_relaxed);
-    if (filled == 0)
+#ifdef ZCL_TESTING
+    if (clock_now_wall_ms() < 0) filled = ZCL_COMMAND_LATENCY_RING_CAP + 1;
+#endif
+    if (filled == 0 || filled > ZCL_COMMAND_LATENCY_RING_CAP)
         return false;
     int64_t tmp[ZCL_COMMAND_LATENCY_RING_CAP];
     for (uint32_t i = 0; i < filled; i++)
