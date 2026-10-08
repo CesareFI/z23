@@ -913,6 +913,14 @@ bool zcl_native_dev_train_cli(const struct zcl_command_spec *spec,
 
     for (size_t i = consumed; i < word_count; i++) {
         const char *w = words[i];
+        const char *value = NULL;
+        if (dvt_cli_flag(w, "name", &value) && value &&
+            strlen(value) >= sizeof(opts.name)) {
+            printf("{\"ok\":false,\"error\":\"--name exceeds 63 bytes; "
+                   "use --name=<name> with at most 63 bytes\"}\n");
+            *out_rc = ZCL_COMMAND_EXIT_INVALID;
+            return true;
+        }
         if (dvt_cli_build_flag(w, &opts) || dvt_cli_keep_flag(w, &opts))
             continue;
         printf("{\"ok\":false,\"error\":\"unknown flag %s\"}\n", w);

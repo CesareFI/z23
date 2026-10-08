@@ -17,6 +17,7 @@
 
 #include "command/native_command.h"
 #include "config/command_catalog.h"
+#include "controllers/agent_impact_rules.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "platform/directory_compat.h"
@@ -25,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ── fixture helpers ──────────────────────────────────────────────────── */
 
@@ -191,10 +193,118 @@ static bool dvt_array_has_sha(const struct json_value *arr, const char *sha)
     return false;
 }
 
+static unsigned dvt_cli_calls;
+static char dvt_cli_name[64];
+
+static void dvt_cli_record(const struct zcl_command_request *request,
+                           struct zcl_command_reply *reply)
+{
+    dvt_cli_calls++;
+    const char *name = json_get_str(json_get(request->input, "name"));
+    (void)snprintf(dvt_cli_name, sizeof(dvt_cli_name), "%s", name ? name : "");
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = ZCL_COMMAND_EXIT_OK;
+}
+
+static bool dvt_cli_capture(const struct zcl_command_spec *spec,
+                            const char *word, FILE *capture,
+                            char *out, size_t cap, int *rc)
+{
+    (void)fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    if (saved < 0) {
+        (void)fclose(capture);
+        return false;
+    }
+    bool ok = dup2(fileno(capture), STDOUT_FILENO) >= 0;
+    if (ok) {
+        const char *words[] = {word};
+        ok = zcl_native_dev_train_cli(spec, words, 1, 0, rc);
+        ok = fflush(stdout) == 0 && ok;
+    }
+    ok = dup2(saved, STDOUT_FILENO) >= 0 && ok;
+    ok = close(saved) == 0 && ok;
+    rewind(capture);
+    size_t n = fread(out, 1, cap - 1, capture);
+    out[n] = '\0';
+    ok = !ferror(capture) && feof(capture) && ok;
+    return fclose(capture) == 0 && ok;
+}
+
+static bool dvt_cli_fixture_capture(const struct zcl_command_spec *spec,
+                                    const char *word, char *out,
+                                    size_t cap, int *rc)
+{
+    char parent[512], path[600];
+    test_make_tmpdir(parent, sizeof(parent), "dev_train", "cli_capture");
+    int n = snprintf(path, sizeof(path), "%s/stdout", parent);
+    bool ok = false;
+    if (n >= 0 && (size_t)n < sizeof(path)) {
+        FILE *capture = fopen(path, "w+b");
+        if (capture)
+            ok = dvt_cli_capture(spec, word, capture, out, cap, rc);
+    }
+    return test_rm_rf_recursive(parent) == 0 && ok;
+}
+
+static int dvt_cli_production_route(void)
+{
+    int failures = 0;
+    TEST("train production path selects its CLI boundary regression") {
+        struct agent_impact_acc impact = {0};
+        bool consensus_risk = true;
+        ASSERT_STR_EQ(zcl_native_code_route_for_path(
+                          "tools/command/native_dev_train_command.c",
+                          &impact, &consensus_risk), "dev_train");
+        ASSERT(!consensus_risk);
+        ASSERT(!impact.groups_lost);
+        bool lint_selected = false;
+        for (size_t i = 0; i < impact.groups_len; i++)
+            if (strcmp(impact.groups[i], "make_lint_gates") == 0)
+                lint_selected = true;
+        ASSERT(lint_selected);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int dvt_cli_name_boundary(void)
+{
+    int failures = 0;
+    TEST("train CLI refuses overlong names before dispatch") {
+        const struct zcl_command_spec *registered = zcl_command_registry_find(
+            zcl_command_catalog(), "dev.train.drop", NULL);
+        ASSERT(registered != NULL);
+        struct zcl_command_spec spec = *registered;
+        spec.handler = dvt_cli_record;
+        char word[sizeof("--name=") + 64];
+        memcpy(word, "--name=", 7);
+        memset(word + 7, 'a', 64);
+        word[71] = '\0';
+        char out[1024];
+        int rc = -1;
+        dvt_cli_calls = 0;
+        ASSERT(dvt_cli_fixture_capture(&spec, word, out, sizeof(out), &rc));
+        ASSERT_EQ(rc, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_EQ(dvt_cli_calls, 0);
+        ASSERT(strstr(out, "--name") != NULL);
+        ASSERT(strstr(out, "at most 63 bytes") != NULL);
+        word[70] = '\0';
+        ASSERT(dvt_cli_fixture_capture(&spec, word, out, sizeof(out), &rc));
+        ASSERT_EQ(rc, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(dvt_cli_calls, 1);
+        ASSERT_STR_EQ(dvt_cli_name, word + 7);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
 int test_dev_train(void);
 int test_dev_train(void)
 {
-    int failures = 0;
+    int failures = dvt_cli_name_boundary() + dvt_cli_production_route();
     /* dev.train.build/check run `make` through zcl_devloop_process_run(),
      * which refuses to exec in a test binary unless the fixture opts in. */
     (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1);
