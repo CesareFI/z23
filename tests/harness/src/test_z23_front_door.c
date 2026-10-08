@@ -768,28 +768,99 @@ static int case_shim_pin(void)
 }
 
 #if !defined(_WIN32) && defined(ZCL_TESTING)
+static int seed_fault, seed_fd;
+static bool seed_capture;
+static char seed_message[1024];
+static void seed_report(const char *operation, const char *path, int error,
+                        const char *repair)
+{
+    (void)snprintf(seed_message, sizeof seed_message,
+                   "front door fetch fixture: %s failed: %s: %s; %s\n",
+                   operation, path, strerror(error), repair);
+    if (!seed_capture) (void)fputs(seed_message, stderr);
+}
+static size_t seed_write(const void *bytes, size_t len, FILE *f)
+{
+    if (seed_fault == 3) { errno = ENOSPC; return 2; }
+    return fwrite(bytes, 1, len, f);
+}
+static int seed_close(FILE *f)
+{
+    const int rc = fclose(f);
+    return seed_fault == 4 ? (errno = EIO, EOF) : rc;
+}
 static bool fetch_seed(const void *bytes, size_t len, char path[512])
 {
-    const int fd = test_mkstemp(path, 512, "front_door_fetch");
+    path[0] = '\0';
+    seed_message[0] = '\0';
+    const int fd = seed_fault == 1 ? (errno = ENOSPC, -1)
+                                 : test_mkstemp(path, 512, "front_door_fetch");
+    seed_fd = fd;
     if (fd < 0) {
-        fprintf(stderr, "front door fetch fixture: create failed: %s\n", strerror(errno));
+        seed_report("create", "front_door_fetch temporary-file template", errno,
+                    "free fixture storage; check writable temporary directory");
         return false;
     }
-    FILE *f = fdopen(fd, "wb");
+    FILE *f = seed_fault == 2 ? (errno = EMFILE, NULL) : fdopen(fd, "wb");
     if (!f) {
-        fprintf(stderr, "front door fetch fixture: fdopen failed: %s\n", strerror(errno));
+        seed_report("fdopen", path, errno, "close excess descriptors");
         (void)close(fd);
         (void)unlink(path);
         return false;
     }
-    const bool written = fwrite(bytes, 1, len, f) == len;
-    const int closed = fclose(f);
+    errno = 0;
+    const bool written = seed_write(bytes, len, f) == len;
+    const int write_error = errno;
+    const int closed = seed_close(f);
+    const int close_error = errno;
     if (!written || closed != 0) {
-        fprintf(stderr, "front door fetch fixture: write/close failed\n");
+        if (!written) seed_report("short write", path, write_error ? write_error : EIO,
+                                  "free fixture storage; check writable temporary directory");
+        else seed_report("close", path, close_error, "check writable temporary directory");
         (void)unlink(path);
         return false;
     }
     return true;
+}
+
+static int case_seed_failure(int fault)
+{
+    int failures = 0;
+    const char *operations[] = {"", "create failed:", "fdopen failed:", "short write failed:", "close failed:"};
+    const char *repairs[] = {"", "free fixture storage", "close excess descriptors",
+                            "free fixture storage", "check writable temporary directory"};
+    const int errors[] = {0, ENOSPC, EMFILE, ENOSPC, EIO};
+    char path[512];
+    seed_fault = fault;
+    seed_capture = true;
+    const bool seeded = fetch_seed("pin", 3, path);
+    seed_fault = 0;
+    seed_capture = false;
+    FD_CHECK(operations[fault], !seeded && strstr(seed_message, operations[fault]) &&
+             strstr(seed_message, fault == 1 ? "front_door_fetch temporary-file template" : path) &&
+             strstr(seed_message, strerror(errors[fault])) && strstr(seed_message, repairs[fault]));
+    if (fault != 1) {
+        FD_CHECK("failed seed removes its fixture", path[0] && access(path, F_OK) == -1 && errno == ENOENT);
+        FD_CHECK("failed seed closes its descriptor", fcntl(seed_fd, F_GETFD) == -1 && errno == EBADF);
+        if (seeded) (void)unlink(path);
+    } else FD_CHECK("create fault opens no fixture", path[0] == '\0' && seed_fd == -1);
+    return failures;
+}
+
+static int case_seed_success(void)
+{
+    int failures = 0;
+    char path[512], bytes[4] = {0};
+    const bool seeded = fetch_seed("pin", 3, path);
+    FD_CHECK("successful seed has no diagnostic", seeded && seed_message[0] == '\0');
+    if (!seeded) return failures;
+    FD_CHECK("successful seed closes its descriptor", fcntl(seed_fd, F_GETFD) == -1 && errno == EBADF);
+    FILE *f = fopen(path, "rb");
+    FD_CHECK("successful seed contains exactly three bytes", f && fread(bytes, 1, sizeof bytes, f) == 3 &&
+             memcmp(bytes, "pin", 3) == 0 && !ferror(f));
+    if (f) FD_CHECK("successful seed read closes", fclose(f) == 0);
+    FD_CHECK("successful seed fixture removed", unlink(path) == 0);
+    return failures;
 }
 
 static int case_fetch_error(int fault, const char *url)
@@ -841,6 +912,8 @@ static int case_fetch_errors(void)
     int failures = 0;
 #if !defined(_WIN32) && defined(ZCL_TESTING)
     (void)fetch_fixture_main;
+    for (int fault = 1; fault <= 4; ++fault) failures += case_seed_failure(fault);
+    failures += case_seed_success();
     char path[512], url[520];
     const bool seeded = fetch_seed("pin", 3, path);
     FD_CHECK("local read/close fixture created", seeded);
