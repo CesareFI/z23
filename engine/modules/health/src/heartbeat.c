@@ -7,6 +7,7 @@
 #include "health/heartbeat.h"
 #include "core/utiltime.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "platform/os_sandbox.h"
 #include "util/thread_liveness.h"
 #include "util/thread_registry.h"
@@ -60,6 +61,47 @@ void health_set_check_interval_ms(int ms)
     atomic_store(&g_check_interval_ms, ms);
 }
 
+static size_t name_sequence_width(unsigned char lead)
+{
+    if (lead >= 0xc2 && lead <= 0xdf) return 2;
+    if (lead >= 0xe0 && lead <= 0xef) return 3;
+    if (lead >= 0xf0 && lead <= 0xf4) return 4;
+    return 1;
+}
+
+/* Read no more source bytes than the bounded destination can retain. */
+static void normalize_name(char out[HEALTH_NAME_MAX], const char *name)
+{
+    size_t used = 0;
+    while (used < HEALTH_NAME_MAX - 1 && *name) {
+        size_t width = name_sequence_width((unsigned char)*name);
+        size_t remaining = HEALTH_NAME_MAX - 1 - used;
+        unsigned char probe[4] = {(unsigned char)*name, 0x80, 0x80, 0x80};
+        /* Fill unobserved continuation bytes with a legal completion.
+         * Only an observed malformed prefix should fail this decode. */
+        if (probe[0] == 0xe0) probe[1] = 0xa0;
+        if (probe[0] == 0xf0) probe[1] = 0x90;
+        size_t available = 1, consumed = 0;
+        while (available < width && available < remaining && name[available]) {
+            probe[available] = (unsigned char)name[available];
+            available++;
+        }
+        uint32_t cp;
+        bool ended = available < width && available < remaining;
+        if (ended || zutf8_decode_n((const char *)probe, width, &cp,
+                                   &consumed) != ZUTF8_OK) {
+            out[used++] = '?';
+            name++;
+            continue;
+        }
+        if (available < width) break;
+        memcpy(out + used, name, consumed);
+        used += consumed;
+        name += consumed;
+    }
+    out[used] = '\0';
+}
+
 /* Shared slot find + init for both register entry points. The two
  * public callers differ only in the `periodic` flag and the registry-
  * full error string (which branches on `periodic`); everything else —
@@ -86,18 +128,17 @@ static health_subsystem_id slot_alloc_and_fill(const char *name,
     if (slot < 0) {
         pthread_mutex_unlock(&g_mu);
         if (periodic)
-            fprintf(stderr, "[health] registry full (cap=%d), cannot register periodic '%s'\n",
-                    HEALTH_REGISTRY_CAP, name);
+            fprintf(stderr, "[health] registry full (cap=%d), cannot register periodic '%.*s'\n",
+                    HEALTH_REGISTRY_CAP, HEALTH_NAME_MAX - 1, name);
         else
-            fprintf(stderr, "[health] registry full (cap=%d), cannot register '%s'\n",
-                    HEALTH_REGISTRY_CAP, name);
+            fprintf(stderr, "[health] registry full (cap=%d), cannot register '%.*s'\n",
+                    HEALTH_REGISTRY_CAP, HEALTH_NAME_MAX - 1, name);
         return HEALTH_INVALID_ID; // obs-ok:health-registry-full-sentinel-return
     }
 
     g_entries[slot].active = true;
     g_entries[slot].periodic = periodic;
-    strncpy(g_entries[slot].name, name, HEALTH_NAME_MAX - 1);
-    g_entries[slot].name[HEALTH_NAME_MAX - 1] = '\0';
+    normalize_name(g_entries[slot].name, name);
     g_entries[slot].deadline_secs = period_secs;
     g_entries[slot].on_stall = cb;
     g_entries[slot].ctx = ctx;

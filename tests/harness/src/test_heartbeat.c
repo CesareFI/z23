@@ -11,6 +11,7 @@
 #include "test/test_core.h"
 #include "health/heartbeat.h"
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "core/utiltime.h"
 #include "platform/clock.h"
 
@@ -458,9 +459,213 @@ static int test_heartbeat_assertion_cleanup(void)
     return failures;
 }
 
+static bool heartbeat_json_fields_match(const struct json_value *a,
+                                       const struct json_value *b)
+{
+    const char *fields[] = {"deadline_secs", "last_beat_age_secs", "fires_total",
+                           "periodic", "currently_stalled"};
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        const struct json_value *x = json_get(a, fields[i]);
+        const struct json_value *y = json_get(b, fields[i]);
+        if (!x || !y || x->type != y->type || json_get_int(x) != json_get_int(y) ||
+            json_get_bool(x) != json_get_bool(y)) return false;
+    }
+    return true;
+}
+
+static int heartbeat_name_case(const char *name, const char *expected, bool periodic)
+{
+    int failures = 0;
+    TEST("heartbeat: normalized names survive snapshot and JSON serialization") {
+        health_reset_for_test();
+        health_subsystem_id id = periodic
+            ? health_register_periodic(name, 10, stall_cb, NULL)
+            : health_register(name, 10, stall_cb, NULL);
+        HEALTH_ASSERT(id >= 0);
+        struct health_snapshot snap;
+        HEALTH_ASSERT(health_snapshot_all(&snap, 1) == 1);
+        bool same_snapshot = strcmp(snap.name, expected) == 0;
+        HEALTH_ASSERT(snap.last_beat_age_secs == 0);
+        HEALTH_ASSERT(snap.deadline_secs == 10);
+        HEALTH_ASSERT(snap.periodic == periodic);
+        HEALTH_ASSERT(snap.on_stall_fired == 0);
+        HEALTH_ASSERT(!snap.currently_stalled);
+        struct json_value out, parsed;
+        json_init(&out);
+        json_init(&parsed);
+        json_set_object(&out);
+        bool dumped = health_dump_state_json(&out, NULL);
+        char wire[2048];
+        size_t len = json_write(&out, wire, sizeof(wire));
+        bool valid = len < sizeof(wire) && zutf8_validate_n(wire, len);
+        bool read = valid && json_read(&parsed, wire, len);
+        const struct json_value *entry = json_at(json_get(&parsed, "entries"), 0);
+        bool same_name = strcmp(json_get_str(json_get(entry, "name")), expected) == 0;
+        const struct json_value *original = json_at(json_get(&out, "entries"), 0);
+        bool same_fields = heartbeat_json_fields_match(original, entry);
+        bool escaped = strcmp(name, "x\"\\\n") != 0 ||
+                       strstr(wire, "x\\\"\\\\\\n") != NULL;
+        json_free(&parsed);
+        json_free(&out);
+        HEALTH_ASSERT(valid);
+        HEALTH_ASSERT(dumped && read && same_snapshot && same_name && same_fields && escaped);
+        health_unregister(id);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool heartbeat_snapshots_match(const struct health_snapshot *a,
+                                      const struct health_snapshot *b)
+{
+    return strcmp(a->name, b->name) == 0 &&
+           a->deadline_secs == b->deadline_secs &&
+           a->last_beat_age_secs == b->last_beat_age_secs &&
+           a->on_stall_fired == b->on_stall_fired &&
+           a->periodic == b->periodic &&
+           a->currently_stalled == b->currently_stalled;
+}
+
+static int heartbeat_full_bounded_name(bool periodic)
+{
+    int failures = 0;
+    TEST("heartbeat: full registry refuses bounded names without changing entries") {
+        health_reset_for_test();
+        for (int i = 0; i < HEALTH_REGISTRY_CAP; i++) {
+            health_subsystem_id id = i % 2
+                ? health_register_periodic("test.kept.periodic", 10, stall_cb, NULL)
+                : health_register("test.kept", 10, stall_cb, NULL);
+            HEALTH_ASSERT(id == i);
+        }
+        struct health_snapshot before[HEALTH_REGISTRY_CAP];
+        struct health_snapshot after[HEALTH_REGISTRY_CAP];
+        HEALTH_ASSERT(health_snapshot_all(before, HEALTH_REGISTRY_CAP) == HEALTH_REGISTRY_CAP);
+        char name[HEALTH_NAME_MAX - 1];
+        memset(name, 'a', sizeof(name));
+        health_subsystem_id refused = periodic
+            ? health_register_periodic(name, 10, stall_cb, NULL)
+            : health_register(name, 10, stall_cb, NULL);
+        HEALTH_ASSERT(refused == HEALTH_INVALID_ID);
+        HEALTH_ASSERT(health_snapshot_all(after, HEALTH_REGISTRY_CAP) == HEALTH_REGISTRY_CAP);
+        for (int i = 0; i < HEALTH_REGISTRY_CAP; i++)
+            HEALTH_ASSERT(heartbeat_snapshots_match(&before[i], &after[i]));
+        PASS();
+    } _test_next:;
+    health_reset_for_test();
+    return failures;
+}
+
+static int heartbeat_bounded_malformed_name(bool periodic)
+{
+    int failures = 0;
+    TEST("heartbeat: bounded malformed suffix retains replacement and following byte") {
+        char name[HEALTH_NAME_MAX - 1], expected[HEALTH_NAME_MAX - 1];
+        memset(name, 'a', sizeof(name));
+        name[37] = (char)0xe2;
+        name[38] = '(';
+        memcpy(expected, name, sizeof(expected));
+        expected[37] = '?';
+        health_reset_for_test();
+        health_subsystem_id id = periodic
+            ? health_register_periodic(name, 10, stall_cb, NULL)
+            : health_register(name, 10, stall_cb, NULL);
+        HEALTH_ASSERT(id >= 0);
+        struct health_snapshot snap;
+        HEALTH_ASSERT(health_snapshot_all(&snap, 1) == 1);
+        HEALTH_ASSERT(memcmp(snap.name, expected, sizeof(expected)) == 0);
+        HEALTH_ASSERT(snap.name[HEALTH_NAME_MAX - 1] == '\0');
+        health_unregister(id);
+        PASS();
+    } _test_next:;
+    health_reset_for_test();
+    return failures;
+}
+
+static int test_heartbeat_bounded_names(void)
+{
+    int failures = 0;
+    for (int periodic = 0; periodic < 2; periodic++) {
+        failures += heartbeat_full_bounded_name(periodic);
+        failures += heartbeat_bounded_malformed_name(periodic);
+        TEST("heartbeat: bounded unterminated names retain all bytes") {
+            char name[HEALTH_NAME_MAX - 1];
+            memset(name, 'a', sizeof(name));
+            health_reset_for_test();
+            health_subsystem_id id = periodic
+                ? health_register_periodic(name, 10, stall_cb, NULL)
+                : health_register(name, 10, stall_cb, NULL);
+            HEALTH_ASSERT(id >= 0);
+            struct health_snapshot snap;
+            HEALTH_ASSERT(health_snapshot_all(&snap, 1) == 1);
+            HEALTH_ASSERT(memcmp(snap.name, name, sizeof(name)) == 0);
+            HEALTH_ASSERT(snap.name[HEALTH_NAME_MAX - 1] == '\0');
+            health_unregister(id);
+            PASS();
+        } _test_next:;
+    }
+    health_reset_for_test();
+    return failures;
+}
+
+static int test_heartbeat_utf8_names(void)
+{
+    int failures = 0;
+    const struct { const char *input, *expected; } cases[] = {
+        {"\xff", "?"}, {"\x80", "?"}, {"\xc0\xaf", "??"},
+        {"\xed\xa0\x80", "???"}, {"\xe2\x82", "??"},
+        {"ok\xe2\x82\xac", "ok\xe2\x82\xac"}, {"x\"\\\n", "x\"\\\n"}
+    };
+    const char *sequences[] = {"\xc2\xa2", "\xe2\x82\xac", "\xf0\x9f\x98\x80"};
+    for (int periodic = 0; periodic < 2; periodic++) {
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+            failures += heartbeat_name_case(cases[i].input, cases[i].expected, periodic);
+        char malformed[HEALTH_NAME_MAX], replaced[HEALTH_NAME_MAX];
+        memset(malformed, 'a', 37);
+        memcpy(replaced, malformed, 37);
+        malformed[37] = (char)0xe2;
+        malformed[38] = '\0';
+        replaced[37] = '?';
+        replaced[38] = '\0';
+        failures += heartbeat_name_case(malformed, replaced, periodic);
+        malformed[38] = '(';
+        malformed[39] = '\0';
+        replaced[38] = '(';
+        replaced[39] = '\0';
+        failures += heartbeat_name_case(malformed, replaced, periodic);
+        for (size_t i = 0; i < sizeof(sequences) / sizeof(sequences[0]); i++) {
+            size_t width = strlen(sequences[i]);
+            for (size_t room = 1; room <= width; room++) {
+                char input[44], expected[HEALTH_NAME_MAX];
+                size_t prefix = HEALTH_NAME_MAX - 1 - room;
+                memset(input, 'a', prefix);
+                strcpy(input + prefix, sequences[i]);
+                memcpy(expected, input, prefix);
+                expected[prefix] = '\0';
+                if (room == width) strcpy(expected + prefix, sequences[i]);
+                failures += heartbeat_name_case(input, expected, periodic);
+            }
+        }
+    }
+    health_reset_for_test();
+    return failures;
+}
+
+static int heartbeat_normalized_names(void)
+{
+    health_reset_for_test();
+    const clock_iface_t *saved = clock_default();
+    clock_set_default(&heartbeat_fixed_clock);
+    int failures = test_heartbeat_utf8_names();
+    failures += test_heartbeat_bounded_names();
+    health_reset_for_test();
+    clock_set_default(saved);
+    return failures;
+}
+
 int test_heartbeat(void)
 {
     int failures = 0;
+    failures += heartbeat_normalized_names();
     failures += test_heartbeat_interrupted_sleep();
     failures += test_heartbeat_assertion_cleanup();
     failures += test_heartbeat_register_and_snapshot();
