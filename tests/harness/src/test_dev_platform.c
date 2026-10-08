@@ -4545,11 +4545,13 @@ static FILE *dp_unity_fixture(void)
 static bool dp_unity_output_matches(FILE *f, size_t includes)
 {
     const char line[] = "#include \"./tools/jsonq.c\"\n";
-    char actual[sizeof(line)];
+    const char owner[] = "#include \"./tools/sqlq.c\"\n";
+    char actual[sizeof(line) + sizeof(owner)];
     if (fseek(f, 0, SEEK_SET) != 0)
         return false;
     for (size_t i = 0; i < includes; i++) {
-        if (!fgets(actual, sizeof(actual), f) || strcmp(actual, line) != 0)
+        const char *expected = i + 1 == includes ? owner : line;
+        if (!fgets(actual, sizeof(actual), f) || strcmp(actual, expected) != 0)
             return false;
     }
     return fgetc(f) == EOF && !ferror(f);
@@ -4562,7 +4564,7 @@ static bool dp_unity_text_result(const char *members, bool accepted,
     if (!f)
         return false;
     bool parsed = zcl_devloop_hotswap_unity_members(
-        f, ".", members, "tools/jsonq.c");
+        f, ".", members, "tools/sqlq.c");
     bool matched = dp_unity_output_matches(f, includes);
     int closed = fclose(f);
     return closed == 0 && parsed == accepted && matched;
@@ -4606,6 +4608,8 @@ static int test_hotswap_unity_extent(void)
 {
     int failures = 0;
     TEST("hotswap unity: no silent member or byte truncation") {
+        ASSERT(dp_unity_text_result("", false, 0));
+        ASSERT(dp_unity_text_result(" \t\r\n", false, 0));
         ASSERT(dp_unity_member_extent(1, true));
         ASSERT(dp_unity_member_extent(63, true));
         ASSERT(dp_unity_member_extent(64, false));
