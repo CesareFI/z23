@@ -203,7 +203,13 @@ static int psc_coin_cmp(const void *a, const void *b)
 static void psc_digest(struct psc_coin *coins, size_t n,
                        uint8_t out_sha3[32], int64_t *out_supply)
 {
-    qsort(coins, n, sizeof(*coins), psc_coin_cmp);
+    /* psc_join succeeds with *out_coins == NULL and *out_count == 0 when
+     * a compiled range has no terminal UTXOs (every outpoint spent in
+     * range); qsort's base is declared nonnull, so the empty shape was
+     * UB for a no-op sort. n == 1 is a no-op sort too. Skipping both
+     * leaves the digest and supply bit-identical. */
+    if (n > 1)
+        qsort(coins, n, sizeof(*coins), psc_coin_cmp);
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
     int64_t supply = 0;
