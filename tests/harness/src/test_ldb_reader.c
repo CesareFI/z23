@@ -367,6 +367,92 @@ static bool lr_copy(const char *src, const char *dst)
     return r.ok;
 }
 
+static bool lr_current_open_result(const char *dir, bool valid)
+{
+    char *err = NULL;
+    ldbr_options_t *o = ldbr_options_create();
+    if (!o) {
+        printf("FAIL (CURRENT test options allocation)\n");
+        return false;
+    }
+    ldbr_options_set_create_if_missing(o, 0);
+    ldbr_t *db = ldbr_open(o, dir, &err);
+    ldbr_options_destroy(o);
+    bool ok = valid ? db != NULL && err == NULL :
+                     db == NULL && err != NULL && err[0] != '\0';
+    printf("  CURRENT %s -> %s (%s)\n", valid ? "valid" : "hidden suffix",
+           ok ? "OK" : "FAIL", err ? err : "opened without error");
+    if (db)
+        ldbr_close(db);
+    ldbr_free(err);
+    return ok;
+}
+
+static size_t lr_current_read(const char *dir, char *bytes, size_t cap)
+{
+    char path[600];
+    snprintf(path, sizeof(path), "%s/CURRENT", dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        printf("FAIL (CURRENT fixture read)\n");
+        return 0;
+    }
+    size_t n = fread(bytes, 1, cap, f);
+    bool complete = !ferror(f) && feof(f);
+    int closed = fclose(f);
+    if (!complete || closed != 0 || n == 0 || n > cap - 40 ||
+        bytes[n - 1] != '\n') {
+        printf("FAIL (CURRENT fixture extent)\n");
+        return 0;
+    }
+    return n;
+}
+
+static bool lr_current_write(const char *dir, const char *bytes, size_t len)
+{
+    char path[600];
+    snprintf(path, sizeof(path), "%s/CURRENT", dir);
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        printf("FAIL (CURRENT fixture write)\n");
+        return false;
+    }
+    bool written = fwrite(bytes, 1, len, f) == len;
+    int closed = fclose(f);
+    if (!written || closed != 0) {
+        printf("FAIL (CURRENT fixture write extent)\n");
+        return false;
+    }
+    return true;
+}
+
+static int lr_current_extent(const char *src, const char *dst)
+{
+    char current[512];
+    size_t n = lr_current_read(src, current, sizeof(current));
+    if (n == 0)
+        return 1;
+    static const char *const suffixes[] = {
+        "", "\0junk", "\0MANIFEST-999999", "\0/hidden"
+    };
+    static const size_t sizes[] = {0, 5, 16, 8};
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        if (!lr_copy(src, dst)) {
+            printf("FAIL (CURRENT fixture copy)\n");
+            return failures + 1;
+        }
+        char bytes[512];
+        memcpy(bytes, current, n - 1);
+        memcpy(bytes + n - 1, suffixes[i], sizes[i]);
+        bytes[n - 1 + sizes[i]] = '\n';
+        if (!lr_current_write(dst, bytes, n + sizes[i]))
+            return failures + 1;
+        failures += !lr_current_open_result(dst, i == 0);
+    }
+    return failures;
+}
+
 static bool lr_test_log_span_bounds(void)
 {
     size_t end = SIZE_MAX;
@@ -811,6 +897,7 @@ int test_ldb_reader(void)
 
     failures += lr_test_empty_database();
 
+    failures += lr_current_extent(src, dmg);
     failures += lr_test_damaged_input(src, dmg);
 
     test_rm_rf(src);

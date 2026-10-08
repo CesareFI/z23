@@ -233,6 +233,11 @@ static bool read_current(const char *dir, char *out, size_t cap, char **err)
         ldb_unmap_file(&file);
         return false;
     }
+    if (memchr(base, '\0', size - 1) != NULL) {
+        *err = ldb_errf("ldb: CURRENT in %s contains an embedded NUL", dir);
+        ldb_unmap_file(&file);
+        return false;
+    }
     memcpy(out, base, size - 1);
     out[size - 1] = '\0';
     ldb_unmap_file(&file);
