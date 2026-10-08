@@ -4722,6 +4722,78 @@ static int test_ops_statecatalog_paging_covers_all(void)
     return failures;
 }
 
+/* Run ops.statecatalog with limit/page and parse the envelope's data. */
+static bool statecatalog_page_fixture(const struct zcl_command_registry *reg,
+                                      const struct zcl_command_spec *s,
+                                      int64_t limit, int64_t page,
+                                      struct json_value *env)
+{
+    static char out[131072];
+    struct zcl_command_context ctx = {
+        .registry = reg, .granted_capabilities = ~(uint64_t)0,
+        .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+    };
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_int(&input, "limit", limit);
+    (void)json_push_kv_int(&input, "page", page);
+    enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+    size_t n = zcl_command_registry_execute_json(
+        reg, s, &ctx, &input, false, "ops.statecatalog", "normal", 0, 0,
+        NULL, out, sizeof(out), &code);
+    json_free(&input);
+    return n > 0 && code == ZCL_COMMAND_EXIT_OK && json_read(env, out, n);
+}
+
+/* A page at or beyond `pages` is an empty well-formed page (page echoed,
+ * pages unchanged, has_more false) and must never multiply page by the
+ * page size unbounded. */
+static int test_ops_statecatalog_page_bounds(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *s = find_spec(reg, "ops.statecatalog");
+
+    TEST("ops.statecatalog bounds page without signed overflow") {
+        ASSERT(s != NULL);
+        const int64_t limit = 5;
+        int64_t total = (int64_t)diagnostics_dumper_count();
+        int64_t pages = (total + limit - 1) / limit;
+        ASSERT(pages > 1);
+        const int64_t cases[] = { 0, pages - 1, pages, INT64_MAX };
+        for (size_t c = 0; c < 4; c++) {
+            struct json_value env;
+            ASSERT(statecatalog_page_fixture(reg, s, limit, cases[c], &env));
+            const struct json_value *d = json_get(&env, "data");
+            const struct json_value *rows = json_get(d, "subsystems");
+            ASSERT(rows != NULL && rows->type == JSON_ARR);
+            ASSERT_EQ(json_get_int(json_get(d, "page")), cases[c]);
+            ASSERT_EQ(json_get_int(json_get(d, "pages")), pages);
+            bool in_range = cases[c] < pages;
+            int64_t want_rows = in_range
+                ? (cases[c] == pages - 1 ? total - cases[c] * limit : limit)
+                : 0;
+            ASSERT_EQ((int64_t)json_size(rows), want_rows);
+            const struct json_value *hm = json_get(d, "has_more");
+            ASSERT(hm != NULL && hm->type == JSON_BOOL);
+            ASSERT_EQ((int)json_get_bool(hm), (int)(cases[c] < pages - 1));
+            json_free(&env);
+        }
+        /* Largest page with the largest limit: the old unbounded multiply
+         * is reached here too. */
+        struct json_value env;
+        ASSERT(statecatalog_page_fixture(reg, s, 1000000, INT64_MAX, &env));
+        const struct json_value *d = json_get(&env, "data");
+        ASSERT_EQ(json_get_int(json_get(d, "page")), INT64_MAX);
+        ASSERT_EQ((int64_t)json_size(json_get(d, "subsystems")), 0);
+        ASSERT_EQ((int)json_get_bool(json_get(d, "has_more")), 0);
+        json_free(&env);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_command_registry_catalog(void)
 {
     int failures = 0;
@@ -4735,6 +4807,7 @@ int test_command_registry_catalog(void)
     failures += test_ops_statecatalog_matches_registry();
     failures += test_ops_statecatalog_paging_and_lookup();
     failures += test_ops_statecatalog_paging_covers_all();
+    failures += test_ops_statecatalog_page_bounds();
     failures += test_handler_index_matches_catalog();
     failures += test_handler_index_known_symbol_maps_to_path();
     failures += test_app_features_leaves();

@@ -870,12 +870,18 @@ static void nc_statecatalog_paged(const struct zcl_command_request *request,
 
     int64_t pages = total == 0 ? 0
                                : ((int64_t)total + page_size - 1) / page_size;
-    size_t start = (size_t)(page * page_size);
+    /* Bound page against pages before any multiply: page < pages <= total
+     * keeps page * page_size within total + page_size, so no signed
+     * overflow. A page past the end is an empty page, not an error. */
+    size_t start = total;
+    if (page < pages)
+        start = (size_t)(page * page_size);
     (void)json_push_kv_int(&reply->data, "page", page);
     (void)json_push_kv_int(&reply->data, "page_size", page_size);
     (void)json_push_kv_int(&reply->data, "pages", pages);
     (void)json_push_kv_bool(&reply->data, "has_more",
-                            (int64_t)start + page_size < (int64_t)total);
+                            start < total &&
+                                (int64_t)(total - start) > page_size);
 
     struct json_value rows;
     json_init(&rows);
