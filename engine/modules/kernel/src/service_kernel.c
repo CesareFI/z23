@@ -127,12 +127,22 @@ bool zcl_service_kernel_init_all(struct zcl_service_kernel *kernel)
     return true;
 }
 
+static bool service_required_entries_healthy(const struct zcl_service_kernel *kernel)
+{
+    for (size_t i = 0; i < kernel->count; i++) {
+        const struct zcl_service_entry *entry = &kernel->services[i];
+        if (!service_optional(entry) && entry->state == ZCL_SERVICE_FAILED)
+            return false;
+    }
+    return true;
+}
+
 bool zcl_service_kernel_start_all(struct zcl_service_kernel *kernel)
 {
     if (!kernel)
         return false;
     if (kernel->started)
-        return true;
+        return service_required_entries_healthy(kernel);
     if (!zcl_service_kernel_init_all(kernel))
         return false;
 

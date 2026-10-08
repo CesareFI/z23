@@ -220,6 +220,36 @@ static int test_service_kernel_independent_failure_spares_siblings(void)
         ASSERT_EQ((int)door->state, (int)ZCL_SERVICE_FAILED);
         ASSERT(door->failure_reason != NULL);
 
+        /* Repeating startup reports degradation without rerunning hooks. */
+        ASSERT(!zcl_service_kernel_start_all(&kernel));
+        ASSERT_EQ(before.start_count, 1);
+        ASSERT_EQ(front_door.start_count, 1);
+        ASSERT_EQ(site.start_count, 1);
+        ASSERT_EQ(event_count, 6);
+        ASSERT_EQ((int)door->state, (int)ZCL_SERVICE_FAILED);
+        ASSERT(kernel.started);
+
+        ASSERT(!zcl_service_kernel_retry_failed(&kernel, "rpc_http"));
+        ASSERT(!zcl_service_kernel_start_all(&kernel));
+        ASSERT_EQ(front_door.start_count, 2);
+        ASSERT_EQ((int)door->state, (int)ZCL_SERVICE_FAILED);
+
+        front_door.fail_start = false;
+        ASSERT(zcl_service_kernel_retry_failed(&kernel, "rpc_http"));
+        ASSERT_EQ((int)door->state, (int)ZCL_SERVICE_STARTED);
+        ASSERT(door->failure_reason == NULL);
+        ASSERT(zcl_service_kernel_start_all(&kernel));
+        ASSERT_EQ(before.init_count, 1);
+        ASSERT_EQ(front_door.init_count, 1);
+        ASSERT_EQ(site.init_count, 1);
+        ASSERT_EQ(before.start_count, 1);
+        ASSERT_EQ(front_door.start_count, 3);
+        ASSERT_EQ(site.start_count, 1);
+        ASSERT_EQ(before.stop_count, 0);
+        ASSERT_EQ(front_door.stop_count, 0);
+        ASSERT_EQ(site.stop_count, 0);
+        ASSERT_EQ(event_count, 8);
+
         /* And a genuinely required service still unwinds: INDEPENDENT is a
          * per-service decision, not a weakening of the kernel. */
         zcl_service_kernel_stop_all(&kernel);
@@ -384,6 +414,11 @@ static int test_service_kernel_optional_failures(void)
             zcl_service_kernel_find(&kernel, "mempool_limits");
         ASSERT(optional != NULL);
         ASSERT_EQ((int)optional->state, (int)ZCL_SERVICE_FAILED);
+
+        ASSERT(zcl_service_kernel_start_all(&kernel));
+        ASSERT_EQ(a.start_count, 1);
+        ASSERT_EQ(b.start_count, 1);
+        ASSERT_EQ(c.start_count, 1);
 
         zcl_service_kernel_stop_all(&kernel);
         ASSERT_EQ(c.stop_count, 1);
