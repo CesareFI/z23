@@ -31,8 +31,6 @@ cognition/controllers/src/agent_anchor_status_controller.c:anchor_status_read:34
 cognition/controllers/src/agent_anchor_status_controller.c:anchor_table_stats:16
 cognition/controllers/src/agent_background_quality.c:agent_push_quality_lane:32
 cognition/controllers/src/agent_controller.c:agent_classify_path:38
-cognition/controllers/src/agent_copy_prove_controller.c:cp_args_valid:18
-cognition/controllers/src/agent_copy_prove_controller.c:rpc_agent_copy_prove:21
 cognition/controllers/src/agent_cure_status_helpers.c:agent_cure_activity_build:17
 cognition/controllers/src/agent_diagnose_controller.c:rpc_agent_diagnose:67
 cognition/controllers/src/agent_interface_controller.c:rpc_agent_deploy_guard:39

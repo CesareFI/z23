@@ -24,6 +24,7 @@
 #include "controllers/agent_copy_prove_controller.h"
 #include "json/json.h"
 #include "platform/directory_compat.h"
+#include "util/spawn.h"
 
 #include <stdio.h>
 #include <fcntl.h>
@@ -642,79 +643,135 @@ static int test_acp_rpc_launch_and_poll(void)
     return failures;
 }
 
-/* ── D: dumper safety-invariant + not_found/invalid-key refusals ───── */
+struct acp_argv_fixture {
+    char work[512], status[600], log[650];
+    int fd;
+};
 
-static bool acp_flag_recorded(const char *path, const char *args, size_t length)
+/* Wait for recorder output; a missing notification fails the row. */
+static bool acp_argv_receive(int fd, char *out, size_t capacity)
 {
-    char actual[2002];
-    return acp_read_file(path, actual, sizeof(actual)) &&
-           strlen(actual) == length + 1 &&
-           memcmp(actual, args, length) == 0 && actual[length] == '\n';
+    size_t used = 0;
+    while (used + 1 < capacity) {
+        struct pollfd ready = { .fd = fd, .events = POLLIN };
+        if (poll(&ready, 1, 5000) != 1) return false;
+        ssize_t n = read(fd, out + used, capacity - used - 1);
+        if (n <= 0) return false;
+        used += (size_t)n;
+        out[used] = '\0';
+        if (out[used - 1] == '\n') return true;
+    }
+    return false;
 }
 
-static int test_acp_rpc_long_args(void)
+static int acp_argv_request(struct acp_argv_fixture *fx, unsigned mask,
+                            const char *args, bool refuse)
 {
     int failures = 0;
-    char work[512], stub[600], status[600], ready[640], recorder[640];
-    test_make_tmpdir(work, sizeof(work), "acp_args", "exact");
-    snprintf(stub, sizeof(stub), "%s/record.sh", work);
-    snprintf(status, sizeof(status), "%s/args-slug.json", work);
-    snprintf(ready, sizeof(ready), "%s.ready", status);
-    snprintf(recorder, sizeof(recorder), "%s.argv", status);
-    const char *body =
-        "#!/bin/sh\n"
-        "status=''\n"
-        "while [ $# -gt 0 ]; do\n"
-        "  case \"$1\" in\n"
-        "    --status-file=*) status=${1#--status-file=} ;;\n"
-        "    --) shift; break ;;\n"
-        "  esac\n"
-        "  shift\n"
-        "done\n"
-        "printf '%s\\n' \"$@\" > \"$status.argv\" || exit 1\n"
-        "printf x > \"$status.ready\"\n";
-    bool setup = acp_write_file(stub, body) && chmod(stub, 0700) == 0 &&
-                 mkfifo(ready, 0600) == 0;
-    ACP_CHECK("long-args recorder setup", setup);
-    if (!setup) { test_rm_rf_recursive(work); return failures; }
-    int fd = open(ready, O_RDWR | O_NONBLOCK);
-    ACP_CHECK("open bounded recorder notification", fd >= 0);
-    if (fd < 0) { test_rm_rf_recursive(work); return failures; }
-    struct acp_saved_env status_env, script_env;
-    acp_env_save(&status_env, "ZCL_COPY_PROVE_STATUS_DIR");
-    acp_env_save(&script_env, "ZCL_AGENT_COPY_PROVE_SCRIPT");
-    bool env_ok = setenv("ZCL_COPY_PROVE_STATUS_DIR", work, 1) == 0 &&
-                  setenv("ZCL_AGENT_COPY_PROVE_SCRIPT", stub, 1) == 0;
-    ACP_CHECK("set isolated long-args environment", env_ok);
-    const size_t lengths[] = {1023, 1024, 2000};
-    for (size_t i = 0; env_ok && i < 3; i++) {
-        char args[2001], label[100], signal;
+    char observed[2020], expected[2020], body[100], label[100];
+    ACP_CHECK("seed prior status", acp_write_file(fx->status, "{\"state\":\"done\"}\n"));
+    struct json_value params, result;
+    acp_build_params(&params, "capacity", (mask & 4) ? fx->work : "", args,
+                     (mask & 8) ? 1 : -1, 30, mask & 1, mask & 2);
+    json_init(&result);
+    uint64_t launches = zcl_spawn_thread_launch_count();
+    bool rc = rpc_agent_copy_prove(&params, false, &result);
+    snprintf(label, sizeof(label), "argv mask=%u bytes=%zu refusal=%d", mask,
+             strlen(args), refuse);
+    ACP_CHECK("argv request handled", rc);
+    if (refuse) {
+        ACP_CHECK(label, strcmp(json_get_str(json_get(&result, "error")),
+                               "invalid_args") == 0);
+        ACP_CHECK("refusal preserves prior status", acp_read_file(fx->status, body,
+                  sizeof(body)) && strcmp(body, "{\"state\":\"done\"}\n") == 0);
+        ACP_CHECK("refusal creates no launch log", access(fx->log, F_OK) != 0);
+        ACP_CHECK("refusal never launches", zcl_spawn_thread_launch_count() == launches);
+    } else {
+        bool started = strcmp(json_get_str(json_get(&result, "status")),
+                              "started") == 0;
+        ACP_CHECK(label, started);
+        unsigned tokens = 1;
+        for (const char *p = args; *p; p++) tokens += *p == ' ';
+        snprintf(expected, sizeof(expected), "%u|%s\n", tokens, args);
+        bool received = started &&
+                        acp_argv_receive(fx->fd, observed, sizeof(observed));
+        ACP_CHECK("runner receives every exact token", received &&
+                  strcmp(observed, expected) == 0);
+        ACP_CHECK("remove launch log", unlink(fx->log) == 0);
+    }
+    json_free(&result);
+    json_free(&params);
+    return failures;
+}
+
+static int acp_argv_count_rows(struct acp_argv_fixture *fx)
+{
+    int failures = 0;
+    for (unsigned mask = 0; mask < 16; mask++) {
+        unsigned limit = 122 - ((mask & 1) != 0) - ((mask & 2) != 0) -
+                               ((mask & 4) != 0) - ((mask & 8) != 0);
+        for (unsigned extra = 0; extra < 2; extra++) {
+            char args[400];
+            unsigned count = limit + extra;
+            for (unsigned i = 0; i < count; i++) memcpy(args + i * 3, "-a ", 3);
+            args[count * 3 - 1] = '\0';
+            failures += acp_argv_request(fx, mask, args, extra != 0);
+        }
+    }
+    return failures;
+}
+
+static int acp_argv_byte_rows(struct acp_argv_fixture *fx)
+{
+    int failures = 0;
+    const size_t lengths[] = {1023, 1024, 2000, 2001};
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
+        char args[2002];
         memset(args, 'a', lengths[i]);
         args[0] = '-';
         args[lengths[i]] = '\0';
-        struct json_value params, result;
-        acp_build_params(&params, "args-slug", "", args, -1, 1, false, false);
-        json_init(&result);
-        bool rc = rpc_agent_copy_prove(&params, false, &result);
-        ACP_CHECK("long-args RPC starts recorder", rc &&
-            strcmp(json_get_str(json_get(&result, "status")), "started") == 0);
-        struct pollfd notification = { .fd = fd, .events = POLLIN };
-        bool done = poll(&notification, 1, 5000) == 1 &&
-                    read(fd, &signal, 1) == 1 && signal == 'x';
-        ACP_CHECK("recorder finished within bounded condition wait", done);
-        bool exact = done && acp_flag_recorded(recorder, args, lengths[i]);
-        snprintf(label, sizeof(label), "%zu-byte flag reaches child exactly", lengths[i]);
-        ACP_CHECK(label, exact);
-        json_free(&params);
-        json_free(&result);
-        if (!done) break;
+        failures += acp_argv_request(fx, 0, args, lengths[i] > 2000);
     }
-    acp_env_restore(&script_env);
-    acp_env_restore(&status_env);
-    ACP_CHECK("close recorder notification", close(fd) == 0);
-    test_rm_rf_recursive(work);
     return failures;
 }
+
+static int test_acp_argv_capacity(void)
+{
+    int failures = 0;
+    struct acp_argv_fixture fx;
+    char stub[600], fifo[600], body[1800];
+    test_make_tmpdir(fx.work, sizeof(fx.work), "acp_argv", "capacity");
+    snprintf(stub, sizeof(stub), "%s/runner.sh", fx.work);
+    snprintf(fifo, sizeof(fifo), "%s/argv.fifo", fx.work);
+    snprintf(fx.status, sizeof(fx.status), "%s/capacity.json", fx.work);
+    snprintf(fx.log, sizeof(fx.log), "%s.launch.log", fx.status);
+    snprintf(body, sizeof(body),
+        "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n"
+        "  [ \"$1\" = -- ] && { shift; break; }\n  shift\ndone\n"
+        "IFS=' '\nprintf '%%s|%%s\\n' \"$#\" \"$*\" > \"%s\"\n", fifo);
+    bool setup = acp_write_file(stub, body) && chmod(stub, 0700) == 0 &&
+                 mkfifo(fifo, 0600) == 0;
+    fx.fd = setup ? open(fifo, O_RDWR | O_NONBLOCK | O_CLOEXEC) : -1;
+    ACP_CHECK("argv recorder setup", fx.fd >= 0);
+    if (fx.fd < 0) { test_rm_rf_recursive(fx.work); return failures; }
+    struct acp_saved_env dir_env, script_env;
+    acp_env_save(&dir_env, "ZCL_COPY_PROVE_STATUS_DIR");
+    acp_env_save(&script_env, "ZCL_AGENT_COPY_PROVE_SCRIPT");
+    bool env_ok = setenv("ZCL_COPY_PROVE_STATUS_DIR", fx.work, 1) == 0 &&
+                  setenv("ZCL_AGENT_COPY_PROVE_SCRIPT", stub, 1) == 0;
+    ACP_CHECK("set recorder environment", env_ok);
+    if (env_ok) {
+        failures += acp_argv_count_rows(&fx);
+        failures += acp_argv_byte_rows(&fx);
+    }
+    ACP_CHECK("close recorder", close(fx.fd) == 0);
+    acp_env_restore(&script_env);
+    acp_env_restore(&dir_env);
+    test_rm_rf_recursive(fx.work);
+    return failures;
+}
+
+/* ── D: dumper safety-invariant + not_found/invalid-key refusals ───── */
 
 static int test_acp_dumper_safety_invariant(void)
 {
@@ -927,7 +984,7 @@ int test_agent_copy_prove(void)
     failures += test_acp_launchd_like_live();
     failures += test_acp_rpc_refusals();
     failures += test_acp_rpc_launch_and_poll();
-    failures += test_acp_rpc_long_args();
+    failures += test_acp_argv_capacity();
     failures += test_acp_dumper_safety_invariant();
     failures += test_acp_dumper_complete_file();
     failures += test_acp_dumper_utf8();

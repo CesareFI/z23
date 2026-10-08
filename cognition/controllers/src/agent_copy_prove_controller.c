@@ -56,6 +56,8 @@
 #define COPY_PROVE_CONTRACT_SCHEMA "zcl.agent_copy_prove.v2"
 #define COPY_PROVE_RESULT_SCHEMA   "zcl.copy_prove_result.v1"
 #define COPY_PROVE_STATE_SCHEMA    "zcl.agent_copy_prove_state.v1"
+#define CP_ARGV_CAPACITY 128
+#define CP_ARGS_MAX_BYTES 2000
 
 /* ── input allowlists ──────────────────────────────────────────────
  *
@@ -94,12 +96,30 @@ static bool cp_path_valid(const char *s)
     return true;
 }
 
+static bool cp_args_fit(const char *s, size_t max_tokens)
+{
+    if (strlen(s) > CP_ARGS_MAX_BYTES) return false;
+    size_t tokens = 0;
+    bool in_token = false;
+    for (const char *p = s; *p; p++) {
+        if (*p != ' ' && !in_token) tokens++;
+        in_token = *p != ' ';
+    }
+    return tokens <= max_tokens;
+}
+
+static bool cp_arg_char_valid(unsigned char c)
+{
+    return isalnum(c) || c == '-' || c == '_' || c == '.' ||
+           c == ':' || c == '=' || c == ',' || c == '/';
+}
+
 /* Space-separated node flags, e.g. "-nobgvalidation -foo=bar". Every
  * token must start with '-' and contain only a conservative charset. */
-static bool cp_args_valid(const char *s)
+static bool cp_args_valid(const char *s, size_t max_tokens)
 {
     if (!s || !s[0]) return true;
-    if (strlen(s) > 2000) return false;
+    if (!cp_args_fit(s, max_tokens)) return false; // raw-return-ok:predicate-caller-reports-invalid-args
     const char *p = s;
     while (*p) {
         while (*p == ' ') p++;
@@ -107,9 +127,8 @@ static bool cp_args_valid(const char *s)
         if (*p != '-') return false;
         while (*p && *p != ' ') {
             unsigned char c = (unsigned char)*p;
-            if (!(isalnum(c) || c == '-' || c == '_' || c == '.' ||
-                  c == ':' || c == '=' || c == ',' || c == '/'))
-                return false;
+            if (!cp_arg_char_valid(c))
+                return false; // raw-return-ok:predicate-caller-reports-invalid-args
             p++;
         }
     }
@@ -249,6 +268,94 @@ static bool cp_write_queued_status(const char *status_file, const char *slug,
 
 /* ── RPC: agentcopyprove ─────────────────────────────────────────── */
 
+static bool cp_start_runner(const char *slug, const char *src,
+                            const char *args, int64_t expect_climb_past,
+                            int64_t deadline_secs, bool full, bool no_run,
+                            const char *status_file, struct json_value *result)
+{
+    const char *script = getenv("ZCL_AGENT_COPY_PROVE_SCRIPT");
+    if (!script || !script[0]) script = "tools/repro_on_copy.sh";
+    if (access(script, X_OK) != 0) {
+        json_push_kv_str(result, "status", "error");
+        json_push_kv_str(result, "error", "script_not_found");
+        json_push_kv_str(result, "detail", script);
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
+        fprintf(stderr, "[agent_copy_prove] %s:%d %s(): script not "
+                "executable: %s (%s)\n", __FILE__, __LINE__, __func__,
+                script, strerror(errno));
+        return true;
+    }
+
+    char launch_log[1200];
+    snprintf(launch_log, sizeof(launch_log), "%s.launch.log", status_file);
+
+    /* Build an argv vector for the detached runner. No shell: no quoting,
+     * no `nohup ... &`. zcl_spawn_detached double-forks + setsid()s (so the
+     * grandchild is reparented to init and never a zombie) and redirects the
+     * grandchild's stdout+stderr to launch_log itself — replacing the old
+     * `> launch_log 2>&1 < /dev/null &`. */
+    char opt_status[1200], opt_deadline[64], opt_src[1200], opt_climb[64];
+    snprintf(opt_status, sizeof(opt_status), "--status-file=%s", status_file);
+    snprintf(opt_deadline, sizeof(opt_deadline), "--deadline=%lld",
+             (long long)deadline_secs);
+
+    const char *argv[CP_ARGV_CAPACITY];
+    size_t argc = 0;
+    argv[argc++] = script;
+    argv[argc++] = slug;
+    argv[argc++] = opt_status;
+    argv[argc++] = opt_deadline;
+    if (full)   argv[argc++] = "--full";
+    if (no_run) argv[argc++] = "--no-run";
+    if (src && src[0]) {
+        snprintf(opt_src, sizeof(opt_src), "--src=%s", src);
+        argv[argc++] = opt_src;
+    }
+    if (expect_climb_past >= 0) {
+        snprintf(opt_climb, sizeof(opt_climb), "--expect-climb-past=%lld",
+                 (long long)expect_climb_past);
+        argv[argc++] = opt_climb;
+    }
+    /* args: allowlist-validated above (each token begins with '-', charset
+     * [A-Za-z0-9_.:=,/-]); split on whitespace into argv words after a `--`
+     * separator — the exact tokens the old `-- %s` shell suffix produced. */
+    char args_copy[CP_ARGS_MAX_BYTES + 1];
+    if (args && args[0]) {
+        argv[argc++] = "--";
+        if (snprintf(args_copy, sizeof(args_copy), "%s", args)
+                < (int)sizeof(args_copy))
+            argc += zcl_argv_split(args_copy, argv + argc,
+                                   (sizeof(argv) / sizeof(argv[0])) - argc);
+    }
+    argv[argc] = NULL;
+
+    struct zcl_result sp = zcl_spawn_detached(argv, launch_log);
+    if (!sp.ok) {
+        json_push_kv_str(result, "status", "error");
+        json_push_kv_str(result, "error", "spawn_failed");
+        json_push_kv_str(result, "detail", sp.message);
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
+        fprintf(stderr, "[agent_copy_prove] %s:%d %s(): spawn_detached "
+                "failed for slug=%s: %s\n", __FILE__, __LINE__,
+                __func__, slug, sp.message);
+        return true;
+    }
+
+    json_push_kv_str(result, "status", "started");
+    json_push_kv_bool(result, "async", true);
+    json_push_kv_str(result, "slug", slug);
+    json_push_kv_str(result, "status_file", status_file);
+    json_push_kv_str(result, "launch_log", launch_log);
+    json_push_kv_str(result, "poll_native",
+                     "z23 dumpstate agent_copy_prove");
+    json_push_kv_int(result, "deadline_secs", deadline_secs);
+    json_push_kv_str(result, "budget_note",
+        "detached background run; does not hold an RPC worker thread. "
+        "Poll status_file via dumpstate instead of waiting on "
+        "this call.");
+    return true;
+}
+
 bool rpc_agent_copy_prove(const struct json_value *params, bool help,
                           struct json_value *result)
 {
@@ -314,12 +421,15 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
                 "src for slug=%s\n", __FILE__, __LINE__, __func__, slug);
         return true;
     }
-    if (!cp_args_valid(args)) {
+    /* Reserve script, slug, status, deadline, separator, terminator,
+     * and each selected optional runner argument before any write. */
+    if (!cp_args_valid(args, CP_ARGV_CAPACITY - 6 - full - no_run -
+                      (src[0] != '\0') - (expect_climb_past >= 0))) {
         json_push_kv_str(result, "status", "error");
         json_push_kv_str(result, "error", "invalid_args");
         json_push_kv_str(result, "detail",
             "args must be space-separated flags starting with '-' using "
-            "only [A-Za-z0-9_.:=,/-]");
+            "only [A-Za-z0-9_.:=,/-], within the runner argument capacity");
         // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): refused invalid "
                 "args for slug=%s\n", __FILE__, __LINE__, __func__, slug);
@@ -357,87 +467,8 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
         return true;
     }
 
-    const char *script = getenv("ZCL_AGENT_COPY_PROVE_SCRIPT");
-    if (!script || !script[0]) script = "tools/repro_on_copy.sh";
-    if (access(script, X_OK) != 0) {
-        json_push_kv_str(result, "status", "error");
-        json_push_kv_str(result, "error", "script_not_found");
-        json_push_kv_str(result, "detail", script);
-        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
-        fprintf(stderr, "[agent_copy_prove] %s:%d %s(): script not "
-                "executable: %s (%s)\n", __FILE__, __LINE__, __func__,
-                script, strerror(errno));
-        return true;
-    }
-
-    char launch_log[1200];
-    snprintf(launch_log, sizeof(launch_log), "%s.launch.log", status_file);
-
-    /* Build an argv vector for the detached runner. No shell: no quoting,
-     * no `nohup ... &`. zcl_spawn_detached double-forks + setsid()s (so the
-     * grandchild is reparented to init and never a zombie) and redirects the
-     * grandchild's stdout+stderr to launch_log itself — replacing the old
-     * `> launch_log 2>&1 < /dev/null &`. */
-    char opt_status[1200], opt_deadline[64], opt_src[1200], opt_climb[64];
-    snprintf(opt_status, sizeof(opt_status), "--status-file=%s", status_file);
-    snprintf(opt_deadline, sizeof(opt_deadline), "--deadline=%lld",
-             (long long)deadline_secs);
-
-    const char *argv[128];
-    size_t argc = 0;
-    argv[argc++] = script;
-    argv[argc++] = slug;
-    argv[argc++] = opt_status;
-    argv[argc++] = opt_deadline;
-    if (full)   argv[argc++] = "--full";
-    if (no_run) argv[argc++] = "--no-run";
-    if (src && src[0]) {
-        snprintf(opt_src, sizeof(opt_src), "--src=%s", src);
-        argv[argc++] = opt_src;
-    }
-    if (expect_climb_past >= 0) {
-        snprintf(opt_climb, sizeof(opt_climb), "--expect-climb-past=%lld",
-                 (long long)expect_climb_past);
-        argv[argc++] = opt_climb;
-    }
-    /* args: allowlist-validated above (each token begins with '-', charset
-     * [A-Za-z0-9_.:=,/-]); split on whitespace into argv words after a `--`
-     * separator — the exact tokens the old `-- %s` shell suffix produced. */
-    char args_copy[2001]; /* cp_args_valid permits 2000 bytes plus NUL. */
-    if (args && args[0]) {
-        argv[argc++] = "--";
-        if (snprintf(args_copy, sizeof(args_copy), "%s", args)
-                < (int)sizeof(args_copy))
-            argc += zcl_argv_split(args_copy, argv + argc,
-                                   (sizeof(argv) / sizeof(argv[0])) - argc);
-    }
-    argv[argc] = NULL;
-
-    struct zcl_result sp = zcl_spawn_detached(argv, launch_log);
-    if (!sp.ok) {
-        json_push_kv_str(result, "status", "error");
-        json_push_kv_str(result, "error", "spawn_failed");
-        json_push_kv_str(result, "detail", sp.message);
-        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
-        fprintf(stderr, "[agent_copy_prove] %s:%d %s(): spawn_detached "
-                "failed for slug=%s: %s\n", __FILE__, __LINE__,
-                __func__, slug, sp.message);
-        return true;
-    }
-
-    json_push_kv_str(result, "status", "started");
-    json_push_kv_bool(result, "async", true);
-    json_push_kv_str(result, "slug", slug);
-    json_push_kv_str(result, "status_file", status_file);
-    json_push_kv_str(result, "launch_log", launch_log);
-    json_push_kv_str(result, "poll_native",
-                     "z23 dumpstate agent_copy_prove");
-    json_push_kv_int(result, "deadline_secs", deadline_secs);
-    json_push_kv_str(result, "budget_note",
-        "detached background run; does not hold an RPC worker thread. "
-        "Poll status_file via dumpstate instead of waiting on "
-        "this call.");
-    return true;
+    return cp_start_runner(slug, src, args, expect_climb_past, deadline_secs,
+                           full, no_run, status_file, result);
 }
 
 /* ── diagnostics registry: subsystem=agent_copy_prove ────────────────
