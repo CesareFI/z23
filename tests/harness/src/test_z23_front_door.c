@@ -250,9 +250,11 @@ static int case_attestation_controls(void)
     FD_CHECK("empty answered origin remains empty",
              a.answered && a.origin[0] == '\0');
     fd_attestation_answered(&a, "repo", NULL);
-    FD_CHECK("NULL pin retains no-answer",
+    const struct fd_pin empty_pin = {0};
+    FD_CHECK("NULL pin requests a pin and clears the previous pin",
              !a.answered && strcmp(a.origin, "repo") == 0 &&
-             strcmp(a.reason, "no-answer") == 0);
+             strcmp(a.reason, "supply-pin") == 0 &&
+             memcmp(&a.pin, &empty_pin, sizeof a.pin) == 0);
     fd_attestation_unreachable(&a, NULL, NULL);
     FD_CHECK("NULL unreachable fields remain empty",
              !a.answered && a.origin[0] == '\0' && a.reason[0] == '\0');

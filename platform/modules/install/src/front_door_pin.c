@@ -213,7 +213,7 @@ void fd_attestation_answered(struct fd_attestation *a, const char *origin,
         a->pin = *pin;
     a->answered = pin != NULL;
     if (!a->answered)
-        copy_bounded(a->reason, sizeof a->reason, "no-answer");
+        copy_bounded(a->reason, sizeof a->reason, "supply-pin");
 }
 
 void fd_attestation_unreachable(struct fd_attestation *a, const char *origin,
