@@ -383,6 +383,46 @@ static int test_log_accept_exact_category(void)
     return failures;
 }
 
+static int test_bool_argument_values(void)
+{
+    int failures = 0;
+    static const struct {
+        const char *flag;
+        bool valid;
+        bool value;
+    } cases[] = {
+        { "-packagehost=1junk", false, false },
+        { "-packagehost=garbage", false, false },
+        { "-packagehost=0junk", false, false },
+        { "-packagehost=9223372036854775808", false, false },
+        { "-packagehost=-9223372036854775809", false, false },
+        { "-packagehost=1 ", false, false },
+        { "-packagehost=0", true, false },
+        { "-packagehost=1", true, true },
+        { "-packagehost=-2", true, true },
+        { "-packagehost=2147483648", true, true },
+        { "-packagehost=9223372036854775807", true, true },
+        { "-packagehost=-9223372036854775808", true, true },
+        { "-packagehost= +2", true, true },
+        { "-packagehost=", true, true },
+        { "-packagehost", true, true },
+        { "-unrelated=1", false, false },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        TEST(cases[i].flag) {
+            const char *argv[] = { "z23", cases[i].flag };
+            ncf_set_argv(argv, 2);
+            ASSERT_EQ(GetBoolArg("-packagehost", false),
+                      cases[i].valid ? cases[i].value : false);
+            ASSERT_EQ(GetBoolArg("-packagehost", true),
+                      cases[i].valid ? cases[i].value : true);
+            PASS();
+        } _test_next:;
+    }
+    return failures;
+}
+
 int test_node_config_file(void)
 {
     int failures = 0;
@@ -403,6 +443,7 @@ int test_node_config_file(void)
     failures += test_log_accept_named_category();
     failures += test_log_accept_debug_spellings();
     failures += test_log_accept_exact_category();
+    failures += test_bool_argument_values();
 
     /* Restore the table so later groups do not inherit a fixture's -datadir. */
     const char *reset[] = { "z23" };

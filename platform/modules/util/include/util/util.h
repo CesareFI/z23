@@ -43,8 +43,10 @@ const char *GetArg(const char *arg, const char *default_val);
  * default. */
 int64_t GetArgInt(const char *arg, int64_t default_val);
 
-/* Boolean for `arg`: present-but-empty (-arg) is true; otherwise true iff
- * the value parses non-zero. `default_val` if `arg` is absent. */
+/* Boolean for `arg`: present-but-empty (-arg) is true. A nonempty value
+ * must parse completely as a base-10 signed 64-bit integer; zero is false
+ * and nonzero is true. Leading whitespace and an optional sign are accepted.
+ * Returns `default_val` if absent, malformed, or outside the integer range. */
 bool GetBoolArg(const char *arg, bool default_val);
 
 

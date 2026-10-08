@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "util/util.h"
+#include "util/parse_num.h"
 #include "chain/chainparamsbase.h"
 #include "platform/private_directory.h"
 #include <ctype.h>
@@ -283,7 +284,10 @@ bool GetBoolArg(const char *arg, bool default_val)
     if (idx >= 0) {
         if (g_args[idx].value[0] == '\0')
             return true;
-        return atoi(g_args[idx].value) != 0;
+        int64_t value;
+        if (!zcl_parse_i64(g_args[idx].value, &value))
+            return default_val;
+        return value != 0;
     }
     return default_val;
 }
