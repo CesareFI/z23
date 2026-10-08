@@ -365,7 +365,7 @@ static enum cseg_status parse_segment(struct chain_segment *seg,
         uint32_t len = get_u32(e + 4);
         uint64_t off = get_u64(e + 8);
         if (len == 0 || off < seg->data_offset ||
-            off + len > trailer_off) {
+            off > trailer_off || len > trailer_off - off) {
             set_err(err, errlen, "%s: index[%u] out of range (off=%llu len=%u)",
                     path, i, (unsigned long long)off, len);
             return CSEG_ERR_FORMAT;

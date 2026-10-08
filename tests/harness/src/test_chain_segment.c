@@ -54,12 +54,56 @@ static bool file_exists(const char *dir, const char *name)
     return stat(p, &sb) == 0;
 }
 
+static int cs_index_bounds(void)
+{
+    int failures = 0;
+    char dir[256], path[512], err[256];
+    test_make_tmpdir(dir, sizeof(dir), "chain_segment", "index_bounds");
+    snprintf(path, sizeof(path), "%s/geometry.dat", dir);
+    enum { DATA = CHAIN_SEGMENT_HEADER_SIZE + CHAIN_SEGMENT_INDEX_ENTRY_SIZE,
+           TRAILER = DATA + 1, SIZE = TRAILER + CHAIN_SEGMENT_TRAILER_SIZE };
+    const uint64_t offsets[] = { UINT64_MAX - 1, TRAILER + 1, DATA, DATA };
+    const uint32_t lengths[] = { 2, 1, 0, 1 };
+    const char *names[] = { "wrapped span refused", "offset past trailer refused",
+                           "empty body refused", "exact body boundary accepted" };
+    for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        uint8_t buf[SIZE] = {0};
+        memcpy(buf, "ZCLSEG01", 8);
+        buf[8] = CHAIN_SEGMENT_FORMAT_VERSION;
+        buf[16] = 1;
+        buf[20] = CHAIN_SEGMENT_INDEX_ENTRY_SIZE;
+        buf[24] = DATA;
+        for (unsigned j = 0; j < 4; j++)
+            buf[CHAIN_SEGMENT_HEADER_SIZE + 4 + j] = (uint8_t)(lengths[i] >> (8 * j));
+        for (unsigned j = 0; j < 8; j++)
+            buf[CHAIN_SEGMENT_HEADER_SIZE + 8 + j] = (uint8_t)(offsets[i] >> (8 * j));
+        buf[DATA] = 0x5a;
+        sha3_256(buf + DATA, 1, buf + CHAIN_SEGMENT_HEADER_SIZE + 16);
+        sha3_256(buf, TRAILER, buf + TRAILER);
+        FILE *f = fopen(path, "wb");
+        bool wrote = false;
+        if (f) {
+            wrote = fwrite(buf, 1, sizeof(buf), f) == sizeof(buf);
+            if (fclose(f) != 0) wrote = false;
+        }
+        CS_CHECK("index geometry fixture written", wrote);
+        struct chain_segment *seg = NULL;
+        enum cseg_status st = chain_segment_open(path, &seg, err, sizeof(err));
+        CS_CHECK(names[i], i == 3 ? st == CSEG_OK && seg != NULL
+                                 : st == CSEG_ERR_FORMAT && seg == NULL);
+        chain_segment_close(seg);
+    }
+    test_rm_rf_recursive(dir);
+    return failures;
+}
+
 int test_chain_segment(void);
 int test_chain_segment(void)
 {
     printf("\n=== chain_segment tests ===\n");
     int failures = 0;
     char err[256];
+    failures += cs_index_bounds();
 
     /* ── Round-trip: seal [1000,1032) then read every block back ──────── */
     {
