@@ -51,6 +51,7 @@
 
 struct canary_kind_slot {
     bool    used;
+    bool    present, parsed, current_pass;
     bool    fail;                       /* latched: latest verdict == FAIL */
     char    kind[CANARY_KIND_NAME_MAX];
     char    from[CANARY_KIND_NAME_MAX]; /* sentinel's own `from` — display only */
@@ -237,6 +238,19 @@ static void process_sentinel(const char *dir, const char *name)
     if (!kind_from_filename(name, kind, sizeof(kind)))
         return;
 
+    pthread_mutex_lock(&g_watch.lock);
+    struct canary_kind_slot *slot = slot_for_kind_locked(kind);
+    if (!slot) {
+        pthread_mutex_unlock(&g_watch.lock);
+        LOG_WARN("canary_watch", "[canary_watch] kind table full (%d), "
+                 "ignoring sentinel %s", CANARY_WATCH_MAX_KINDS, name);
+        return;
+    }
+    slot->present = true;
+    slot->parsed = false;
+    slot->current_pass = false;
+    pthread_mutex_unlock(&g_watch.lock);
+
     char path[CANARY_PATH_MAX];
     if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path))
         return;
@@ -256,15 +270,7 @@ static void process_sentinel(const char *dir, const char *name)
                   v.type == JSON_OBJ;
 
     pthread_mutex_lock(&g_watch.lock);
-    struct canary_kind_slot *slot = slot_for_kind_locked(kind);
-    if (!slot) {
-        pthread_mutex_unlock(&g_watch.lock);
-        json_free(&v);
-        LOG_WARN("canary_watch", "[canary_watch] kind table full (%d), "
-                 "ignoring sentinel %s", CANARY_WATCH_MAX_KINDS, name);
-        return;
-    }
-
+    slot->parsed = parsed;
     if (!parsed) {
         /* Keep the slot's previous verdict — a torn read is transport noise,
          * never a page and never a clear. Log once per mtime, not per tick. */
@@ -335,6 +341,7 @@ static void process_sentinel(const char *dir, const char *name)
                        started_ts >= process_start;
     bool authoritative_clear = is_pass && exact_source && exact_artifact &&
                                current_run;
+    slot->current_pass = authoritative_clear;
     bool rejected_clear = !is_fail && !authoritative_clear;
 
     snprintf(slot->verdict, sizeof(slot->verdict), "%s", verdict);
@@ -442,6 +449,13 @@ static void recompute_latch(void)
 
 void canary_sentinel_watch_tick_once(void)
 {
+    pthread_mutex_lock(&g_watch.lock);
+    for (int i = 0; i < CANARY_WATCH_MAX_KINDS; i++) {
+        g_watch.slots[i].present = false;
+        g_watch.slots[i].parsed = false;
+        g_watch.slots[i].current_pass = false;
+    }
+    pthread_mutex_unlock(&g_watch.lock);
     atomic_store(&g_watch.last_scan_unix, platform_time_wall_unix());
     atomic_fetch_add(&g_watch.scans_total, 1);
 
@@ -553,6 +567,9 @@ bool canary_watch_dump_state_json(struct json_value *out, const char *key)
         json_init(&obj);
         json_set_object(&obj);
         json_push_kv_str(&obj, "kind", s->kind);
+        json_push_kv_bool(&obj, "present", s->present);
+        json_push_kv_bool(&obj, "parsed", s->parsed);
+        json_push_kv_bool(&obj, "current_pass", s->current_pass);
         json_push_kv_str(&obj, "from", s->from[0] ? s->from : "-");
         json_push_kv_str(&obj, "verdict", s->verdict[0] ? s->verdict : "-");
         json_push_kv_str(&obj, "reason", s->reason);

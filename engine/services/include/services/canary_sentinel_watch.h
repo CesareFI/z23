@@ -70,7 +70,10 @@ int canary_sentinel_watch_fail_detail(char *out, size_t cap);
  * Returns false when no dir can be resolved (no env, no HOME). */
 bool canary_sentinel_watch_resolve_dir(char *out, size_t cap);
 
-/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+/* Reentrant-safe. Per-kind present/parsed/current_pass describe the last scan
+ * attempt; retained display and FAIL fields are historical. current_pass uses
+ * existing clear authority, not age, future-time, or proof-window qualification.
+ * A concurrent dump may observe an in-progress scan. */
 struct json_value;
 bool canary_watch_dump_state_json(struct json_value *out, const char *key);
 
