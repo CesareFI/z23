@@ -801,6 +801,84 @@ static int t_rpc_surface(void)
     return failures;
 }
 
+static bool zwp_text_has(const struct json_value *r, const char *text)
+{
+    const char *s = json_get_str(r);
+    return s && strstr(s, text);
+}
+
+static int t_resolve_bad_inputs(const struct rpc_command *cmd)
+{
+    int failures = 0;
+    const char *inputs[] = {"[\"not-an-onion\"]", "[]", "[7]",
+        "[{\"hostname\":\"\"}]", "[{\"hostname\":7}]"};
+    for (size_t i = 0; i < sizeof(inputs) / sizeof(inputs[0]); i++) {
+        struct json_value p = {0}, r = {0};
+        bool parsed = json_read(&p, inputs[i], strlen(inputs[i]));
+        ZWP_CHECK("resolve: invalid input remains a text refusal",
+                  parsed && !cmd->actor(&p, false, &r) && r.type == JSON_STR);
+        ZWP_CHECK("resolve: identify field and exact repair format",
+                  zwp_text_has(&r, "hostname") && zwp_text_has(&r, "56 lowercase base32") &&
+                  zwp_text_has(&r, "a-z, 2-7") && zwp_text_has(&r, ".onion"));
+        ZWP_CHECK("resolve: identify invalid value", i != 0 || zwp_text_has(&r, "not-an-onion"));
+        json_free(&p);
+        json_free(&r);
+    }
+    return failures;
+}
+
+static int t_resolve_diagnostics(void)
+{
+    int failures = 0;
+    struct node_db ndb = {0};
+    bool opened = node_db_open(&ndb, ":memory:");
+    ZWP_CHECK("resolve fixture: open isolated store", opened);
+    if (!opened) return failures;
+    struct rpc_table t = {0};
+    rpc_table_init(&t);
+    register_zdir_rpc_commands(&t, &ndb, NULL, NULL, NULL, NULL);
+    const struct rpc_command *cmd = rpc_table_find(&t, "zdir_resolve");
+    ZWP_CHECK("resolve: registered caller", cmd != NULL);
+    if (cmd) {
+        failures += t_resolve_bad_inputs(cmd);
+        char host[64], long_host[1024];
+        zwp_mk_host(host, sizeof(host), 'a');
+        memset(long_host, 'x', sizeof(long_host) - 1);
+        long_host[sizeof(long_host) - 1] = '\0';
+        struct json_value r = {0};
+        bool ok = zwp_call_rpc(&t, "zdir_resolve", long_host, NULL, &r);
+        const char *s = json_get_str(&r);
+        ZWP_CHECK("resolve: oversized input diagnostic is bounded", !ok && s && strlen(s) < 320);
+        json_free(&r);
+        json_init(&r);
+        ok = zwp_call_rpc(&t, "zdir_resolve", host, NULL, &r);
+        ZWP_CHECK("resolve: absent input names directory recovery", !ok &&
+                  zwp_text_has(&r, host) && zwp_text_has(&r, "directory list"));
+        json_free(&r);
+        json_init(&r);
+        struct db_onion_directory row = {0};
+        snprintf(row.hostname, sizeof(row.hostname), "%s", host);
+        snprintf(row.status, sizeof(row.status), "%s", ONION_DIRECTORY_STATUS_ACTIVE);
+        ZWP_CHECK("resolve fixture: save healthy row", db_onion_directory_save(&ndb, &row));
+        ok = zwp_call_rpc(&t, "zdir_resolve", host, NULL, &r);
+        ZWP_CHECK("resolve: healthy row remains an object", ok && r.type == JSON_OBJ &&
+                  zwp_text_has(json_get(&r, "hostname"), host));
+        json_free(&r);
+    }
+    struct rpc_table unavailable = {0};
+    rpc_table_init(&unavailable);
+    register_zdir_rpc_commands(&unavailable, NULL, NULL, NULL, NULL, NULL);
+    char host[64];
+    zwp_mk_host(host, sizeof(host), 'a');
+    struct json_value r = {0};
+    bool ok = zwp_call_rpc(&unavailable, "zdir_resolve", host, NULL, &r);
+    ZWP_CHECK("resolve: unavailable input names readiness and retry", !ok &&
+              zwp_text_has(&r, host) && zwp_text_has(&r, "readiness") && zwp_text_has(&r, "retry"));
+    json_free(&r);
+    node_db_close(&ndb);
+    return failures;
+}
+
 int test_zdir_write_path(void)
 {
     printf("\n=== ZDIR write path (announce/retire a node on-chain) ===\n");
@@ -813,6 +891,7 @@ int test_zdir_write_path(void)
     failures += t_refusals();
     failures += t_no_transfer();
     failures += t_rpc_surface();
+    failures += t_resolve_diagnostics();
 
     node_rpc_client_set_test_hook(NULL);
     return failures;

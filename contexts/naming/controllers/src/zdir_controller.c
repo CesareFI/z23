@@ -295,6 +295,16 @@ static bool rpc_zdir_deregister(const struct json_value *params, bool help,
 
 /* ── zdir_resolve ───────────────────────────────────────────────── */
 
+static bool zdir_resolve_refuse(struct json_value *result, const char *hostname,
+                                const char *reason, const char *action)
+{
+    char message[320];
+    snprintf(message, sizeof(message), "%s: hostname=\"%.62s\"; %s",
+             reason, hostname ? hostname : "<missing or non-string>", action);
+    json_set_str(result, message);
+    return false;
+}
+
 static bool rpc_zdir_resolve(const struct json_value *params, bool help,
                              struct json_value *result)
 {
@@ -308,18 +318,18 @@ static bool rpc_zdir_resolve(const struct json_value *params, bool help,
         return true;
     }
 
-    if (!g_zdir_ndb) {
-        json_set_str(result, "Directory projection unavailable");
-        return false;
-    }
-    const char *hostname = zdir_require_hostname(params, result);
-    if (!hostname)
-        return false;
+    const char *hostname = zdir_str_field(params, 0, "hostname");
+    if (!g_zdir_ndb)
+        return zdir_resolve_refuse(result, hostname,
+            "Directory projection unavailable", "Inspect node readiness, then retry zdir_resolve");
+    if (!hostname || !hostname[0] || !onion_hostname_valid(hostname))
+        return zdir_resolve_refuse(result, hostname, "Invalid hostname",
+            "Supply hostname as a string: 56 lowercase base32 chars (a-z, 2-7) + .onion");
 
     struct db_onion_directory row;
     if (!db_onion_directory_find(g_zdir_ndb, hostname, &row)) {
-        json_set_str(result, "Hostname is not registered on-chain");
-        return false;
+        return zdir_resolve_refuse(result, hostname,
+            "Hostname is not registered on-chain", "Inspect the directory list, then resolve a listed hostname");
     }
 
     json_set_object(result);
