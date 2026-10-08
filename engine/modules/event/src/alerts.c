@@ -8,6 +8,7 @@
 #include "util/spawn.h"
 #include "event/event.h"
 #include "core/utiltime.h"
+#include "zutf8/zutf8.h"
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -150,23 +151,47 @@ static void check_rule(struct rule_state *rs)
 
 /* ── Event observer ──────────────────────────────────────────── */
 
-/* Latch the operator-needed state so the health surface can report
- * DEGRADED until the underlying condition clears. `detail` is the event
- * payload (e.g. "condition=tip_not_advancing attempts=5"). */
-static void operator_needed_set(const char *detail)
+/* Retain counted detail with visible NULs, validating even discarded bytes. */
+static void operator_needed_detail(char *detail, size_t cap,
+                                   const unsigned char *payload, size_t len)
 {
+    size_t used = 0;
+    if (payload) {
+        for (size_t i = 0; i < len; i++) {
+            size_t width = payload[i] == 0 ? 2 : 1;
+            if (width >= cap - used) break;
+            if (payload[i] == 0) {
+                detail[used++] = '\\';
+                detail[used++] = '0';
+            } else detail[used++] = (char)payload[i];
+        }
+    }
+    detail[used] = '\0';
+    if ((payload && !zutf8_validate_n((const char *)payload, len)) ||
+        !zutf8_validate_n(detail, used))
+        snprintf(detail, cap, "(operator detail refused: invalid UTF-8)");
+}
+
+/* Latch until the condition clears, even when its detail is refused. */
+static void operator_needed_set(const unsigned char *payload, size_t len)
+{
+    char detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN];
+    operator_needed_detail(detail, sizeof(detail), payload, len);
     pthread_mutex_lock(&g_lock);
     if (atomic_load(&g_operator_needed_since_unix) == 0)
         atomic_store(&g_operator_needed_since_unix, (int64_t)GetTime());
     snprintf(g_operator_needed_detail, sizeof(g_operator_needed_detail),
-             "%s", detail && *detail ? detail : "(unspecified)");
+             "%s", *detail ? detail : "(unspecified)");
     atomic_store(&g_operator_needed, true);
     pthread_mutex_unlock(&g_lock);
     /* Make it impossible to miss: a STATUS= line systemd/operators see. */
     if (sd_notify_is_active()) {
         char status[256];
         snprintf(status, sizeof(status), "DEGRADED operator_needed: %s",
-                 detail && *detail ? detail : "(unspecified)");
+                 *detail ? detail : "(unspecified)");
+        if (!zutf8_validate(status))
+            snprintf(status, sizeof(status),
+                     "DEGRADED operator_needed: (operator detail refused: invalid UTF-8)");
         sd_notify_status(status);
     }
 }
@@ -174,6 +199,7 @@ static void operator_needed_set(const char *detail)
 static bool operator_needed_nonterminal(const char *payload, size_t len)
 {
     const char marker[] = "terminal=0";
+    if (!payload) return false;
     for (size_t i = 0; len - i >= sizeof(marker) - 1; i++) {
         if (memcmp(payload + i, marker, sizeof(marker) - 1) == 0)
             return true;
@@ -197,15 +223,8 @@ static void alert_observer(enum event_type type, uint32_t peer_id,
          * makes a self-recovering wedge read as operator_needed forever — even
          * after the tip climbs back to the network. Only latch genuine
          * remedy-exhaustion pages, which omit the terminal=0 marker. */
-        const char *p = payload ? (const char *)payload : "";
-        size_t len = payload ? strnlen(p, payload_len) : 0;
-        if (!operator_needed_nonterminal(p, len)) {
-            char detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN];
-            size_t copied = len < sizeof(detail) - 1 ? len : sizeof(detail) - 1;
-            memcpy(detail, p, copied);
-            detail[copied] = '\0';
-            operator_needed_set(detail);
-        }
+        if (!operator_needed_nonterminal(payload, payload_len))
+            operator_needed_set(payload, payload_len);
     }
     /* The symptom resolved (remedy witnessed) → drop the DEGRADED latch so
      * the node returns to healthy without operator intervention. */
@@ -441,6 +460,19 @@ void alerts_reset(void)
     pthread_mutex_unlock(&g_lock);
 }
 
+/* Never expose a split UTF-8 sequence through a smaller output buffer. */
+static void operator_needed_copy(char *out, size_t cap, const char *detail)
+{
+    if (!out || cap == 0) return;
+    int n = snprintf(out, cap, "%s", detail);
+    if (n < 0) {
+        out[0] = '\0';
+        return;
+    }
+    if ((size_t)n >= cap && !zutf8_validate(out))
+        snprintf(out, cap, "(operator detail refused: invalid UTF-8)");
+}
+
 bool alerts_operator_needed(char *detail_out, size_t detail_cap,
                             int64_t *since_unix_out)
 {
@@ -448,8 +480,7 @@ bool alerts_operator_needed(char *detail_out, size_t detail_cap,
     bool active = atomic_load(&g_operator_needed);
     if (since_unix_out)
         *since_unix_out = atomic_load(&g_operator_needed_since_unix);
-    if (detail_out && detail_cap > 0)
-        snprintf(detail_out, detail_cap, "%s", g_operator_needed_detail);
+    operator_needed_copy(detail_out, detail_cap, g_operator_needed_detail);
     pthread_mutex_unlock(&g_lock);
     return active;
 }
@@ -474,8 +505,7 @@ bool alerts_operator_needed_clear_if_chain_advance_recovered(
 
     if (!alerts_operator_needed(detail, sizeof(detail), &since))
         return false;
-    if (detail_out && detail_cap > 0)
-        snprintf(detail_out, detail_cap, "%s", detail);
+    operator_needed_copy(detail_out, detail_cap, detail);
     if (since_unix_out)
         *since_unix_out = since;
 

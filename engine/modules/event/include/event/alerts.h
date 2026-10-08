@@ -67,8 +67,13 @@ void alerts_reset(void);
 /* True iff EV_OPERATOR_NEEDED has fired and not yet been cleared (by an
  * EV_CONDITION_CLEARED for the underlying condition, or an explicit clear).
  * This is the "a halt can never be silent" signal — the health surface reads
- * it to report DEGRADED / operator_needed. `detail_out` (optional) receives
- * the latched event payload; `since_unix_out` (optional) the first-fire time. */
+ * it to report DEGRADED / operator_needed. A counted terminal=0 marker suppresses
+ * latching. `detail_out` (optional) receives bounded, terminated UTF-8 detail
+ * with embedded NULs displayed as \\0. Malformed counted input or an incomplete
+ * retained/output sequence becomes bounded ASCII refusal text; the latch stays
+ * active. Complete UTF-8 prefixes may be truncated to fit. No bytes are written
+ * when detail_out is NULL or detail_cap is zero. `since_unix_out` (optional)
+ * receives the first-fire time. */
 bool alerts_operator_needed(char *detail_out, size_t detail_cap,
                             int64_t *since_unix_out);
 
