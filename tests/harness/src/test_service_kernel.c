@@ -118,6 +118,45 @@ static int test_service_kernel_lifecycle(void)
     return failures;
 }
 
+static int test_service_kernel_registration_frozen(void)
+{
+    int failures = 0;
+    TEST("service kernel: initialization freezes registration") {
+        for (size_t count = 0; count <= 1; ++count) {
+            struct zcl_service_kernel kernel;
+            struct zcl_service_entry saved[ZCL_SERVICE_KERNEL_MAX_SERVICES];
+            int events[8] = {0}, event_count = 0;
+            struct service_kernel_test_ctx a = {
+                .id = 1, .events = events, .event_count = &event_count
+            };
+            struct service_kernel_test_ctx b = {
+                .id = 2, .events = events, .event_count = &event_count
+            };
+            struct zcl_service_spec spec_a = test_spec("existing", &a);
+            struct zcl_service_spec spec_b = test_spec("late", &b);
+            zcl_service_kernel_init(&kernel);
+            if (count)
+                ASSERT(zcl_service_kernel_register(&kernel, &spec_a));
+            ASSERT(zcl_service_kernel_init_all(&kernel));
+            ASSERT(kernel.initialized && !kernel.started);
+            memcpy(saved, kernel.services, sizeof saved);
+            ASSERT(!zcl_service_kernel_register(&kernel, &spec_b));
+            ASSERT_EQ(zcl_service_kernel_count(&kernel), count);
+            ASSERT(memcmp(saved, kernel.services, sizeof saved) == 0);
+            ASSERT(kernel.initialized && !kernel.started);
+            ASSERT(zcl_service_kernel_find(&kernel, "late") == NULL);
+            ASSERT(zcl_service_kernel_start_all(&kernel));
+            ASSERT_EQ(a.init_count, (int)count);
+            ASSERT_EQ(a.start_count, (int)count);
+            ASSERT_EQ(b.init_count, 0);
+            ASSERT_EQ(b.start_count, 0);
+            zcl_service_kernel_stop_all(&kernel);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_service_kernel_failure_unwinds(void)
 {
     int failures = 0;
@@ -504,6 +543,7 @@ int test_service_kernel(void)
 {
     int failures = 0;
     failures += test_service_kernel_lifecycle();
+    failures += test_service_kernel_registration_frozen();
     failures += test_service_kernel_failure_unwinds();
     failures += test_service_kernel_independent_failure_spares_siblings();
     failures += test_service_kernel_start_timing();

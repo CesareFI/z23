@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "kernel/service_kernel.h"
+#include "base/log_macros.h"
 #include "platform/time_compat.h"
 #include <stdio.h>
 #include <string.h>
@@ -90,8 +91,8 @@ bool zcl_service_kernel_register(struct zcl_service_kernel *kernel,
 {
     if (!kernel || !service_spec_valid(spec))
         return false;
-    if (kernel->started)
-        return false;
+    if (kernel->initialized || kernel->started)
+        LOG_RETURN(false, "service-kernel", "registration refused after initialization: service=%s", spec->name);
     if (kernel->count >= ZCL_SERVICE_KERNEL_MAX_SERVICES)
         return false;
     if (zcl_service_kernel_find(kernel, spec->name))
