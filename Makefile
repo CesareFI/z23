@@ -8604,17 +8604,24 @@ $(RETRIEVAL_EVAL_BIN): tools/retrieval_eval.c \
     cognition/modules/retrieval/src/retrieval_profile.c \
     cognition/modules/retrieval/include/retrieval/retrieval_experiment.h \
     platform/modules/base/src/safe_alloc.c platform/modules/base/include/base/safe_alloc.h \
+    platform/modules/base/src/log_level.c \
+    platform/modules/base/include/base/log_macros.h \
+    platform/modules/base/include/base/log_level.h \
+    platform/modules/base/include/base/format_attribute.h \
+    platform/modules/base/include/base/utc_tm.h \
+    platform/modules/base/include/base/stdio_lock.h \
     cognition/modules/retrieval/include/retrieval/retrieval.h \
     platform/modules/sha3/src/sha3.c platform/modules/sha3/include/sha3/sha3.h \
     platform/modules/base/include/base/hex.h platform/modules/base/include/base/serialize_le.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	$(CC) -std=c23 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror -pedantic \
 	    -Icognition/modules/retrieval/include -Iplatform/modules/base/include -Iplatform/modules/sha3/include -o $@ \
 	    tools/retrieval_eval.c cognition/modules/retrieval/src/retrieval_eval.c \
 	    cognition/modules/retrieval/src/retrieval_eval_result.c \
 	    cognition/modules/retrieval/src/retrieval_experiment.c \
 	    cognition/modules/retrieval/src/retrieval_profile.c \
-	    platform/modules/base/src/safe_alloc.c platform/modules/sha3/src/sha3.c
+	    platform/modules/base/src/safe_alloc.c platform/modules/base/src/log_level.c \
+	    platform/modules/sha3/src/sha3.c
 
 .PHONY: retrieval-eval-selftest retrieval-gold-corpus-check \
     retrieval-gold-benchmark-scope-selftest \

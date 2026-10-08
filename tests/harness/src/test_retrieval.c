@@ -21,6 +21,7 @@
 #include "test/test_core.h"
 
 #include <base/safe_alloc.h>
+#include <base/log_level.h>
 #include <retrieval/retrieval.h>
 
 #include <stdio.h>
@@ -562,6 +563,117 @@ static int case_gold_metrics(void)
     return failures;
 }
 
+static bool gold_capture_restore(int saved)
+{
+    bool ok = fflush(stderr) == 0;
+    if (dup2(saved, STDERR_FILENO) < 0) ok = false;
+    if (close(saved) != 0) ok = false;
+    return ok;
+}
+
+static bool gold_capture_read(FILE *capture, const char *expected, bool ok)
+{
+    char text[4096] = {0};
+    if (fseek(capture, 0, SEEK_SET) != 0) ok = false;
+    size_t n = fread(text, 1, sizeof(text) - 1, capture);
+    if (ferror(capture) || n == sizeof(text) - 1) ok = false;
+    if (fclose(capture) != 0) ok = false;
+    return ok && strstr(text, expected) != NULL && strstr(text, "private-") == NULL;
+}
+
+static FILE *gold_capture_open(void)
+{
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof(path), "retrieval_log");
+    if (fd < 0) return NULL;
+    bool removed = unlink(path) == 0;
+    FILE *capture = fdopen(fd, "w+");
+    if (!capture) {
+        (void)close(fd);
+        return NULL;
+    }
+    if (!removed) {
+        (void)fclose(capture);
+        return NULL;
+    }
+    return capture;
+}
+
+static bool gold_diagnostic(const struct zcl_retrieval_gold_task *invalid,
+                            const char *expected)
+{
+    const char *paths[] = {"a.c"};
+    const struct zcl_retrieval_ranked_file ranked[] = {{"a.c", 4, true, true}};
+    struct zcl_retrieval_gold_task tasks[] = {
+        {"first", "find a", paths, 1, ranked, 1, true}, *invalid,
+    };
+    FILE *capture = gold_capture_open();
+    if (!capture) return false;
+    int saved = dup(STDERR_FILENO);
+    bool ok = saved >= 0;
+    enum zcl_log_level level = zcl_log_level_get();
+    zcl_log_level_set(ZCL_LOG_ERROR);
+    if (fflush(stderr) != 0) ok = false;
+    if (ok && dup2(fileno(capture), STDERR_FILENO) < 0) ok = false;
+    if (ok) {
+        struct zcl_retrieval_eval_metrics metrics;
+        ok = !zcl_retrieval_evaluate(tasks, 2, &metrics);
+        ok = ok && metrics.tasks == 0 && metrics.unique_files_at_5 == 1 &&
+            metrics.context_bytes_at_5 == 4;
+    }
+    if (saved >= 0 && !gold_capture_restore(saved)) ok = false;
+    zcl_log_level_set(level);
+    return gold_capture_read(capture, expected, ok);
+}
+
+static int case_gold_diagnostics(void)
+{
+    int failures = 0;
+    const char *paths[] = {"a.c"};
+    const char *empty[] = {""};
+    const char *null_path[] = {NULL};
+    const char *duplicate[] = {"private-path", "private-path"};
+    const struct zcl_retrieval_ranked_file empty_rank[] = {{"", 0, true, true}};
+    const struct zcl_retrieval_ranked_file null_rank[] = {{NULL, 0, true, true}};
+    const struct {
+        struct zcl_retrieval_gold_task task;
+        const char *expected;
+    } cases[] = {
+        {{"private-id", "", paths, 1, NULL, 0, true},
+         "task=1 field=query reason=invalid-field"},
+        {{"first", "private-query", paths, 1, NULL, 0, true},
+         "task=1 field=task_id reason=duplicate-id"},
+        {{"private-id", NULL, paths, 1, NULL, 0, true},
+         "task=1 field=query reason=invalid-field"},
+        {{NULL, "private-query", paths, 1, NULL, 0, true},
+         "task=1 field=task_id reason=invalid-field"},
+        {{"", "private-query", paths, 1, NULL, 0, true},
+         "task=1 field=task_id reason=invalid-field"},
+        {{"private-id", "private-query", NULL, 1, NULL, 0, true},
+         "task=1 field=relevant_paths reason=invalid-field"},
+        {{"private-id", "private-query", paths, 0, NULL, 0, true},
+         "task=1 field=relevant_paths reason=invalid-field"},
+        {{"private-id", "private-query", empty, 1, NULL, 0, true},
+         "task=1 field=relevant_path reason=invalid-field"},
+        {{"private-id", "private-query", null_path, 1, NULL, 0, true},
+         "task=1 field=relevant_path reason=invalid-field"},
+        {{"private-id", "private-query", duplicate, 2, NULL, 0, true},
+         "task=1 field=relevant_path reason=invalid-field"},
+        {{"private-id", "private-query", paths, 1, NULL, 1, true},
+         "task=1 field=ranked reason=invalid-field"},
+        {{"private-id", "private-query", paths, 1, empty_rank,
+          ZCL_RETRIEVAL_EVAL_RANK_MAX + 1u, true},
+         "task=1 field=ranked reason=invalid-field"},
+        {{"private-id", "private-query", paths, 1, empty_rank, 1, true},
+         "task=1 field=ranked_path reason=invalid-field"},
+        {{"private-id", "private-query", paths, 1, null_rank, 1, true},
+         "task=1 field=ranked_path reason=invalid-field"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+        RT_CHECK(cases[i].expected, gold_diagnostic(&cases[i].task, cases[i].expected));
+    return failures;
+}
+
 int test_retrieval(void);
 int test_retrieval(void)
 {
@@ -573,6 +685,7 @@ int test_retrieval(void)
     failures += case_poisoned();
     failures += case_surface();
     failures += case_gold_metrics();
+    failures += case_gold_diagnostics();
     printf("retrieval: %d failure(s)\n", failures);
     return failures;
 }

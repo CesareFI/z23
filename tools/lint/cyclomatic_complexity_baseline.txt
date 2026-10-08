@@ -169,8 +169,6 @@ cognition/modules/ontology/src/ontology_vocabulary.c:vocabulary_equal:26
 cognition/modules/ontology/src/story_graph.c:zcl_story_why_v1_build:21
 cognition/modules/retrieval/src/retrieval_comparison.c:zcl_retrieval_comparison_observe:21
 cognition/modules/retrieval/src/retrieval_comparison.c:zcl_retrieval_comparison_observe_v2:30
-cognition/modules/retrieval/src/retrieval_eval.c:task_valid:19
-cognition/modules/retrieval/src/retrieval_eval.c:zcl_retrieval_evaluate:41
 cognition/modules/retrieval/src/retrieval_eval_result.c:zcl_retrieval_experiment_eval_result_init:26
 cognition/modules/retrieval/src/retrieval_eval_result.c:zcl_retrieval_experiment_eval_result_validate:22
 cognition/modules/retrieval/src/retrieval_eval_result.c:zcl_retrieval_experiment_eval_result_verify_binding:18

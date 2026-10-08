@@ -2,6 +2,7 @@
  * purpose: Truthful file-level metrics for reviewed retrieval task corpora. */
 
 #include <retrieval/retrieval.h>
+#include <base/log_macros.h>
 
 #include <limits.h>
 #include <string.h>
@@ -13,25 +14,52 @@ static bool add_u64(uint64_t *sum, uint64_t value)
     return true;
 }
 
-static bool task_valid(const struct zcl_retrieval_gold_task *task)
+static const char *task_invalid_paths(const struct zcl_retrieval_gold_task *task)
 {
-    if (!task || !task->task_id || !task->task_id[0] || !task->query ||
-        !task->query[0] || !task->relevant_paths || task->relevant_count == 0 ||
-        (!task->ranked && task->ranked_count != 0) ||
-        task->ranked_count > ZCL_RETRIEVAL_EVAL_RANK_MAX)
-        return false;
     for (size_t i = 0; i < task->relevant_count; i++) {
         if (!task->relevant_paths[i] || !task->relevant_paths[i][0])
-            return false;
+            return "relevant_path";
         for (size_t prior = 0; prior < i; prior++)
-            if (strcmp(task->relevant_paths[i],
-                       task->relevant_paths[prior]) == 0)
-                return false;
+            if (strcmp(task->relevant_paths[i], task->relevant_paths[prior]) == 0)
+                return "relevant_path";
     }
     for (size_t i = 0; i < task->ranked_count; i++)
         if (!task->ranked[i].path || !task->ranked[i].path[0])
-            return false;
-    return true;
+            return "ranked_path";
+    return NULL;
+}
+
+/* Fixed tokens only: rejected input text never enters the diagnostic. */
+static const char *task_invalid_field(const struct zcl_retrieval_gold_task *task)
+{
+    if (!task->task_id || !task->task_id[0]) return "task_id";
+    if (!task->query || !task->query[0]) return "query";
+    if (!task->relevant_paths || !task->relevant_count) return "relevant_paths";
+    if ((!task->ranked && task->ranked_count) ||
+        task->ranked_count > ZCL_RETRIEVAL_EVAL_RANK_MAX) return "ranked";
+    return task_invalid_paths(task);
+}
+
+static bool task_reject(size_t t, const char *field, const char *reason)
+{
+    LOG_FAIL("retrieval", "task=%zu field=%s reason=%s", t, field, reason);
+}
+
+static bool task_validate(const struct zcl_retrieval_gold_task *tasks, size_t t)
+{
+    const char *field = task_invalid_field(&tasks[t]);
+    const char *reason = "invalid-field";
+    if (!field) {
+        for (size_t prior = 0; prior < t; prior++) {
+            if (strcmp(tasks[t].task_id, tasks[prior].task_id) == 0) {
+                field = "task_id";
+                reason = "duplicate-id";
+                break;
+            }
+        }
+    }
+    if (!field) return true;
+    return task_reject(t, field, reason);
 }
 
 static bool path_relevant(const struct zcl_retrieval_gold_task *task,
@@ -52,71 +80,84 @@ static bool ranked_duplicate(const struct zcl_retrieval_gold_task *task,
     return false;
 }
 
-bool zcl_retrieval_evaluate(
-    const struct zcl_retrieval_gold_task *tasks, size_t task_count,
-    struct zcl_retrieval_eval_metrics *out)
+struct eval_totals {
+    uint64_t recall5, recall20, rr;
+    bool r5_available, r20_available, mrr_available, wrong_scope_available;
+};
+
+struct task_ranks {
+    size_t unique, relevant5, relevant20, first_relevant;
+};
+
+static bool selection_add(const struct zcl_retrieval_ranked_file *row,
+                          struct zcl_retrieval_eval_metrics *out,
+                          struct eval_totals *totals)
 {
-    if (!out) return false;
-    memset(out, 0, sizeof(*out));
-    if (!tasks || task_count == 0 || task_count > UINT32_MAX) return false;
-    uint64_t recall5_sum = 0, recall20_sum = 0, rr_sum = 0;
-    bool r5_available = true, r20_available = true, mrr_available = true;
-    bool wrong_scope_available = true;
-    for (size_t t = 0; t < task_count; t++) {
-        const struct zcl_retrieval_gold_task *task = &tasks[t];
-        if (!task_valid(task)) return false;
-        for (size_t prior = 0; prior < t; prior++)
-            if (strcmp(task->task_id, tasks[prior].task_id) == 0)
-                return false;
-        size_t unique_rank = 0, relevant5 = 0, relevant20 = 0;
-        size_t first_relevant = 0;
-        for (size_t i = 0; i < task->ranked_count; i++) {
-            if (ranked_duplicate(task, i)) continue;
-            unique_rank++;
-            bool relevant = path_relevant(task, task->ranked[i].path);
-            if (relevant && first_relevant == 0) first_relevant = unique_rank;
-            if (relevant && unique_rank <= 5) relevant5++;
-            if (relevant && unique_rank <= 20) relevant20++;
-            if (unique_rank <= 5) {
-                if (!add_u64(&out->unique_files_at_5, 1) ||
-                    !add_u64(&out->context_bytes_at_5,
-                             task->ranked[i].context_bytes))
-                    return false;
-                if (!task->ranked[i].in_scope_available)
-                    wrong_scope_available = false;
-                else if (!task->ranked[i].in_scope &&
-                    !add_u64(&out->wrong_scope_files_at_5, 1))
-                    return false;
-            }
-        }
-        bool task_r5 = task->ranking_complete || unique_rank >= 5 ||
-            relevant5 == task->relevant_count;
-        bool task_r20 = task->ranking_complete || unique_rank >= 20 ||
-            relevant20 == task->relevant_count;
-        bool task_mrr = first_relevant != 0 || task->ranking_complete;
-        r5_available = r5_available && task_r5;
-        r20_available = r20_available && task_r20;
-        mrr_available = mrr_available && task_mrr;
-        if (task_r5)
-            recall5_sum += (uint64_t)relevant5 *
-                ZCL_RETRIEVAL_EVAL_BASIS_POINTS / task->relevant_count;
-        if (task_r20)
-            recall20_sum += (uint64_t)relevant20 *
-                ZCL_RETRIEVAL_EVAL_BASIS_POINTS / task->relevant_count;
-        if (task_mrr && first_relevant != 0)
-            rr_sum += ZCL_RETRIEVAL_EVAL_BASIS_POINTS / first_relevant;
+    if (!add_u64(&out->unique_files_at_5, 1) ||
+        !add_u64(&out->context_bytes_at_5, row->context_bytes))
+        return false;
+    if (!row->in_scope_available)
+        totals->wrong_scope_available = false;
+    else if (!row->in_scope && !add_u64(&out->wrong_scope_files_at_5, 1))
+        return false;
+    return true;
+}
+
+static bool task_scan(const struct zcl_retrieval_gold_task *task,
+                      struct zcl_retrieval_eval_metrics *out,
+                      struct eval_totals *totals, struct task_ranks *ranks)
+{
+    for (size_t i = 0; i < task->ranked_count; i++) {
+        if (ranked_duplicate(task, i)) continue;
+        ranks->unique++;
+        bool relevant = path_relevant(task, task->ranked[i].path);
+        if (relevant && ranks->first_relevant == 0)
+            ranks->first_relevant = ranks->unique;
+        if (relevant && ranks->unique <= 5) ranks->relevant5++;
+        if (relevant && ranks->unique <= 20) ranks->relevant20++;
+        if (ranks->unique <= 5 && !selection_add(&task->ranked[i], out, totals))
+            return false;
     }
+    return true;
+}
+
+static void task_score(const struct zcl_retrieval_gold_task *task,
+                       const struct task_ranks *ranks, struct eval_totals *totals)
+{
+    bool r5 = task->ranking_complete || ranks->unique >= 5 ||
+        ranks->relevant5 == task->relevant_count;
+    bool r20 = task->ranking_complete || ranks->unique >= 20 ||
+        ranks->relevant20 == task->relevant_count;
+    bool mrr = ranks->first_relevant != 0 || task->ranking_complete;
+    totals->r5_available = totals->r5_available && r5;
+    totals->r20_available = totals->r20_available && r20;
+    totals->mrr_available = totals->mrr_available && mrr;
+    if (r5)
+        totals->recall5 += (uint64_t)ranks->relevant5 *
+            ZCL_RETRIEVAL_EVAL_BASIS_POINTS / task->relevant_count;
+    if (r20)
+        totals->recall20 += (uint64_t)ranks->relevant20 *
+            ZCL_RETRIEVAL_EVAL_BASIS_POINTS / task->relevant_count;
+    if (mrr && ranks->first_relevant != 0)
+        totals->rr += ZCL_RETRIEVAL_EVAL_BASIS_POINTS / ranks->first_relevant;
+}
+
+static bool eval_finish(size_t task_count, const struct eval_totals *totals,
+                        struct zcl_retrieval_eval_metrics *out)
+{
     out->tasks = (uint32_t)task_count;
-    out->recall_at_5_available = r5_available;
-    out->recall_at_20_available = r20_available;
-    out->mrr_available = mrr_available;
-    if (r5_available) out->recall_at_5_bp = (uint32_t)(recall5_sum / task_count);
-    if (r20_available)
-        out->recall_at_20_bp = (uint32_t)(recall20_sum / task_count);
-    if (mrr_available) out->mrr_bp = (uint32_t)(rr_sum / task_count);
+    out->recall_at_5_available = totals->r5_available;
+    out->recall_at_20_available = totals->r20_available;
+    out->mrr_available = totals->mrr_available;
+    if (totals->r5_available)
+        out->recall_at_5_bp = (uint32_t)(totals->recall5 / task_count);
+    if (totals->r20_available)
+        out->recall_at_20_bp = (uint32_t)(totals->recall20 / task_count);
+    if (totals->mrr_available)
+        out->mrr_bp = (uint32_t)(totals->rr / task_count);
     if (out->context_bytes_at_5 > UINT64_MAX - 3u) return false;
     out->approximate_tokens_at_5 = (out->context_bytes_at_5 + 3u) / 4u;
-    out->wrong_scope_at_5_available = wrong_scope_available &&
+    out->wrong_scope_at_5_available = totals->wrong_scope_available &&
         out->unique_files_at_5 != 0;
     if (out->wrong_scope_at_5_available)
         out->wrong_scope_at_5_bp = (uint32_t)(
@@ -125,4 +166,24 @@ bool zcl_retrieval_evaluate(
     else
         out->wrong_scope_files_at_5 = 0;
     return true;
+}
+
+bool zcl_retrieval_evaluate(
+    const struct zcl_retrieval_gold_task *tasks, size_t task_count,
+    struct zcl_retrieval_eval_metrics *out)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!tasks || task_count == 0 || task_count > UINT32_MAX) return false;
+    struct eval_totals totals = {
+        .r5_available = true, .r20_available = true,
+        .mrr_available = true, .wrong_scope_available = true,
+    };
+    for (size_t t = 0; t < task_count; t++) {
+        if (!task_validate(tasks, t)) return false;
+        struct task_ranks ranks = {0};
+        if (!task_scan(&tasks[t], out, &totals, &ranks)) return false;
+        task_score(&tasks[t], &ranks, &totals);
+    }
+    return eval_finish(task_count, &totals, out);
 }
