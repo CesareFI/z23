@@ -38,6 +38,8 @@
 #include "event/event.h"
 
 #include <pthread.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -204,10 +206,14 @@ int lms_env_int(const char *name, int fallback, int min, int max)
 {
     const char *s = getenv(name);
     if (!s || !s[0]) return fallback;
-    int n = atoi(s);
+    char *end = NULL;
+    errno = 0;
+    long n = strtol(s, &end, 10);
+    if (end == s || *end != '\0' || errno == ERANGE ||
+        n < INT_MIN || n > INT_MAX) return fallback;
     if (n < min) return fallback;
     if (n > max) return max;
-    return n;
+    return (int)n;
 }
 
 bool lms_env_disabled(void)

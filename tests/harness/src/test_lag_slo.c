@@ -14,6 +14,7 @@
 #include "test/test_core.h"
 
 #include "services/legacy_mirror_sync_service.h"
+#include "../../../engine/services/src/legacy_mirror_sync_internal.h"
 #include "event/event.h"
 #include "json/json.h"
 #include "util/supervisor.h"
@@ -53,6 +54,43 @@ static void concurrent_observer(enum event_type type, uint32_t peer_id,
     (void)ctx;
     if (type == EV_MIRROR_CONCURRENT_CATCHUP)
         atomic_fetch_add(&g_concurrent_events, 1);
+}
+
+static int test_mirror_env_integer_tokens(void)
+{
+    int failures = 0;
+    const char *name = "ZCL_TEST_LMS_ENV_INT";
+    const char *prior = getenv(name);
+    bool had_prior = prior != NULL;
+    char saved[256];
+    if (prior && strlen(prior) >= sizeof(saved)) {
+        fprintf(stderr, "lag_slo: saved test environment value too long\n");
+        return 1;
+    }
+    if (prior) snprintf(saved, sizeof(saved), "%s", prior);
+    TEST_CASE("lag_slo: mirror integer settings refuse suffixes and overflow")
+    {
+        const struct { const char *text; int expected; } rows[] = {
+            {"1junk", 20}, {"999999999999999999999999999999", 20},
+            {"2147483648", 20}, {"-2147483649", 20},
+            {"9223372036854775808", 20}, {"-9223372036854775809", 20},
+            {"", 20}, {"junk", 20}, {"0", 20}, {"-1", 20},
+            {"1", 1}, {"100", 100}, {"101", 100},
+            {"2147483647", 100}, {"  +7", 7}, {"1 ", 20},
+        };
+        ASSERT(unsetenv(name) == 0);
+        ASSERT(lms_env_int(name, 20, 1, 100) == 20);
+        for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+            ASSERT(setenv(name, rows[i].text, 1) == 0);
+            ASSERT(lms_env_int(name, 20, 1, 100) == rows[i].expected);
+        }
+    } TEST_END
+    if (had_prior) {
+        if (setenv(name, saved, 1) != 0) failures++;
+    } else if (unsetenv(name) != 0) {
+        failures++;
+    }
+    return failures;
 }
 
 static int test_event_names_are_stable(void)
@@ -336,6 +374,7 @@ int test_lag_slo(void)
     int failures = 0;
     event_log_init();
     printf("\n=== Lag SLO breach observability ===\n");
+    failures += test_mirror_env_integer_tokens();
     failures += test_event_names_are_stable();
     failures += test_severity_none_when_under_threshold();
     failures += test_snapshot_surfaces_thresholds();
