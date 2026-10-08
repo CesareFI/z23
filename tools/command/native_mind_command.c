@@ -24,6 +24,7 @@
 #include "kernel/command_registry.h"
 #include "mind.h"
 #include "platform/time_compat.h"
+#include "zutf8/zutf8.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -241,7 +242,7 @@ static void mind_answer_not_yet(const char *kind, struct json_value *data,
  * leaf does not parse fleet_facts.def; the fleetfacts module is the only
  * reader. An unanswered subject is one UNKNOWN row, never silence and never
  * a near-miss guess. */
-static void mind_answer_fleet(const char *kind, const char *subject,
+static bool mind_answer_fleet(const char *kind, const char *subject,
                               struct json_value *rows, char *summary,
                               size_t cap)
 {
@@ -253,9 +254,7 @@ static void mind_answer_fleet(const char *kind, const char *subject,
     memset(&answer, 0, sizeof(answer));
     if (!zcl_fleet_facts_query(subject, relation, NULL,
                                ZCL_FLEET_FACTS_MAX_ROWS, &answer)) {
-        (void)snprintf(summary, cap,
-                       "the fleet fact table refused this ask as malformed");
-        return;
+        return false;
     }
     for (size_t i = 0; i < answer.row_count; i++) {
         const struct zcl_fleet_fact_v1 *row = &answer.rows[i];
@@ -270,23 +269,56 @@ static void mind_answer_fleet(const char *kind, const char *subject,
                        row->why);
         mind_push_row(rows, what, where, 0, detail);
     }
+    int written;
     if (answer.unknown)
-        (void)snprintf(summary, cap,
+        written = snprintf(summary, cap,
                        "the fleet has written nothing about '%s'%s. That is "
                        "an UNKNOWN row from the same table `z23 dev know` "
                        "reads, not a denial and not a guess",
                        subject,
                        relation ? " as trap_signature" : "");
     else if (answer.truncated)
-        (void)snprintf(summary, cap,
+        written = snprintf(summary, cap,
                        "%zu of %zu fleet fact row(s) about %s; truncated. "
                        "`z23 dev know --subject=%s` is the same table",
                        answer.row_count, answer.total, subject, subject);
     else
-        (void)snprintf(summary, cap,
+        written = snprintf(summary, cap,
                        "%zu fleet fact row(s) about %s; `z23 dev know "
                        "--subject=%s` is the same table",
                        answer.total, subject, subject);
+    return written >= 0 && (size_t)written < cap && zutf8_validate(summary);
+}
+
+static bool mind_ask_refused(bool known, const char *kind, const char *subject,
+                             struct zcl_command_reply *reply)
+{
+    if (!known) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "UNKNOWN_QUESTION", "normalize", false, false,
+            "kind must be one of where_is, owns, tests_for, executor_for, "
+            "next_passage, trap_of", kind ? kind : "");
+        return true;
+    }
+    if (!subject) return false;
+    if (strcmp(kind, "executor_for") != 0 && strcmp(kind, "trap_of") != 0)
+        return false;
+    if (zutf8_validate(subject)) return false;
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+        "INVALID_UTF8", "normalize", false, false,
+        "fleet question subject must be well-formed UTF-8", "subject");
+    return true;
+}
+
+static bool mind_ask_kind_known(const char *kind)
+{
+    bool known = false;
+    for (size_t i = 0; kind && i < sizeof(g_mind_kinds) / sizeof(*g_mind_kinds);
+         i++)
+        known = known || strcmp(kind, g_mind_kinds[i]) == 0;
+    return known;
 }
 
 void zcl_native_handle_dev_mind_ask(const struct zcl_command_request *request,
@@ -294,18 +326,8 @@ void zcl_native_handle_dev_mind_ask(const struct zcl_command_request *request,
 {
     const char *kind = mind_str(request, "kind");
     const char *subject = mind_str(request, "subject");
-    bool known = false;
-    for (size_t i = 0; kind && i < sizeof(g_mind_kinds) / sizeof(*g_mind_kinds);
-         i++)
-        known = known || strcmp(kind, g_mind_kinds[i]) == 0;
-    if (!known) {
-        zcl_command_reply_fail(
-            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-            "UNKNOWN_QUESTION", "normalize", false, false,
-            "kind must be one of where_is, owns, tests_for, executor_for, "
-            "next_passage, trap_of", kind ? kind : "");
-        return;
-    }
+    bool known = mind_ask_kind_known(kind);
+    if (mind_ask_refused(known, kind, subject, reply)) return;
     bool needs_index = strcmp(kind, "where_is") == 0 ||
                        strcmp(kind, "owns") == 0;
     if (!subject && strcmp(kind, "next_passage") != 0) {
@@ -360,7 +382,15 @@ void zcl_native_handle_dev_mind_ask(const struct zcl_command_request *request,
         mind_answer_tests_for(subject, &rows, summary, sizeof(summary));
     } else if (strcmp(kind, "executor_for") == 0 ||
                strcmp(kind, "trap_of") == 0) {
-        mind_answer_fleet(kind, subject, &rows, summary, sizeof(summary));
+        if (!mind_answer_fleet(kind, subject, &rows, summary, sizeof(summary))) {
+            json_free(&rows);
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "ANSWER_TOO_LONG", "render", false, false,
+                "fleet answer could not be rendered within its text bound",
+                "subject");
+            return;
+        }
     } else {
         mind_answer_not_yet(kind, &reply->data, summary, sizeof(summary));
     }

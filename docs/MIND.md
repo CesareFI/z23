@@ -85,7 +85,11 @@ z23 dev fleet mind status --fleet             # every paired node's index root a
 
 `executor_for` and `trap_of` answer from the same fleet fact table `z23 dev
 know` reads. An unanswered subject is one UNKNOWN row, never silence and
-never a guessed near miss. `next_passage` still answers `not_yet_available`:
+never a guessed near miss. Fleet subjects must be well-formed UTF-8; malformed
+text is refused as `INVALID_UTF8` before lookup or echo. If the complete
+fleet summary does not fit its 512-byte buffer, the answer is refused as
+`ANSWER_TOO_LONG` before subject, rows or summary are published.
+`next_passage` still answers `not_yet_available`:
 the forward story walker is not in this tree yet, and inventing a next beat
 would fabricate the evidence that walker exists to measure.
 

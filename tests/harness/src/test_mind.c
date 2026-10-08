@@ -31,6 +31,7 @@
 #define _DEFAULT_SOURCE
 #endif
 #include "test/test_core.h"
+#include "zutf8/zutf8.h"
 
 #include "codeindex/codeindex.h"
 #include "codeindex/codeindex_build.h"
@@ -627,6 +628,140 @@ static int test_mind_ask_fleet_facts(void)
     return failures;
 }
 
+static int test_mind_fleet_subject_utf8(void)
+{
+    int failures = 0;
+    struct mind_ask_call c;
+    bool active = false;
+    TEST("mind.ask: refuse malformed fleet subjects before echo or summary") {
+        static const char *const kinds[] = {"executor_for", "trap_of"};
+        static const char *const bad[] = {
+            "\xff", "\xc0\xaf", "\xed\xa0\x80", "\xf4\x90\x80\x80",
+            "\xc3", "\xe2\x82"
+        };
+        for (size_t k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++) {
+            for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+                mind_ask_begin(&c);
+                active = true;
+                ASSERT(c.request.spec != NULL);
+                ASSERT(json_push_kv_str(&c.input, "kind", kinds[k]));
+                ASSERT(json_push_kv_str(&c.input, "subject", bad[i]));
+                ASSERT(mind_ask_run(&c));
+                ASSERT_EQ(c.reply.status, ZCL_COMMAND_STATUS_FAILED);
+                ASSERT_EQ(c.reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+                ASSERT_STR_EQ(c.reply.error.code, "INVALID_UTF8");
+                ASSERT(strstr(c.reply.error.message, "UTF-8") != NULL);
+                ASSERT(mind_ask_get(&c, "subject") == NULL);
+                ASSERT(mind_ask_get(&c, "summary") == NULL);
+                ASSERT(mind_ask_get(&c, "rows") == NULL);
+                mind_ask_end(&c);
+                active = false;
+            }
+        }
+        PASS();
+    } _test_next:;
+    if (active) mind_ask_end(&c);
+    return failures;
+}
+
+static int test_mind_fleet_subject_unicode(void)
+{
+    int failures = 0;
+    struct mind_ask_call c;
+    mind_ask_begin(&c);
+    TEST("mind.ask: valid Unicode unknown subject retains answer and echo") {
+        static const char subject[] = "unknown-\xc3\xa9-\xe2\x82\xac";
+        ASSERT(c.request.spec != NULL);
+        ASSERT(json_push_kv_str(&c.input, "kind", "trap_of"));
+        ASSERT(json_push_kv_str(&c.input, "subject", subject));
+        ASSERT(mind_ask_run(&c));
+        ASSERT_EQ(c.reply.status, ZCL_COMMAND_STATUS_PASSED);
+        ASSERT_EQ(mind_ask_row_count(&c), 1);
+        ASSERT_STR_EQ(mind_ask_row_str(&c, 0, "what"), "unknown");
+        ASSERT_STR_EQ(mind_ask_str(&c, "subject"), subject);
+        ASSERT(strstr(mind_ask_str(&c, "summary"), subject) != NULL);
+        char serialized[4096];
+        size_t len = json_write(&c.reply.data, serialized, sizeof(serialized));
+        ASSERT(len > 0);
+        ASSERT(len < sizeof(serialized));
+        ASSERT(json_valid(serialized, len));
+        ASSERT(strstr(serialized, subject) != NULL);
+        PASS();
+    } _test_next:;
+    mind_ask_end(&c);
+    return failures;
+}
+
+static int mind_fleet_bound_case(const char *kind, size_t padding,
+                                 const char *scalar, bool fits)
+{
+    int failures = 0;
+    struct mind_ask_call c;
+    char subject[520];
+    mind_ask_begin(&c);
+    TEST("mind.ask: fleet summary bound refuses overflow before publication") {
+        ASSERT(padding < sizeof(subject));
+        ASSERT(strlen(scalar) < sizeof(subject) - padding);
+        memset(subject, 'a', padding);
+        memcpy(subject + padding, scalar, strlen(scalar) + 1);
+        ASSERT(c.request.spec != NULL);
+        ASSERT(json_push_kv_str(&c.input, "kind", kind));
+        ASSERT(json_push_kv_str(&c.input, "subject", subject));
+        ASSERT(mind_ask_run(&c));
+        if (fits) {
+            ASSERT_EQ(c.reply.status, ZCL_COMMAND_STATUS_PASSED);
+            ASSERT_EQ(strlen(mind_ask_str(&c, "summary")), 511);
+            ASSERT_STR_EQ(mind_ask_str(&c, "subject"), subject);
+            ASSERT_EQ(mind_ask_row_count(&c), 1);
+            ASSERT_STR_EQ(mind_ask_row_str(&c, 0, "what"), "unknown");
+        } else {
+            ASSERT_EQ(c.reply.status, ZCL_COMMAND_STATUS_FAILED);
+            ASSERT_EQ(c.reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+            ASSERT_STR_EQ(c.reply.error.code, "ANSWER_TOO_LONG");
+            ASSERT(strstr(c.reply.error.message, "text bound") != NULL);
+            ASSERT(mind_ask_get(&c, "subject") == NULL);
+            ASSERT(mind_ask_get(&c, "summary") == NULL);
+            ASSERT(mind_ask_get(&c, "rows") == NULL);
+            ASSERT(mind_ask_get(&c, "row_count") == NULL);
+        }
+        char serialized[4096];
+        size_t len = json_write(&c.reply.data, serialized, sizeof(serialized));
+        ASSERT(len > 0 && len < sizeof(serialized));
+        ASSERT(json_valid(serialized, len));
+        ASSERT(zutf8_validate_n(serialized, len));
+        PASS();
+    } _test_next:;
+    mind_ask_end(&c);
+    return failures;
+}
+
+static int test_mind_fleet_summary_bound(void)
+{
+    int failures = 0;
+    static const char *const kinds[] = {"executor_for", "trap_of"};
+    static const char *const scalars[] = {
+        "\xc3\xa9", "\xe2\x82\xac", "\xf0\x9f\x98\x80"
+    };
+    /* Unknown summary: 37-byte prefix, 96-byte suffix; trap adds 18.
+     * Put each possible incomplete scalar prefix at byte 511's NUL cut. */
+    for (size_t k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++) {
+        size_t subject_limit = k == 0 ? 378 : 360;
+        failures += mind_fleet_bound_case(kinds[k], subject_limit, "", true);
+        failures += mind_fleet_bound_case(kinds[k], subject_limit + 1, "", false);
+        for (size_t s = 0; s < sizeof(scalars) / sizeof(scalars[0]); s++) {
+            size_t width = strlen(scalars[s]);
+            failures += mind_fleet_bound_case(kinds[k], subject_limit - width,
+                                              scalars[s], true);
+            failures += mind_fleet_bound_case(kinds[k], subject_limit - width + 1,
+                                              scalars[s], false);
+            for (size_t copied = 1; copied < width; copied++)
+                failures += mind_fleet_bound_case(kinds[k], 474 - copied,
+                                                  scalars[s], false);
+        }
+    }
+    return failures;
+}
+
 int test_mind(void)
 {
     int failures = 0;
@@ -655,6 +790,9 @@ int test_mind(void)
     failures += test_mind_stale_query_is_refused();
     failures += test_mind_peer_capsule();
     failures += test_mind_ask_fleet_facts();
+    failures += test_mind_fleet_subject_utf8();
+    failures += test_mind_fleet_subject_unicode();
+    failures += test_mind_fleet_summary_bound();
 
     (void)unsetenv("ZCL_MIND_STATE_DIR");
     (void)test_rm_rf_recursive(MIND_FIX);
