@@ -66,7 +66,9 @@ struct hotswap_macho_facts {
 
 /* Probe the Mach-O image on descriptor `fd` without mapping or executing it.
  * Leaves the descriptor offset at 0 on success.  Returns true only when the
- * file is a well-formed Mach-O 64-bit image this host can load. */
+ * file is a well-formed Mach-O 64-bit image this host can load.
+ * Non-Apple, non-Windows test builds share descriptor/fat selection but
+ * refuse full probing; they never return successful native-image facts. */
 bool hotswap_macho_probe_fd(int fd, struct hotswap_macho_facts *out,
                             char *err, size_t err_cap);
 

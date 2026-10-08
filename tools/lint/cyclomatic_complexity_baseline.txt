@@ -1914,7 +1914,6 @@ engine/modules/hotswap/src/hotswap_elf_probe_tables.c:dynsym_count_from_gnu_hash
 engine/modules/hotswap/src/hotswap_loader.c:hotswap_path_is_acceptable:21
 engine/modules/hotswap/src/hotswap_loader.c:load_prepare_locked:23
 engine/modules/hotswap/src/hotswap_macho_probe.c:hotswap_macho_pre_map_admit:32
-engine/modules/hotswap/src/hotswap_macho_probe.c:hotswap_macho_probe_fd:82
 engine/modules/hotswap/src/hotswap_manifest_validate.c:hotswap_manifest_v2_validate:28
 engine/modules/hotswap/src/hotswap_sealed_image.c:si_copy_exact:18
 engine/modules/hotswap/src/hotswap_service.c:zcl_hotswap_service_activate_so_any:22

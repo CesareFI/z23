@@ -41,6 +41,125 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#if !defined(_WIN32)
+#include "hotswap/hotswap_macho_probe.h"
+#include "base/serialize_le.h"
+
+struct macho_magic_row {
+    uint32_t offset, size;
+    size_t length;
+    const char *reason;
+};
+
+/* Existing fat32 + arm64 MH_BUNDLE bytes. No Apple SDK or artifact execution
+ * is needed to drive the descriptor-reading and selection stage. */
+static void t_macho_magic_image(unsigned char image[88],
+                                 const struct macho_magic_row *row, bool swap)
+{
+    uint32_t fat[2] = {UINT32_C(0xcafebabe), 1};
+    uint32_t arch[5] = {UINT32_C(0x0100000c), 0, row->offset, row->size, 0};
+    uint32_t thin[8] = {UINT32_C(0xfeedfacf), UINT32_C(0x0100000c), 0, 8,
+                        1, 24, 0, 0};
+    uint32_t symbols[6] = {2, 24, 88, 0, 88, 0};
+    memset(image, 0, 88);
+    if (swap) {
+        fat[0] = zcl_bswap32(fat[0]);
+        fat[1] = zcl_bswap32(fat[1]);
+        for (size_t i = 0; i < sizeof(arch) / sizeof(arch[0]); i++)
+            arch[i] = zcl_bswap32(arch[i]);
+    }
+    memcpy(image, fat, sizeof(fat));
+    memcpy(image + sizeof(fat), arch, sizeof(arch));
+    memcpy(image + 32, thin, sizeof(thin));
+    memcpy(image + 64, symbols, sizeof(symbols));
+}
+
+static int t_macho_magic_result(int fd, const struct macho_magic_row *row)
+{
+    int failures = 0;
+    static struct hotswap_macho_facts facts;
+    static const struct hotswap_macho_facts zero;
+    char err[256] = {0};
+    memset(&facts, 0xa5, sizeof(facts));
+    bool ok = hotswap_macho_probe_fd(fd, &facts, err, sizeof(err));
+    if (row->reason) {
+        ASSERT(!ok);
+        ASSERT_STR_EQ(err, row->reason);
+        ASSERT(memcmp(&facts, &zero, sizeof(facts)) == 0);
+    } else {
+#if defined(__APPLE__)
+        ASSERT(ok);
+        ASSERT(facts.file_size == row->length);
+        ASSERT(err[0] == '\0');
+#else
+        ASSERT(!ok);
+        ASSERT_STR_EQ(err, "macho probe: full probe requires macOS");
+        ASSERT(memcmp(&facts, &zero, sizeof(facts)) == 0);
+#endif
+        ASSERT(lseek(fd, 0, SEEK_CUR) == 0);
+    }
+_test_next:;
+    return failures;
+}
+
+static int t_macho_magic_row(int fd, const struct macho_magic_row *row, bool swap)
+{
+    int failures = 0;
+    unsigned char image[88];
+    t_macho_magic_image(image, row, swap);
+    ASSERT(row->length <= sizeof(image));
+    ASSERT(ftruncate(fd, 0) == 0);
+    ASSERT(lseek(fd, 0, SEEK_SET) == 0);
+    ASSERT(write(fd, image, row->length) == (ssize_t)row->length);
+    failures += t_macho_magic_result(fd, row);
+_test_next:;
+    return failures;
+}
+
+static int t_macho_fat_magic_bounds(void)
+{
+    int failures = 0;
+    int fd = -1;
+    bool linked = false;
+    char path[PATH_MAX] = {0};
+    const struct macho_magic_row rows[] = {
+        {32, 0, 88, "macho probe: fat arch extends past file"},
+        {32, 1, 88, "macho probe: fat arch extends past file"},
+        {32, 2, 88, "macho probe: fat arch extends past file"},
+        {32, 3, 88, "macho probe: fat arch extends past file"},
+        {27, 1, 28, "macho probe: fat arch extends past file"},
+        {28, 0, 28, "macho probe: fat arch extends past file"},
+        {28, 1, 28, "macho probe: fat arch extends past file"},
+        {89, 4, 88, "macho probe: fat arch extends past file"},
+        {32, 57, 88, "macho probe: fat arch extends past file"},
+        {32, 56, 88, NULL}
+    };
+    TEST("Mach-O fat selection bounds magic before reading it") {
+        fd = test_mkstemp(path, sizeof(path), "hotswap_macho_magic");
+        ASSERT(fd >= 0);
+        linked = true;
+        ASSERT(unlink(path) == 0);
+        linked = false;
+        for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+            failures += t_macho_magic_row(fd, &rows[i], false);
+            failures += t_macho_magic_row(fd, &rows[i], true);
+        }
+        if (failures == 0)
+            PASS();
+    } _test_next:;
+    if (fd >= 0) {
+        int closed = close(fd);
+        fd = -1;
+        ASSERT(closed == 0);
+    }
+    if (linked) {
+        linked = false;
+        ASSERT(unlink(path) == 0);
+    }
+    return failures;
+}
+#endif
+
 /* The status controller row of engine/composition/hotswap_swappable.def; its declared probe
  * leaf in engine/composition/hotswap_eligible.def is core.status. */
 #define V2_TU_STATUS "engine/controllers/src/status_native_handlers.c"
@@ -1225,6 +1344,9 @@ int test_hotswap_module_v2(void)
 {
     int failures = 0;
     failures += t_allowlist_is_per_file();
+#if !defined(_WIN32)
+    failures += t_macho_fat_magic_bounds();
+#endif
     failures += t_parameterized_probe_catalog_is_host_owned();
     failures += t_partial_admit_publishes_nothing();
     failures += t_duplicate_leaf_refused();
