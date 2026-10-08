@@ -195,7 +195,8 @@ bool ci_enumerate_source_snapshots_windows(
         if (!collect_directory(root, roots[i], &paths, true))
             goto collect_failed;
 
-    qsort(paths.items, paths.count, sizeof(paths.items[0]), path_compare);
+    if (paths.count > 1)
+        qsort(paths.items, paths.count, sizeof(paths.items[0]), path_compare);
     bool ok = true;
     for (size_t i = 0; ok && i < paths.count; i++) {
         if (i > 0 && strcmp(paths.items[i].value,

@@ -25,11 +25,23 @@ static int inv_ev_symbol_cmp(const void *a, const void *b)
     return c ? c : (x->index > y->index) - (x->index < y->index);
 }
 
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_ev_symbols_sort(struct inv_ev_symbol_order *v, int n)
+{
+    if (n > 1) qsort(v, (size_t)n, sizeof(*v), inv_ev_symbol_cmp);
+}
+
 static int inv_ev_cap_cmp(const void *a, const void *b)
 {
     const struct inv_ev_cap_order *x = a, *y = b;
     int c = strcmp(x->token, y->token);
     return c ? c : (x->index > y->index) - (x->index < y->index);
+}
+
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_ev_caps_sort(struct inv_ev_cap_order *v, int n)
+{
+    if (n > 1) qsort(v, (size_t)n, sizeof(*v), inv_ev_cap_cmp);
 }
 
 static int inv_ev_ref_cmp(const void *a, const void *b)
@@ -45,6 +57,12 @@ static int inv_ev_ref_cmp(const void *a, const void *b)
     return strcmp(x->enclosing, y->enclosing);
 }
 
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_refs_sort(struct inv_ref *refs, int n)
+{
+    if (n > 1) qsort(refs, (size_t)n, sizeof(*refs), inv_ev_ref_cmp);
+}
+
 static int inv_ev_body_cmp(const void *a, const void *b)
 {
     const struct inv_ev_body_order *x = a, *y = b;
@@ -54,6 +72,12 @@ static int inv_ev_body_cmp(const void *a, const void *b)
     if (c) return c;
     return (x->body->line > y->body->line) -
            (x->body->line < y->body->line);
+}
+
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_ev_bodies_sort(struct inv_ev_body_order *v, int n)
+{
+    if (n > 1) qsort(v, (size_t)n, sizeof(*v), inv_ev_body_cmp);
 }
 
 static int inv_ev_name_lower(const struct inv_ev_symbol_order *order,
@@ -195,8 +219,8 @@ bool inv_count_uses(struct inv_scan *scan,
         caps[i].token = report->capabilities[i].include_token;
         caps[i].header = report->capabilities[i].header;
     }
-    qsort(symbols, (size_t)function_count, sizeof(*symbols), inv_ev_symbol_cmp);
-    qsort(caps, (size_t)nc, sizeof(*caps), inv_ev_cap_cmp);
+    inv_ev_symbols_sort(symbols, function_count);
+    inv_ev_caps_sort(caps, nc);
     for (int i = 0; i < scan->include_count; i++) {
         const struct inv_include *inc = &scan->includes[i];
         int cap = inv_ev_resolve_include(scan, caps, nc, inc->file_index,
@@ -205,8 +229,7 @@ bool inv_count_uses(struct inv_scan *scan,
         if (!scan->files[inc->file_index].is_example)
             inv_ev_bit_set(cap_files, stride, cap, inc->file_index);
     }
-    qsort(scan->refs, (size_t)scan->ref_count, sizeof(*scan->refs),
-          inv_ev_ref_cmp);
+    inv_refs_sort(scan->refs, scan->ref_count);
     for (int ri = 0; ri < scan->ref_count;) {
         int end = ri + 1;
         while (end < scan->ref_count &&
@@ -408,8 +431,8 @@ bool inv_registered_reachability(const struct inv_scan *scan,
         caps[i].index = i; caps[i].token = report->capabilities[i].include_token;
         caps[i].header = report->capabilities[i].header;
     }
-    qsort(order, (size_t)scan->body_count, sizeof(*order), inv_ev_body_cmp);
-    qsort(caps, (size_t)report->capability_count, sizeof(*caps), inv_ev_cap_cmp);
+    inv_ev_bodies_sort(order, scan->body_count);
+    inv_ev_caps_sort(caps, report->capability_count);
     for (int i = 0; i < scan->include_count; i++) {
         int cap = inv_ev_resolve_include(scan, caps, report->capability_count,
             scan->includes[i].file_index, scan->includes[i].token);

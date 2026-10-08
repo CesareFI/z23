@@ -90,6 +90,12 @@ static int idmap_cmp(const void *left, const void *right)
                   ((const struct idmap_ent *)right)->path);
 }
 
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void idmap_sort(struct build_ctx *b)
+{
+    if (b->nids > 1) qsort(b->ids, b->nids, sizeof(b->ids[0]), idmap_cmp);
+}
+
 static int64_t idmap_find(const struct build_ctx *b, const char *path)
 {
     size_t lo = 0, hi = b->nids;
@@ -246,7 +252,7 @@ bool ci_build_store_memory(const char *root, int64_t build_start_ms,
     bool tx_open = ci_store_begin(store);
     bool ok = tx_open && ci_store_clear(store) && ci_group_emit_all(store) &&
               build_files_with_shards(&build, root);
-    if (ok) qsort(build.ids, build.nids, sizeof(build.ids[0]), idmap_cmp);
+    if (ok) idmap_sort(&build);
 
     uint8_t built_source_root[32], built_dep_root[32];
     if (ok) {

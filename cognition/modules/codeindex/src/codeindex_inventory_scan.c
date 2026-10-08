@@ -299,7 +299,8 @@ bool inv_collect_paths(struct inv_scan *s)
         if (!inv_collect_dir(s, roots[i]))
             LOG_FAIL("codeindex.inventory", "scan root %s failed: %s",
                      roots[i], strerror(errno));
-    qsort(s->paths, (size_t)s->path_count, sizeof(*s->paths), inv_path_cmp);
+    if (s->path_count > 1)
+        qsort(s->paths, (size_t)s->path_count, sizeof(*s->paths), inv_path_cmp);
     int write = 0;
     for (int i = 0; i < s->path_count; i++) {
         if (write > 0 && strcmp(s->paths[write - 1].path,

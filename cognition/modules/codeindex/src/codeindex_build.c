@@ -168,7 +168,7 @@ bool ci_enumerate_sources(const char *root, ci_enum_cb cb, void *user)
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++)
         if (!collect_dir(root, roots[i], &vec)) goto collect_failed;
 
-    qsort(vec.v, vec.n, sizeof(vec.v[0]), sv_cmp);
+    if (vec.n > 1) qsort(vec.v, vec.n, sizeof(vec.v[0]), sv_cmp);
 
     bool ok = true;
     for (size_t i = 0; i < vec.n && ok; i++) {

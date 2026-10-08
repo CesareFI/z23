@@ -61,6 +61,12 @@ static int inv_body_exact_cmp(const void *a, const void *b)
     return (x->body->line > y->body->line) - (x->body->line < y->body->line);
 }
 
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_body_order_sort_exact(struct inv_body_order *v, int n)
+{
+    if (n > 1) qsort(v, (size_t)n, sizeof(*v), inv_body_exact_cmp);
+}
+
 static int inv_body_shape_cmp(const void *a, const void *b)
 {
     const struct inv_body_order *x = a, *y = b;
@@ -69,6 +75,12 @@ static int inv_body_shape_cmp(const void *a, const void *b)
     c = strcmp(x->body->path, y->body->path);
     if (c) return c;
     return (x->body->line > y->body->line) - (x->body->line < y->body->line);
+}
+
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_body_order_sort_shape(struct inv_body_order *v, int n)
+{
+    if (n > 1) qsort(v, (size_t)n, sizeof(*v), inv_body_shape_cmp);
 }
 
 static int inv_def_order_cmp(const void *a, const void *b)
@@ -82,6 +94,12 @@ static int inv_def_order_cmp(const void *a, const void *b)
            (x->symbol->def_line < y->symbol->def_line);
 }
 
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_def_order_sort(struct inv_def_order *v, int n)
+{
+    if (n > 1) qsort(v, (size_t)n, sizeof(*v), inv_def_order_cmp);
+}
+
 static int inv_body_name_order_cmp(const void *a, const void *b)
 {
     const struct inv_body_name_order *x = a, *y = b;
@@ -91,6 +109,12 @@ static int inv_body_name_order_cmp(const void *a, const void *b)
     if (c) return c;
     return (x->body->line > y->body->line) -
            (x->body->line < y->body->line);
+}
+
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_body_name_order_sort(struct inv_body_name_order *v, int n)
+{
+    if (n > 1) qsort(v, (size_t)n, sizeof(*v), inv_body_name_order_cmp);
 }
 
 static int inv_duplicate_value_cmp(const void *a, const void *b)
@@ -113,6 +137,14 @@ static int inv_duplicate_value_cmp(const void *a, const void *b)
     return (x->line_b > y->line_b) - (x->line_b < y->line_b);
 }
 
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_duplicates_sort(struct ci_inventory_report *report)
+{
+    if (report->duplicate_count > 1)
+        qsort(report->duplicates, (size_t)report->duplicate_count,
+              sizeof(*report->duplicates), inv_duplicate_value_cmp);
+}
+
 static int inv_invariant_value_cmp(const void *a, const void *b)
 {
     const struct ci_inventory_invariant *x = a, *y = b;
@@ -131,6 +163,14 @@ static int inv_invariant_value_cmp(const void *a, const void *b)
            (x->definition_line < y->definition_line);
 }
 
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_invariants_sort(struct ci_inventory_report *report)
+{
+    if (report->invariant_count > 1)
+        qsort(report->invariants, (size_t)report->invariant_count,
+              sizeof(*report->invariants), inv_invariant_value_cmp);
+}
+
 static int inv_definition_arm_value_cmp(const void *a, const void *b)
 {
     const struct ci_inventory_definition_arm *x = a, *y = b;
@@ -142,6 +182,14 @@ static int inv_definition_arm_value_cmp(const void *a, const void *b)
     if (c) return c;
     return (x->definition_line > y->definition_line) -
            (x->definition_line < y->definition_line);
+}
+
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_definition_arms_sort(struct ci_inventory_report *report)
+{
+    if (report->definition_arm_count > 1)
+        qsort(report->definition_arms, (size_t)report->definition_arm_count,
+              sizeof(*report->definition_arms), inv_definition_arm_value_cmp);
 }
 
 static bool inv_header_guard_symbol(const struct ci_symbol *s)
@@ -257,6 +305,12 @@ static int inv_arm_key_cmp(const void *a, const void *b)
     return strcmp(x->name, y->name);
 }
 
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_arm_keys_sort(struct inv_arm_key *v, int n)
+{
+    if (n > 1) qsort(v, (size_t)n, sizeof(*v), inv_arm_key_cmp);
+}
+
 static int inv_arm_key_lower(const struct inv_arm_key *keys, int count,
                              char kind, const char *name)
 {
@@ -337,11 +391,9 @@ static bool inv_build_capabilities(const struct inv_scan *scan,
             arm_keys[arm_key_count].kind = scan->occurrences[i].symbol.kind;
             arm_keys[arm_key_count++].name = scan->occurrences[i].symbol.name;
         }
-    qsort(defs, (size_t)def_count, sizeof(*defs), inv_def_order_cmp);
-    qsort(bodies, (size_t)scan->body_count, sizeof(*bodies),
-          inv_body_name_order_cmp);
-    qsort(arm_keys, (size_t)arm_key_count, sizeof(*arm_keys),
-          inv_arm_key_cmp);
+    inv_def_order_sort(defs, def_count);
+    inv_body_name_order_sort(bodies, scan->body_count);
+    inv_arm_keys_sort(arm_keys, arm_key_count);
 
     int ci = 0, si = 0, occ_begin = 0;
     for (int fi = 0; fi < scan->file_count; fi++) {
@@ -505,7 +557,7 @@ static bool inv_derive_duplicates(const struct inv_scan *scan,
             order[count].index = i;
             order[count++].body = &scan->bodies[i];
         }
-    qsort(order, (size_t)count, sizeof(*order), inv_body_exact_cmp);
+    inv_body_order_sort_exact(order, count);
     for (int i = 0; i < count;) {
         int end = i + 1;
         while (end < count && inv_digest_cmp(order[end].body->exact_sha3,
@@ -525,7 +577,7 @@ static bool inv_derive_duplicates(const struct inv_scan *scan,
             order[count].index = i;
             order[count++].body = &scan->bodies[i];
         }
-    qsort(order, (size_t)count, sizeof(*order), inv_body_shape_cmp);
+    inv_body_order_sort_shape(order, count);
     for (int i = 0; i < count;) {
         int end = i + 1;
         while (end < count && inv_digest_cmp(order[end].body->shape_sha3,
@@ -544,8 +596,7 @@ static bool inv_derive_duplicates(const struct inv_scan *scan,
         i = end;
     }
     free(order);
-    qsort(report->duplicates, (size_t)report->duplicate_count,
-          sizeof(*report->duplicates), inv_duplicate_value_cmp);
+    inv_duplicates_sort(report);
     return true;
 }
 
@@ -652,6 +703,12 @@ static int inv_const_body_order_cmp(const void *a, const void *b)
     return strcmp(x->name, y->name);
 }
 
+/* qsort's base is declared nonnull; sorting 0 or 1 entries is a no-op. */
+static void inv_const_bodies_sort(struct inv_const_body_order *v, int n)
+{
+    if (n > 1) qsort(v, (size_t)n, sizeof(*v), inv_const_body_order_cmp);
+}
+
 static int inv_const_body_lower(const struct inv_const_body_order *order,
                                 int count, const char *name)
 {
@@ -694,8 +751,7 @@ static bool inv_derive_invariants(const struct inv_scan *scan,
         const_bodies[const_body_count].name = body->name;
         const_bodies[const_body_count++].body = body;
     }
-    qsort(const_bodies, (size_t)const_body_count, sizeof(*const_bodies),
-          inv_const_body_order_cmp);
+    inv_const_bodies_sort(const_bodies, const_body_count);
     for (int c = 0; c < report->capability_count; c++) {
         const struct ci_inventory_capability *cap = &report->capabilities[c];
         for (int i = cap->symbol_offset; i < cap->symbol_offset + cap->symbol_count;
@@ -719,8 +775,7 @@ static bool inv_derive_invariants(const struct inv_scan *scan,
         }
     }
     free(const_bodies);
-    qsort(report->invariants, (size_t)report->invariant_count,
-          sizeof(*report->invariants), inv_invariant_value_cmp);
+    inv_invariants_sort(report);
     return true;
 }
 
@@ -817,8 +872,7 @@ static bool inv_derive_definition_arms(const struct inv_scan *scan,
                          symbol->name);
         }
     }
-    qsort(report->definition_arms, (size_t)report->definition_arm_count,
-          sizeof(*report->definition_arms), inv_definition_arm_value_cmp);
+    inv_definition_arms_sort(report);
     return true;
 }
 
