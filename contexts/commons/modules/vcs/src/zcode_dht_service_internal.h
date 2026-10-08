@@ -160,10 +160,17 @@ struct service_record_discovery {
       records[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];
 };
 
+/* The service binds identity, record and persistence state under one
+ * datadir prefix. A path at or beyond this cap is refused at create: an
+ * unchecked copy would truncate the record/persistence prefix while
+ * identity material keeps loading from the full caller path. */
+#define VCS_ZCODE_DHT_SERVICE_DATADIR_CAP 1024
+
 struct vcs_zcode_dht_service {
   bool enabled;
   uint64_t record_collect_watermark_mono; /* last expired-row reclaim */
-  char disabled_reason[96], last_error[160], datadir[1024];
+  char disabled_reason[96], last_error[160],
+      datadir[VCS_ZCODE_DHT_SERVICE_DATADIR_CAP];
   uint8_t genesis[32], self_id[32], online_seed[32], local_noise_static[32];
   struct vcs_zcode_dht_delegation delegation;
   vcs_zcode_dht_chain_verify_fn chain_verify;

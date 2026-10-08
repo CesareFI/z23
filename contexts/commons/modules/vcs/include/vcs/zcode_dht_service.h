@@ -274,6 +274,12 @@ struct vcs_zcode_dht_record_discovery_result {
       records[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];
 };
 
+/* Returns NULL when params are absent, or when datadir is absent or at
+ * or over the service's 1024-byte datadir capacity: the service binds
+ * identity, record and persistence state under one prefix, and a path
+ * that does not fit its datadir buffer would silently split identity
+ * (loaded from the full path) from record/persistence storage (bound to
+ * a truncated prefix). */
 struct vcs_zcode_dht_service *
 vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *params);
 void vcs_zcode_dht_service_free(struct vcs_zcode_dht_service *service,

@@ -5520,6 +5520,47 @@ _test_next:;
   return failures;
 }
 
+/* A datadir that does not fit the service's datadir cap must refuse at
+ * create. Identity material (delegation, online key) loads from the full
+ * caller path while record storage and persistence bind s->datadir; an
+ * unchecked copy truncates the latter, so a long path would authenticate
+ * from one directory and persist/serve records from a chopped prefix of
+ * it. Refusal is NULL before any state exists. */
+static int test_overlong_datadir_refuses(void)
+{
+  int failures = 0;
+  TEST("zcode dht service: an overlong datadir refuses instead of "
+       "splitting identity from record storage") {
+    uint8_t genesis[32], noise[32];
+    memset(genesis, 0x31, sizeof(genesis));
+    memset(noise, 0x32, sizeof(noise));
+    /* 1199 chars: the identity loader's own 1400-byte path buffer still
+     * fits this, so before the fix create() proceeded and silently
+     * truncated the record/persistence prefix. */
+    char long_dir[1200];
+    memset(long_dir, 'd', sizeof(long_dir) - 1);
+    long_dir[sizeof(long_dir) - 1] = '\0';
+    struct vcs_zcode_dht_service *s = fixture_service(long_dir, genesis, noise);
+    ASSERT(s == NULL);
+    /* Boundary: cap-1 fits and reaches the ordinary identity-missing
+     * disabled path rather than refusing. */
+    char fit_dir[1024];
+    memset(fit_dir, 'd', sizeof(fit_dir) - 1);
+    fit_dir[sizeof(fit_dir) - 1] = '\0';
+    struct vcs_zcode_dht_service *fit =
+        fixture_service(fit_dir, genesis, noise);
+    ASSERT(fit != NULL);
+    struct vcs_zcode_dht_service_status st;
+    vcs_zcode_dht_service_status(fit, &st);
+    ASSERT(!st.enabled);
+    ASSERT_STR_EQ(st.disabled_reason, "IDENTITY_MATERIAL_UNAVAILABLE");
+    vcs_zcode_dht_service_free(fit, test_time(1000));
+    PASS();
+  }
+_test_next:;
+  return failures;
+}
+
 int test_zcode_dht_service(void) {
   int failures = test_disabled_diagnostics();
   failures += test_signed_record_storage_denial(VCS_ZCODE_SOVEREIGNTY_STORE);
@@ -5552,6 +5593,7 @@ int test_zcode_dht_service(void) {
   failures += test_sparse_iterative_network();
   failures += test_sparse_space16_network();
   failures += test_foreground_discovery_needs_no_periodic_flush();
+  failures += test_overlong_datadir_refuses();
   TEST("zcode dht service: Noise-authenticated two-node lookup and restart") {
     char adir[] = "/tmp/zcl_dht_service_a_XXXXXX";
     char bdir[] = "/tmp/zcl_dht_service_b_XXXXXX";
