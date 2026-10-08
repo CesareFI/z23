@@ -8114,6 +8114,40 @@ static int test_ic_app_sync_wire_route(void)
     return failures;
 }
 
+static int test_ic_app_sync_service_route(void)
+{
+    int failures = 0;
+    TEST("impact composition: a service-only App sync edit selects availability") {
+        const char *path = "engine/services/src/app_event_sync.c";
+        struct agent_impact_acc impact = {0};
+        bool consensus_risk = true;
+        ASSERT_STR_EQ(zcl_native_code_route_for_path(path, &impact,
+                                                    &consensus_risk),
+                      "app_event_sync");
+        ASSERT(!consensus_risk);
+        ASSERT(!impact.groups_lost);
+        ASSERT(ic_acc_has_group(&impact, "app_event_sync"));
+        ASSERT(ic_acc_has_group(&impact, "make_lint_gates"));
+        const char *files[] = {path};
+        struct zcl_devloop_plan plan;
+        ASSERT(zcl_devloop_plan_files(files, 1, &plan));
+        ASSERT(!plan.closure_universal);
+        ASSERT(ic_group_in(plan.path_groups, plan.path_groups_len,
+                           "app_event_sync"));
+        static char selector[ZCL_DEVLOOP_MAX_PLAN_SELECTIONS *
+                             (ZCL_TEST_GROUP_FULL_MAX + 1)];
+        char gated[PROOF_HOST_GATED_MAX];
+        uint32_t selected = 0;
+        ASSERT(zcl_dev_proof_test_build_test_selector(
+            &plan, ".", false, selector, sizeof(selector), &selected,
+            gated, sizeof(gated)));
+        ASSERT(ic_selector_has(selector, "test_app_event_sync"));
+        ASSERT(gated[0] == '\0');
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_snapshot_tool_routes(void)
 {
     int failures = 0;
@@ -11798,6 +11832,7 @@ int test_impact_composition(void)
     failures += test_ic_metaverse_view_state_routes();
     failures += test_ic_snapshot_tool_routes();
     failures += test_ic_app_sync_wire_route();
+    failures += test_ic_app_sync_service_route();
     failures += test_ic_pr69_sensor_routes();
     failures += test_ic_local_selection_build_needs();
     failures += test_ic_proof_prefork_builds_the_shared_targets();

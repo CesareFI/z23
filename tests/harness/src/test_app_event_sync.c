@@ -22,6 +22,8 @@
  *   - the batch bound stops an answer at ZCL_APP_SYNC_BATCH_MAX rows and
  *     the next pull continues from there;
  *   - no peer and no session both refuse, and neither stores anything.
+ *   - a closed store refuses frontier reads and serving with cleared
+ *     outputs; an open empty store returns an empty frontier and answer.
  *
  * Clocks are injected. `received_at` is a fixed number this file chooses,
  * because arrival order is local evidence and no assertion here may depend
@@ -718,6 +720,53 @@ static int test_app_sync_writer_byte_bound(void)
     return failures;
 }
 
+static int test_app_sync_store_availability(void)
+{
+    int failures = 0;
+    struct node_db db = {0};
+    TEST("app sync: closed store refuses; open empty store is current") {
+        struct zcl_app_event_scope_v1 scope =
+            sync_test_scope("social.events.v1");
+        struct zcl_app_sync_pull pull = {0};
+        memcpy(pull.app_id, scope.app_id, sizeof(pull.app_id));
+        memcpy(pull.topic, scope.topic, sizeof(pull.topic));
+        struct zcl_app_sync_frontier frontier;
+        memset(&frontier, 0xa5, sizeof(frontier));
+        ASSERT(!zcl_app_event_sync_frontier(&db, scope.app_id, scope.topic,
+                                            &frontier));
+        ASSERT(!frontier.have);
+        ASSERT_EQ(frontier.rows, 0);
+        ASSERT_EQ(frontier.cursor, 0);
+        const uint8_t zero_id[32] = {0};
+        ASSERT(memcmp(frontier.event_id, zero_id, sizeof(zero_id)) == 0);
+        uint8_t answer[64];
+        size_t len = 99, rows = 99;
+        ASSERT_EQ(zcl_app_event_sync_serve(&db, &scope, &pull, answer,
+                                          sizeof(answer), &len, &rows),
+                  ZCL_APP_SYNC_ARGUMENT);
+        ASSERT_EQ(len, 0u);
+        ASSERT_EQ(rows, 0u);
+
+        ASSERT(node_db_open(&db, ":memory:"));
+        memset(&frontier, 0xa5, sizeof(frontier));
+        ASSERT(zcl_app_event_sync_frontier(&db, scope.app_id, scope.topic,
+                                           &frontier));
+        ASSERT(!frontier.have);
+        ASSERT_EQ(frontier.rows, 0);
+        ASSERT_EQ(frontier.cursor, 0);
+        ASSERT(memcmp(frontier.event_id, zero_id, sizeof(zero_id)) == 0);
+        len = rows = 99;
+        ASSERT_EQ(zcl_app_event_sync_serve(&db, &scope, &pull, answer,
+                                          sizeof(answer), &len, &rows),
+                  ZCL_APP_SYNC_OK);
+        ASSERT_EQ(len, 0u);
+        ASSERT_EQ(rows, 0u);
+        PASS();
+    } _test_next:;
+    node_db_close(&db);
+    return failures;
+}
+
 static int test_app_sync_no_peer(void)
 {
     int failures = 0;
@@ -769,6 +818,7 @@ int test_app_event_sync(void)
     failures += test_app_sync_out_of_scope_row();
     failures += test_app_sync_batch_bound();
     failures += test_app_sync_writer_byte_bound();
+    failures += test_app_sync_store_availability();
     failures += test_app_sync_no_peer();
     return failures;
 }

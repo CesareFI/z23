@@ -39,6 +39,10 @@ bool zcl_app_event_sync_frontier(struct node_db *ndb, const char *app_id,
     if (!ndb || !app_id || !topic || !out)
         return false; // raw-return-ok:argument-shape-checked-by-caller
     memset(out, 0, sizeof(*out));
+    if (!ndb->open) {
+        LOG_WARN(APP_SYNC_TAG, "local frontier unreadable: store is closed");
+        return false;
+    }
     out->rows = db_app_event_count(ndb, app_id, topic);
     out->have = db_app_event_topic_frontier(ndb, app_id, topic, &out->cursor,
                                             out->event_id);
@@ -70,6 +74,17 @@ static enum zcl_app_sync_status app_sync_serve_one(
     return zcl_app_sync_writer_append(writer, &record->event);
 }
 
+static int64_t app_sync_after_cursor(
+    struct node_db *ndb, const struct zcl_app_sync_pull *pull)
+{
+    int64_t after_cursor = 0;
+    if (zcl_bytes_any_set(pull->since_event_id, 32) &&
+        !db_app_event_topic_cursor_of(ndb, pull->app_id, pull->topic,
+                                      pull->since_event_id, &after_cursor))
+        after_cursor = 0;
+    return after_cursor;
+}
+
 enum zcl_app_sync_status zcl_app_event_sync_serve(
     struct node_db *ndb, const struct zcl_app_event_scope_v1 *scope,
     const struct zcl_app_sync_pull *pull, uint8_t *out, size_t cap,
@@ -79,16 +94,16 @@ enum zcl_app_sync_status zcl_app_event_sync_serve(
         return ZCL_APP_SYNC_ARGUMENT;
     *len = 0;
     *rows = 0;
+    if (!ndb->open) {
+        LOG_WARN(APP_SYNC_TAG, "serving stopped: store is closed");
+        return ZCL_APP_SYNC_ARGUMENT;
+    }
     /* Resolve the asker's frontier EVENT into this node's own arrival
      * order. A frontier this node does not hold answers from the start of
      * the topic: every save is idempotent by event id, so re-offering rows
      * the asker already holds costs bandwidth and stores nothing, while
      * guessing a cursor would skip rows silently. */
-    int64_t after_cursor = 0;
-    if (zcl_bytes_any_set(pull->since_event_id, 32) &&
-        !db_app_event_topic_cursor_of(ndb, pull->app_id, pull->topic,
-                                      pull->since_event_id, &after_cursor))
-        after_cursor = 0;
+    int64_t after_cursor = app_sync_after_cursor(ndb, pull);
 
     struct db_app_event_ref *refs =
         zcl_calloc(APP_SYNC_PAGE_MAX, sizeof(*refs), "app_sync_serve_refs");

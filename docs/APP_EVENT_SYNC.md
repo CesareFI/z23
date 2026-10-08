@@ -106,7 +106,7 @@ operator surfaces print:
 
 | Token | Means |
 |---|---|
-| `appsync_argument` | a NULL, or a field over its bound |
+| `appsync_argument` | a NULL, a field over its bound, or a closed serving store |
 | `appsync_malformed` | the bytes are not a frame of this version |
 | `appsync_version` | a wire version this build does not speak |
 | `appsync_row_too_large` | one row is over the wire's row bound |
