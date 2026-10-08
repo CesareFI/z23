@@ -16,6 +16,7 @@
 #include "config/command_catalog.h"
 #include "config/boot_zcode_async_proof.h"
 #include "controllers/rpc_client.h"
+#include "controllers/agent_impact_rules.h"
 #include "crypto/ed25519.h"
 #include "json/json.h"
 #include "models/build_fabric.h"
@@ -805,6 +806,96 @@ static bool zpd_enlarge_context_source(const char *workspace,
         vcs_tree_capture_path(workspace, task->source_root) == VCS_OK;
 }
 
+static bool zpd_context_budget_row(const char *workspace,
+    const struct vcs_zcode_task_v1 *task, const uint8_t root[32], size_t overhead)
+{
+    struct zcode_agent_context_status captured, empty;
+    memset(&captured, 0xa5, sizeof(captured));
+    memset(&empty, 0, sizeof(empty));
+    struct zcl_result refused = zcode_agent_context_capture_complete(
+        workspace, task, root, "fixture_parse_options", &captured);
+    char budget_detail[64], overhead_detail[64];
+    (void)snprintf(budget_detail, sizeof(budget_detail), "max_context_bytes=%llu",
+                   (unsigned long long)task->max_context_bytes);
+    (void)snprintf(overhead_detail, sizeof(overhead_detail), "overhead=%zu", overhead);
+    bool ok = !refused.ok && refused.code == -1 &&
+        strstr(refused.message, budget_detail) &&
+        strstr(refused.message, overhead_detail) &&
+        strstr(refused.message, "replan") &&
+        !strstr(refused.message, "changed") &&
+        !strstr(refused.message, "could not be read") &&
+        memcmp(&captured, &empty, sizeof(captured)) == 0;
+    if (!ok) printf("context budget refusal: budget=%llu detail=%s\n",
+                    (unsigned long long)task->max_context_bytes, refused.message);
+    return ok;
+}
+
+static bool zpd_context_budget_refuses(const char *workspace,
+    struct vcs_zcode_task_v1 task, const uint8_t root[32])
+{
+    /* The fixture symbol has one definition file, no callers or includes. */
+    const size_t overhead = VCS_ZCODE_AGENT_CONTEXT_FIXED_BYTES +
+        strlen("fixture_parse_options") + VCS_ZCODE_AGENT_CONTEXT_ENTRY_FIXED_BYTES +
+        VCS_ZCODE_AGENT_CONTEXT_PATH_MAX;
+    const size_t budgets[] = {0, 1, overhead - 1};
+    for (size_t i = 0; i < sizeof(budgets) / sizeof(budgets[0]); i++) {
+        /* Exercise the direct service shape, including an invalid zero
+         * budget, while retaining the source-matching task root. */
+        task.max_context_bytes = budgets[i];
+        if (!zpd_context_budget_row(workspace, &task, root, overhead)) return false;
+    }
+    struct vcs_zcode_task_index *index = vcs_zcode_task_index_build(workspace,
+        1);
+    char root_hex[65]; zcl_hex_encode(root, 32, root_hex);
+    bool ambiguous = false;
+    bool ok = index && vcs_zcode_task_index_complete(index) &&
+        !vcs_zcode_task_index_context_for_task(index, root_hex, &ambiguous) &&
+        !ambiguous;
+    vcs_zcode_task_index_free(index);
+    return ok;
+}
+
+static bool zpd_context_mapping_path(const char *path)
+{
+    struct agent_impact_acc impact = {0};
+    struct zcl_devloop_plan plan;
+    if (!agent_impact_apply_shared_rules(path, &impact) ||
+        !zcl_devloop_plan_files(&path, 1, &plan) ||
+        plan.closure_groups_len != 0) return false;
+    bool regression = false, lint = false, site = false, wallet = false;
+    for (size_t i = 0; i < impact.groups_len; i++) {
+        regression |= strcmp(impact.groups[i], "zcode_package_dev") == 0;
+        lint |= strcmp(impact.groups[i], "make_lint_gates") == 0;
+        site |= strcmp(impact.groups[i], "site_routes") == 0;
+        wallet |= strcmp(impact.groups[i], "wallet") == 0;
+    }
+    bool planned = false;
+    for (size_t i = 0; i < plan.path_groups_len; i++)
+        planned |= strcmp(plan.path_groups[i], "zcode_package_dev") == 0;
+    if (strstr(path, "/src/")) {
+        if (!site || !wallet) return false;
+    }
+    return regression && lint && planned;
+}
+
+static bool zpd_context_proof_mapping(void)
+{
+    return zpd_context_mapping_path(
+        "cognition/services/src/zcode_agent_context_service.c") &&
+        zpd_context_mapping_path(
+        "cognition/services/include/services/zcode_agent_context_service.h");
+}
+
+static bool zpd_context_budget_prepare(const char *workspace,
+    struct vcs_zcode_task_v1 *task, uint8_t root[32])
+{
+    task->max_context_bytes = 4096;
+    return zpd_context_proof_mapping() &&
+        zpd_enlarge_context_source(workspace, task) &&
+        vcs_zcode_task_root(task, root) == VCS_ZCODE_DEV_OK &&
+        zpd_context_budget_refuses(workspace, *task, root);
+}
+
 static bool zpd_capture_truncation_refuses(const char *workspace,
     const char *task_workspace, const char *task_hex)
 {
@@ -816,9 +907,7 @@ static bool zpd_capture_truncation_refuses(const char *workspace,
             VCS_ZCODE_TASK_WIRE_BYTES, &wire, &len) == 0 &&
         vcs_zcode_task_parse(wire, len, &task) == VCS_ZCODE_DEV_OK;
     free(wire);
-    ok = ok && zpd_enlarge_context_source(workspace, &task);
-    task.max_context_bytes = 4096;
-    ok = ok && vcs_zcode_task_root(&task, root) == VCS_ZCODE_DEV_OK;
+    ok = ok && zpd_context_budget_prepare(workspace, &task, root);
     struct zcode_agent_context_status captured;
     if (ok) {
         struct zcl_result strict = zcode_agent_context_capture_complete(
@@ -828,7 +917,7 @@ static bool zpd_capture_truncation_refuses(const char *workspace,
                          strict.ok, strict.message);
     }
     struct vcs_zcode_task_index *index = vcs_zcode_task_index_build(workspace,
-        (int64_t)platform_time_wall_unix());
+        1);
     char root_hex[65]; zcl_hex_encode(root, 32, root_hex);
     bool ambiguous = false;
     ok = ok && index && vcs_zcode_task_index_complete(index) &&

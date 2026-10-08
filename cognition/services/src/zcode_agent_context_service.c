@@ -232,6 +232,11 @@ static struct zcl_result zac_capture_files(const char *workspace,
                       VCS_ZCODE_AGENT_CONTEXT_PATH_MAX);
     size_t budget = task->max_context_bytes > overhead
         ? (size_t)task->max_context_bytes - overhead : 0;
+    if (budget < path_count)
+        return ZCL_ERR(-1,
+            "max_context_bytes=%llu leaves no source excerpt after overhead=%zu; "
+            "replan with a larger context budget; no context stored",
+            (unsigned long long)task->max_context_bytes, overhead);
     for (size_t i = 0; i < path_count; i++) {
         size_t left = path_count - i;
         size_t share = left > 0 ? budget / left : 0;
