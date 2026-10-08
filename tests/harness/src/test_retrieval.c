@@ -359,6 +359,13 @@ static int case_poisoned(void)
              zcl_retrieval_df(r, "sha3") == 0);
     RT_CHECK("and refuses to answer from here on",
              zcl_retrieval_query(r, "sha3", h, 8) == 0);
+    memset(h, 0x5a, sizeof(h));
+    struct zcl_retrieval_hit sentinel[8];
+    memcpy(sentinel, h, sizeof(h));
+    size_t count = 99;
+    RT_CHECK("checked poisoned query refuses with zero count and no hits",
+             !zcl_retrieval_query_checked(r, "sha3", h, 8, &count) &&
+             count == 0 && memcmp(h, sentinel, sizeof(h)) == 0);
     RT_CHECK("and refuses further insertions",
              zcl_retrieval_add(r, "seventh", "sha3 again") == 0);
     RT_CHECK("the corpus size did not grow",
@@ -428,6 +435,61 @@ static int case_surface(void)
     RT_CHECK("legacy query keeps its zero-on-refusal contract",
              zcl_retrieval_query(r, "solo", h, 4) == 1);
 
+    zcl_retrieval_destroy(r);
+    return failures;
+}
+
+static int case_checked_refusals(void)
+{
+    int failures = 0;
+    struct zcl_retrieval *r = zcl_retrieval_create();
+    RT_CHECK("checked refusal fixture creates an index", r != NULL);
+    if (!r)
+        return failures;
+    RT_CHECK("checked refusal fixture indexes one document",
+             zcl_retrieval_add(r, "one", "solo") == 1);
+
+    struct zcl_retrieval_hit h[4], sentinel[4];
+    size_t count = 99;
+    const struct {
+        const char *label;
+        const struct zcl_retrieval *index;
+        const char *query;
+        struct zcl_retrieval_hit *out;
+        size_t cap;
+        size_t *out_count;
+    } invalid[] = {
+        {"checked NULL index refuses", NULL, "solo", h, 4, &count},
+        {"checked NULL query refuses", r, NULL, h, 4, &count},
+        {"checked NULL output refuses", r, "solo", NULL, 4, &count},
+        {"checked zero capacity refuses", r, "solo", h, 0, &count},
+        {"checked NULL count refuses", r, "solo", h, 4, NULL},
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        count = 99;
+        memset(h, 0x5a, sizeof(h));
+        memcpy(sentinel, h, sizeof(h));
+        RT_CHECK(invalid[i].label,
+                 !zcl_retrieval_query_checked(invalid[i].index,
+                     invalid[i].query, invalid[i].out, invalid[i].cap,
+                     invalid[i].out_count));
+        RT_CHECK("checked refusal resets a supplied count and leaves hits alone",
+                 count == (invalid[i].out_count ? 0u : 99u) &&
+                 memcmp(h, sentinel, sizeof(h)) == 0);
+    }
+    RT_CHECK("invalid checked arguments leave the document healthy",
+             zcl_retrieval_ok(r) && zcl_retrieval_count(r) == 1);
+    RT_CHECK("checked valid query still observes the matching document",
+             zcl_retrieval_query_checked(r, "solo", h, 4, &count) &&
+             count == 1 && h[0].doc == 1 && h[0].score > 0.0);
+    RT_CHECK("unknown document IDs have no stored text",
+             zcl_retrieval_text(r, 0) == NULL &&
+             zcl_retrieval_text(r, 2) == NULL);
+    RT_CHECK("unknown document IDs have no length",
+             zcl_retrieval_doc_len(r, 0) == 0 &&
+             zcl_retrieval_doc_len(r, 2) == 0);
+    RT_CHECK("a NULL token has no document frequency",
+             zcl_retrieval_df(r, NULL) == 0);
     zcl_retrieval_destroy(r);
     return failures;
 }
@@ -684,6 +746,7 @@ int test_retrieval(void)
     failures += case_tokenizer();
     failures += case_poisoned();
     failures += case_surface();
+    failures += case_checked_refusals();
     failures += case_gold_metrics();
     failures += case_gold_diagnostics();
     printf("retrieval: %d failure(s)\n", failures);
