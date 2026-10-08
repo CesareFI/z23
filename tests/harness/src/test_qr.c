@@ -60,7 +60,37 @@ static void qr_case_alloc_failure_refuses(void)
     zcl_alloc_fault_clear();
     QR_CHECK("QR render refuses allocation failure",
              refused && pixels == NULL && side == 0 &&
-             strcmp(err, "QR render allocation failed") == 0);
+             strcmp(err, "QR render allocation failed: 7500 bytes, side=50; "
+                         "retry after freeing memory") == 0);
+    qr_matrix_free(&m);
+}
+
+static void qr_case_render_alloc_optional_error(void)
+{
+    uint8_t sentinel = 0;
+    struct qr_matrix m;
+    char err[2] = { 'x', 'y' };
+    char full[128] = "stale error";
+    if (!qr_matrix_encode("hello", &m, NULL, 0)) {
+        QR_CHECK("QR optional allocation diagnostic (matrix setup)", false);
+        return;
+    }
+    char *errors[] = { err, NULL, full };
+    const size_t capacities[] = { 1, 1, sizeof full };
+    bool cleared = true;
+    for (size_t i = 0; i < 3; i++) {
+        uint8_t *pixels = &sentinel;
+        uint32_t side = 99;
+        zcl_alloc_fault_fail_next("qr.render.rgb");
+        bool refused = !qr_matrix_render_rgb(&m, 2, 2, &pixels, &side,
+                                             errors[i], capacities[i]);
+        zcl_alloc_fault_clear();
+        cleared = cleared && refused && pixels == NULL && side == 0;
+    }
+    QR_CHECK("QR allocation diagnostic supports full, tiny and omitted buffers",
+             cleared && err[0] == '\0' && err[1] == 'y' &&
+             strcmp(full, "QR render allocation failed: 7500 bytes, side=50; "
+                          "retry after freeing memory") == 0);
     qr_matrix_free(&m);
 }
 
@@ -76,7 +106,8 @@ static void qr_case_popup_alloc_failure_refuses(void)
     const char *labels[] = { "qr.matrix.modules", "qr.render.rgb" };
     const char *errors[] = { "QR matrix allocation failed during encode (441 bytes); "
                              "retry after freeing memory",
-                             "QR render allocation failed" };
+        "QR render allocation failed: 252300 bytes, side=290; "
+        "retry after freeing memory" };
     for (size_t i = 0; i < 2; i++) {
         struct qr_popup_card card = { .width = 99, .height = 99 };
         zcl_alloc_fault_fail_next(labels[i]);
@@ -229,6 +260,7 @@ int test_qr(void)
 
     if (!qr_case_payment_uri_encode_and_finders()) return (*qr_failures_ptr());
     qr_case_alloc_failure_refuses();
+    qr_case_render_alloc_optional_error();
     qr_case_encode_alloc_optional_diagnostic();
     qr_case_popup_alloc_failure_refuses();
     qr_case_render_refusal_outputs();

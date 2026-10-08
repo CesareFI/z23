@@ -153,7 +153,11 @@ bool qr_matrix_render_rgb(const struct qr_matrix *matrix, uint32_t scale,
     }
     uint8_t *rgb = zcl_malloc((size_t)bytes, "qr.render.rgb");
     if (!rgb) {
-        qr_error(error, error_cap, "QR render allocation failed");
+        char message[128];
+        snprintf(message, sizeof message,
+                 "QR render allocation failed: %zu bytes, side=%u; "
+                 "retry after freeing memory", bytes, (unsigned)out_side);
+        qr_error(error, error_cap, message);
         return false;
     }
     memset(rgb, 0xff, (size_t)bytes);
