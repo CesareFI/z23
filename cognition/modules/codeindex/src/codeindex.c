@@ -201,6 +201,11 @@ bool codeindex_dep_root_sha3(struct codeindex *ci, uint8_t out[32])
     return true;
 }
 
+static bool ci_receipt_extent_valid(size_t len, size_t capacity)
+{
+    return len > 0 && len < capacity;
+}
+
 bool codeindex_build_cold_ms(struct codeindex *ci, long long *ms_out,
                              long long *files_out)
 {
@@ -219,7 +224,9 @@ bool codeindex_build_cold_ms(struct codeindex *ci, long long *ms_out,
     /* Stores built before the self-receipt existed simply lack the keys;
      * that absence is a valid observation of an older generation, not a
      * hard failure. */
-    if (!ms_found || !files_found || ms_len == 0 || files_len == 0)
+    if (!ms_found || !files_found ||
+        !ci_receipt_extent_valid(ms_len, sizeof(ms_text)) ||
+        !ci_receipt_extent_valid(files_len, sizeof(files_text)))
         return false;
     ms_text[ms_len] = '\0';
     files_text[files_len] = '\0';
@@ -251,7 +258,9 @@ bool codeindex_seed_receipt(struct codeindex *ci, char kind_out[32],
         LOG_FAIL("codeindex", "read seeding receipt failed");
     /* A generation that was built rather than seeded simply has no receipt,
      * and a patched one has had its cleared. Both are honest observations. */
-    if (!kind_found || !files_found || kind_len == 0 || files_len == 0)
+    if (!kind_found || !files_found ||
+        !ci_receipt_extent_valid(kind_len, sizeof(kind)) ||
+        !ci_receipt_extent_valid(files_len, sizeof(files_text)))
         return false;
     kind[kind_len] = '\0';
     files_text[files_len] = '\0';

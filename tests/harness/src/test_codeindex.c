@@ -40,6 +40,7 @@
 #include <sqlite3.h>
 
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -698,6 +699,89 @@ static int test_codeindex_metrics_warm_view(int64_t files_indexed)
                  MET_FIX, &have_snap, &unchanged, digest) &&
              have_snap);
     if (idx) codeindex_close(idx);
+    return failures;
+}
+
+#define RECEIPT_FIX "test-tmp/ci_receipt_extent"
+
+static bool receipt_extent_write(const char *key, const char *bytes, int len)
+{
+    sqlite3 *db = NULL;
+    if (sqlite3_open(RECEIPT_FIX "/.codeindex/index.kv", &db) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return false;
+    }
+    const char *defaults = "INSERT OR REPLACE INTO meta(k,v) VALUES"
+        "('build_cold_ms','7'),('build_cold_files','7'),"
+        "('build_seed_donor','0000000000000000000000000000007'),"
+        "('build_seed_files','7')";
+    sqlite3_stmt *stmt = NULL;
+    bool ok = sqlite3_exec(db, defaults, NULL, NULL, NULL) == SQLITE_OK;
+    if (ok) ok = sqlite3_prepare_v2(db, "UPDATE meta SET v=? WHERE k=?",
+                                  -1, &stmt, NULL) == SQLITE_OK;
+    if (ok) ok = sqlite3_bind_blob(stmt, 1, bytes, len, SQLITE_TRANSIENT) == SQLITE_OK;
+    if (ok) ok = sqlite3_bind_text(stmt, 2, key, -1, SQLITE_TRANSIENT) == SQLITE_OK;
+    if (ok) ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    if (sqlite3_close(db) != SQLITE_OK) ok = false;
+    return ok;
+}
+
+static int receipt_extent_check(const char *key, int len, bool fits, bool seed)
+{
+    int failures = 0;
+    char bytes[256], kind[32];
+    memset(bytes, '0', sizeof(bytes));
+    bytes[len - 1] = '7';
+    bool written = receipt_extent_write(key, bytes, len);
+    CI_CHECK("write explicit receipt byte extent", written);
+    if (!written) return failures;
+    struct codeindex *ci = codeindex_open_existing(RECEIPT_FIX);
+    CI_CHECK("open receipt extent fixture without rebuilding", ci != NULL);
+    if (!ci) return failures;
+    long long ms = -1, files = -1;
+    memset(kind, 'X', sizeof(kind));
+    bool ok;
+    if (seed) {
+        ok = codeindex_seed_receipt(ci, kind, &files);
+        CI_CHECK("seed receipt extent refusal or exact fitting output", fits
+            ? ok && files == 7 && strcmp(kind, "0000000000000000000000000000007") == 0
+            : !ok && files == 0 && kind[0] == '\0');
+    } else {
+        ok = codeindex_build_cold_ms(ci, &ms, &files);
+        CI_CHECK("cold receipt extent refusal or fitting values", fits
+            ? ok && ms == 7 && files == 7
+            : !ok && ms == 0 && files == 0);
+    }
+    codeindex_close(ci);
+    return failures;
+}
+
+static int receipt_extent_tests(void)
+{
+    int failures = 0;
+    bool cleaned = test_rm_rf_recursive(RECEIPT_FIX) == 0 || errno == ENOENT;
+    CI_CHECK("receipt fixture cleanup", cleaned);
+    if (!cleaned) return failures;
+    bool written = mk_write(RECEIPT_FIX, "src/a.c", "int a;\n");
+    CI_CHECK("receipt fixture source", written);
+    if (!written) return failures;
+    struct codeindex *ci = codeindex_open(RECEIPT_FIX);
+    CI_CHECK("build isolated receipt fixture", ci != NULL);
+    if (!ci) return failures;
+    codeindex_close(ci);
+    const char *keys[] = {"build_cold_ms", "build_cold_files",
+                         "build_seed_donor", "build_seed_files"};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        int capacity = i == 2 ? 32 : 24;
+        failures += receipt_extent_check(keys[i], capacity, false, i >= 2);
+        failures += receipt_extent_check(keys[i], 256, false, i >= 2);
+    }
+    failures += receipt_extent_check(keys[0], 23, true, false);
+    failures += receipt_extent_check(keys[1], 23, true, false);
+    failures += receipt_extent_check(keys[2], 31, true, true);
+    failures += receipt_extent_check(keys[3], 23, true, true);
+    CI_CHECK("remove isolated receipt fixture", test_rm_rf_recursive(RECEIPT_FIX) == 0);
     return failures;
 }
 
@@ -1860,5 +1944,9 @@ static int test_codeindex_platform_arm(void)
 
 int test_codeindex(void)
 {
-    return test_codeindex_platform_arm();
+    int failures = test_codeindex_platform_arm();
+#if !defined(_WIN32)
+    failures += receipt_extent_tests();
+#endif
+    return failures;
 }
