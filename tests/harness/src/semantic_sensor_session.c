@@ -49,10 +49,12 @@
 #include "test/semantic_sensor_session.h"
 
 #include "base/hex.h"
+#include "json/json.h"
 #include "sha3/sha3.h"
 #include "test/test_core.h"
 #include "util/spawn.h"
 #include "vcs/semantic_manifest.h"
+#include "zutf8/zutf8.h"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -521,7 +523,17 @@ static bool sss_write_all(int fd, const char *s, size_t n)
     return ok;
 }
 
-/* One stdout line of the session, without its newline. */
+/* Admit the measured record before exposing it through a C string. */
+static bool sss_copy_record(const char *bytes, size_t n, char *out, size_t cap)
+{
+    if (n >= cap || memchr(bytes, '\0', n) != NULL ||
+        !zutf8_validate_n(bytes, n)) return false;
+    memcpy(out, bytes, n);
+    out[n] = '\0';
+    return true;
+}
+
+/* One stdout record, without its newline, including a final EOF record. */
 static bool sss_line(struct sss_proc *p, char *out, size_t cap)
 {
     for (;;) {
@@ -530,14 +542,19 @@ static bool sss_line(struct sss_proc *p, char *out, size_t cap)
         ssize_t got;
         if (nl != NULL) {
             size_t n = (size_t)(nl - p->buf);
-            (void)snprintf(out, cap, "%.*s", (int)n, p->buf);
+            bool valid = sss_copy_record(p->buf, n, out, cap);
             memmove(p->buf, nl + 1, p->have - n - 1);
             p->have -= n + 1;
-            return true;
+            return valid;
         }
         if (p->have == sizeof(p->buf) || poll(&pf, 1, 120000) <= 0)
             return false;
         got = read(p->from, p->buf + p->have, sizeof(p->buf) - p->have);
+        if (got == 0 && p->have != 0) {
+            bool valid = sss_copy_record(p->buf, p->have, out, cap);
+            p->have = 0;
+            return valid;
+        }
         if (got <= 0)
             return false;
         p->have += (size_t)got;
@@ -601,22 +618,40 @@ static int sss_finish(struct sss_proc *p, char *summary, size_t cap)
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-/* A string field of a flat JSON reply. */
+static bool sss_unique_keys(const struct json_value *v)
+{
+    for (size_t i = 0; i < v->num_children; i++) {
+        if (!sss_unique_keys(&v->children[i])) return false;
+        if (v->type != JSON_OBJ) continue;
+        for (size_t j = 0; j < i; j++)
+            if (strcmp(v->keys[i], v->keys[j]) == 0) return false;
+    }
+    return true;
+}
+
+/* Parse the whole reply before treating any member as evidence. */
+static bool sss_reply(const char *reply, struct json_value *v)
+{
+    size_t n = strlen(reply);
+    json_init(v);
+    return zutf8_validate_n(reply, n) && json_read(v, reply, n) &&
+           v->type == JSON_OBJ && sss_unique_keys(v);
+}
+
+/* A decoded string field of a complete, unambiguous JSON reply. */
 static bool sss_field(const char *reply, const char *key, char *out,
                       size_t cap)
 {
-    char pat[64];
-    const char *s, *e;
-    (void)snprintf(pat, sizeof(pat), "\"%s\":\"", key);
-    s = strstr(reply, pat);
-    if (s == NULL)
-        return false;
-    s += strlen(pat);
-    e = strchr(s, '"');
-    if (e == NULL)
-        return false;
-    (void)snprintf(out, cap, "%.*s", (int)(e - s), s);
-    return true;
+    struct json_value v;
+    bool ok = sss_reply(reply, &v);
+    const struct json_value *field = json_get(&v, key);
+    ok = ok && field != NULL && field->type == JSON_STR;
+    const char *s = json_get_str(field);
+    size_t n = strlen(s);
+    ok = ok && n < cap;
+    if (ok) memcpy(out, s, n + 1);
+    json_free(&v);
+    return ok;
 }
 
 static bool sss_is(const char *reply, const char *key, const char *want)
@@ -1219,10 +1254,127 @@ static bool sss_ascii(const char *reply)
 
 static bool sss_refused(const char *reply, const char *why)
 {
-    if (strstr(reply, "\"ok\":false") != NULL)
-        return why == NULL || sss_starts(reply, "why", why);
-    printf("FAIL reply is not a refusal: %s\n", reply);
-    return false;
+    struct json_value v;
+    bool valid = sss_reply(reply, &v);
+    const struct json_value *ok = json_get(&v, "ok");
+    bool refused = valid && ok != NULL && ok->type == JSON_BOOL && !ok->val.b;
+    json_free(&v);
+    if (!refused) return false;
+    return why == NULL || sss_starts(reply, "why", why);
+}
+
+static int sss_t_reply_checks(void)
+{
+    int failures = 0;
+    char got[64];
+    static const char *const bad_fields[] = {
+        "{\"why\":\"good\"",
+        "{\"why\":\"good\",\"extra\":[}",
+        "{\"why\":\"good\"}junk",
+        "{\"why\":\"good\",\"why\":\"bad\"}",
+        "{\"why\":\"good\",\"\\u0077hy\":\"bad\"}",
+        "{\"why\":\"good\\u0000bad\"}",
+        "{\"why\":\"good\",\"\\u0000why\":0}",
+        "{\"why\":\"good\",\"extra\":{\"x\":1,\"\\u0078\":2}}",
+        "{\"why\":\"good\",\"extra\":[{\"x\":1,\"x\":2}]}",
+        "{\"why\":\"\xff\"}",
+        "{\"why\":false}",
+        "{}",
+    };
+    static const char *const bad_refusals[] = {
+        "{\"ok\":false}junk", "{\"ok\":false,\"ok\":true}",
+        "{\"ok\":\"false\"}",
+        "{\"ok\":0}", "{\"ok\":true}", "{}",
+    };
+    TEST_CASE("semantic_sensor: reply checks reject junk and duplicate keys") {
+        for (size_t i = 0; i < sizeof(bad_fields) / sizeof(bad_fields[0]); i++) {
+            (void)snprintf(got, sizeof(got), "unchanged");
+            ASSERT(!sss_field(bad_fields[i], "why", got, sizeof(got)));
+            ASSERT_STR_EQ(got, "unchanged");
+        }
+        for (size_t i = 0; i < sizeof(bad_refusals) / sizeof(bad_refusals[0]); i++)
+            ASSERT(!sss_refused(bad_refusals[i], NULL));
+    } TEST_END
+    return failures;
+}
+
+static int sss_t_reply_strings(void)
+{
+    int failures = 0;
+    char got[64];
+    TEST_CASE("semantic_sensor: reply strings decode without truncation") {
+        ASSERT(sss_field("{\"why\":\"a\\\"b\\\\c\\u0041\"}", "why", got, sizeof(got)));
+        ASSERT_STR_EQ(got, "a\"b\\cA");
+        ASSERT(sss_field("{\"why\":\"\\\\u0000\"}", "why", got, sizeof(got)));
+        ASSERT_STR_EQ(got, "\\u0000");
+        (void)snprintf(got, sizeof(got), "unchanged");
+        ASSERT(!sss_field("{\"why\":\"good\"}", "why", got, 4));
+        ASSERT_STR_EQ(got, "unchanged");
+        ASSERT(!sss_field("{\"why\":\"\"}", "why", got, 0));
+        ASSERT_STR_EQ(got, "unchanged");
+        ASSERT(sss_field("{\"why\":\"good\"}", "why", got, 5));
+        ASSERT_STR_EQ(got, "good");
+        ASSERT(sss_refused(" { \"ok\" : false, \"why\" : \"good\" } ", "good"));
+    } TEST_END
+    return failures;
+}
+
+/* Write bounded fixture bytes, close the writer, and use the session reader. */
+static bool sss_pipe_case(const char *bytes, size_t n, size_t cap,
+                          bool admitted, bool refusal)
+{
+    int fd[2];
+    if (pipe(fd) != 0) {
+        perror("session reply fixture pipe");
+        return false;
+    }
+    bool written = sss_write_all(fd[1], bytes, n);
+    if (close(fd[1]) != 0) written = false;
+    struct sss_proc p = {.from = fd[0]};
+    char reply[64] = "unchanged";
+    bool read_ok = written && sss_line(&p, reply, cap);
+    bool ok = written && read_ok == admitted;
+    if (read_ok) ok = ok && sss_refused(reply, NULL) == refusal;
+    else ok = ok && strcmp(reply, "unchanged") == 0;
+    if (close(fd[0]) != 0) ok = false;
+    return ok;
+}
+
+static int sss_t_record_checks(void)
+{
+    int failures = 0;
+    static const char nul[] = "{\"ok\":false}\0junk\n";
+    static const char bad_utf8[] = "{\"ok\":false,\"why\":\"\xff\"}\n";
+    static const char too_long[] = "{\"ok\":false}junk\n";
+    static const char line[] = "{\"ok\":false}\n";
+    static const char final[] = "{\"ok\":false}";
+    static const char incomplete[] = "{\"ok\":false";
+    static const char utf8[] = "{\"ok\":false,\"why\":\"\xc3\xa9\"}\n";
+    static const struct {
+        const char *bytes;
+        size_t n, cap;
+        bool admitted, refusal;
+    } cases[] = {
+        {nul, sizeof(nul) - 1, 64, false, false},
+        {bad_utf8, sizeof(bad_utf8) - 1, 64, false, false},
+        {too_long, sizeof(too_long) - 1, sizeof(final), false, false},
+        {line, sizeof(line) - 1, sizeof(final) - 1, false, false},
+        {line, sizeof(line) - 1, 0, false, false},
+        {line, sizeof(line) - 1, sizeof(final), true, true},
+        {final, sizeof(final) - 1, sizeof(final), true, true},
+        {incomplete, sizeof(incomplete) - 1, 64, true, false},
+        {"", 0, 64, false, false},
+        {utf8, sizeof(utf8) - 1, 64, true, true},
+    };
+    TEST_CASE("semantic_sensor: measured pipe replies reject lost bytes "
+              "and preserve final EOF records") {
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            printf("session reply pipe case %zu\n", i);
+            ASSERT(sss_pipe_case(cases[i].bytes, cases[i].n, cases[i].cap,
+                                 cases[i].admitted, cases[i].refusal));
+        }
+    } TEST_END
+    return failures;
 }
 
 static int sss_t_bad_opts(struct sss_ctx *c)
@@ -1739,7 +1891,8 @@ static int sss_t_object_cc_invalid(struct sss_ctx *c)
 
 int semantic_sensor_session_cases(void)
 {
-    int failures = 0;
+    int failures = sss_t_reply_checks() + sss_t_reply_strings() +
+                   sss_t_record_checks();
     struct sss_ctx c = {0};
     if (realpath(SSS_SENSOR, c.sensor) == NULL ||
         test_mkdtemp(c.dir, sizeof(c.dir), "semsensor_session") == NULL) {
