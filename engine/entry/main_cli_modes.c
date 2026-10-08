@@ -2194,7 +2194,6 @@ static void cli_print_unknown_command_diagnostic(const char *method)
                method ? method : "", method ? method : "");
 }
 
-
 typedef bool (*cli_static_agent_handler)(const struct json_value *params,
                                          bool help,
                                          struct json_value *result);
@@ -2362,7 +2361,7 @@ int cli_main(int argc, char **argv)
     if (argrc >= 0)
         return argrc;
     const char *home = getenv("HOME");
-    char datadir[512];
+    char datadir[CLI_TARGET_DATADIR_CAP];
     zcl_cli_lane_default_datadir(datadir, sizeof(datadir), home);
     bool datadir_set = false;
     bool rpcport_set = false;
@@ -2839,6 +2838,8 @@ static int cli_validate_client_argv(int argc, char **argv)
                                                      sizeof(suggest));
         if (kind != CLI_FLAG_OK)
             return cli_refuse_malformed_target_flag(argv[i], kind, suggest);
+        if (cli_flag_value_overflows_path_buffer(argv[i]))
+            return cli_refuse_overlong_datadir(argv[i]);
     }
     return -1; /* every token OK; caller continues */
 }
@@ -3707,7 +3708,6 @@ int wallet_backup_decrypt_mode(int argc, char **argv)
     printf("Decrypted %s -> %s\n", argv[2], argv[3]);
     return 0;
 }
-
 int repair_utxos_mode(int argc, char **argv)
 {
     if (argc <= 4) {

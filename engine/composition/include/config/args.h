@@ -49,6 +49,24 @@ enum cli_flag_kind cli_flag_classify(const char *arg, char *suggest,
  * static internal buffer — read-only, single-threaded CLI process only. */
 const char *cli_flag_client_whitelist_csv(void);
 
+/* Length bound of the operator-target datadir buffer the CLI clients
+ * copy -datadir= / ZCL_DATADIR into. The env path refuses over this
+ * bound already; the argv flag is validated next to cli_flag_classify
+ * so cli_main's exact complexity pin does not move. */
+#define CLI_TARGET_DATADIR_CAP 512
+
+/* True when arg is a well-formed -datadir= whose value cannot fit the
+ * operator-target path buffer. */
+bool cli_flag_value_overflows_path_buffer(const char *arg);
+
+/* Refuse the whole CLI-client invocation when a -datadir= flag value
+ * does not fit the operator-target path buffer: a chopped cookie
+ * directory can name another node's directory, so the client must
+ * never authenticate from a truncated path. Prints the
+ * error=DATADIR_TOO_LONG diagnostic and returns
+ * ZCL_COMMAND_EXIT_INVALID; never returns to let the caller continue. */
+int cli_refuse_overlong_datadir(const char *arg);
+
 /* Decide whether node mode may auto-add the co-located legacy peer.  A
  * zclassic.conf whose P2P port equals this process's listening port describes
  * this node (or a stale/shared config), not an independent oracle.  Dialling
