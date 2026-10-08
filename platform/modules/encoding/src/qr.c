@@ -94,17 +94,23 @@ void qr_matrix_free(struct qr_matrix *matrix)
 }
 
 /* Argument gate + out-param hygiene for qr_matrix_render_rgb. */
-static bool qr_render_args_valid(const struct qr_matrix *matrix,
+static const char *qr_render_args_error(const struct qr_matrix *matrix,
                                  uint32_t scale, uint32_t quiet_modules,
                                  uint8_t **pixels, uint32_t *side)
 {
     if (pixels) *pixels = NULL;
     if (side) *side = 0;
-    return matrix && matrix->modules && matrix->width != 0 && pixels &&
-           side && scale != 0 && scale <= 64u && quiet_modules <= 32u;
+    if (!matrix) return "QR matrix: supply a matrix";
+    if (!matrix->modules) return "QR matrix.modules: supply module data";
+    if (!matrix->width) return "QR matrix.width: use a nonzero width";
+    if (!pixels) return "QR pixels: supply an output pointer";
+    if (!side) return "QR side: supply an output pointer";
+    if (!scale || scale > 64u) return "QR scale: use 1..64";
+    if (quiet_modules > 32u) return "QR quiet_modules: use 0..32";
+    return NULL;
 }
 
-/* Arguments have passed qr_render_args_valid. The widened sum and scale
+/* Arguments have passed qr_render_args_error. The widened sum and scale
  * product fit uint64_t; bound the side before squaring and RGB expansion. */
 static bool qr_render_size(uint32_t width, uint32_t scale,
                            uint32_t quiet_modules, uint32_t *out_side,
@@ -126,8 +132,10 @@ bool qr_matrix_render_rgb(const struct qr_matrix *matrix, uint32_t scale,
                           uint32_t quiet_modules, uint8_t **pixels,
                           uint32_t *side, char *error, size_t error_cap)
 {
-    if (!qr_render_args_valid(matrix, scale, quiet_modules, pixels, side)) {
-        qr_error(error, error_cap, "invalid QR render arguments");
+    const char *args_error = qr_render_args_error(matrix, scale, quiet_modules,
+                                                 pixels, side);
+    if (args_error) {
+        qr_error(error, error_cap, args_error);
         return false;
     }
     uint32_t out_side;

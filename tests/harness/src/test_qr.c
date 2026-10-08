@@ -109,24 +109,63 @@ static void qr_case_encode_alloc_optional_diagnostic(void)
 static void qr_case_render_refusal_outputs(void)
 {
     uint8_t sentinel = 0;
-    uint8_t *pixels = &sentinel;
-    uint32_t side = 99;
-    char err[128];
     struct qr_matrix matrix = { .modules = &sentinel, .width = 1 };
-    bool refused = !qr_matrix_render_rgb(NULL, 2, 2, &pixels, &side,
-                                         err, sizeof err);
-    QR_CHECK("invalid QR matrix clears both outputs",
-             refused && pixels == NULL && side == 0 &&
-             strcmp(err, "invalid QR render arguments") == 0);
-    side = 99;
-    refused = !qr_matrix_render_rgb(&matrix, 2, 2, NULL, &side,
-                                    err, sizeof err);
-    QR_CHECK("missing QR pixels clears supplied side", refused && side == 0);
-    pixels = &sentinel;
-    refused = !qr_matrix_render_rgb(&matrix, 2, 2, &pixels, NULL,
-                                    err, sizeof err);
-    QR_CHECK("missing QR side clears supplied pixels",
-             refused && pixels == NULL);
+    struct qr_matrix no_modules = { .width = 1 };
+    struct qr_matrix no_width = { .modules = &sentinel };
+    const struct {
+        const struct qr_matrix *matrix;
+        uint32_t scale, quiet;
+        bool missing_pixels, missing_side;
+        const char *error;
+    } cases[] = {
+        { &matrix, 0, 4, false, false, "QR scale: use 1..64" },
+        { &matrix, 65, 4, false, false, "QR scale: use 1..64" },
+        { &matrix, 1, 33, false, false, "QR quiet_modules: use 0..32" },
+        { NULL, 2, 2, false, false, "QR matrix: supply a matrix" },
+        { &no_modules, 2, 2, false, false,
+          "QR matrix.modules: supply module data" },
+        { &no_width, 2, 2, false, false,
+          "QR matrix.width: use a nonzero width" },
+        { &matrix, 2, 2, true, false, "QR pixels: supply an output pointer" },
+        { &matrix, 2, 2, false, true, "QR side: supply an output pointer" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        for (size_t mode = 0; mode < 4; mode++) {
+            uint8_t *pixels = &sentinel;
+            uint32_t side = 99;
+            char err[128] = "stale error";
+            char *error = mode == 2 ? NULL : err;
+            size_t cap = mode == 1 ? 1u : mode == 3 ? 0u : sizeof err;
+            bool refused = !qr_matrix_render_rgb(cases[i].matrix,
+                cases[i].scale, cases[i].quiet,
+                cases[i].missing_pixels ? NULL : &pixels,
+                cases[i].missing_side ? NULL : &side, error, cap);
+            QR_CHECK(cases[i].error, refused &&
+                (cases[i].missing_pixels || pixels == NULL) &&
+                (cases[i].missing_side || side == 0));
+            QR_CHECK("QR argument diagnostic respects optional buffer",
+                mode == 0 ? strcmp(err, cases[i].error) == 0 :
+                mode == 1 ? err[0] == '\0' : strcmp(err, "stale error") == 0);
+        }
+    }
+}
+
+static void qr_case_render_argument_boundaries(void)
+{
+    uint8_t module = 0;
+    struct qr_matrix matrix = { .modules = &module, .width = 1 };
+    const uint32_t scales[] = { 1, 64 }, quiets[] = { 0, 32 };
+    for (size_t i = 0; i < 2; i++) {
+        uint8_t *pixels = NULL;
+        uint32_t side = 0;
+        char err[128] = "stale error";
+        bool rendered = qr_matrix_render_rgb(&matrix, scales[i], quiets[i],
+                                             &pixels, &side, err, sizeof err);
+        QR_CHECK("QR render accepts argument boundaries", rendered && pixels &&
+            side == (1u + 2u * quiets[i]) * scales[i] && err[0] == '\0');
+        struct qr_popup_card card = { .pixels = pixels };
+        qr_popup_card_free(&card);
+    }
 }
 
 static void qr_case_render_size_refuses(void)
@@ -159,6 +198,7 @@ int test_qr(void)
     qr_case_encode_alloc_optional_diagnostic();
     qr_case_popup_alloc_failure_refuses();
     qr_case_render_refusal_outputs();
+    qr_case_render_argument_boundaries();
     qr_case_render_size_refuses();
     qr_case_zclassic_window_icon();
     qr_case_canvas_primitives();
