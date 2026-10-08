@@ -44,7 +44,6 @@ tests/harness/src/test_consensus_state_producer_receipt.c 1
 tests/harness/src/test_consensus_state_publication_cas.c 1
 tests/harness/src/test_cookie_rotation.c 1
 tests/harness/src/test_core_seal.c 2
-tests/harness/src/test_db_maintenance_port.c 1
 tests/harness/src/test_dev_app_scaffold.c 1
 tests/harness/src/test_dev_platform.c 3
 tests/harness/src/test_disk_block_io.c 4

@@ -45,9 +45,9 @@ static bool exec_sql(sqlite3 *db, const char *sql)
  * caller can clean up the sidecar files. */
 static bool make_file_db(sqlite3 **out_db, char *path, size_t pathsz)
 {
-    snprintf(path, pathsz, "/tmp/zcl_dbmp_test_%d_XXXXXX", (int)getpid());
-    int fd = mkstemp(path);
-    if (fd >= 0) close(fd);
+    int fd = test_mkstemp(path, pathsz, "zcl_dbmp_test");
+    if (fd < 0) return false;
+    close(fd);
     unlink(path);   /* let sqlite create it fresh */
 
     sqlite3 *db = NULL;
@@ -128,6 +128,162 @@ static int t_wal_ckpt_classify_counts(void)
         ASSERT_EQ(wal_ckpt_classify(true, false, 5, 3), WAL_CKPT_PARTIAL);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+/* Delegate WAL I/O except an armed file-reset failure; no replacement SQL. */
+static sqlite3_io_methods dbmp_wal_io;
+static const sqlite3_io_methods *dbmp_real_wal_io;
+static bool dbmp_fail_reset;
+static int dbmp_reset_calls;
+static int dbmp_truncate(sqlite3_file *file, sqlite3_int64 size)
+{
+    if (dbmp_fail_reset && size == 0) {
+        dbmp_reset_calls++;
+        return SQLITE_IOERR_TRUNCATE;
+    }
+    return dbmp_real_wal_io->xTruncate(file, size);
+}
+static int dbmp_open(sqlite3_vfs *vfs, const char *name, sqlite3_file *file,
+                     int flags, int *out_flags)
+{
+    sqlite3_vfs *real = vfs->pAppData;
+    int rc = real->xOpen(real, name, file, flags, out_flags);
+    if (rc == SQLITE_OK && (flags & SQLITE_OPEN_WAL)) {
+        dbmp_real_wal_io = file->pMethods;
+        dbmp_wal_io = *file->pMethods;
+        dbmp_wal_io.xTruncate = dbmp_truncate;
+        file->pMethods = &dbmp_wal_io;
+    }
+    return rc;
+}
+static bool dbmp_locked(bool ok, struct db_maintenance_wal_outcome wal, const char *err, const char *path)
+{
+    (void)path; return !ok &&
+        wal.rc == SQLITE_LOCKED && wal.busy && !wal.truncated &&
+        wal.truncate_rc == -1 && wal.log_frames == -1 &&
+        wal.ckpt_frames == -1 && err[0] != 0;
+}
+static bool dbmp_busy(bool ok, struct db_maintenance_wal_outcome wal, const char *err, const char *path)
+{
+    return ok &&
+        wal.rc == SQLITE_OK && wal.truncate_rc == SQLITE_BUSY &&
+        !wal.busy && !wal.truncated && wal.log_frames > 0 &&
+        wal.ckpt_frames == wal.log_frames && err[0] == 0 &&
+        wal_file_size(path) > 0;
+}
+static bool dbmp_hard(bool ok, struct db_maintenance_wal_outcome wal, const char *err, const char *path)
+{
+    return !ok && dbmp_reset_calls == 1 && wal.rc == SQLITE_IOERR_TRUNCATE &&
+        wal.truncate_rc == SQLITE_IOERR_TRUNCATE && !wal.busy &&
+        !wal.truncated && wal.log_frames > 0 &&
+        wal.ckpt_frames == wal.log_frames && err[0] != 0 &&
+        wal_file_size(path) > 0;
+}
+static bool dbmp_remove_file(const char *path)
+{
+    if (unlink(path) == 0) return true;
+    return errno == ENOENT;
+}
+static int dbmp_remove_files(const char *path)
+{
+    int failures = 0;
+    char side[1100];
+    DBMP_CHECK("checkpoint main fixture removed", dbmp_remove_file(path));
+    int n = snprintf(side, sizeof side, "%s-wal", path);
+    bool fits = n >= 0 && (size_t)n < sizeof side;
+    DBMP_CHECK("checkpoint WAL fixture removed", fits && dbmp_remove_file(side));
+    n = snprintf(side, sizeof side, "%s-shm", path);
+    fits = n >= 0 && (size_t)n < sizeof side;
+    DBMP_CHECK("checkpoint SHM fixture removed", fits && dbmp_remove_file(side));
+    return failures;
+}
+static int dbmp_cleanup(sqlite3 *db, sqlite3 *reader, const char *path)
+{
+    int failures = 0;
+    if (reader) DBMP_CHECK("reader closes", sqlite3_close(reader) == SQLITE_OK);
+    if (db) {
+        DBMP_CHECK("writer transaction released", exec_sql(db, "ROLLBACK;") ||
+                   sqlite3_get_autocommit(db));
+        DBMP_CHECK("writer closes", sqlite3_close(db) == SQLITE_OK);
+    }
+    failures += dbmp_remove_files(path);
+    return failures;
+}
+/* Exercise the real maintenance caller; setup failures stop later cases. */
+static int dbmp_refusal_cases(sqlite3 *db, const char *path)
+{
+    int failures = 0;
+    sqlite3 *reader = NULL;
+    struct db_maintenance_sqlite_ctx ctx;
+    struct db_maintenance_port port = {0};
+    char err[256];
+    struct db_maintenance_wal_outcome wal;
+    bool ready = exec_sql(db, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;"
+                             "CREATE TABLE kv(k); INSERT INTO kv VALUES(1);") &&
+        db_maintenance_sqlite_bind(&ctx, db, &port) &&
+        sqlite3_extended_result_codes(db, 1) == SQLITE_OK;
+    DBMP_CHECK("checkpoint refusal fixture ready", ready);
+    if (!ready) goto cleanup;
+    ready = exec_sql(db, "BEGIN IMMEDIATE; INSERT INTO kv VALUES(2);");
+    DBMP_CHECK("PASSIVE write lock established", ready);
+    if (!ready) goto cleanup;
+    bool ok = port.wal_checkpoint(port.self, &wal, err, sizeof err);
+    DBMP_CHECK("locked PASSIVE refuses with exact outcome", dbmp_locked(ok, wal, err, path));
+    ready = exec_sql(db, "ROLLBACK;") &&
+        sqlite3_open_v2(path, &reader, SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK &&
+        exec_sql(reader, "BEGIN; SELECT * FROM kv;");
+    DBMP_CHECK("reader snapshot pinned", ready);
+    if (!ready) goto cleanup;
+    ok = port.wal_checkpoint(port.self, &wal, err, sizeof err);
+    DBMP_CHECK("pinned reader keeps reset busy after PASSIVE drain", dbmp_busy(ok, wal, err, path));
+    ready = exec_sql(reader, "ROLLBACK;") &&
+        exec_sql(db, "INSERT INTO kv VALUES(3);");
+    DBMP_CHECK("hard reset fixture ready", ready);
+    if (!ready) goto cleanup;
+    dbmp_reset_calls = 0;
+    dbmp_fail_reset = true;
+    ok = port.wal_checkpoint(port.self, &wal, err, sizeof err);
+    dbmp_fail_reset = false;
+    DBMP_CHECK("hard reset error propagates exact outcome", dbmp_hard(ok, wal, err, path));
+cleanup:
+    dbmp_fail_reset = false;
+    failures += dbmp_cleanup(db, reader, path);
+    return failures;
+}
+
+static int dbmp_refusal_fixture(const char *vfs_name)
+{
+    int failures = 0;
+    char path[1024];
+    int fd = test_mkstemp(path, sizeof path, "zcl_dbmp_refusal");
+    DBMP_CHECK("checkpoint fixture path created", fd >= 0);
+    if (fd < 0) return failures;
+    DBMP_CHECK("checkpoint fixture descriptor closes", close(fd) == 0);
+    sqlite3 *db = NULL;
+    bool ready = sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE,
+                               vfs_name) == SQLITE_OK;
+    DBMP_CHECK("checkpoint fixture opens", ready);
+    if (ready) failures += dbmp_refusal_cases(db, path);
+    else failures += dbmp_cleanup(db, NULL, path);
+    return failures;
+}
+
+static int t_dbmp_checkpoint_refusals(void)
+{
+    int failures = 0;
+    sqlite3_vfs *real = sqlite3_vfs_find(NULL);
+    DBMP_CHECK("checkpoint fixture VFS exists", real != NULL);
+    if (!real) return failures;
+    sqlite3_vfs vfs = *real;
+    vfs.zName = "dbmp-reset-failure";
+    vfs.pAppData = real;
+    vfs.xOpen = dbmp_open;
+    int registered = sqlite3_vfs_register(&vfs, 0);
+    DBMP_CHECK("checkpoint fixture VFS registers", registered == SQLITE_OK);
+    if (registered != SQLITE_OK) return failures;
+    failures += dbmp_refusal_fixture(vfs.zName);
+    DBMP_CHECK("fixture VFS unregisters", sqlite3_vfs_unregister(&vfs) == SQLITE_OK);
     return failures;
 }
 
@@ -472,6 +628,7 @@ int test_db_maintenance_port(void)
     } _test_next:;
 
     failures += t_wal_path_bounds();
+    failures += t_dbmp_checkpoint_refusals();
     failures += t_wal_ckpt_classify_ranking();
     failures += t_wal_ckpt_classify_unknown();
     failures += t_wal_ckpt_classify_counts();
