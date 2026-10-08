@@ -215,20 +215,20 @@ static struct zcl_result wrs_validate_request(
 }
 
 #ifndef _WIN32
-/* Refuse a target that cannot be represented before filesystem access. */
+/* Check both capacities before copying either locator or accessing files. */
 static struct zcl_result wrs_prepare_paths(
     const struct wallet_restore_request *req,
     struct wallet_restore_report *out)
 {
+    if (strlen(req->backup_path) >= sizeof(out->backup_path) ||
+        strlen(req->datadir) > sizeof(out->target_db) - sizeof("/node.db")) {
+        LOG_WARN(WRS_TAG, "restore: backup or target path exceeds report capacity");
+        return ZCL_ERR(-59, "restore: backup or target path exceeds report capacity");
+    }
     snprintf(out->backup_path, sizeof(out->backup_path), "%s",
              req->backup_path);
-    int n = snprintf(out->target_db, sizeof(out->target_db), "%s/node.db",
-                     req->datadir);
-    if (n <= 0 || (size_t)n >= sizeof(out->target_db)) {
-        out->target_db[0] = '\0';
-        LOG_WARN(WRS_TAG, "restore: target path exceeds report capacity");
-        return ZCL_ERR(-59, "restore: target path is too long");
-    }
+    snprintf(out->target_db, sizeof(out->target_db), "%s/node.db",
+             req->datadir);
     return ZCL_OK;
 }
 
@@ -419,10 +419,6 @@ struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
                    "current-SID single-writer, no-reparse private restore "
                    "transaction passes qualification");
 #else
-    struct zcl_result path_r = wrs_prepare_paths(req, out);
-    if (!path_r.ok)
-        return path_r;
-
     size_t n_tables = 0;
     const char *const *tables = wallet_backup_tables(&n_tables);
     if (n_tables > WALLET_RESTORE_TABLE_MAX) {
@@ -430,6 +426,10 @@ struct zcl_result wallet_restore_run(const struct wallet_restore_request *req,
                  n_tables);
         return ZCL_ERR(-32, "restore: wallet table set exceeds report capacity");
     }
+    struct zcl_result path_r = wrs_prepare_paths(req, out);
+    if (!path_r.ok)
+        return path_r;
+
     out->n_tables = n_tables;
     out->dry_run = req->dry_run;
     struct zcl_result target_r = wrs_prepare_target(req, out);

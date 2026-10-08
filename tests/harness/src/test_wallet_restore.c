@@ -26,6 +26,7 @@
  *   - a datadir held by another writer (the pidfile flock)
  *   - a held pidfile whose valid datadir path exceeds the probe buffer
  *   - a backup path that does not exist
+ *   - backup and target paths that cannot fit the report
  *   - a file that is not a SQLite database
  *   - a SQLite database holding none of the wallet tables
  *   - an encrypted backup with no password available
@@ -365,6 +366,117 @@ static int wr_test_long_datadir_lock(void)
 }
 #endif
 
+#if !defined(_WIN32)
+/* Private nested fixture: every component is below the filename limit. */
+static bool wr_long_path_fixture(char dirs[8][1100], size_t *count)
+{
+    *count = 0;
+    if (!test_mkdtemp(dirs[0], 1100, "wr_paths")) return false;
+    *count = 1;
+    if (strlen(dirs[0]) >= 1018) return false;
+    while (strlen(dirs[*count - 1]) < 1018) {
+        size_t len = strlen(dirs[*count - 1]);
+        size_t part = 1018 - len - 1;
+        if (part > 180) part = 180;
+        if (1018 - len - 1 - part == 1) --part;
+        if (*count >= 8 || part == 0) return false;
+        memcpy(dirs[*count], dirs[*count - 1], len);
+        dirs[*count][len++] = '/';
+        memset(dirs[*count] + len, 'p', part);
+        dirs[*count][len + part] = '\0';
+        if (mkdir(dirs[*count], 0700) != 0) return false;
+        ++*count;
+    }
+    return true;
+}
+
+static int wr_path_backup(const char *path)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    bool opened = sqlite3_open(path, &db) == SQLITE_OK;
+    WR_CHECK("opened synthetic path backup", opened);
+    bool seeded = opened && wr_exec(db,
+        "CREATE TABLE wallet_transactions (id INTEGER)");
+    WR_CHECK("created non-secret wallet table", seeded);
+    WR_CHECK("closed synthetic path backup", sqlite3_close(db) == SQLITE_OK);
+    return failures;
+}
+
+static int wr_path_refusal(const char *backup, const char *datadir)
+{
+    int failures = 0;
+    struct wallet_restore_request req = {
+        .backup_path = backup, .datadir = datadir, .dry_run = true
+    };
+    struct wallet_restore_report rep;
+    memset(&rep, 0xa5, sizeof(rep));
+    struct zcl_result r = wallet_restore_run(&req, &rep);
+    WR_CHECK("refuses unrepresentable restore path", !r.ok);
+    WR_CHECK("names path capacity refusal",
+             strstr(r.message, "path exceeds report capacity") != NULL);
+    WR_CHECK("refusal leaves report locators empty",
+             rep.backup_path[0] == '\0' && rep.target_db[0] == '\0');
+    char path[1200];
+    snprintf(path, sizeof(path), "%s/node", datadir);
+    WR_CHECK("refusal creates no clipped target", access(path, F_OK) != 0);
+    snprintf(path, sizeof(path), "%s/node.db", datadir);
+    WR_CHECK("refusal creates no requested target", access(path, F_OK) != 0);
+    return failures;
+}
+
+/* Also removes artifacts left by the deliberate path-check mutation. */
+static void wr_path_target_cleanup(const char *dir)
+{
+    static const char *const names[] = {
+        "node", "node-wal", "node-shm", "node-journal",
+        "node.db", "node.db-wal", "node.db-shm", "node.db-journal"
+    };
+    char path[1200];
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+        wr_rm(path);
+    }
+}
+
+static int wr_test_report_path_capacity(void)
+{
+    int failures = 0;
+    char dirs[8][1100], backup[1200], long_backup[1200];
+    size_t count;
+    bool built = wr_long_path_fixture(dirs, &count);
+    WR_CHECK("built private 1018-byte datadir", built);
+    if (built) {
+        const char *deep = dirs[count - 1];
+        snprintf(backup, sizeof(backup), "%s/backup.sqlite", dirs[0]);
+        snprintf(long_backup, sizeof(long_backup),
+                 "%s/123456789012345678901234.sqlite", deep);
+        WR_CHECK("datadir witness is exactly 1018 bytes", strlen(deep) == 1018);
+        WR_CHECK("backup witness is exactly 1050 bytes", strlen(long_backup) == 1050);
+        int seeded = wr_path_backup(backup);
+        failures += seeded;
+        /* SQLite's VFS has its own pathname limit. Seed through the short
+         * name, then give those same non-secret bytes a long filesystem name
+         * without asking SQLite to open it. */
+        bool linked = link(backup, long_backup) == 0;
+        WR_CHECK("linked synthetic backup at the long path", linked);
+        if (seeded == 0 && linked) {
+            failures += wr_path_refusal(backup, deep);
+            failures += wr_path_refusal(long_backup, dirs[0]);
+        }
+        wr_path_target_cleanup(deep);
+        wr_path_target_cleanup(dirs[0]);
+        WR_CHECK("removed short synthetic backup", unlink(backup) == 0);
+        WR_CHECK("removed long synthetic backup", unlink(long_backup) == 0);
+    }
+    while (count > 0) {
+        --count;
+        WR_CHECK("removed private path fixture directory", rmdir(dirs[count]) == 0);
+    }
+    return failures;
+}
+#endif
+
 /* ── rescan honesty ─────────────────────────────────────────── */
 
 /* struct wallet is large; keep it out of the group's stack frame. */
@@ -378,6 +490,9 @@ static struct wallet g_wr_wallet;
 static int wr_test_rescan_reports_missing_bodies(void)
 {
     int failures = 0;
+#if !defined(_WIN32)
+    failures += wr_test_report_path_capacity();
+#endif
 
     struct active_chain chain;
     active_chain_init(&chain);
