@@ -490,7 +490,8 @@ static void fxi_digests(struct fxi *x)
         if (r->main < 0)
             r->main = x->ents[r->ent].main_owned ? 1 : 0;
     }
-    qsort(x->rows, x->nrows, sizeof(*x->rows), fxi_row_cmp);
+    if (x->nrows > 1)
+        qsort(x->rows, x->nrows, sizeof(*x->rows), fxi_row_cmp);
     for (size_t k = 0; k < x->nrows;) {
         struct fxi_ent *t = &x->ents[x->rows[k].ent];
         struct sha3_256_ctx h, w;

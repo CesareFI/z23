@@ -568,7 +568,8 @@ static bool fxg_collect(struct fxg *g)
         if (!fxg_line(g, k))
             return false;
     fxg_nest(g);
-    qsort(g->sites, g->nsites, sizeof(*g->sites), fxg_site_cmp);
+    if (g->nsites > 1)
+        qsort(g->sites, g->nsites, sizeof(*g->sites), fxg_site_cmp);
     g->sorted = true;
     for (size_t k = 0; k < g->nsites; k++)
         if (g->sites[k].line != FXG_NO)

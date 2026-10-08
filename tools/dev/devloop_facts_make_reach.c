@@ -16,7 +16,8 @@ static int fxm_str_cmp(const void *a, const void *b)
 static void fxm_strs_seal(struct fxc_strs *s)
 {
     size_t w = 0;
-    qsort(s->v, s->n, sizeof(*s->v), fxm_str_cmp);
+    if (s->n > 1)
+        qsort(s->v, s->n, sizeof(*s->v), fxm_str_cmp);
     for (size_t k = 0; k < s->n; k++) {
         if (w > 0 && strcmp(s->v[w - 1], s->v[k]) == 0) {
             free(s->v[k]);

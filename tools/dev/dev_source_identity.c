@@ -544,7 +544,8 @@ static bool source_ns_names(int fd, char ***out, size_t *out_count,
         source_ns_names_free(names, count);
         return source_ns_fail(ctx, "include_directory_read_failed");
     }
-    qsort(names, count, sizeof(*names), source_ns_name_cmp);
+    if (count > 1)
+        qsort(names, count, sizeof(*names), source_ns_name_cmp);
     *out = names;
     *out_count = count;
     return true;

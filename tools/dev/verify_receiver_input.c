@@ -373,7 +373,8 @@ static const char *vr_depfile_split(const char *s, size_t n, char ***paths,
 
 static bool vr_dedupe(char **paths, size_t *count)
 {
-    qsort(paths, *count, sizeof(*paths), vr_path_order);
+    if (*count > 1)
+        qsort(paths, *count, sizeof(*paths), vr_path_order);
     size_t w = 0;
     for (size_t i = 0; i < *count; i++) {
         if (w > 0 && strcmp(paths[w - 1], paths[i]) == 0) {
