@@ -1060,6 +1060,87 @@ static void print_root_listing_now(void)
     free(names);
 }
 
+/* Compile the real selftest against fixed environment slots. Retired slots
+ * remain readable, but restoration from one is rejected deterministically. */
+static int clock_env_script(const char *cpath, const char *script, const char *binary)
+{
+    FILE *f = fopen(script, "w");
+    if (!f) return -1;
+#if defined(__APPLE__)
+    const char *linker = "-Wl,-dead_strip";
+#else
+    const char *linker = "-Wl,--gc-sections";
+#endif
+    int err = fprintf(f, "#!/bin/sh\nset -eu\n"
+        "cc -std=c23 -ffunction-sections -fdata-sections %s "
+        "-Dgetenv=clock_env_get -Dsetenv=clock_env_set -Dunsetenv=clock_env_unset "
+        "-Itools/lint/lintc -Iplatform/modules/base/include "
+        "'%s' tools/lint/lintc/gate_tree_walk.c tools/lint/lintc/lib.c "
+        "-o '%s' >/dev/null 2>&1\nexec '%s' >/dev/null 2>&1\n",
+        linker, cpath, binary, binary) < 0;
+    if (fclose(f)) err = 1;
+    if (err || chmod(script, 0700)) return -1;
+    return run_gate_script_watched(script, 30, "clock environment witness");
+}
+
+static int clock_env_witness(void)
+{
+    static const char source[] =
+        "#define _POSIX_C_SOURCE 200809L\n"
+        "#include <stdlib.h>\n#include <string.h>\n#include <stdio.h>\n"
+        "#include \"lintc.h\"\n"
+        "static char slots[8][8193]; static int used, active=-1, rejected;\n"
+        "char *clock_env_get(const char *n) { return !strcmp(n,\"ZCL_LINT_MODE\")"
+        " && active>=0 ? slots[active] : NULL; }\n"
+        "int clock_env_set(const char *n,const char *v,int overwrite) {\n"
+        " if(strcmp(n,\"ZCL_LINT_MODE\")) return -1;\n"
+        " for(int i=0;i<used;i++) if(v==slots[i] && i!=active)"
+        " { rejected++; return -1; }\n"
+        " if(active>=0 && !overwrite) return 0;\n"
+        " if(used==8 || strlen(v)>=sizeof slots[0]) return -1;\n"
+        " memcpy(slots[used],v,strlen(v)+1); active=used++; return 0; }\n"
+        "int clock_env_unset(const char *n) { if(strcmp(n,\"ZCL_LINT_MODE\"))"
+        " return -1; active=-1; return 0; }\n"
+        "static int check(const char *v,int expected) {\n"
+        " used=0; active=-1; rejected=0;\n"
+        " if(v && clock_env_set(\"ZCL_LINT_MODE\",v,1)) return 1;\n"
+        " int before=used, rc=check_no_raw_clock_outside_platform_selftest();\n"
+        " const char *got=clock_env_get(\"ZCL_LINT_MODE\");\n"
+        " if(rc!=expected || rejected || (v ? !got || strcmp(v,got) : got!=NULL))"
+        " { fprintf(stderr,\"clock environment restoration failed rc=%d rejected=%d\\n\","
+        "rc,rejected); return 1; }\n"
+        " return expected && used!=before; }\n"
+        "int main(void) {\n"
+        " if(clock_env_set(\"ZCL_LINT_MODE\",\"FAIL\",1)) return 10;\n"
+        " const char *borrowed=clock_env_get(\"ZCL_LINT_MODE\");\n"
+        " if(clock_env_set(\"ZCL_LINT_MODE\",\"WARN\",1) ||"
+        " clock_env_set(\"ZCL_LINT_MODE\",borrowed,1)!=-1 || rejected!=1) return 11;\n"
+        " if(check(\"FAIL\",0) || check(NULL,0) || check(\"\",0)) return 12;\n"
+        " char big[8193]; memset(big,'x',8192); big[8192]=0;\n"
+        " return check(big,2) ? 13 : 0; }\n";
+    char dir[] = "test-tmp/_clock_env_fixtureXXXXXX";
+    char cpath[PATH_MAX], script[PATH_MAX], binary[PATH_MAX];
+    if (!mkdtemp(dir)) return -1;
+    int rc = -1;
+    if (snprintf(cpath, sizeof cpath, "%s/witness.c", dir) >= (int)sizeof cpath
+        || snprintf(script, sizeof script, "%s/run.sh", dir) >= (int)sizeof script
+        || snprintf(binary, sizeof binary, "%s/witness", dir) >= (int)sizeof binary) {
+        (void)rmdir(dir);
+        return -1;
+    }
+    FILE *f = fopen(cpath, "w");
+    if (f) {
+        int err = fputs(source, f) == EOF;
+        if (fclose(f)) err = 1;
+        if (!err) rc = clock_env_script(cpath, script, binary);
+    }
+    if (unlink(binary) && errno != ENOENT) rc = -1;
+    if (unlink(script) && errno != ENOENT) rc = -1;
+    if (unlink(cpath) && errno != ENOENT) rc = -1;
+    if (rmdir(dir)) rc = -1;
+    return rc;
+}
+
 int t_no_stray_root_files(void)
 {
     int failures = 0;
@@ -1067,6 +1148,7 @@ int t_no_stray_root_files(void)
     char *makefile_buf = NULL;
     char *doc_buf = NULL;
 
+    int clock_env_rc = clock_env_witness();
     int baseline_rc = run_gate_script(ROOT_STRAY_SCRIPT_REL, NULL);
     if (baseline_rc != 0) {
         fprintf(stderr,
@@ -1101,6 +1183,7 @@ int t_no_stray_root_files(void)
 
     TEST("[lint-gate] check-no-stray-root-files: clean root passes, isolated "
          "classification trips, recovers, wired") {
+        ASSERT(clock_env_rc == 0);
         ASSERT(baseline_rc == 0);
         ASSERT(trip_rc == 1);
         ASSERT(recover_rc == 0);

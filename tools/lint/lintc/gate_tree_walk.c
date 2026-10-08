@@ -384,6 +384,15 @@ static int keep_case(int (*keep)(const char *, const char *), const regex_t *re,
 
 int check_no_raw_clock_outside_platform_selftest(void)
 {
+    const char *oldm = getenv("ZCL_LINT_MODE");
+    char saved_mode[8192];
+    int had_mode = oldm != NULL;
+    if (had_mode) {
+        size_t n = strlen(oldm);
+        if (n >= sizeof saved_mode)
+            return die("z23-lint: inherited clock mode too long\n", "");
+        memcpy(saved_mode, oldm, n + 1);
+    }
     regex_t re;
     int cr = clock_comp(&re);
     if (cr) return cr;
@@ -401,11 +410,13 @@ int check_no_raw_clock_outside_platform_selftest(void)
             | keep_case(clock_keep, &re, "tools/lint/foo.c", hit, 1, 1, "FAIL")
             | keep_case(clock_keep, &re, "platform/modules/platform/src/clock.c", hit, 0, 0, "FAIL")
             | keep_case(clock_keep, &re, "tools/lint/foo.c", marked, 0, 0, "FAIL");
-    const char *oldm = getenv("ZCL_LINT_MODE");
     if (setenv("ZCL_LINT_MODE", "WARN", 1) != 0) bad = 1;
     bad |= keep_case(clock_keep, &re, "tools/lint/foo.c", hit, 1, 0, clock_mode());
-    if (oldm) (void)setenv("ZCL_LINT_MODE", oldm, 1);
-    else (void)unsetenv("ZCL_LINT_MODE");
+    if (had_mode ? setenv("ZCL_LINT_MODE", saved_mode, 1)
+                 : unsetenv("ZCL_LINT_MODE")) {
+        (void)die("z23-lint: cannot restore clock mode\n", "");
+        bad = 1;
+    }
     (void)lint_filter_excluded;
     (void)lint_annotate_stray;
     regfree(&re);
