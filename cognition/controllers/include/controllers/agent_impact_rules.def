@@ -838,7 +838,7 @@ AGENT_IMPACT_RULE("engine/services/src/db_maintenance.c|engine/services/include/
  * the per-key resident quota counts STORED rows, and the reclaim is what
  * hands a key its slots back once the rows holding them are dead and
  * outside the burst window. */
-AGENT_IMPACT_RULE("engine/models/src/fleet_board_post.c|engine/models/include/models/fleet_board_post.h|tests/harness/src/test_fleet_board.c", "fleet_board fleet_board_bridge db_maintenance models make_lint_gates")
+AGENT_IMPACT_RULE("engine/composition/src/boot_fleet_board_rpc.c|engine/models/src/fleet_board_post.c|engine/models/include/models/fleet_board_post.h|tests/harness/src/test_fleet_board.c", "fleet_board fleet_board_bridge db_maintenance models make_lint_gates")
 /* The board's wire format, and the home of the default post TTL: change
  * what a post's lifetime defaults to and every stored row's expiry moves,
  * which is exactly what the resident quota counts and the reclaim keys on.

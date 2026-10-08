@@ -27,6 +27,7 @@
 #include "net/net.h"
 #include "net/peer_scoring.h"
 #include "platform/time_compat.h"
+#include "platform/clock.h"
 #include "util/thread_registry.h"
 #include "test/mesh_stream_fixture.h"
 #include "test/mesh_stream_loopback.h"
@@ -1654,6 +1655,106 @@ static int test_fleet_board_native_busy(void)
     return failures;
 }
 
+static int64_t fb_room_boundary_mono_ns(void *self)
+{
+    (void)self;
+    return INT64_C(1000000000);
+}
+
+static int64_t fb_room_boundary_wall_ms(void *self)
+{
+    (void)self;
+    return INT64_C(1700000000000);
+}
+
+static bool fb_rpc_room_post(struct fb_rpc_fixture *f, const char *room,
+                             struct json_value *out)
+{
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    bool ok = json_push_kv_str(&input, "op", "post") &&
+              json_push_kv_str(&input, "kind", "note") &&
+              json_push_kv_str(&input, "scope", "public") &&
+              json_push_kv_str(&input, "room", room) &&
+              json_push_kv_str(&input, "text", "x") &&
+              fb_rpc_call(f, &input, out);
+    json_free(&input);
+    return ok;
+}
+
+static int fb_rpc_room_refusal(struct fb_rpc_fixture *f, const char *room)
+{
+    int failures = 0;
+    struct json_value out;
+    json_init(&out);
+    {
+        struct fleet_board_status before, after;
+        ASSERT(db_fleet_board_status(&f->db, INT64_C(1700000000), &before));
+        int changes = sqlite3_total_changes(f->db.db);
+        ASSERT(fb_rpc_room_post(f, room, &out));
+        ASSERT(!json_get_bool(json_get(&out, "ok")));
+        ASSERT_STR_EQ(json_get_str(json_get(&out, "code")), "BAD_ROOM");
+        ASSERT_EQ(sqlite3_total_changes(f->db.db), changes);
+        ASSERT(db_fleet_board_status(&f->db, INT64_C(1700000000), &after));
+        ASSERT_EQ(after.posts, before.posts);
+    } _test_next:;
+    json_free(&out);
+    return failures;
+}
+
+static int fb_rpc_room_acceptance(struct fb_rpc_fixture *f, const char *room)
+{
+    int failures = 0;
+    struct json_value out;
+    json_init(&out);
+    {
+        struct fleet_board_status before, after;
+        ASSERT(db_fleet_board_status(&f->db, INT64_C(1700000000), &before));
+        ASSERT(fb_rpc_room_post(f, room, &out));
+        ASSERT(json_get_bool(json_get(&out, "ok")));
+        uint8_t id[32];
+        ASSERT(fleet_board_id_from_hex(json_get_str(json_get(&out, "id")), id));
+        struct db_fleet_board_post row;
+        ASSERT(db_fleet_board_post_find(&f->db, id, &row));
+        ASSERT_STR_EQ(row.post.room, room);
+        ASSERT(db_fleet_board_status(&f->db, INT64_C(1700000000), &after));
+        ASSERT_EQ(after.posts, before.posts + INT64_C(1));
+    } _test_next:;
+    json_free(&out);
+    return failures;
+}
+
+static int test_fleet_board_rpc_room_boundary(void)
+{
+    int failures = 0;
+    static const clock_iface_t clock = {
+        .now_monotonic_ns = fb_room_boundary_mono_ns,
+        .now_wall_ms = fb_room_boundary_wall_ms,
+    };
+    const clock_iface_t *saved_clock = clock_default();
+    clock_set_default(&clock);
+    struct fb_rpc_fixture f;
+    bool opened = fb_rpc_fixture_open(&f, "rpc-room-boundary");
+    TEST("fleet board: RPC refuses room33 without writes and preserves room32") {
+        ASSERT(opened);
+        char room[FLEET_BOARD_ROOM_MAX + 2];
+        memset(room, 'a', sizeof(room) - 1);
+        room[sizeof(room) - 1] = '\0';
+        ASSERT_EQ(fb_rpc_room_refusal(&f, room), 0);
+        room[FLEET_BOARD_ROOM_MAX] = '\0';
+        ASSERT_EQ(fb_rpc_room_acceptance(&f, room), 0);
+        PASS();
+    } _test_next:;
+    if (opened) fb_rpc_fixture_close(&f);
+    if (test_rm_rf_recursive(f.dir) != 0) {
+        fprintf(stderr, "fleet board: room-boundary cleanup failed\n");
+        failures++;
+    }
+    clock_set_default(saved_clock);
+    return failures;
+}
+
 static int test_fleet_board_rpc_scope_default(void)
 {
     int failures = 0;
@@ -3205,6 +3306,7 @@ int test_fleet_board(void)
     failures += test_fleet_board_rpc_verification();
     failures += test_fleet_board_rpc_concurrency();
     failures += test_fleet_board_rpc_scope_default();
+    failures += test_fleet_board_rpc_room_boundary();
     failures += test_fleet_board_rpc_created_at();
     failures += test_fleet_board_rpc_fleet_page();
     failures += test_fleet_board_native_busy();

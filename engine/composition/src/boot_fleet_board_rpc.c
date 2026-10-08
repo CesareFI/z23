@@ -172,6 +172,35 @@ static bool fb_compose_time(const struct json_value *in,
     return true;
 }
 
+static bool fb_compose_scope(const struct json_value *in,
+                             struct json_value *result,
+                             struct fleet_board_post *post)
+{
+    /* Everything signed today is scoped. The default is the public default
+     * room, which is where the pre-scope board already lives; "fleet" marks
+     * the post fleet-private, and a fleet post names no room. */
+    const char *scope_name = fb_str(in, "scope", "public");
+    if (!fleet_board_scope_from_name(scope_name, &post->scope)) {
+        fb_error(result, "BAD_SCOPE", "scope must be public or fleet");
+        return false;
+    }
+    const char *room = fb_str(in, "room",
+        post->scope == FLEET_BOARD_SCOPE_PUBLIC ? FLEET_BOARD_ROOM_DEFAULT
+                                                : "");
+    (void)snprintf(post->room, sizeof(post->room), "%s", room);
+    if (post->scope == FLEET_BOARD_SCOPE_FLEET && post->room[0]) {
+        fb_error(result, "BAD_ROOM", "a fleet-scoped post names no room");
+        return false;
+    }
+    if (post->scope == FLEET_BOARD_SCOPE_PUBLIC &&
+        !fleet_board_room_valid(room)) {
+        fb_error(result, "BAD_ROOM",
+                 "room must be 1..32 bytes of [a-z0-9-]");
+        return false;
+    }
+    return true;
+}
+
 /* Build an unsigned post from the request. Signing, storing, and announcing
  * belong to boot_fleet_board_publish; this only reads caller input. */
 static bool fb_compose(const struct json_value *in, struct json_value *result,
@@ -204,28 +233,8 @@ static bool fb_compose(const struct json_value *in, struct json_value *result,
                    fb_str(in, "agent", ""));
     (void)snprintf(post->receipt, sizeof(post->receipt), "%s",
                    fb_str(in, "receipt", ""));
-    /* Everything signed today is scoped. The default is the public default
-     * room, which is where the pre-scope board already lives; "fleet" marks
-     * the post fleet-private, and a fleet post names no room. */
-    const char *scope_name = fb_str(in, "scope", "public");
-    if (!fleet_board_scope_from_name(scope_name, &post->scope)) {
-        fb_error(result, "BAD_SCOPE", "scope must be public or fleet");
+    if (!fb_compose_scope(in, result, post))
         return false;
-    }
-    const char *room = fb_str(in, "room",
-        post->scope == FLEET_BOARD_SCOPE_PUBLIC ? FLEET_BOARD_ROOM_DEFAULT
-                                                : "");
-    (void)snprintf(post->room, sizeof(post->room), "%s", room);
-    if (post->scope == FLEET_BOARD_SCOPE_FLEET && post->room[0]) {
-        fb_error(result, "BAD_ROOM", "a fleet-scoped post names no room");
-        return false;
-    }
-    if (post->scope == FLEET_BOARD_SCOPE_PUBLIC &&
-        !fleet_board_room_valid(post->room)) {
-        fb_error(result, "BAD_ROOM",
-                 "room must be 1..32 bytes of [a-z0-9-]");
-        return false;
-    }
     const char *ref = fb_str(in, "ref", NULL);
     if (ref && ref[0] && !fleet_board_id_from_hex(ref, post->ref)) {
         fb_error(result, "BAD_REF", "ref must be a 64-character post id");
