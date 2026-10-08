@@ -233,6 +233,19 @@ static bool tunnel_allow_parse(char *line, struct mesh_tunnel_allow_row *out)
     return true;
 }
 
+/* Every row needs the port/why delimiter, even when why is empty.
+ * A complete final row does not need a terminating LF. */
+static bool tunnel_allow_complete(const char *line)
+{
+    line += strspn(line, " \t");
+    const char *port = strchr(line, ' ');
+    if (!port)
+        return false;
+    port += strspn(port, " ");
+    size_t digits = strspn(port, "0123456789");
+    return digits != 0 && port[digits] == ' ';
+}
+
 /* Read the allow file into the table. Called with the tunnel lock held.
  * No file is not an error: it is the honest answer that nothing is
  * allowed, which is also what an unreadable or over-long file means. */
@@ -257,17 +270,26 @@ static void tunnel_allow_load_locked(void)
                                   &len, TUN_TAG))
         return;
     char *cursor = text;
-    while (cursor && *cursor && g_allow_count < MESH_TUNNEL_ALLOW_MAX) {
-        char *nl = strchr(cursor, '\n');
-        if (nl)
-            *nl = '\0';
+    char *limit = text + len;
+    while (cursor < limit && g_allow_count < MESH_TUNNEL_ALLOW_MAX) {
+        char *nl = memchr(cursor, '\n', (size_t)(limit - cursor));
+        /* Skip a NUL-bearing record by its counted boundary so later
+         * complete rows remain usable, including a final row at EOF. */
+        char *end_record = nl ? nl : limit;
+        if (memchr(cursor, '\0', (size_t)(end_record - cursor))) {
+            cursor = nl ? nl + 1 : limit;
+            continue;
+        }
+        *end_record = '\0';
+        if (!tunnel_allow_complete(cursor)) {
+            cursor = nl ? nl + 1 : limit;
+            continue;
+        }
         struct mesh_tunnel_allow_row row;
         memset(&row, 0, sizeof(row));
         if (tunnel_allow_parse(cursor, &row))
             g_allow[g_allow_count++] = row;
-        if (!nl)
-            break;
-        cursor = nl + 1;
+        cursor = nl ? nl + 1 : limit;
     }
     free(text);
 }

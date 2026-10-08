@@ -2850,7 +2850,6 @@ tests/harness/src/test_mesh_private_object_receiver.c:receiver_fixture_make:16
 tests/harness/src/test_mesh_private_object_stage.c:stage_fixture_make:16
 tests/harness/src/test_mesh_status_wire.c:mesh_handshake:16
 tests/harness/src/test_mesh_terminal_worker.c:test_mesh_terminal_worker_platform_arm#2:33
-tests/harness/src/test_mesh_tunnel.c:test_mesh_tunnel:19
 tests/harness/src/test_metaverse_agent_broker.c:mb_audit:36
 tests/harness/src/test_metaverse_agent_broker.c:mb_money_portfolio:33
 tests/harness/src/test_metaverse_agent_broker.c:mb_money_rpc:18

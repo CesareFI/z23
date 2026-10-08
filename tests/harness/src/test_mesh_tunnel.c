@@ -276,9 +276,101 @@ static size_t tunnel_open_payload(uint16_t port, uint8_t out[8])
     return 8u;
 }
 
-int test_mesh_tunnel(void)
+#define TUNNEL_TEXT_PEER \
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+#define TUNNEL_TEXT_BEFORE TUNNEL_TEXT_PEER " 80 before\n"
+#define TUNNEL_TEXT_AFTER TUNNEL_TEXT_PEER " 81 after\n"
+
+static int tunnel_allow_text_cases(void)
 {
     int failures = 0;
+    char dir[256], path[512];
+    test_make_tmpdir(dir, sizeof(dir), "mesh_tunnel", "allow_text");
+    snprintf(path, sizeof(path), "%s/%s", dir, MESH_TUNNEL_ALLOW_FILE);
+    struct boot_svc_ctx svc = {0};
+    svc.datadir = dir;
+    TEST("mesh tunnel: missing allow file grants nothing") {
+        mesh_tunnel_test_bind(&svc);
+        size_t total = SIZE_MAX;
+        ASSERT_EQ(mesh_tunnel_allow_list(NULL, 0, &total), (size_t)0);
+        ASSERT_EQ(total, (size_t)0);
+        PASS();
+    }
+    static const char hidden[] = TUNNEL_TEXT_BEFORE
+        TUNNEL_TEXT_PEER " 22\0junk\n" TUNNEL_TEXT_AFTER;
+    static const char partial[] = TUNNEL_TEXT_BEFORE TUNNEL_TEXT_PEER " 2";
+    static const char partial_lf[] = TUNNEL_TEXT_BEFORE
+        TUNNEL_TEXT_PEER " 2\n" TUNNEL_TEXT_AFTER;
+    static const char leading[] = TUNNEL_TEXT_BEFORE
+        "\0" TUNNEL_TEXT_PEER " 22\n" TUNNEL_TEXT_AFTER;
+    static const char between[] = TUNNEL_TEXT_BEFORE "\0\n" TUNNEL_TEXT_AFTER;
+    static const char space[] = TUNNEL_TEXT_BEFORE TUNNEL_TEXT_PEER " ";
+    static const char valid[] = TUNNEL_TEXT_PEER " 80 \xc2\xa2\r\n"
+        TUNNEL_TEXT_PEER " 81 \n";
+    static const char final[] = TUNNEL_TEXT_PEER " 80 before";
+    static const char final_empty[] = TUNNEL_TEXT_BEFORE
+        TUNNEL_TEXT_PEER " 81 ";
+    const struct {
+        const char *bytes;
+        size_t len, count;
+    } cases[] = {
+        {hidden, sizeof(hidden) - 1, 2},
+        {partial, sizeof(partial) - 1, 1},
+        {partial_lf, sizeof(partial_lf) - 1, 2},
+        {leading, sizeof(leading) - 1, 2},
+        {between, sizeof(between) - 1, 2},
+        {space, sizeof(space) - 1, 1},
+        {valid, sizeof(valid) - 1, 2},
+        {final, sizeof(final) - 1, 1},
+        {final_empty, sizeof(final_empty) - 1, 2},
+        {"", 0, 0},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        TEST("mesh tunnel: counted complete allow records") {
+            FILE *fp = fopen(path, "wb");
+            ASSERT(fp != NULL);
+            size_t wrote = fwrite(cases[i].bytes, 1, cases[i].len, fp);
+            int closed = fclose(fp);
+            ASSERT_EQ(wrote, cases[i].len);
+            ASSERT_EQ(closed, 0);
+            mesh_tunnel_test_bind(&svc);
+            struct mesh_tunnel_allow_row rows[3];
+            size_t total = SIZE_MAX;
+            ASSERT_EQ(mesh_tunnel_allow_list(rows, 3, &total), cases[i].count);
+            ASSERT_EQ(total, cases[i].count);
+            for (size_t j = 0; j < total; j++) {
+                ASSERT_EQ(rows[j].port, 80u + j);
+                ASSERT_STR_EQ(rows[j].peer, TUNNEL_TEXT_PEER);
+            }
+            PASS();
+        }
+    }
+_test_next:
+    mesh_tunnel_test_reset();
+    mesh_tunnel_test_bind(NULL);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static void tunnel_test_node_drop(struct p2p_node *node,
+                                  struct send_segment *queue)
+{
+    if (!node)
+        return;
+    while (queue && queue->next) {
+        struct send_segment *seg = queue->next;
+        queue->next = seg->next;
+        send_segment_free(seg);
+    }
+    node->send_head = NULL;
+    node->send_tail = NULL;
+    node->transport = NULL; /* owned by the fixture */
+    p2p_node_free(node);
+}
+
+int test_mesh_tunnel(void)
+{
+    int failures = tunnel_allow_text_cases();
     char dir[256];
     test_make_tmpdir(dir, sizeof(dir), "mesh_tunnel", "loopback");
     struct mesh_term_fixture f;
@@ -574,28 +666,8 @@ _test_next:
     mesh_stream_test_reset();
     mesh_stream_test_bind(NULL);
     app_runtime_set_current(NULL);
-    if (a) {
-        while (a_queue && a_queue->next) {
-            struct send_segment *seg = a_queue->next;
-            a_queue->next = seg->next;
-            send_segment_free(seg);
-        }
-        a->send_head = NULL;
-        a->send_tail = NULL;
-        a->transport = NULL; /* owned by the fixture */
-        p2p_node_free(a);
-    }
-    if (b) {
-        while (b_queue && b_queue->next) {
-            struct send_segment *seg = b_queue->next;
-            b_queue->next = seg->next;
-            send_segment_free(seg);
-        }
-        b->send_head = NULL;
-        b->send_tail = NULL;
-        b->transport = NULL;
-        p2p_node_free(b);
-    }
+    tunnel_test_node_drop(a, a_queue);
+    tunnel_test_node_drop(b, b_queue);
     free(a_queue);
     free(b_queue);
     if (nm.nodes) {
