@@ -253,7 +253,8 @@ static int fx_path_cmp(const void *a, const void *b)
 /* Replace the plan's closure with the narrowed file set. */
 static bool fx_fold(struct zcl_devloop_plan *plan, struct fx_set *files)
 {
-    qsort(files->items, files->len, files->width, fx_path_cmp);
+    if (files->len > 1)
+        qsort(files->items, files->len, files->width, fx_path_cmp);
     plan->closure_attempted = true;
     plan->closure_snapshot = false;
     plan->closure_universal = plan->path_universal;

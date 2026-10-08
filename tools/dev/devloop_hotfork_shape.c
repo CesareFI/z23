@@ -1208,8 +1208,9 @@ static bool shape_load_baseline(struct shape_run *run, char *why,
             return shape_refuse(why, why_len, "OBJECT_UNREADABLE", tu,
                                 "the object's symbols or relocations cannot be read");
     }
-    qsort(run->base.items, run->base.count, sizeof(run->base.items[0]),
-          shape_cmp);
+    if (run->base.count > 1)
+        qsort(run->base.items, run->base.count, sizeof(run->base.items[0]),
+              shape_cmp);
     return true;
 }
 
@@ -2155,8 +2156,9 @@ static bool shape_compare(struct shape_run *run, char *why, size_t why_len)
         return shape_refuse(why, why_len, "INIT_FINI", run->next.init_fini,
                             "the candidate carries a constructor or destructor "
                             "section that would run at dlopen");
-    qsort(run->next.items, run->next.count, sizeof(run->next.items[0]),
-          shape_cmp);
+    if (run->next.count > 1)
+        qsort(run->next.items, run->next.count, sizeof(run->next.items[0]),
+              shape_cmp);
     struct shape_diff diff = {0};
     shape_walk(run, &diff);
     return shape_report(&diff, why, why_len);

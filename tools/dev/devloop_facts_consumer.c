@@ -359,7 +359,8 @@ static bool fxc_universe(struct fxc *c)
     bool ok = fxc_scan(c, "", 0);
     if (!ok || c->cand.n >= ZCL_DEVLOOP_FACTS_TU_MAX)
         fxc_incomplete(c, "facts-scan-bounded", c->facts_dir);
-    qsort(c->cand.v, c->cand.n, sizeof(*c->cand.v), fxc_str_cmp);
+    if (c->cand.n > 1)
+        qsort(c->cand.v, c->cand.n, sizeof(*c->cand.v), fxc_str_cmp);
     fxc_note_moved(c);
     ok = true;
     for (size_t k = 0; ok && k < c->cand.n; k++)
@@ -368,7 +369,8 @@ static bool fxc_universe(struct fxc *c)
          fxc_name_collisions(c);
     if (c->mixed)
         fxc_incomplete(c, "producer-mismatch", "two producers in the universe");
-    qsort(r->tus, r->ntus, sizeof(*r->tus), fxc_tu_cmp);
+    if (r->ntus > 1)
+        qsort(r->tus, r->ntus, sizeof(*r->tus), fxc_tu_cmp);
     for (size_t k = 0; k < r->ntus; k++)
         r->naffected += r->tus[k].affected;
     r->applied = true;

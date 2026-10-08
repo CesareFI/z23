@@ -423,8 +423,10 @@ static bool fxh_changed(struct fxh_diff *d, struct fxh_pieces *b,
 {
     size_t i = 0, j = 0;
     bool ok = true;
-    qsort(b->v, b->n, sizeof(*b->v), fxh_piece_cmp);
-    qsort(a->v, a->n, sizeof(*a->v), fxh_piece_cmp);
+    if (b->n > 1)
+        qsort(b->v, b->n, sizeof(*b->v), fxh_piece_cmp);
+    if (a->n > 1)
+        qsort(a->v, a->n, sizeof(*a->v), fxh_piece_cmp);
     while (ok && (i < b->n || j < a->n)) {
         int r = i >= b->n   ? 1
                 : j >= a->n ? -1

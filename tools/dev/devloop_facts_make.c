@@ -170,7 +170,8 @@ static int fxm_var_cmp(const void *a, const void *b)
 static void fxm_vars_seal(struct fxm *m)
 {
     size_t w = 0;
-    qsort(m->vars, m->nvars, sizeof(*m->vars), fxm_var_cmp);
+    if (m->nvars > 1)
+        qsort(m->vars, m->nvars, sizeof(*m->vars), fxm_var_cmp);
     for (size_t k = 0; k < m->nvars; k++) {
         if (w > 0 && strcmp(m->vars[w - 1].name, m->vars[k].name) == 0) {
             free(m->vars[w - 1].value);

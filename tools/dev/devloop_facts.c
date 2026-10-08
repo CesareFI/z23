@@ -306,7 +306,8 @@ static bool fx_scope_digest(struct fx_ctx *c, const uint8_t *m, size_t n,
     if (!vcs_semantic_section_v1_each(m, n, VCS_SEMANTIC_SECTION_V1_SPANS,
                                       fx_spans_cb, c))
         return fx_fail(c, "invalid-manifest", "spans of %s", c->tu->source);
-    qsort(c->ranges, c->nranges, sizeof(*c->ranges), fx_range_cmp);
+    if (c->nranges > 1)
+        qsort(c->ranges, c->nranges, sizeof(*c->ranges), fx_range_cmp);
     for (size_t k = 0; k < c->nranges; k++) {
         struct zcl_devloop_facts_range r = c->ranges[k];
         if (r.end > src_len || r.begin > r.end)
