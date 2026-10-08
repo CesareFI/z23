@@ -22,6 +22,7 @@
 #if defined(ZCL_TESTING) && !defined(_WIN32)
 
 #include "lint_gate_selftests.h"
+#include "../../../tools/lint/lintc/gate_arm_symbol_single_priv.h"
 
 /* Gate #23 — universal thread supervision ratchet. Runs hermetically via the
  * ZCL_THREADSUP_SCAN_ROOTS / ZCL_THREADSUP_BASELINE overrides so it never
@@ -887,9 +888,251 @@ done:
     return failures;
 }
 
-int t_lint_gates_fail_loud_on_empty_scan(void)
+static void arm_baseline_exec(const char *exe, const char *dir)
+{
+    if (chdir(dir) != 0) _exit(126);
+    int fd = open("out", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) _exit(126);
+    if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) _exit(126);
+    close(fd);
+    char *const env[] = { "ZCL_LINT_MODE=FAIL", "ZCL_ARM_SYMBOL_BASELINE=baseline",
+        "ZCL_ARM_SYMBOL_SCAN_ROOTS=src", "ZCL_ARM_SYMBOL_FILE_FLOOR=1",
+        "ZCL_ARM_SYMBOL_COVERAGE=0", "LC_ALL=C", NULL };
+    char *const args[] = { (char *)exe, "check-arm-symbol-single", NULL };
+    execve(exe, args, env);
+    _exit(127);
+}
+
+static int arm_baseline_output(const char *dir, const char *diagnostic)
+{
+    char out_path[PATH_MAX], out[2048];
+    int n = snprintf(out_path, sizeof out_path, "%s/out", dir);
+    if (n < 0 || (size_t)n >= sizeof out_path) return 0;
+    FILE *f = fopen(out_path, "r");
+    if (!f) return 0;
+    size_t used = fread(out, 1, sizeof out - 1, f);
+    int read_ok = !ferror(f) && feof(f);
+    int closed = fclose(f);
+    out[used] = '\0';
+    if (!read_ok || closed != 0) return 0;
+    return strstr(out, diagnostic) != NULL;
+}
+
+static int arm_baseline_run(const char *exe, const char *dir, int expected,
+                            const char *diagnostic)
+{
+    /* The registered group's enclosing supervisor owns the execution bound. */
+    pid_t pid = fork();
+    if (pid < 0) return 0;
+    if (pid == 0) arm_baseline_exec(exe, dir);
+    int status = 0;
+    pid_t waited;
+    do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
+    if (waited != pid || !WIFEXITED(status)) return 0;
+    if (WEXITSTATUS(status) != expected) return 0;
+    return arm_baseline_output(dir, diagnostic);
+}
+
+static int arm_baseline_fixture(const char *dir, char path[PATH_MAX],
+                                char baseline[2048])
+{
+    char rel[384], name[256], source[1024];
+    memcpy(rel, "src/", 4);
+    memset(rel + 4, 'a', 190);
+    rel[194] = '/';
+    memset(rel + 195, 'b', 180);
+    memcpy(rel + 375, "/probe.c", 9);
+    memset(name, 'f', 255);
+    name[255] = '\0';
+    int n = snprintf(path, PATH_MAX, "%s/%s", dir, rel);
+    if (n < 0 || n >= PATH_MAX) return 0;
+    size_t prefix = strlen(dir) + 1;
+    path[prefix + 3] = '\0';
+    if (mkdir(path, 0700) != 0) return 0;
+    path[prefix + 3] = '/';
+    path[prefix + 194] = '\0';
+    if (mkdir(path, 0700) != 0) return 0;
+    path[prefix + 194] = '/';
+    path[prefix + 375] = '\0';
+    if (mkdir(path, 0700) != 0) return 0;
+    path[prefix + 375] = '/';
+    n = snprintf(source, sizeof source,
+        "#if 1\nint %s(void){return 0;}\n#else\nint %s(void){return 1;}\n#endif\n",
+        name, name);
+    if (n < 0 || (size_t)n >= sizeof source || write_file(path, source) != 0)
+        return 0;
+    n = snprintf(baseline, 2048,
+        "# z23-generated-artifact: zcl.generated_artifact.v1\n"
+        "# artifact-id: zcl.arm_symbol_single_baseline.v1\n"
+        "# asserts: multi_arm_definition(path,symbol)\n"
+        "# generated-by: tools/lint/check_arm_symbol_single.sh\n"
+        "# regenerate: ZCL_LINT_MODE=UPDATE tools/lint/check_arm_symbol_single.sh\n"
+        "%s\t%sX\n", rel, name);
+    return n > 0 && n < 2048;
+}
+
+static int arm_baseline_write(const char *dir, const char *bytes, size_t n)
+{
+    char path[PATH_MAX];
+    int k = snprintf(path, sizeof path, "%s/baseline", dir);
+    if (k < 0 || (size_t)k >= sizeof path) return 0;
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    int wrote = fwrite(bytes, 1, n, f) == n;
+    int closed = fclose(f);
+    return wrote && closed == 0;
+}
+
+static int arm_baseline_case(const char *exe, const char *dir,
+                             const char *bytes, size_t n, int status,
+                             const char *diagnostic)
+{
+    if (!arm_baseline_write(dir, bytes, n)) return 0;
+    int ok = arm_baseline_run(exe, dir, status, diagnostic);
+    if (!ok)
+        fprintf(stderr, "[lint-gate] baseline case (%zu bytes): expected "
+                        "exit %d and %s\n", n, status, diagnostic);
+    return ok;
+}
+
+static int arm_baseline_key_cases(const char *exe, const char *dir,
+                                  char baseline[2048])
+{
+    const char *pass = "PASS (1 files scanned, 1 duplicate pair(s), all 1 baselined)";
+    size_t n = strlen(baseline);
+    if (n < 2 || n >= 2048) return 0;
+    int ok = arm_baseline_case(exe, dir, baseline, n, 2,
+                               "z23-lint: baseline overflow");
+    baseline[n - 2] = '\n';
+    ok &= arm_baseline_case(exe, dir, baseline, n - 1, 0, pass);
+    ok &= arm_baseline_case(exe, dir, baseline, n - 2, 0, pass);
+    return ok;
+}
+
+static int arm_baseline_nul_cases(const char *exe, const char *dir,
+                                  const char *path, char baseline[2048])
+{
+    if (write_file(path,
+        "#if 1\nint foo(void){return 0;}\n#else\nint foo(void){return 1;}\n#endif\n") != 0)
+        return 0;
+    const char *malformed = "z23-lint: malformed baseline record";
+    char *tab = strrchr(baseline, '\t');
+    char *newline = strchr(baseline, '\n');
+    if (!tab || !newline) return 0;
+    char *name = tab + 1;
+    size_t offset = (size_t)(name - baseline);
+    if (offset > 2048 - 6) return 0;
+    /* 383 path bytes + tab + foo + NUL + X: below the extent limit. */
+    memcpy(name, "foo\0X\n", 6);
+    int ok = arm_baseline_case(exe, dir, baseline, offset + 6, 2, malformed);
+    memcpy(name, "foo\n", 4);
+    size_t n = offset + 4;
+    size_t claim = (size_t)(newline - baseline);
+    /* Preserve the entire valid claim prefix, then append NUL and junk. */
+    memmove(baseline + claim + 2, baseline + claim, n - claim);
+    baseline[claim] = '\0';
+    baseline[claim + 1] = 'X';
+    ok &= arm_baseline_case(exe, dir, baseline, n + 2, 2, malformed);
+    return ok;
+}
+
+/* Drive the real gate's input-error diagnostic as well as the shared
+ * partial-read/close checks below. A directory opens but cannot yield a
+ * complete baseline stream on supported POSIX hosts. */
+static int arm_baseline_input_error(const char *exe, const char *dir)
+{
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof path, "%s/baseline", dir);
+    if (n < 0 || (size_t)n >= sizeof path) return 0;
+    if (unlink(path) != 0) return 0;
+    if (mkdir(path, 0700) != 0) return 0;
+    int ok = arm_baseline_run(exe, dir, 2, "z23-lint: baseline read failed");
+    return ok;
+}
+
+static int t_arm_baseline_key_extent(void)
+{
+    int failures = 0, cases_ok = 0;
+    char exe[PATH_MAX], dir[PATH_MAX], path[PATH_MAX] = {0}, baseline[2048];
+    if (repo_path(exe, sizeof exe, "build/bin/z23-lint") != 0)
+        return 1;
+    if (!test_mkdtemp(dir, sizeof dir, "asy_baseline")) return 1;
+    if (arm_baseline_fixture(dir, path, baseline)) {
+        cases_ok = arm_baseline_key_cases(exe, dir, baseline);
+        cases_ok &= arm_baseline_nul_cases(exe, dir, path, baseline);
+        cases_ok &= arm_baseline_input_error(exe, dir);
+    }
+    int cleanup_ok = test_rm_rf_recursive(dir) == 0;
+    TEST("[lint-gate] baseline keys: 640 bytes refuse; 639 bytes match with "
+         "or without newline; NUL tails and input errors refuse") {
+        ASSERT(cases_ok && cleanup_ok);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Seed stdio's private buffer with a complete record, then invalidate the
+ * underlying descriptor. The record is still readable; the next refill gets
+ * EBADF, reproducing a partial baseline read without timing or interception. */
+static int arm_baseline_partial_read(FILE *f)
+{
+    int ch = fgetc(f);
+    if (ch == EOF || ungetc(ch, f) == EOF) return 0;
+    if (close(fileno(f)) != 0) return 0;
+    char record[64];
+    if (!fgets(record, sizeof record, f)) return 0;
+    if (strcmp(record, "src/probe.c\tfoo\n") != 0) return 0;
+    if (fgetc(f) != EOF || !ferror(f) || feof(f)) return 0;
+    return 1;
+}
+
+static int arm_baseline_stream_case(const char *path, int partial)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char buffer[1024];
+    if (setvbuf(f, buffer, _IOFBF, sizeof buffer) != 0) {
+        fclose(f);
+        return 0;
+    }
+    int prepared = 1;
+    if (partial) prepared = arm_baseline_partial_read(f);
+    else {
+        while (fgetc(f) != EOF) {}
+        prepared = feof(f) && !ferror(f);
+        if (close(fileno(f)) != 0) prepared = 0;
+    }
+    const char *error = asy_baseline_finish(f, 0);
+    if (!prepared || !error) return 0;
+    return strcmp(error, "z23-lint: baseline read failed\n") == 0;
+}
+
+static int t_arm_baseline_read_failure(void)
 {
     int failures = 0;
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof path, "asy_read");
+    if (fd < 0) return 1;
+    int closed = close(fd);
+    int wrote = write_file(path, "src/probe.c\tfoo\n");
+    int partial_ok = 0, close_ok = 0;
+    if (closed == 0 && wrote == 0) {
+        partial_ok = arm_baseline_stream_case(path, 1);
+        close_ok = arm_baseline_stream_case(path, 0);
+    }
+    int cleanup_ok = unlink(path) == 0;
+    TEST("[lint-gate] baseline partial read and EOF close errors refuse "
+         "with baseline read failed") {
+        ASSERT(partial_ok && close_ok && cleanup_ok);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+int t_lint_gates_fail_loud_on_empty_scan(void)
+{
+    int failures = t_arm_baseline_key_extent();
+    failures += t_arm_baseline_read_failure();
 
     /* A guaranteed-empty scan dir under the repo's test-tmp. mkdir is
      * idempotent; we never write into it, so it stays empty. */

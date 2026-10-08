@@ -8,6 +8,19 @@
 #define GATE_ARM_SYMBOL_SINGLE_PRIV_H
 
 #include <stddef.h>
+#include <stdio.h>
+
+/* Both baseline readers own their stream. A complete EOF and a successful
+ * close are required even when all expected records have already arrived.
+ * Return the refusal diagnostic for the caller to report. */
+static inline const char *asy_baseline_finish(FILE *f, int stopped)
+{
+    int read_failed = ferror(f) || (!stopped && !feof(f));
+    int close_failed = fclose(f) != 0;
+    if (read_failed || close_failed)
+        return "z23-lint: baseline read failed\n";
+    return NULL;
+}
 
 typedef int (*asy_emit_fn)(const char *file, void *ctx, const char *name,
                            int line, int is_static);

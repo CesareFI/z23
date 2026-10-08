@@ -307,7 +307,12 @@ static int asy_baseline_check_claims(const char *path)
     char *line = NULL;
     size_t cap = 0;
     ssize_t n;
+    int rc = 0;
     while ((n = getline(&line, &cap, f)) >= 0) {
+        if (memchr(line, '\0', (size_t)n) != NULL) {
+            rc = die("z23-lint: malformed baseline record\n", "");
+            break;
+        }
         if (n > 0 && line[n - 1] == '\n')
             line[--n] = '\0';
         for (int i = 0; i < ASY_NCLAIMS; i++)
@@ -315,7 +320,11 @@ static int asy_baseline_check_claims(const char *path)
                 seen[i] = 1;
     }
     free(line);
-    fclose(f);
+    const char *error = asy_baseline_finish(f, rc != 0);
+    if (error)
+        return die(error, "");
+    if (rc)
+        return rc;
     for (int i = 0; i < ASY_NCLAIMS; i++) {
         if (!seen[i]) {
             fprintf(stderr,
@@ -339,24 +348,32 @@ static int asy_base_load(struct asy_base *b, const char *path, int *count)
     char *line = NULL;
     size_t cap = 0;
     ssize_t n;
+    int rc = 0;
     while ((n = getline(&line, &cap, f)) >= 0) {
+        if (memchr(line, '\0', (size_t)n) != NULL) {
+            rc = die("z23-lint: malformed baseline record\n", "");
+            break;
+        }
         if (n > 0 && line[n - 1] == '\n')
             line[--n] = '\0';
         if (line[0] == '#' || line[0] == '\0')
             continue;
         if (!strchr(line, '\t'))
             continue;
-        if (b->n >= ASY_MAXPAIR) {
-            free(line);
-            fclose(f);
-            return die("z23-lint: baseline overflow\n", "");
+        if (b->n >= ASY_MAXPAIR || (size_t)n >= ASY_PAIRKEY) {
+            rc = die("z23-lint: baseline overflow\n", "");
+            break;
         }
         snprintf(b->k[b->n], ASY_PAIRKEY, "%s", line);
         b->n++;
         (*count)++;
     }
     free(line);
-    fclose(f);
+    const char *error = asy_baseline_finish(f, rc != 0);
+    if (error)
+        return die(error, "");
+    if (rc)
+        return rc;
     return 0;
 }
 
