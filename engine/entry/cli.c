@@ -57,7 +57,13 @@ static char g_host[64] = "127.0.0.1";
 static bool read_cookie(const char *datadir)
 {
     char path[512];
-    snprintf(path, sizeof(path), "%s/.cookie", datadir);
+    int n = snprintf(path, sizeof(path), "%s/.cookie", datadir);
+    if (n < 0 || (size_t)n >= sizeof(path)) {
+        fprintf(stderr, "error=DATADIR_TOO_LONG the cookie path exceeds "
+                "the %zu-byte path buffer — refusing (no silent "
+                "truncation)\n", sizeof(path));
+        return false;
+    }
     FILE *f = fopen(path, "r");
     if (!f) return false;
     size_t n = fread(g_cookie, 1, sizeof(g_cookie) - 1, f);
@@ -229,16 +235,33 @@ int main(int argc, char **argv)
 {
     const char *home = getenv("HOME");
     char datadir[512];
-    if (home)
-        snprintf(datadir, sizeof(datadir), "%s/.zclassic-c23", home);
-    else
-        snprintf(datadir, sizeof(datadir), ".zclassic-c23");
+    {
+        int n;
+        if (home)
+            n = snprintf(datadir, sizeof(datadir), "%s/.zclassic-c23", home);
+        else
+            n = snprintf(datadir, sizeof(datadir), ".zclassic-c23");
+        if (n < 0 || (size_t)n >= sizeof(datadir)) {
+            fprintf(stderr, "error=DATADIR_TOO_LONG the default datadir "
+                    "exceeds the %zu-byte path buffer — refusing (no "
+                    "silent truncation)\n", sizeof(datadir));
+            return 1;
+        }
+    }
 
     /* Parse options before method */
     int arg_start = 1;
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "-datadir=", 9) == 0) {
-            snprintf(datadir, sizeof(datadir), "%s", argv[i] + 9);
+            int n = snprintf(datadir, sizeof(datadir), "%s", argv[i] + 9);
+            if (n < 0 || (size_t)n >= sizeof(datadir)) {
+                fprintf(stderr, "error=DATADIR_TOO_LONG -datadir=DIR "
+                        "exceeds the %zu-byte path buffer — refusing (no "
+                        "silent truncation): a chopped cookie path can "
+                        "authenticate against the wrong node\n",
+                        sizeof(datadir));
+                return 1;
+            }
             arg_start = i + 1;
         } else if (strncmp(argv[i], "-rpcport=", 9) == 0) {
             g_port = atoi(argv[i] + 9);

@@ -17,6 +17,7 @@
 #include "config/boot_error.h"
 #include "controllers/agent_controller.h"  /* agent_print_native_usage (print_usage) */
 #include "hotswap/hotswap_module.h"
+#include "kernel/command_registry.h"
 #include "platform/environment_compat.h"
 #include "util/hw_profile.h"
 #include "util/log_level.h"
@@ -296,6 +297,23 @@ const char *cli_flag_client_whitelist_csv(void)
             pos += (size_t)n;
     }
     return buf;
+}
+
+bool cli_flag_value_overflows_path_buffer(const char *arg)
+{
+    return strncmp(arg, "-datadir=", 9) == 0 &&
+           strlen(arg + 9) >= CLI_TARGET_DATADIR_CAP;
+}
+
+int cli_refuse_overlong_datadir(const char *arg)
+{
+    fprintf(stderr,
+            "error=DATADIR_TOO_LONG detail=flag '%s' names a directory "
+            "that exceeds the %zu-byte path buffer — refusing (no silent "
+            "truncation): a chopped cookie path can authenticate against "
+            "the wrong node try=use a shorter -datadir=DIR path\n",
+            arg, (size_t)CLI_TARGET_DATADIR_CAP);
+    return ZCL_COMMAND_EXIT_INVALID;
 }
 
 /* Bare boolean flags whose entire effect is "set this one env var to '1'".

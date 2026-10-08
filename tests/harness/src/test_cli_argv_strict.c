@@ -658,6 +658,42 @@ static int cas_test_noisetransport_is_recognized(void)
 
 int test_cli_argv_strict(void);
 
+/* A -datadir= value that does not fit the CLI's path buffer must refuse
+ * before any routing: an unchecked copy would chop the cookie directory,
+ * and the 511-byte prefix of a chosen path can name another node's
+ * directory — the CLI would hand that node's cookie to the wrong lane.
+ * Refusal is the standard invalid-invocation exit with a marker the
+ * sibling double-dash/missing-value refusals already established. */
+static int cas_test_overlong_datadir_refuses(void)
+{
+    int failures = 0;
+    TEST("CLI-client argv: a -datadir= longer than the path buffer is "
+         "refused, not chopped into another node's cookie directory") {
+        char home[PATH_MAX];
+        test_fmt_tmpdir(home, sizeof(home), "zcl_cas_overlong", "home");
+        (void)test_ensure_tmproot();
+        cas_mkdir_p(home);
+
+        char over[600];
+        memset(over, 'd', sizeof(over) - 1);
+        over[sizeof(over) - 1] = '\0';
+        char flag[9 + sizeof(over)];
+        int fl = snprintf(flag, sizeof(flag), "-datadir=%s", over);
+        ASSERT(fl > 0 && (size_t)fl < sizeof(flag));
+
+        char *argv[] = {(char *)CAS_BIN, flag, (char *)"status", NULL};
+        char out[8192] = {0};
+        int rc = cas_run(argv, home, out, sizeof(out));
+
+        ASSERT_EQ(rc, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT(cas_contains(out, "DATADIR_TOO_LONG"));
+        ASSERT(cas_contains(out, "no silent truncation"));
+        ASSERT(!cas_contains(out, "starting (datadir="));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_cli_argv_strict(void)
 {
     int failures = 0;
@@ -685,6 +721,7 @@ int test_cli_argv_strict(void)
     failures += cas_test_extended_transaction_guide_fits();
     failures += cas_test_daemon_mode_tolerant_and_warns();
     failures += cas_test_noisetransport_is_recognized();
+    failures += cas_test_overlong_datadir_refuses();
 
     return failures;
 }
