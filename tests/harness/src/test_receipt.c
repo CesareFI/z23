@@ -554,6 +554,40 @@ static int case_surface(void)
     return failures;
 }
 
+static int case_null_output(void)
+{
+    int failures = 0;
+    memset(g_why, 0xa5, sizeof(g_why));
+    RC_CHECK("building into NULL refuses",
+        !zcl_receipt_build(NULL, &open_ledger, ZCL_RECEIPT_KIND_PASS,
+            ZCL_RECEIPT_VERDICT_PASS, g_root, NULL, "test_receipt",
+            g_vec, 131, "tc", "env", g_producer, g_why, sizeof(g_why)));
+    RC_CHECK("NULL output identifies out and requests storage",
+        memchr(g_why, '\0', sizeof(g_why)) != NULL &&
+        strstr(g_why, "out is NULL") != NULL &&
+        strstr(g_why, "provide output storage") != NULL);
+    return failures;
+}
+
+static int case_null_output_unavailable_diagnostics(void)
+{
+    int failures = 0;
+    char untouched[sizeof(g_why)];
+    memset(untouched, 0xa5, sizeof(untouched));
+    for (int mode = 0; mode < 2; mode++) {
+        memcpy(g_why, untouched, sizeof(g_why));
+        char *why = mode == 0 ? NULL : g_why;
+        size_t why_cap = mode == 0 ? sizeof(g_why) : 0;
+        RC_CHECK("NULL output refuses without diagnostic capacity",
+            !zcl_receipt_build(NULL, &open_ledger, ZCL_RECEIPT_KIND_PASS,
+                ZCL_RECEIPT_VERDICT_PASS, g_root, NULL, "test_receipt",
+                g_vec, 131, "tc", "env", g_producer, why, why_cap));
+        RC_CHECK("unavailable diagnostics leave the buffer unchanged",
+            memcmp(g_why, untouched, sizeof(g_why)) == 0);
+    }
+    return failures;
+}
+
 static int case_enum_narrowing(void)
 {
     int failures = 0;
@@ -597,6 +631,8 @@ int test_receipt(void)
     failures += case_red_delta();
     failures += case_labels();
     failures += case_surface();
+    failures += case_null_output();
+    failures += case_null_output_unavailable_diagnostics();
     failures += case_enum_narrowing();
     printf("receipt: %d failure(s)\n", failures);
     return failures;

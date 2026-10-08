@@ -393,6 +393,21 @@ static bool receipt_build_fields(struct zcl_proof_receipt *out,
     return true;
 }
 
+static bool receipt_build_output(struct zcl_proof_receipt *out,
+                                 char *why, size_t why_cap)
+{
+    if (why && why_cap)
+        why[0] = '\0';
+    if (!out) {
+        if (why && why_cap)
+            (void)snprintf(why, why_cap,
+                "out is NULL; provide output storage for the receipt");
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    return true;
+}
+
 bool zcl_receipt_build(struct zcl_proof_receipt *out,
                        const struct zcl_receipt_ledger *ledger,
                        enum zcl_receipt_kind kind,
@@ -407,11 +422,8 @@ bool zcl_receipt_build(struct zcl_proof_receipt *out,
                        const uint8_t producer[32],
                        char *why, size_t why_cap)
 {
-    if (why && why_cap)
-        why[0] = '\0';
-    if (!out)
+    if (!receipt_build_output(out, why, why_cap))
         return false;
-    memset(out, 0, sizeof(*out));
 
     if (!receipt_build_eligible(ledger, group, why, why_cap))
         return false;
