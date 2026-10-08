@@ -13,7 +13,7 @@
  *   - generation monotonicity
  *   - a publish reports ITS OWN generation (no read-after-write race); a
  *     refusal neither advances it nor writes the out-parameter
- *   - two-thread hammer (writer replace_batch loop + reader dispatch loop)
+ *   - four-reader hammer with a held override and counted overlapping dispatches
  */
 
 #include "test/test_core.h"
@@ -346,13 +346,18 @@ static int test_generation_monotonicity(void)
     return failures;
 }
 
-/* ── Two-thread hammer ───────────────────────────────────────────── */
+/* ── Writer/reader hammer ───────────────────────────────────────────── */
 
 #define HAMMER_ITERS 4000
 #define HAMMER_READERS 4
 
 static _Atomic bool g_hammer_done = false;
 static _Atomic int g_hammer_torn = 0;
+static pthread_mutex_t g_hammer_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_hammer_changed = PTHREAD_COND_INITIALIZER;
+static bool g_hammer_published, g_hammer_abort;
+static int g_hammer_ready, g_hammer_publications;
+static unsigned g_hammer_reads[HAMMER_READERS];
 
 static void *hammer_writer(void *arg)
 {
@@ -364,7 +369,17 @@ static void *hammer_writer(void *arg)
         /* Strictly increasing generation => always succeeds; alternate the
          * handler so readers can observe either the base or the override. */
         ovr.handler = (i & 1u) ? h_override : h_base;
-        (void)zcl_command_registry_replace_batch(i, &ovr, 1, NULL, 0, NULL);
+        if (zcl_command_registry_replace_batch(i, &ovr, 1, NULL, 0, NULL))
+            g_hammer_publications++;
+        if (i == 1) {
+            /* Hold the override until every reader checks its exact marker. */
+            pthread_mutex_lock(&g_hammer_lock);
+            g_hammer_published = true;
+            pthread_cond_broadcast(&g_hammer_changed);
+            while (g_hammer_ready < HAMMER_READERS && !g_hammer_abort)
+                pthread_cond_wait(&g_hammer_changed, &g_hammer_lock);
+            pthread_mutex_unlock(&g_hammer_lock);
+        }
     }
     atomic_store_explicit(&g_hammer_done, true, memory_order_release);
     return NULL;
@@ -372,15 +387,20 @@ static void *hammer_writer(void *arg)
 
 static void *hammer_reader(void *arg)
 {
-    (void)arg;
-    char out[4096];
+    unsigned *reads = arg;
+    char out[4096] = {0};
+    pthread_mutex_lock(&g_hammer_lock);
+    while (!g_hammer_published && !g_hammer_abort)
+        pthread_cond_wait(&g_hammer_changed, &g_hammer_lock);
+    bool aborting = g_hammer_abort;
+    pthread_mutex_unlock(&g_hammer_lock);
+    if (aborting)
+        return NULL;
     while (!atomic_load_explicit(&g_hammer_done, memory_order_acquire)) {
         enum zcl_command_exit ec = exec_path("core.probe.read", out,
                                              sizeof(out));
-        if (ec != ZCL_COMMAND_EXIT_OK) {
-            atomic_fetch_add_explicit(&g_hammer_torn, 1, memory_order_relaxed);
-            continue;
-        }
+        bool first = (*reads == 0);
+        (*reads)++;
         /* The envelope must always parse (never a torn/freed table) and carry
          * exactly one of the two known handler markers. */
         struct json_value parsed;
@@ -389,8 +409,17 @@ static void *hammer_reader(void *arg)
         json_free(&parsed);
         bool marker = strstr(out, "\"who\":\"base\"") != NULL ||
                       strstr(out, "\"who\":\"override\"") != NULL;
-        if (!ok || !marker)
+        if (ec != ZCL_COMMAND_EXIT_OK || !ok || !marker ||
+            (first && (strstr(out, "\"who\":\"override\"") == NULL ||
+                       zcl_command_registry_effective_handler(
+                           find_spec("core.probe.read")) != h_override)))
             atomic_fetch_add_explicit(&g_hammer_torn, 1, memory_order_relaxed);
+        if (first) {
+            pthread_mutex_lock(&g_hammer_lock);
+            g_hammer_ready++;
+            pthread_cond_broadcast(&g_hammer_changed);
+            pthread_mutex_unlock(&g_hammer_lock);
+        }
     }
     return NULL;
 }
@@ -492,15 +521,39 @@ static int test_concurrent_hammer(void)
         atomic_store_explicit(&g_hammer_done, false, memory_order_relaxed);
         atomic_store_explicit(&g_hammer_torn, 0, memory_order_relaxed);
 
+        g_hammer_published = g_hammer_abort = false;
+        g_hammer_ready = g_hammer_publications = 0;
+        memset(g_hammer_reads, 0, sizeof(g_hammer_reads));
         pthread_t writer;
         pthread_t readers[HAMMER_READERS];
-        ASSERT_EQ(pthread_create(&writer, NULL, hammer_writer, NULL), 0);
-        for (int i = 0; i < HAMMER_READERS; i++)
-            ASSERT_EQ(pthread_create(&readers[i], NULL, hammer_reader, NULL), 0);
-
-        pthread_join(writer, NULL);
-        for (int i = 0; i < HAMMER_READERS; i++)
-            pthread_join(readers[i], NULL);
+        int writer_rc = pthread_create(&writer, NULL, hammer_writer, NULL);
+        int created = 0, reader_rc = 0, join_rc = 0;
+        while (writer_rc == 0 && created < HAMMER_READERS) {
+            reader_rc = pthread_create(&readers[created], NULL, hammer_reader,
+                                       &g_hammer_reads[created]);
+            if (reader_rc != 0) break;
+            created++;
+        }
+        if (writer_rc != 0 || reader_rc != 0) {
+            pthread_mutex_lock(&g_hammer_lock);
+            g_hammer_abort = true;
+            pthread_cond_broadcast(&g_hammer_changed);
+            pthread_mutex_unlock(&g_hammer_lock);
+        }
+        if (writer_rc == 0) join_rc |= pthread_join(writer, NULL);
+        for (int i = 0; i < created; i++)
+            join_rc |= pthread_join(readers[i], NULL);
+        ASSERT_EQ(writer_rc, 0);
+        ASSERT_EQ(reader_rc, 0);
+        ASSERT_EQ(join_rc, 0);
+        for (int i = 0; i < HAMMER_READERS; i++) {
+            printf("hammer reader %d: %u overlapping dispatches\n",
+                   i, g_hammer_reads[i]);
+            ASSERT(g_hammer_reads[i] > 0);
+        }
+        printf("hammer publications: %d\n", g_hammer_publications);
+        ASSERT_EQ(g_hammer_ready, HAMMER_READERS);
+        ASSERT_EQ(g_hammer_publications, HAMMER_ITERS);
 
         ASSERT_EQ(atomic_load(&g_hammer_torn), 0);
         ASSERT_EQ((unsigned)zcl_command_registry_active_generation(),
