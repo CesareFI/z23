@@ -3,6 +3,7 @@
 #include "retrieval/retrieval_experiment.h"
 
 #include "base/safe_alloc.h"
+#include "base/log_macros.h"
 #include "base/serialize_le.h"
 #include "sha3/sha3.h"
 
@@ -330,7 +331,47 @@ enum zcl_retrieval_experiment_error zcl_retrieval_experiment_project(
     return ZCL_RETRIEVAL_EXPERIMENT_OK;
 }
 
-enum zcl_retrieval_experiment_error zcl_retrieval_experiment_evaluate(
+static const char *rx_evaluation_error(enum zcl_retrieval_experiment_error error)
+{
+    if (error == ZCL_RETRIEVAL_EXPERIMENT_BINDING) return "BINDING";
+    return zcl_retrieval_experiment_error_string(error);
+}
+
+static void rx_evaluation_diagnostic(
+    enum zcl_retrieval_experiment_error error, size_t task, size_t count)
+{
+    if (task < count) {
+        LOG_ERROR("retrieval", "project task=%zu error=%s", task,
+                  rx_evaluation_error(error));
+    } else {
+        LOG_ERROR("retrieval", "evaluation error=EVALUATION tasks=%zu", count);
+    }
+}
+
+static enum zcl_retrieval_experiment_error rx_evaluation_task(
+    const struct zcl_retrieval_experiment_eval_task *task,
+    const struct zcl_retrieval_experiment_eval_report *report)
+{
+    if (task->relevant_count == 0 ||
+        task->relevant_count >
+            ZCL_RETRIEVAL_EXPERIMENT_RELEVANCE_MAX ||
+        task->bm25_count > ZCL_RETRIEVAL_EVAL_RANK_MAX ||
+        task->parent_count > ZCL_RETRIEVAL_EVAL_RANK_MAX)
+        return ZCL_RETRIEVAL_EXPERIMENT_SHAPE;
+    if ((task->bm25_count && rx_memory_overlaps(
+            report, sizeof(*report), task->bm25,
+            task->bm25_count * sizeof(*task->bm25))) ||
+        (task->parent_count && rx_memory_overlaps(
+            report, sizeof(*report), task->parent,
+            task->parent_count * sizeof(*task->parent))) ||
+        (task->relevant_paths && rx_memory_overlaps(
+            report, sizeof(*report), task->relevant_paths,
+            task->relevant_count * sizeof(*task->relevant_paths))))
+        return ZCL_RETRIEVAL_EXPERIMENT_ALIAS;
+    return ZCL_RETRIEVAL_EXPERIMENT_OK;
+}
+
+static enum zcl_retrieval_experiment_error rx_evaluation_inputs(
     const struct zcl_retrieval_experiment_eval_task *tasks,
     size_t task_count, uint8_t bm25_prefix,
     struct zcl_retrieval_experiment_eval_report *report)
@@ -344,23 +385,21 @@ enum zcl_retrieval_experiment_error zcl_retrieval_experiment_evaluate(
                            task_count * sizeof(*tasks)))
         return ZCL_RETRIEVAL_EXPERIMENT_ALIAS;
     for (size_t i = 0; i < task_count; i++) {
-        if (tasks[i].relevant_count == 0 ||
-            tasks[i].relevant_count >
-                ZCL_RETRIEVAL_EXPERIMENT_RELEVANCE_MAX ||
-            tasks[i].bm25_count > ZCL_RETRIEVAL_EVAL_RANK_MAX ||
-            tasks[i].parent_count > ZCL_RETRIEVAL_EVAL_RANK_MAX)
-            return ZCL_RETRIEVAL_EXPERIMENT_SHAPE;
-        if ((tasks[i].bm25_count && rx_memory_overlaps(
-                report, sizeof(*report), tasks[i].bm25,
-                tasks[i].bm25_count * sizeof(*tasks[i].bm25))) ||
-            (tasks[i].parent_count && rx_memory_overlaps(
-                report, sizeof(*report), tasks[i].parent,
-                tasks[i].parent_count * sizeof(*tasks[i].parent))) ||
-            (tasks[i].relevant_paths && rx_memory_overlaps(
-                report, sizeof(*report), tasks[i].relevant_paths,
-                tasks[i].relevant_count * sizeof(*tasks[i].relevant_paths))))
-            return ZCL_RETRIEVAL_EXPERIMENT_ALIAS;
+        enum zcl_retrieval_experiment_error error =
+            rx_evaluation_task(&tasks[i], report);
+        if (error != ZCL_RETRIEVAL_EXPERIMENT_OK) return error;
     }
+    return ZCL_RETRIEVAL_EXPERIMENT_OK;
+}
+
+enum zcl_retrieval_experiment_error zcl_retrieval_experiment_evaluate(
+    const struct zcl_retrieval_experiment_eval_task *tasks,
+    size_t task_count, uint8_t bm25_prefix,
+    struct zcl_retrieval_experiment_eval_report *report)
+{
+    enum zcl_retrieval_experiment_error error =
+        rx_evaluation_inputs(tasks, task_count, bm25_prefix, report);
+    if (error != ZCL_RETRIEVAL_EXPERIMENT_OK) return error;
     struct zcl_retrieval_experiment_eval_report result = {
         .top20_membership_preserved = true,
         .full_retained_set_preserved = true,
@@ -375,25 +414,21 @@ enum zcl_retrieval_experiment_error zcl_retrieval_experiment_evaluate(
     }
     struct zcl_retrieval_gold_task
         evaluated[ZCL_RETRIEVAL_EXPERIMENT_TASK_MAX] = {0};
-    for (size_t i = 0; i < task_count; i++) {
+    size_t i = 0;
+    for (; i < task_count; i++) {
         struct zcl_retrieval_experiment_report projected;
-        enum zcl_retrieval_experiment_error error =
+        error =
             zcl_retrieval_experiment_project(
                 tasks[i].bm25, tasks[i].bm25_count,
                 tasks[i].bm25_complete, tasks[i].parent,
                 tasks[i].parent_count, tasks[i].parent_complete,
                 bm25_prefix, candidate[i], ZCL_RETRIEVAL_EVAL_RANK_MAX,
                 &projected);
-        if (error != ZCL_RETRIEVAL_EXPERIMENT_OK) {
-            free(candidate);
-            memset(report, 0, sizeof(*report));
-            return error;
-        }
+        if (error != ZCL_RETRIEVAL_EXPERIMENT_OK) goto refusal;
         if (SIZE_MAX - result.changed_positions_at_5 <
             projected.changed_positions_at_5) {
-            free(candidate);
-            memset(report, 0, sizeof(*report));
-            return ZCL_RETRIEVAL_EXPERIMENT_OVERFLOW;
+            error = ZCL_RETRIEVAL_EXPERIMENT_OVERFLOW;
+            goto refusal;
         }
         result.changed_positions_at_5 += projected.changed_positions_at_5;
         if (projected.used_bm25_fallback) result.fallback_tasks++;
@@ -415,13 +450,17 @@ enum zcl_retrieval_experiment_error zcl_retrieval_experiment_evaluate(
         };
     }
     if (!zcl_retrieval_evaluate(evaluated, task_count, &result.metrics)) {
-        free(candidate);
-        memset(report, 0, sizeof(*report));
-        return ZCL_RETRIEVAL_EXPERIMENT_EVALUATION;
+        error = ZCL_RETRIEVAL_EXPERIMENT_EVALUATION;
     }
+refusal:
+    if (error != ZCL_RETRIEVAL_EXPERIMENT_OK)
+        rx_evaluation_diagnostic(error, i, task_count);
     free(candidate);
-    *report = result;
-    return ZCL_RETRIEVAL_EXPERIMENT_OK;
+    if (error != ZCL_RETRIEVAL_EXPERIMENT_OK)
+        memset(report, 0, sizeof(*report));
+    else
+        *report = result;
+    return error;
 }
 
 bool zcl_retrieval_ranked_files_root(

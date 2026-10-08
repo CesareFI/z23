@@ -2,6 +2,7 @@
 #include "test/test_core.h"
 
 #include "base/safe_alloc.h"
+#include "base/log_level.h"
 #include "retrieval/retrieval_experiment.h"
 
 #include <stdio.h>
@@ -277,6 +278,99 @@ static int case_post_proposal_evaluation(void)
              report.metrics.tasks == 0u &&
              !report.context_ceiling_preserved);
     zcl_alloc_fault_clear();
+    return failures;
+}
+
+static bool rx_eval_capture(
+    FILE *capture, const struct zcl_retrieval_experiment_eval_task *tasks,
+    size_t count, enum zcl_retrieval_experiment_error expected)
+{
+    int saved = dup(STDERR_FILENO);
+    if (saved < 0) return false;
+    enum zcl_log_level level = zcl_log_level_get();
+    bool ok = false;
+    if (fflush(stderr) != 0) goto restore;
+    if (dup2(fileno(capture), STDERR_FILENO) < 0) goto restore;
+    zcl_log_level_set(ZCL_LOG_ERROR);
+    struct zcl_retrieval_experiment_eval_report report, zero;
+    memset(&zero, 0, sizeof(zero));
+    memset(&report, 0xa5, sizeof(report));
+    enum zcl_retrieval_experiment_error error =
+        zcl_retrieval_experiment_evaluate(tasks, count, 0u, &report);
+    ok = error == expected;
+    ok &= memcmp(&report, &zero, sizeof(report)) == 0;
+    ok &= zcl_log_level_get() == ZCL_LOG_ERROR;
+    ok &= fflush(stderr) == 0;
+restore:
+    ok &= dup2(saved, STDERR_FILENO) >= 0;
+    ok &= close(saved) == 0;
+    zcl_log_level_set(level);
+    return ok;
+}
+
+static bool rx_eval_capture_contains(FILE *capture, const char *diagnostic)
+{
+    if (fseek(capture, 0, SEEK_SET) != 0) return false;
+    char text[1024];
+    size_t bytes = fread(text, 1u, sizeof(text) - 1u, capture);
+    text[bytes] = '\0';
+    bool ok = fgetc(capture) == EOF;
+    ok &= ferror(capture) == 0;
+    ok &= strstr(text, diagnostic) != NULL;
+    return ok;
+}
+
+static bool rx_eval_diagnostic(
+    const struct zcl_retrieval_experiment_eval_task *tasks, size_t count,
+    enum zcl_retrieval_experiment_error expected, const char *diagnostic)
+{
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof(path), "retrieval_eval_diagnostic");
+    if (fd < 0) return false;
+    FILE *capture = fdopen(fd, "w+");
+    if (!capture) {
+        (void)close(fd);
+        (void)unlink(path);
+        return false;
+    }
+    bool ok = rx_eval_capture(capture, tasks, count, expected);
+    ok &= rx_eval_capture_contains(capture, diagnostic);
+    ok &= fclose(capture) == 0;
+    ok &= unlink(path) == 0;
+    return ok;
+}
+
+static int case_evaluation_diagnostics(void)
+{
+    int failures = 0;
+    const char *relevant[] = {"a.c"};
+    struct zcl_retrieval_ranked_file rows[] = {
+        {.path = "a.c", .context_bytes = 1u},
+        {.path = "b.c", .context_bytes = 1u},
+    };
+    struct zcl_retrieval_ranked_file duplicate[] = {rows[0], rows[0]};
+    struct zcl_retrieval_experiment_eval_task tasks[2] = {{
+        .task_id = "first", .query = "find a", .relevant_paths = relevant,
+        .relevant_count = 1u, .bm25 = rows, .bm25_count = 2u,
+        .bm25_complete = true, .parent = rows, .parent_count = 2u,
+        .parent_complete = true,
+    }};
+    tasks[1] = tasks[0];
+    tasks[1].task_id = "second";
+    tasks[1].parent = duplicate;
+    RX_CHECK("projection refusal names second task and binding",
+             rx_eval_diagnostic(tasks, 2u, ZCL_RETRIEVAL_EXPERIMENT_BINDING,
+                                "project task=1 error=BINDING"));
+    tasks[0].bm25_count = tasks[0].parent_count = 1u;
+    tasks[0].query = "";
+    RX_CHECK("empty query names gold evaluation step",
+             rx_eval_diagnostic(tasks, 1u, ZCL_RETRIEVAL_EXPERIMENT_EVALUATION,
+                                "evaluation error=EVALUATION tasks=1"));
+    tasks[0].query = "find a";
+    rows[0].context_bytes = UINT64_MAX - 2u;
+    RX_CHECK("token rounding refuses at gold evaluation step",
+             rx_eval_diagnostic(tasks, 1u, ZCL_RETRIEVAL_EXPERIMENT_EVALUATION,
+                                "evaluation error=EVALUATION tasks=1"));
     return failures;
 }
 
@@ -886,6 +980,7 @@ int test_retrieval_experiment(void)
     failures += case_guard_and_refusals();
     failures += case_roots_exclude_gold();
     failures += case_post_proposal_evaluation();
+    failures += case_evaluation_diagnostics();
     failures += case_integer_profile_identity();
     failures += case_feature_snapshot_and_projection();
     failures += case_feature_refusals_and_aliases();
