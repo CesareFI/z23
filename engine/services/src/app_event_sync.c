@@ -192,21 +192,38 @@ static void app_sync_report_refusal(struct zcl_app_sync_report *report)
              report->verified, report->stored);
 }
 
-enum zcl_app_sync_status zcl_app_event_sync_apply(
-    struct node_db *ndb, const struct zcl_app_event_scope_v1 *scope,
-    const uint8_t *rows, size_t len, int64_t received_at,
-    struct zcl_app_sync_report *report)
+/* Start a call before validating its remaining inputs. Apply retains the
+ * caller's peer and frontier; replicate owns the whole report. */
+static bool app_sync_prepare_report(struct zcl_app_sync_report *report,
+                                    bool clear_all)
 {
-    if (!ndb || !scope || !report || (!rows && len > 0) || received_at <= 0)
-        return ZCL_APP_SYNC_ARGUMENT;
-    /* The counters are this call's own; the peer name and the frontier
-     * belong to whoever set them up, and are left alone. */
-    report->status = ZCL_APP_SYNC_OK;
+    if (!report) {
+        LOG_WARN(APP_SYNC_TAG, "pull refused: missing report");
+        return false;
+    }
+    if (clear_all)
+        memset(report, 0, sizeof(*report));
+    report->status = ZCL_APP_SYNC_ARGUMENT;
     report->pulled = 0;
     report->verified = 0;
     report->stored = 0;
     report->refused = 0;
     report->bad_row = 0;
+    return true;
+}
+
+enum zcl_app_sync_status zcl_app_event_sync_apply(
+    struct node_db *ndb, const struct zcl_app_event_scope_v1 *scope,
+    const uint8_t *rows, size_t len, int64_t received_at,
+    struct zcl_app_sync_report *report)
+{
+    if (!app_sync_prepare_report(report, false))
+        return ZCL_APP_SYNC_ARGUMENT;
+    if (!ndb || !scope || (!rows && len > 0) || received_at <= 0) {
+        LOG_WARN(APP_SYNC_TAG, "pull refused: invalid apply arguments");
+        return ZCL_APP_SYNC_ARGUMENT;
+    }
+    report->status = ZCL_APP_SYNC_OK;
     struct zcl_app_signed_event_v1 *event =
         zcl_calloc(1, sizeof(*event), "app_sync_apply_event");
     uint8_t *payload =
@@ -214,6 +231,7 @@ enum zcl_app_sync_status zcl_app_event_sync_apply(
     if (!event || !payload) {
         free(event);
         free(payload);
+        report->status = ZCL_APP_SYNC_ARGUMENT;
         LOG_WARN(APP_SYNC_TAG, "pull stopped: no memory for one row");
         return ZCL_APP_SYNC_ARGUMENT;
     }
@@ -255,9 +273,12 @@ enum zcl_app_sync_status zcl_app_event_replicate(
     const struct zcl_app_sync_peer *peer, int64_t received_at,
     struct zcl_app_sync_report *report)
 {
-    if (!ndb || !scope || !report || received_at <= 0)
+    if (!app_sync_prepare_report(report, true))
         return ZCL_APP_SYNC_ARGUMENT;
-    memset(report, 0, sizeof(*report));
+    if (!ndb || !scope || received_at <= 0) {
+        LOG_WARN(APP_SYNC_TAG, "pull refused: invalid replicate arguments");
+        return ZCL_APP_SYNC_ARGUMENT;
+    }
     app_sync_name_peer(report, peer);
     if (!peer || !peer->ask) {
         report->status = ZCL_APP_SYNC_NO_PEER;

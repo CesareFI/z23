@@ -118,7 +118,10 @@ enum zcl_app_sync_status zcl_app_event_sync_serve(
 /* Verify an answer and persist what verified. Stops at the first row that
  * refuses; rows before it are already stored (each save is its own
  * idempotent write, and a row that verified is true whatever follows it),
- * rows after it are never looked at. `report` is filled either way. */
+ * rows after it are never looked at. A non-NULL `report` receives this
+ * call's status and counters even on argument refusal; its caller-owned
+ * peer and frontier fields are retained. A NULL report refuses with
+ * ZCL_APP_SYNC_ARGUMENT. */
 enum zcl_app_sync_status zcl_app_event_sync_apply(
     struct node_db *ndb, const struct zcl_app_event_scope_v1 *scope,
     const uint8_t *rows, size_t len, int64_t received_at,
@@ -126,7 +129,10 @@ enum zcl_app_sync_status zcl_app_event_sync_apply(
 
 /* One bounded pull from one peer for the scope's (app_id, topic): frontier,
  * request, answer, verify, store, frontier. Refuses as `appsync_no_peer`
- * when no peer was named or the named peer has no session to ask over. */
+ * when no peer was named or the named peer has no session to ask over.
+ * A non-NULL report is cleared before argument validation and receives
+ * ZCL_APP_SYNC_ARGUMENT on invalid inputs. A NULL report also refuses
+ * with ZCL_APP_SYNC_ARGUMENT. */
 enum zcl_app_sync_status zcl_app_event_replicate(
     struct node_db *ndb, const struct zcl_app_event_scope_v1 *scope,
     const struct zcl_app_sync_peer *peer, int64_t received_at,

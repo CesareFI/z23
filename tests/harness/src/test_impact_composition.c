@@ -1695,6 +1695,26 @@ static int test_ic_wallet_recovery_status_proof_mapping(void)
     return failures;
 }
 
+static int test_ic_app_event_sync_proof_mapping(void)
+{
+    int failures = 0;
+    TEST("impact composition: app sync paths select their report regression") {
+        static const char *const paths[] = {
+            "engine/services/src/app_event_sync.c",
+            "engine/services/include/services/app_event_sync_service.h",
+            "tests/harness/src/test_app_event_sync.c",
+        };
+        for (size_t i = 0; i < sizeof paths / sizeof paths[0]; i++) {
+            struct agent_impact_acc impact = {0};
+            ASSERT(agent_impact_apply_shared_rules(paths[i], &impact));
+            ASSERT(ic_acc_has_group(&impact, "app_event_sync"));
+            ASSERT(ic_acc_has_group(&impact, "make_lint_gates"));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_sqlq_proof_mapping(void)
 {
     int failures = 0;
@@ -11733,6 +11753,7 @@ int test_impact_composition(void)
     int failures = 0;
     failures += test_ic_rule_group_capacity();
     failures += test_ic_rule_group_length();
+    failures += test_ic_app_event_sync_proof_mapping();
     ic_isolate_state_root();
     failures += test_ic_fuzz_sensor_binding_parser();
     failures += test_ic_foreground_proof_command();

@@ -808,6 +808,66 @@ static int test_app_sync_no_peer(void)
     return failures;
 }
 
+static int test_app_sync_argument_report(void)
+{
+    int failures = 0;
+    struct node_db b = {0};
+    TEST("app sync: argument refusals replace stale report counters") {
+        struct zcl_app_event_scope_v1 scope =
+            sync_test_scope("social.events.v1");
+        ASSERT(node_db_open(&b, ":memory:"));
+        struct zcl_app_sync_report report = {0};
+        ASSERT_EQ(zcl_app_event_sync_apply(&b, &scope, NULL, 0,
+                                          SYNC_TEST_RECEIVED_AT, &report),
+                  ZCL_APP_SYNC_OK);
+        for (int replicate = 0; replicate < 2; replicate++) {
+            for (int invalid = 0; invalid < 3; invalid++) {
+                report.status = ZCL_APP_SYNC_OK;
+                report.pulled = report.verified = report.stored = 7;
+                report.refused = report.bad_row = 7;
+                (void)snprintf(report.peer, sizeof(report.peer), "node-before");
+                report.frontier.have = true;
+                report.frontier.cursor = 7;
+                report.frontier.rows = 7;
+                memset(report.frontier.event_id, 7, sizeof(report.frontier.event_id));
+                struct zcl_app_sync_report expected = report;
+                if (replicate)
+                    memset(&expected, 0, sizeof(expected));
+                struct node_db *db = invalid == 0 ? NULL : &b;
+                const struct zcl_app_event_scope_v1 *input_scope =
+                    invalid == 1 ? NULL : &scope;
+                int64_t received_at = invalid == 2 ? 0 : SYNC_TEST_RECEIVED_AT;
+                enum zcl_app_sync_status status = replicate
+                    ? zcl_app_event_replicate(db, input_scope, NULL, received_at,
+                                              &report)
+                    : zcl_app_event_sync_apply(db, input_scope, NULL, 0, received_at,
+                                               &report);
+                ASSERT_EQ(status, ZCL_APP_SYNC_ARGUMENT);
+                ASSERT_EQ(report.status, ZCL_APP_SYNC_ARGUMENT);
+                ASSERT_EQ(report.pulled, 0u);
+                ASSERT_EQ(report.verified, 0u);
+                ASSERT_EQ(report.stored, 0u);
+                ASSERT_EQ(report.refused, 0u);
+                ASSERT_EQ(report.bad_row, 0u);
+                ASSERT(strcmp(report.peer, expected.peer) == 0);
+                ASSERT_EQ(report.frontier.have, expected.frontier.have);
+                ASSERT_EQ(report.frontier.cursor, expected.frontier.cursor);
+                ASSERT_EQ(report.frontier.rows, expected.frontier.rows);
+                ASSERT(memcmp(report.frontier.event_id, expected.frontier.event_id,
+                              sizeof(report.frontier.event_id)) == 0);
+            }
+        }
+        ASSERT_EQ(zcl_app_event_sync_apply(&b, &scope, NULL, 0, 0, NULL),
+                  ZCL_APP_SYNC_ARGUMENT);
+        ASSERT_EQ(zcl_app_event_replicate(&b, &scope, NULL, 0, NULL),
+                  ZCL_APP_SYNC_ARGUMENT);
+        ASSERT_EQ(db_app_event_count(&b, "social", "social.events.v1"), 0);
+        PASS();
+    } _test_next:;
+    node_db_close(&b);
+    return failures;
+}
+
 int test_app_event_sync(void)
 {
     int failures = 0;
@@ -820,5 +880,6 @@ int test_app_event_sync(void)
     failures += test_app_sync_writer_byte_bound();
     failures += test_app_sync_store_availability();
     failures += test_app_sync_no_peer();
+    failures += test_app_sync_argument_report();
     return failures;
 }
