@@ -454,17 +454,20 @@ static struct zcl_result mesh_terminal_worker_input_platform_arm(struct mesh_ter
                                              const uint8_t *bytes, size_t n,
                                              int64_t now_unix)
 {
-    if (!w || (!bytes && n != 0))
+    if (!w)
         return ZCL_ERR(MESH_TERMINAL_WORKER_ERR_NULL,
-                       "input: worker/bytes required");
+                       "input: worker required");
     if (n == 0)
         return ZCL_OK;
+    if (!bytes)
+        return ZCL_ERR(MESH_TERMINAL_WORKER_ERR_NULL,
+                       "input: bytes required");
     if (!w->running || w->master_fd < 0)
         return ZCL_ERR(MESH_TERMINAL_WORKER_ERR_NOT_RUNNING,
                        "input: session is over (%s)",
                        mesh_terminal_close_reason_string(w->close_reason));
-    if (w->bytes_in > w->max_bytes_in ||
-        n > w->max_bytes_in - w->bytes_in) {
+    if (mesh_terminal_worker_budget_would_overrun(
+            w->bytes_in, w->max_bytes_in, n)) {
         mesh_terminal_worker_kill(w);
         w->close_reason = MESH_TERMINAL_CLOSE_BYTE_LIMIT;
         return ZCL_ERR(MESH_TERMINAL_WORKER_ERR_BYTE_LIMIT,
@@ -478,6 +481,8 @@ static struct zcl_result mesh_terminal_worker_input_platform_arm(struct mesh_ter
         ssize_t wr = write(w->master_fd, bytes + total, n - total);
         if (wr > 0) {
             total += (size_t)wr;
+            w->bytes_in += (size_t)wr;
+            w->last_activity_unix = now_unix;
             continue;
         }
         if (wr < 0 && errno == EINTR)
@@ -497,8 +502,6 @@ static struct zcl_result mesh_terminal_worker_input_platform_arm(struct mesh_ter
         return ZCL_ERR(MESH_TERMINAL_WORKER_ERR_IO,
                        "pty write failed errno=%d", errno);
     }
-    w->bytes_in += total;
-    w->last_activity_unix = now_unix;
     return ZCL_OK;
 }
 
@@ -930,9 +933,9 @@ static struct zcl_result mesh_terminal_worker_input_platform_arm(struct mesh_ter
             return ZCL_ERR(MESH_TERMINAL_WORKER_ERR_IO,
                            "pty input stalled (wrote %zu/%zu)", total, n);
         total += wrote;
+        w->bytes_in += wrote;
+        w->last_activity_unix = now_unix;
     }
-    w->bytes_in += total;
-    w->last_activity_unix = now_unix;
     return ZCL_OK;
 }
 

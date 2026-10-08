@@ -47,6 +47,29 @@
 #if defined(__linux__)
 #include <errno.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+static bool partial_active;
+static unsigned partial_writes, partial_polls;
+static ssize_t partial_write(int fd, const void *buf, size_t n)
+{
+    if (!partial_active) return write(fd, buf, n);
+    if (++partial_writes == 1) return write(fd, buf, n < 3 ? n : 3);
+    errno = EAGAIN;
+    return -1;
+}
+static int partial_poll(struct pollfd *fds, nfds_t n, int timeout)
+{
+    if (!partial_active) return poll(fds, n, timeout);
+    ++partial_polls;
+    return 0;
+}
+static int partial_kill(pid_t pid, int sig)
+{
+    if (!partial_active) return kill(pid, sig);
+    return 0;
+}
 static bool tw_interrupt_wait;
 static unsigned tw_blocking_calls;
 static pid_t tw_waited_pid;
@@ -54,6 +77,7 @@ static struct mesh_terminal_worker *tw_waiting_worker;
 static bool tw_owned_on_retry;
 static pid_t tw_fixture_waitpid(pid_t pid, int *status, int options)
 {
+    if (partial_active) { *status = 0; return pid; }
     if (!tw_interrupt_wait) return waitpid(pid, status, options);
     if (options == WNOHANG) return 0;
     tw_waited_pid = pid;
@@ -61,10 +85,16 @@ static pid_t tw_fixture_waitpid(pid_t pid, int *status, int options)
     tw_owned_on_retry = !tw_waiting_worker || tw_waiting_worker->running;
     return waitpid(pid, status, options);
 }
-/* Compile the production callers with only their wait syscall substituted. */
+/* Compile the production callers with deterministic syscall observations. */
+#define write partial_write
+#define poll partial_poll
+#define kill partial_kill
 #define waitpid tw_fixture_waitpid
 #include "../../../cognition/modules/session/src/mesh_terminal_worker.c"
 #undef waitpid
+#undef kill
+#undef poll
+#undef write
 #endif
 
 static char g_dir[160];
@@ -85,7 +115,39 @@ static void live_config(struct mesh_terminal_worker_config *cfg)
     cfg->idle_seconds = 30;
 }
 
+static int check(int failures, bool ok, const char *label);
+
 #if defined(__linux__)
+
+static int partial_input_effects(void)
+{
+    int failures = 0, fds[2];
+    if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) != 0)
+        return check(failures, false, "partial input pipe setup");
+    struct mesh_terminal_worker w = { .pid = 1, .pgid = 1,
+        .master_fd = fds[1], .running = true, .max_bytes_in = 8,
+        .last_activity_unix = 10 };
+    const uint8_t bytes[] = "abcdefgh";
+    partial_active = true;
+    partial_writes = partial_polls = 0;
+    struct zcl_result r = mesh_terminal_worker_input(&w, bytes, 8, 20);
+    failures = check(failures, !r.ok && r.code == MESH_TERMINAL_WORKER_ERR_IO,
+                     "partial input reports stalled IO");
+    failures = check(failures, w.bytes_in == 3 && w.last_activity_unix == 20 && w.running,
+                     "partial input charges accepted prefix and activity");
+    uint8_t got[8];
+    failures = check(failures, read(fds[0], got, sizeof got) == 3 &&
+                     memcmp(got, bytes, 3) == 0 && partial_writes == 2 && partial_polls == 1,
+                     "partial input transfers exactly three bytes before timeout");
+    r = mesh_terminal_worker_input(&w, bytes, 6, 30);
+    failures = check(failures, !r.ok && r.code == MESH_TERMINAL_WORKER_ERR_BYTE_LIMIT &&
+                     partial_writes == 2 && w.bytes_in == 3 && w.last_activity_unix == 20,
+                     "partial input retry refused before another write");
+    mesh_terminal_worker_kill(&w);
+    partial_active = false;
+    close(fds[0]);
+    return failures;
+}
 
 /* Drain worker output into a rolling buffer until `needle` appears or the
  * deadline passes. Returns true when found. `err` (optional) captures a
@@ -618,6 +680,7 @@ int test_mesh_terminal_worker(void)
 {
     int failures = test_mesh_terminal_worker_bookkeeping();
 #if defined(__linux__)
+    failures += partial_input_effects();
     failures += test_interrupted_reaping();
     failures += test_interrupted_startup_reaping();
 #endif
