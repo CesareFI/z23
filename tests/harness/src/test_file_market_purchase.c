@@ -60,6 +60,7 @@ struct purchase_fixture {
     bool money_current;
     bool source_owned;
     bool fetch_ready;
+    int invalid_ready;
     int64_t expected_amount;
     uint8_t expected_memo[FILE_MARKET_PAYMENT_MEMO_BYTES];
     struct simnet sim;
@@ -273,6 +274,60 @@ static enum file_market_delivery_status purchase_fetch(
     out->size = (uint32_t)size;
     sha3_256(out->data, out->size, out->sha3);
     return FILE_MARKET_DELIVERY_READY;
+}
+
+static enum file_market_delivery_status purchase_fetch_invalid_ready(
+    void *opaque, const uint8_t peer_ip[16], uint16_t peer_port,
+    const uint8_t network_genesis[32], const uint8_t offer_id[32],
+    uint32_t chunk_index, const uint8_t buyer_pubkey[32],
+    const uint8_t buyer_seed[32], int64_t deadline_ms,
+    struct file_market_delivery_chunk *out)
+{
+    struct purchase_fixture *f = opaque;
+    if (f->invalid_ready == 1) {
+        f->fetches++;
+        memset(out, 0, sizeof(*out));
+        out->size = FILE_MARKET_CHUNK_SIZE;
+        return FILE_MARKET_DELIVERY_READY;
+    }
+    enum file_market_delivery_status status = purchase_fetch(
+        opaque, peer_ip, peer_port, network_genesis, offer_id, chunk_index,
+        buyer_pubkey, buyer_seed, deadline_ms, out);
+    if (status == FILE_MARKET_DELIVERY_READY) {
+        if (f->invalid_ready == 2) out->size--;
+        else out->sha3[0] ^= 1;
+    }
+    return status;
+}
+
+static int purchase_invalid_ready_tests(
+    struct market_purchase_runtime *runtime, struct purchase_fixture *fixture,
+    const uint8_t plan_id[32], const char *destination)
+{
+    int failures = 0;
+    const char *causes[] = {"data", "size", "hash"};
+    runtime->fetch = purchase_fetch_invalid_ready;
+    fixture->fetch_ready = true;
+    for (int mode = 1; mode <= 3; mode++) {
+        fixture->invalid_ready = mode;
+        struct market_purchase_view view = {0};
+        int before = fixture->fetches;
+        struct zcl_result result = market_purchase_retrieve(
+            runtime, plan_id, destination, &view);
+        PURCHASE_CHECK(causes[mode - 1],
+            !result.ok && result.code == -76 &&
+            fixture->fetches == before + 1 &&
+            db_market_download_chunk_count(fixture->ndb, plan_id) == 0 &&
+            !view.destination_published && access(destination, F_OK) != 0);
+        PURCHASE_CHECK("invalid READY names chunk, cause, and safe recovery",
+            strstr(result.message, "chunk=0") &&
+            strstr(result.message, causes[mode - 1]) &&
+            strstr(result.message, "retry") && strstr(result.message, "provider") &&
+            !strstr(result.message, "seller delivery is"));
+    }
+    fixture->invalid_ready = 0;
+    runtime->fetch = purchase_fetch;
+    return failures;
 }
 
 static enum file_market_delivery_status purchase_fetch_onion_limited(
@@ -497,6 +552,8 @@ int file_market_purchase_tests(void)
                    node_db_open(&ndb, path));
     fixture.ndb = &ndb;
     fixture.fetch_ready = true;
+    failures += purchase_invalid_ready_tests(
+        &runtime, &fixture, plan.plan_id, destination);
     int fetches_before_budget = fixture.fetches;
     atomic_init(&fixture.deadline_clock_reads, 0);
     struct platform_clock_source budget_source = {

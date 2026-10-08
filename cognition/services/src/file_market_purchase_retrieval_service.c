@@ -314,6 +314,21 @@ struct zcl_result market_purchase_delivery_error(
                    file_market_delivery_status_string(status));
 }
 
+static struct zcl_result mp_invalid_chunk_error(
+    const uint8_t offer_id[32], enum file_market_delivery_status status,
+    uint32_t index, const struct file_market_delivery_chunk *chunk,
+    uint32_t expected)
+{
+    if (status != FILE_MARKET_DELIVERY_READY)
+        return market_purchase_delivery_error(offer_id, status);
+    const char *cause = !chunk->data ? "data missing" :
+        chunk->size != expected ? "size mismatch" : "hash mismatch";
+    LOG_ERROR(MP_RETRIEVE_TAG, "chunk=%u failed local verification: %s",
+              index, cause);
+    return ZCL_ERR(-76, "chunk=%u failed local verification: %s; "
+                   "retry with a provider supplying valid chunk data", index, cause);
+}
+
 struct zcl_result market_purchase_retrieve(
     const struct market_purchase_runtime *rt, const uint8_t plan_id[32],
     const char *destination_path, struct market_purchase_view *out)
@@ -448,8 +463,9 @@ struct zcl_result market_purchase_retrieve(
             exact = memcmp(actual, chunk.sha3, 32) == 0;
         }
         if (!exact) {
+            result = mp_invalid_chunk_error(offer.offer_id, status, i,
+                                           &chunk, expected);
             mp_chunk_discard(&chunk);
-            result = market_purchase_delivery_error(offer.offer_id, status);
             break;
         }
         uint64_t offset = (uint64_t)i * FILE_MARKET_CHUNK_SIZE;
