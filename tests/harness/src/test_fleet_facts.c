@@ -200,8 +200,61 @@ static int test_fleet_facts_table(void)
         ASSERT(!answer.truncated);
         ASSERT(answer.rows[0].confidence == ZCL_FLEET_CONFIDENCE_UNKNOWN);
         ASSERT_STR_EQ(answer.rows[0].subject, "no-such-subject");
+        ASSERT_STR_EQ(answer.rows[0].relation, "");
+        ASSERT_STR_EQ(answer.rows[0].context, "");
         ASSERT_STR_EQ(answer.rows[0].object, "");
-        ASSERT(answer.rows[0].why[0] != '\0');
+        ASSERT_STR_EQ(answer.rows[0].provenance,
+                      "00000000000000000000000000000000"
+                      "00000000000000000000000000000000");
+        ASSERT(strstr(answer.rows[0].why, "doctrine nor observations") != NULL);
+        ASSERT(strstr(answer.rows[0].why,
+                      "Check relation and context against the exposed vocabularies") != NULL);
+        ASSERT(strstr(answer.rows[0].why,
+                      "retry with optional filters cleared") != NULL);
+        PASS();
+    }
+
+    TEST("fleet_facts: an unknown filtered ask retains inputs and recovery guidance") {
+        struct zcl_fleet_facts_answer_v1 answer;
+        ASSERT(zcl_fleet_facts_query("no-such-subject", "trap_signature",
+                                     "doctrine", 8, &answer));
+        ASSERT(answer.unknown);
+        ASSERT_EQ(answer.row_count, (size_t)1);
+        ASSERT_EQ(answer.total, (size_t)1);
+        ASSERT(!answer.truncated);
+        ASSERT(answer.rows[0].confidence == ZCL_FLEET_CONFIDENCE_UNKNOWN);
+        ASSERT_STR_EQ(answer.rows[0].subject, "no-such-subject");
+        ASSERT_STR_EQ(answer.rows[0].relation, "trap_signature");
+        ASSERT_STR_EQ(answer.rows[0].context, "doctrine");
+        ASSERT_STR_EQ(answer.rows[0].object, "");
+        ASSERT_STR_EQ(answer.rows[0].provenance,
+                      "00000000000000000000000000000000"
+                      "00000000000000000000000000000000");
+        ASSERT(strstr(answer.rows[0].why, "doctrine nor observations") != NULL);
+        ASSERT(strstr(answer.rows[0].why,
+                      "Check relation and context against the exposed vocabularies") != NULL);
+        ASSERT(strstr(answer.rows[0].why,
+                      "retry with optional filters cleared") != NULL);
+        PASS();
+    }
+
+    TEST("fleet_facts: a matching ask retains its doctrine reason") {
+        struct zcl_fleet_facts_answer_v1 answer;
+        ASSERT(zcl_fleet_facts_query("test_boot_phase", "trap_signature",
+                                     "lane_state:proof", 16, &answer));
+        ASSERT(!answer.unknown);
+        ASSERT_EQ(answer.row_count, (size_t)1);
+        ASSERT_EQ(answer.total, (size_t)1);
+        ASSERT(!answer.truncated);
+        ASSERT(answer.rows[0].confidence == ZCL_FLEET_CONFIDENCE_DOCTRINE);
+        ASSERT_STR_EQ(answer.rows[0].subject, "test_boot_phase");
+        ASSERT_STR_EQ(answer.rows[0].relation, "trap_signature");
+        ASSERT_STR_EQ(answer.rows[0].context, "lane_state:proof");
+        ASSERT_STR_EQ(answer.rows[0].object, "ram-generation-root");
+        ASSERT_STR_EQ(answer.rows[0].why,
+                      "its block-I/O probe burns under the suite tmpdir inside the "
+                      "generation, and fsync on tmpfs never moves ru_oublock; "
+                      "not load, not a flake");
         PASS();
     }
 

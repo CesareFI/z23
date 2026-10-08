@@ -226,8 +226,9 @@ static void ff_unknown(const char *subject, const char *relation,
     ff_copy(row->relation, sizeof(row->relation), relation ? relation : "");
     ff_copy(row->context, sizeof(row->context), context ? context : "");
     ff_copy(row->why, sizeof(row->why),
-            "no row in engine/composition/fleet_facts.def answers this ask; "
-            "that table is the whole of what the fleet has written down");
+            "Neither doctrine nor observations supplied a matching row. "
+            "Check relation and context against the exposed vocabularies; "
+            "retry with optional filters cleared.");
     memset(row->provenance, '0', 64);
     row->provenance[64] = '\0';
     row->confidence = ZCL_FLEET_CONFIDENCE_UNKNOWN;
