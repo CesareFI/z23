@@ -162,6 +162,76 @@ static int test_add_custom_rule(void)
     return failures;
 }
 
+static void foreign_alert_observer(enum event_type type, uint32_t peer_id,
+                                  const void *payload, uint32_t len, void *ctx)
+{
+    (void)type; (void)peer_id; (void)payload; (void)len;
+    (*(int *)ctx)++;
+}
+
+static int test_registration_refusal(void)
+{
+    int failures = 0, calls = 0, saved = -1;
+    FILE *log = NULL;
+    TEST("alerts: refused observers do not publish rules") {
+        alerts_shutdown();
+        event_clear_all_observers();
+        unsetenv("ZCL_ALERTS_DISABLE");
+        unsetenv("ZCL_ALERT_WEBHOOK_URL");
+        for (int i = 0; i < EVENT_MAX_OBSERVERS; i++)
+            ASSERT(event_observe(EV_OPERATOR_NEEDED, foreign_alert_observer, &calls));
+        log = tmpfile();
+        ASSERT(log != NULL);
+        ASSERT(fflush(stderr) == 0);
+        saved = dup(STDERR_FILENO);
+        ASSERT(saved >= 0);
+        ASSERT(dup2(fileno(log), STDERR_FILENO) >= 0);
+        alerts_init();
+        int flushed = fflush(stderr);
+        int restored = dup2(saved, STDERR_FILENO);
+        ASSERT(restored >= 0);
+        ASSERT(flushed == 0);
+        ASSERT(fseek(log, 0, SEEK_SET) == 0);
+        char text[1024] = {0};
+        ASSERT(fread(text, 1, sizeof(text) - 1, log) > 0);
+        ASSERT(contains(text, "rule operator_needed registration refused"));
+        ASSERT(alerts_rule_count() == 5);
+        char report[4096];
+        ASSERT(alerts_report_json(report, sizeof(report)) > 0);
+        ASSERT(!contains(report, "\"name\":\"operator_needed\""));
+        event_emitf(EV_OPERATOR_NEEDED, 0, "condition=A attempts=5");
+        ASSERT(calls == EVENT_MAX_OBSERVERS);
+        ASSERT(!alerts_operator_needed(NULL, 0, NULL));
+        event_emitf(EV_DISK_LOW, 0, "test");
+        ASSERT(alerts_fire_count("disk_low") == 1);
+        for (int i = 0; i < EVENT_MAX_OBSERVERS; i++)
+            ASSERT(event_observe(EV_NODE_READY, foreign_alert_observer, &calls));
+        struct alert_rule rule = {
+            .name = "refused", .trigger = EV_NODE_READY, .threshold = 1,
+            .window_sec = 60, .cooldown_sec = 120, .enabled = true,
+        };
+        ASSERT(!alerts_add_rule(&rule));
+        ASSERT(alerts_rule_count() == 5);
+        rule.trigger = EV_TCP_CONNECTED;
+        ASSERT(alerts_add_rule(&rule));
+        ASSERT(alerts_rule_count() == 6);
+        event_emitf(EV_TCP_CONNECTED, 0, "test");
+        ASSERT(alerts_fire_count("refused") == 1);
+        PASS();
+    } _test_next:;
+    if (saved >= 0) {
+        if (dup2(saved, STDERR_FILENO) < 0) {
+            fprintf(stdout, "alerts fixture: stderr restoration failed\n");
+            failures++;
+        }
+        if (close(saved) != 0) failures++;
+    }
+    if (log && fclose(log) != 0) failures++;
+    alerts_shutdown();
+    event_clear_all_observers();
+    return failures;
+}
+
 static int test_rule_name_boundary(void)
 {
     int failures = 0;
@@ -264,7 +334,7 @@ static int test_rule_table_full(void)
         /* 6 seed rules already registered; fill to ALERT_MAX_RULES */
         for (int i = 0; i < (int)(ALERT_MAX_RULES - 6); i++) {
             struct alert_rule r = {
-                .trigger = EV_NODE_READY,
+                .trigger = (enum event_type)(EV_TCP_CONNECT_ATTEMPT + i),
                 .threshold = 1,
                 .window_sec = 60,
                 .cooldown_sec = 60,
@@ -701,6 +771,7 @@ int test_alerts(void)
     failures += test_cooldown_suppresses_repeat();
     failures += test_multi_event_threshold();
     failures += test_add_custom_rule();
+    failures += test_registration_refusal();
     failures += test_rule_name_boundary();
     failures += test_report_json_shape();
     failures += test_reset_clears_state();

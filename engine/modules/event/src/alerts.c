@@ -343,23 +343,28 @@ void alerts_init(void)
         g_num_rules++;
     }
 
-    /* Install observers for each distinct trigger event.  We use a
-     * single observer callback that checks all rules — simpler than
-     * one observer per rule, and bounded by ALERT_MAX_RULES. */
+    /* Publish only rules whose trigger subscription succeeded. */
     bool installed[EV_NUM_TYPES] = {false};
+    size_t kept = 0;
     for (size_t i = 0; i < g_num_rules; i++) {
         enum event_type t = g_rules[i].rule.trigger;
         if (t < EV_NUM_TYPES && !installed[t]) {
-            event_observe(t, alert_observer, NULL);
+            if (!event_observe(t, alert_observer, NULL)) {
+                fprintf(stderr, "[ALERT] rule %s registration refused\n",
+                        g_rules[i].rule.name);
+                continue;
+            }
             installed[t] = true;
         }
+        g_rules[kept++] = g_rules[i];
     }
+    g_num_rules = kept;
+
     /* EV_CONDITION_CLEARED has no threshold rule — it only clears the
      * operator-needed latch — but we still need to observe it. */
-    if (!installed[EV_CONDITION_CLEARED]) {
-        event_observe(EV_CONDITION_CLEARED, alert_observer, NULL);
-        installed[EV_CONDITION_CLEARED] = true;
-    }
+    if (!installed[EV_CONDITION_CLEARED] &&
+        !event_observe(EV_CONDITION_CLEARED, alert_observer, NULL))
+        fprintf(stderr, "[ALERT] condition-cleared registration refused\n");
 
     g_initialized = true;
     pthread_mutex_unlock(&g_lock);
@@ -409,14 +414,17 @@ bool alerts_add_rule(const struct alert_rule *rule)
         return false;
     }
 
+    if (g_initialized && rule->trigger < EV_NUM_TYPES &&
+        !event_observe(rule->trigger, alert_observer, NULL)) {
+        fprintf(stderr, "[ALERT] rule %s registration refused\n", rule->name);
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
     size_t idx = g_num_rules++;
     memset(&g_rules[idx], 0, sizeof(g_rules[idx]));
     g_rules[idx].rule = *rule;
     g_rules[idx].window_start_us = GetTimeMicros();
-
-    /* Install observer if needed */
-    if (g_initialized && rule->trigger < EV_NUM_TYPES)
-        event_observe(rule->trigger, alert_observer, NULL);
 
     pthread_mutex_unlock(&g_lock);
     return true;
