@@ -213,17 +213,18 @@ static int case_attestation_oversized(void)
     int failures = 0;
     struct fd_attestation a;
     answered(&a, "abcdefghijklmnop", k_pin_a);
-    FD_CHECK("oversized answered origin refuses without a pin",
+    FD_CHECK("oversized answered origin requests shortening to 15",
              !a.answered && a.origin[0] == '\0' && a.pin.text[0] == '\0' &&
-             strcmp(a.reason, "input-too-long") == 0);
+             strcmp(a.reason, "shorten-origin-to-15") == 0);
     fd_attestation_unreachable(&a, "repo", "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr");
-    FD_CHECK("oversized unreachable reason has an explicit refusal",
-             !a.answered && a.origin[0] == '\0' &&
-             strcmp(a.reason, "input-too-long") == 0);
+    FD_CHECK("oversized unreachable reason retains origin and requests 31",
+             !a.answered && strcmp(a.origin, "repo") == 0 &&
+             a.pin.text[0] == '\0' &&
+             strcmp(a.reason, "shorten-reason-to-31") == 0);
     fd_attestation_unreachable(&a, "abcdefghijklmnop", "fetch-failed");
-    FD_CHECK("oversized unreachable origin has an explicit refusal",
-             !a.answered && a.origin[0] == '\0' &&
-             strcmp(a.reason, "input-too-long") == 0);
+    FD_CHECK("oversized unreachable origin requests shortening to 15",
+             !a.answered && a.origin[0] == '\0' && a.pin.text[0] == '\0' &&
+             strcmp(a.reason, "shorten-origin-to-15") == 0);
     return failures;
 }
 

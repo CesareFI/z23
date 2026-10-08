@@ -206,7 +206,7 @@ void fd_attestation_answered(struct fd_attestation *a, const char *origin,
         return;
     memset(a, 0, sizeof *a);
     if (!copy_bounded(a->origin, sizeof a->origin, origin)) {
-        copy_bounded(a->reason, sizeof a->reason, "input-too-long");
+        copy_bounded(a->reason, sizeof a->reason, "shorten-origin-to-15");
         return;
     }
     if (pin)
@@ -222,11 +222,12 @@ void fd_attestation_unreachable(struct fd_attestation *a, const char *origin,
     if (!a)
         return;
     memset(a, 0, sizeof *a);
-    if (!copy_bounded(a->origin, sizeof a->origin, origin) ||
-        !copy_bounded(a->reason, sizeof a->reason, reason)) {
-        memset(a, 0, sizeof *a);
-        copy_bounded(a->reason, sizeof a->reason, "input-too-long");
+    if (!copy_bounded(a->origin, sizeof a->origin, origin)) {
+        copy_bounded(a->reason, sizeof a->reason, "shorten-origin-to-15");
+        return;
     }
+    if (!copy_bounded(a->reason, sizeof a->reason, reason))
+        copy_bounded(a->reason, sizeof a->reason, "shorten-reason-to-31");
     a->answered = false;
 }
 
