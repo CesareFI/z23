@@ -3136,6 +3136,101 @@ static int test_board_method_not_found_enveloped(void)
         board_method_not_found_enveloped_rpc);
 }
 
+/* Capture the linked production parser/CLI, never an independently built
+ * executable whose source may differ from this test generation. */
+static bool read_cli_recovery(int fd, char *out, size_t cap)
+{
+    if (!out || cap < 2) return false;
+    if (lseek(fd, 0, SEEK_SET) < 0) return false;
+    ssize_t got = read(fd, out, cap - 1);
+    if (got <= 0) return false;
+    out[got] = '\0';
+    char extra;
+    return read(fd, &extra, 1) == 0;
+}
+
+static bool capture_cli_recovery(size_t row, char *out, size_t cap, int *rc)
+{
+    static const char *const options[] = {"--after=-1", "--heartbeat-ms=99"};
+    const char *const args[] = {"find", "9223372036854775808", "--format=json"};
+    char dir[PATH_MAX], path[PATH_MAX];
+    test_make_tmpdir(dir, sizeof(dir), "native_api", "cli_recovery");
+    int n = snprintf(path, sizeof(path), "%s/stdout", dir);
+    bool ok = false;
+    int saved = -1, fd = -1;
+    if (n <= 0 || (size_t)n >= sizeof(path)) goto cleanup;
+    fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0 || fflush(stdout) != 0) goto cleanup;
+    saved = dup(STDOUT_FILENO);
+    if (saved < 0) goto cleanup;
+    if (dup2(fd, STDOUT_FILENO) < 0) goto cleanup;
+    if (row < 2)
+        *rc = zcl_native_dev_events_flags_for_test(&options[row], 1);
+    else
+        *rc = zcl_native_command_main("code", args, 3, dir, 0,
+                                      CHAIN_MAIN, true);
+    ok = fflush(stdout) == 0;
+cleanup:
+    if (saved >= 0) {
+        if (dup2(saved, STDOUT_FILENO) < 0) ok = false;
+        close(saved);
+    }
+    if (ok) ok = read_cli_recovery(fd, out, cap);
+    if (fd >= 0) close(fd);
+    test_cleanup_tmpdir(dir);
+    return ok;
+}
+
+static bool cli_recovery_matches(const struct json_value *doc, size_t row)
+{
+    const struct json_value *error = json_get(doc, "error");
+    const struct json_value *next = json_get(doc, "next");
+    if (!next || next->type != JSON_ARR) return false;
+    const char *action = json_get_str(json_get(error, "next_action"));
+    if (row == 2)
+        return next->num_children == 0 &&
+               strcmp(action, "inspect the command contract") == 0;
+    if (!validate_emitted_next(doc, 0, "discover.schema")) return false;
+    const struct json_value *item = &next->children[0];
+    const char *reason = json_get_str(json_get(item, "reason"));
+    const char *path = json_get_str(json_get(json_get(item, "input"), "path"));
+    const char *expected = row == 0
+        ? "inspect the schema and set --after to a nonnegative integer"
+        : "inspect the schema and set --heartbeat-ms to 100..300000";
+    return next->num_children == 1 && strcmp(path, "dev.loop.events") == 0 &&
+           strcmp(reason, expected) == 0 &&
+           strcmp(action, reason) == 0;
+}
+
+static int test_cli_error_recovery_next(void)
+{
+    int failures = 0;
+    TEST("CLI invalid event options and empty-next errors name their recovery") {
+        for (size_t row = 0; row < 3; row++) {
+            char out[8192];
+            int rc = -1;
+            ASSERT(capture_cli_recovery(row, out, sizeof(out), &rc));
+            ASSERT_EQ(rc, row == 2 ? ZCL_COMMAND_EXIT_INTERNAL : ZCL_COMMAND_EXIT_INVALID);
+            struct json_value doc;
+            json_init(&doc);
+            bool parsed = json_read(&doc, out, strlen(out));
+            bool matched = parsed && cli_recovery_matches(&doc, row);
+            bool envelope = parsed &&
+                strcmp(json_get_str(json_get(&doc, "schema")), "zcl.result.v1") == 0 &&
+                !json_get_bool(json_get(&doc, "ok"));
+            const char *code = json_get_str(json_get(json_get(&doc, "error"), "code"));
+            bool code_ok = strcmp(code, row == 2 ? "BAD_INPUT" :
+                                  "INVALID_SUBSCRIPTION_CURSOR") == 0;
+            json_free(&doc);
+            ASSERT(envelope);
+            ASSERT(code_ok);
+            ASSERT(matched);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static unsigned g_logs_rpc_calls;
 static bool g_logs_rpc_null;
 static bool g_logs_rpc_params_match;
@@ -3240,6 +3335,7 @@ static int test_logs_local_serialization_failure(void)
 int test_native_api_contract(void)
 {
     int failures = 0;
+    failures += test_cli_error_recovery_next();
     failures += test_logs_local_serialization_failure();
     failures += test_board_unavailable_guides_instance_selection();
     failures += test_board_method_not_found_bare();

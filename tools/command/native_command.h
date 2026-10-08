@@ -18,6 +18,11 @@ extern "C" {
 bool zcl_native_command_is_root(const char *word);
 
 #ifdef ZCL_TESTING
+/* Drive the production event-option parser without a separate dev binary.
+ * Invalid options print the same error envelope as the streaming CLI and
+ * return INVALID; valid options return OK without starting a stream. */
+int zcl_native_dev_events_flags_for_test(const char *const *words, size_t count);
+
 /* Exercise one production JSONL stream step with an already-published event.
  * Writes accepted lines to stdout; refused encodings write no bytes and set
  * INTERNAL. The cursor advances past a found event even on refusal. */

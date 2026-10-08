@@ -1979,7 +1979,7 @@ static void nc_print_error(const char *command, const char *code,
                            const char *evidence, const char *next_command,
                            const char *next_key, const char *next_value);
 
-#ifdef ZCL_DEV_BUILD
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 static bool nc_parse_i64_exact(const char *value, int64_t min, int64_t max,
                                int64_t *out)
 {
@@ -2015,7 +2015,9 @@ static enum nc_dev_events_flags_result nc_dev_events_parse_flags(
             if (!nc_parse_i64_exact(word + 8, 0, INT64_MAX, after)) {
                 nc_print_error("dev.loop.events", "INVALID_SUBSCRIPTION_CURSOR",
                                "normalize", "--after must be nonnegative",
-                               "after", "", "", "");
+                               "after", "discover.schema",
+                               "{\"path\":\"dev.loop.events\"}",
+                               "inspect the schema and set --after to a nonnegative integer");
                 *rc = ZCL_COMMAND_EXIT_INVALID;
                 return NC_DEV_EVENTS_INVALID;
             }
@@ -2024,7 +2026,9 @@ static enum nc_dev_events_flags_result nc_dev_events_parse_flags(
                 nc_print_error("dev.loop.events", "INVALID_SUBSCRIPTION_CURSOR",
                                "normalize",
                                "--heartbeat-ms must be 100..300000",
-                               "heartbeat_ms", "", "", "");
+                               "heartbeat_ms", "discover.schema",
+                               "{\"path\":\"dev.loop.events\"}",
+                               "inspect the schema and set --heartbeat-ms to 100..300000");
                 *rc = ZCL_COMMAND_EXIT_INVALID;
                 return NC_DEV_EVENTS_INVALID;
             }
@@ -2770,6 +2774,7 @@ static void nc_print_error_build_error(const char *code, const char *phase,
                                        const char *message,
                                        const char *evidence,
                                        const char *next_reason,
+                                       bool has_next,
                                        struct json_value *error)
 {
     struct json_value blockers;
@@ -2785,7 +2790,8 @@ static void nc_print_error_build_error(const char *code, const char *phase,
     (void)json_push_kv_str(error, "next_action",
                            next_reason && next_reason[0]
                                ? next_reason
-                               : "follow the first next command");
+                               : has_next ? "follow the first next command"
+                                          : "inspect the command contract");
     (void)json_push_kv_bool(error, "mutated", false);
     if (evidence && evidence[0])
         (void)json_push_kv_str(error, "evidence", evidence);
@@ -2856,11 +2862,12 @@ static void nc_print_error(const char *command, const char *code,
     (void)json_push_kv_str(&root, "status", "failed");
     (void)json_push_kv_str(&root, "request_id", "local-cli");
     (void)json_push_kv_int(&root, "elapsed_us", 0);
-    nc_print_error_build_error(code, phase, message, evidence, next_reason,
-                               &error);
-    (void)json_push_kv(&root, "error", &error);
     nc_print_error_build_next(command, next_command, next_input, next_reason,
                               &next, &item);
+    nc_print_error_build_error(code, phase, message, evidence, next_reason,
+                               next.num_children > 0,
+                               &error);
+    (void)json_push_kv(&root, "error", &error);
     (void)json_push_kv(&root, "next", &next);
 
     char out[ZCL_COMMAND_ERROR_BUDGET + 1];
@@ -2879,6 +2886,19 @@ static void nc_print_error(const char *command, const char *code,
     json_free(&error);
     json_free(&root);
 }
+
+#ifdef ZCL_TESTING
+int zcl_native_dev_events_flags_for_test(const char *const *words, size_t count)
+{
+    int64_t after = 0, heartbeat_ms = 15000;
+    int rc = ZCL_COMMAND_EXIT_OK;
+    bool saved_format = g_nc_format_json;
+    g_nc_format_json = true;
+    (void)nc_dev_events_parse_flags(words, count, 0, &after, &heartbeat_ms, &rc);
+    g_nc_format_json = saved_format;
+    return rc;
+}
+#endif
 
 static void nc_print_error_next_string(
     const char *command, const char *code, const char *phase,
