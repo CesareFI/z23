@@ -170,7 +170,9 @@ struct zcl_result science_commit_prelude(
     char request_hex[65];
     zcl_hex_encode(request, 32, request_hex);
     if (!db_zcode_science_plan_find_by_request(ndb, request_hex, plan))
-        return ZCL_ERR(-1, "science-plan-not-found");
+        return ZCL_ERR(-1, "science-plan-not-found: request=%s kind=%s; "
+                       "plan this exact request before committing",
+                       request_hex, kind);
     if (strcmp(plan->kind, kind) != 0)
         return ZCL_ERR(-1, "science-plan-kind-mismatch");
     if (now >= plan->expires_unix)

@@ -403,9 +403,25 @@ static int test_zstore_study_plan_commit(void)
         uint8_t wire[VCS_ZCODE_STUDY_SPEC_WIRE_BYTES];
         ASSERT_EQ(vcs_zcode_study_spec_serialize(&study, wire),
                   VCS_ZCODE_SCIENCE_OK);
+        /* A confirmed commit before planning names the missing request. */
+        struct zcode_science_commit_out unplanned = {0};
+        struct zcl_result missing = zcode_science_study_commit(
+            &ndb, dir, wire, sizeof(wire), true, 1500, &unplanned);
+        ASSERT(!missing.ok);
+        ASSERT_EQ(missing.code, -1);
+        ASSERT(strncmp(missing.message, "science-plan-not-found",
+                       strlen("science-plan-not-found")) == 0);
+        ASSERT(strstr(missing.message, "kind=study") != NULL);
+        ASSERT(strstr(missing.message,
+                      "plan this exact request before committing") != NULL);
+        ASSERT_EQ(zstore_cas_object_count(dir), 0);
         struct zcode_science_plan_out plan, replan;
         ASSERT(zcode_science_study_plan(&ndb, dir, wire, sizeof(wire), 1500,
                                         &plan).ok);
+        char request_detail[sizeof("request=") + 64];
+        (void)snprintf(request_detail, sizeof(request_detail), "request=%s",
+                       plan.request_hash);
+        ASSERT(strstr(missing.message, request_detail) != NULL);
         ASSERT(!plan.already_planned);
         ASSERT_EQ(plan.expires_unix, 1500 + ZCODE_SCIENCE_PLAN_TTL_SECONDS);
         /* Re-planning the same request returns the same plan. */
@@ -440,6 +456,20 @@ static int test_zstore_study_plan_commit(void)
         struct zcode_science_commit_out stray;
         ASSERT(!zcode_science_study_commit(&ndb, dir, other, sizeof(other),
                                            true, 1500, &stray).ok);
+        /* A distinct well-formed request cannot reuse the existing plan. */
+        struct vcs_zcode_study_spec_v1 other_study = study;
+        other_study.sequence++;
+        ASSERT_EQ(vcs_zcode_study_spec_serialize(&other_study, other),
+                  VCS_ZCODE_SCIENCE_OK);
+        struct zcl_result distinct = zcode_science_study_commit(
+            &ndb, dir, other, sizeof(other), true, 1500, &stray);
+        ASSERT(!distinct.ok);
+        ASSERT_EQ(distinct.code, -1);
+        ASSERT(strncmp(distinct.message, "science-plan-not-found",
+                       strlen("science-plan-not-found")) == 0);
+        ASSERT(strstr(distinct.message, "kind=study") != NULL);
+        ASSERT(strstr(distinct.message, request_detail) == NULL);
+        ASSERT_EQ(zstore_cas_object_count(dir), 1);
         /* Projection reads before rebuild. */
         struct db_zcode_science_entry before, after;
         bool found = false;
