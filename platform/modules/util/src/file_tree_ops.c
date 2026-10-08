@@ -67,15 +67,16 @@ struct zcl_result zcl_mkdir_p(const char *path, mode_t mode)
 /* Copy every remaining byte of `in` into `out` through a 256 KB buffer that
  * the top-level call allocated once and threads down the recursion. */
 static struct zcl_result copy_bytes(int in, int out, char *iobuf,
-                                    const char *dst_disp)
+                                    const char *src_disp, const char *dst_disp)
 {
     for (;;) {
         ssize_t r = read(in, iobuf, ZCL_TREE_IOBUF_SZ);
         if (r < 0) {
             if (errno == EINTR)
                 continue;
-            return ZCL_ERR(-1, "read failed: %s: %s", dst_disp,
-                           strerror(errno));
+            return ZCL_ERR(-1, "read failed: %s: errno=%d: %s; "
+                           "inspect source readability before retrying",
+                           src_disp, errno, strerror(errno));
         }
         if (r == 0)
             return ZCL_OK;
@@ -155,7 +156,7 @@ static struct zcl_result copy_regular_at(int s_dfd, const char *sname,
 
     struct zcl_result r = copy_prepare_destination(in, out, src_disp, dst_disp);
     if (r.ok)
-        r = copy_bytes(in, out, iobuf, dst_disp);
+        r = copy_bytes(in, out, iobuf, src_disp, dst_disp);
     if (r.ok) {
         /* Set the exact mode even under a restrictive umask. */
         if (fchmod(out, mode) != 0)
@@ -298,8 +299,10 @@ struct zcl_result zcl_tree_copy(const char *src, const char *dst,
                                 unsigned flags, zcl_tree_filter_fn filter,
                                 void *fctx)
 {
-    if (!src || !dst)
-        return ZCL_ERR(-1, "zcl_tree_copy: NULL src/dst");
+    if (!src)
+        return ZCL_ERR(-1, "zcl_tree_copy: NULL src; supply a source path");
+    if (!dst)
+        return ZCL_ERR(-1, "zcl_tree_copy: NULL dst; supply a destination path");
 
     struct stat st;
     if (fstatat(AT_FDCWD, src, &st, AT_SYMLINK_NOFOLLOW) != 0)

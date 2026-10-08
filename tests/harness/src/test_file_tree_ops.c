@@ -30,7 +30,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 /* ── helpers ─────────────────────────────────────────────────────── */
@@ -136,6 +138,82 @@ static bool fto_filter(const char *name, bool is_dir, void *ctx)
 }
 
 /* ── cases ───────────────────────────────────────────────────────── */
+
+static int test_copy_null_source(void)
+{
+    int failures = 0;
+    TEST("file_tree_ops NULL source names the missing field and repair") {
+        char root[PATH_MAX], dst[PATH_MAX + 16];
+        char *dir = test_mkdtemp(root, sizeof(root), "fto_null");
+        ASSERT(dir != NULL);
+        snprintf(dst, sizeof(dst), "%s/copied", dir);
+        struct zcl_result r = zcl_tree_copy(NULL, dst, 0, NULL, NULL);
+        bool refused = !r.ok && r.code == -1;
+        bool named = strstr(r.message, "NULL src;") != NULL;
+        bool repair = strstr(r.message, "supply a source path") != NULL;
+        bool untouched = access(dst, F_OK) == -1 && errno == ENOENT;
+        struct zcl_result cleanup = zcl_tree_remove(dir);
+        ASSERT(cleanup.ok);
+        ASSERT(refused && untouched);
+        ASSERT(named && repair);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+#if defined(__linux__)
+static bool fto_source_read_failure(const char *dst)
+{
+    /* Qualify the exact read-EIO fixture; an unavailable proc entry fails. */
+    int fd = open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    char byte;
+    ssize_t got = pread(fd, &byte, 1, 0);
+    int cause = errno;
+    bool closed = close(fd) == 0;
+    if (!closed || got != -1 || cause != EIO)
+        return false;
+    struct zcl_result r = zcl_tree_copy("/proc/self/mem", dst, 0, NULL, NULL);
+    char expected[32];
+    snprintf(expected, sizeof(expected), "errno=%d:", EIO);
+    if (r.ok || r.code != -1)
+        return false;
+    if (!strstr(r.message, "read failed: /proc/self/mem:"))
+        return false;
+    if (!strstr(r.message, expected))
+        return false;
+    return strstr(r.message, "inspect source readability") != NULL;
+}
+
+static int test_copy_source_read_failure(void)
+{
+    int failures = 0;
+    TEST("file_tree_ops read EIO identifies source and readability repair") {
+        char root[PATH_MAX], dst[PATH_MAX + 16];
+        char *dir = test_mkdtemp(root, sizeof(root), "fto_read");
+        ASSERT(dir != NULL);
+        snprintf(dst, sizeof(dst), "%s/copied", dir);
+        pid_t child = fork();
+        if (child == 0) {
+            alarm(10);
+            _exit(fto_source_read_failure(dst) ? 0 : 1);
+        }
+        int status = 0;
+        pid_t waited = -1;
+        if (child > 0) {
+            do { waited = waitpid(child, &status, 0); }
+            while (waited < 0 && errno == EINTR);
+        }
+        struct zcl_result cleanup = zcl_tree_remove(dir);
+        ASSERT(cleanup.ok);
+        ASSERT(child > 0 && waited == child);
+        ASSERT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
 
 static int test_nested_copy_signature_parity(void)
 {
@@ -514,6 +592,10 @@ static int test_file_tree_ops_platform_arm(void)
 {
     int failures = 0;
 
+    failures += test_copy_null_source();
+#if defined(__linux__)
+    failures += test_copy_source_read_failure();
+#endif
     failures += test_nested_copy_signature_parity();
     failures += test_same_inode_refuse(false);
     failures += test_same_inode_refuse(true);
