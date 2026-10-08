@@ -182,6 +182,41 @@ static bool sdn_wait_until_armed(struct sdn_blocked_wait *wait)
     return false;
 }
 
+/* Exercise the real initializer with the caller's bound fixture socket.
+ * Invalid intervals disable the watchdog without disabling notification. */
+static int sdn_test_watchdog_intervals(const char *path)
+{
+    int failures = 0;
+    static const struct {
+        const char *text;
+        uint64_t expected;
+    } cases[] = {
+        {"60000000junk", 0},
+        {"9223372036854775808", 0},
+        {"60000000", 60000000ULL},
+        {"9223372036854775807", INT64_MAX},
+        {"1", 1},
+        {"0", 0},
+        {"-1", 0},
+        {"", 0},
+        {"garbage", 0},
+        {" 60000000", 60000000ULL},
+    };
+    SDN_CHECK("interval fixture NOTIFY_SOCKET set",
+        setenv("NOTIFY_SOCKET", path, 1) == 0);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        SDN_CHECK("interval fixture WATCHDOG_USEC set",
+            setenv("WATCHDOG_USEC", cases[i].text, 1) == 0);
+        sd_notify_reset_for_testing();
+        SDN_CHECK("interval fixture init succeeds", sd_notify_init());
+        SDN_CHECK("interval fixture remains active", sd_notify_is_active());
+        SDN_CHECK(cases[i].text,
+            sd_notify_watchdog_usec() == cases[i].expected);
+    }
+    sd_notify_reset_for_testing();
+    return failures;
+}
+
 /* ── fake root-health callback used by the gate test ────────────── */
 static bool g_fake_health_healthy = true;
 static bool fake_health_check(void) { return g_fake_health_healthy; }
@@ -281,6 +316,7 @@ static int test_sd_notify_platform_arm(void)
         SDN_CHECK("path-mode socket bound", fd >= 0);
 
         if (fd >= 0) {
+            failures += sdn_test_watchdog_intervals(path);
             setenv("NOTIFY_SOCKET", path, 1);
             setenv("WATCHDOG_USEC", "60000000", 1); /* 60s */
             sd_notify_reset_for_testing();

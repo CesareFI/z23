@@ -7,6 +7,7 @@
 
 #include "util/sd_notify.h"
 #include "util/log_macros.h"
+#include "util/parse_num.h"
 
 #include <stddef.h>
 #include <stdatomic.h>
@@ -67,8 +68,8 @@ bool sd_notify_init(void)
     const char *wd = getenv("WATCHDOG_USEC");
     uint64_t wd_us = 0;
     if (wd && wd[0]) {
-        long long v = strtoll(wd, NULL, 10);
-        if (v > 0)
+        int64_t v = 0;
+        if (zcl_parse_i64(wd, &v) && v > 0)
             wd_us = (uint64_t)v;
     }
     atomic_store(&g_watchdog_usec, wd_us);
