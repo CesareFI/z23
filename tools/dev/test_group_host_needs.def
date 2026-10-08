@@ -219,6 +219,11 @@ ZCL_TEST_GROUP_BUILD_NEED("test_soak_runner", "build/bin/soak_runner", "soak_run
  * harness it regresses; absence fails. Selected local runs and the proof's
  * prefork build it through this row. */
 ZCL_TEST_GROUP_BUILD_NEED("test_crash_recovery", "build/bin/crash_recovery_test", "crash_recovery_test")
+/* tests/harness/src/test_inspect_html.c execs build/bin/inspect_html and
+ * self-skips where it is absent. The proof's prefork step builds the tool
+ * for every selection that includes this group. */
+ZCL_TEST_GROUP_BUILD_NEED("test_inspect_html", "build/bin/inspect_html",
+                          "tools/inspect_html")
 
 /* tests/harness/src/test_process_group_exec.c execs the fixture launcher
  * build/bin/process-group-exec for both its arms. No default target builds

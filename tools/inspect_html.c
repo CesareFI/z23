@@ -35,6 +35,11 @@ static char *read_file(const char *path, size_t *len_out) {
 static int count_pattern(const char *hay, const char *needle) {
     int n = 0;
     size_t nlen = strlen(needle);
+    /* An empty needle matches at every position (strstr(p, "") == p), so
+     * advancing by nlen makes no progress and the loop spins forever —
+     * count zero instead. */
+    if (nlen == 0)
+        return 0;
     const char *p = hay;
     while ((p = strstr(p, needle)) != NULL) { n++; p += nlen; }
     return n;
