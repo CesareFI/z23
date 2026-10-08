@@ -1457,6 +1457,74 @@ static int mb_scratch_path_bounds(void)
     return failures;
 }
 
+#if !defined(_WIN32)
+static int mb_identity_invalid(char *dir_arg, const char *prefix,
+                               unsigned long long limit)
+{
+    int failures = 0;
+    const char *bad[] = { "7junk", "-1", "+7", " 7", "7 ", "",
+                         "18446744073709551616" };
+    char option[96];
+    char *args[] = { "z23", "--metaverse-broker", dir_arg, option, "--listen" };
+    for (size_t b = 0; b < sizeof(bad) / sizeof(bad[0]); b++) {
+        snprintf(option, sizeof(option), "%s%s", prefix, bad[b]);
+        for (int argc = 4; argc <= 5; argc++)
+            MB_CHECK(option, agent_broker_mode_main(argc, args) == 2);
+    }
+    if (limit < ULLONG_MAX) {
+        snprintf(option, sizeof(option), "%s%llu", prefix, limit + 1);
+        MB_CHECK("identity above native range refuses pair setup",
+                 agent_broker_mode_main(4, args) == 2);
+        MB_CHECK("identity above native range refuses listener setup",
+                 agent_broker_mode_main(5, args) == 2);
+    }
+    return failures;
+}
+
+static int mb_identity_valid(char *dir_arg, const char *prefix,
+                             unsigned long long limit)
+{
+    int failures = 0;
+    unsigned long long good[] = { 0, 7, limit };
+    char option[96];
+    char *args[] = { "z23", "--metaverse-broker", dir_arg, option, "--listen" };
+    MB_CHECK("omitted identity reaches mkdir", agent_broker_mode_main(3, args) == 3);
+    for (size_t b = 0; b < sizeof(good) / sizeof(good[0]); b++) {
+        snprintf(option, sizeof(option), "%s%llu", prefix, good[b]);
+        MB_CHECK("valid identity reaches pair mkdir", agent_broker_mode_main(4, args) == 3);
+        MB_CHECK("valid identity reaches listener mkdir", agent_broker_mode_main(5, args) == 3);
+    }
+    return failures;
+}
+#endif
+
+static int mb_identity_options(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    char parent[PATH_MAX], dir[PATH_MAX + 16], dir_arg[PATH_MAX + 32];
+    int fd = test_mkstemp(parent, sizeof(parent), "broker-identity");
+    MB_CHECK("identity fixture file", fd >= 0);
+    if (fd < 0)
+        return failures;
+    MB_CHECK("identity fixture close", close(fd) == 0);
+    /* A regular-file parent makes setup return 3 before spawning or listening. */
+    snprintf(dir, sizeof(dir), "%s/child", parent);
+    snprintf(dir_arg, sizeof(dir_arg), "--broker-dir=%s", dir);
+    unsigned long long uid_max = (uid_t)-1, gid_max = (gid_t)-1;
+    unsigned long long agent_max = uid_max < gid_max ? uid_max : gid_max;
+    failures += mb_identity_invalid(dir_arg, "--agent-uid=", agent_max);
+    failures += mb_identity_invalid(dir_arg, "--expect-uid=", uid_max);
+    failures += mb_identity_valid(dir_arg, "--agent-uid=", agent_max);
+    failures += mb_identity_valid(dir_arg, "--expect-uid=", uid_max);
+    struct stat st;
+    MB_CHECK("identity fixture remains a file", lstat(parent, &st) == 0 && S_ISREG(st.st_mode));
+    MB_CHECK("identity creates no child directory", lstat(dir, &st) < 0 && errno == ENOTDIR);
+    MB_CHECK("identity fixture removed", unlink(parent) == 0);
+#endif
+    return failures;
+}
+
 int test_metaverse_agent_broker(void)
 {
     printf("\n=== metaverse confined-agent broker (adversarial) ===\n");
@@ -1464,6 +1532,7 @@ int test_metaverse_agent_broker(void)
 
     test_make_tmpdir(g_dir, sizeof(g_dir), "mvagent", "root");
 
+    failures += mb_identity_options();
     failures += mb_scratch_path_bounds();
 
     failures += mb_codec();

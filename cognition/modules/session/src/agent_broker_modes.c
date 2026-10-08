@@ -65,6 +65,35 @@ static bool arg_present(int argc, char **argv, const char *flag)
 }
 
 #if !defined(_WIN32)
+static bool parse_identity(const char *text, unsigned long long limit,
+                           unsigned long long *out)
+{
+    *out = 0;
+    if (!text)
+        return true;
+    if (!text[0] || strspn(text, "0123456789") != strlen(text))
+        LOG_FAIL(MODES_TAG, "identity must be nonempty decimal digits");
+    errno = 0;
+    char *end = NULL;
+    unsigned long long value = strtoull(text, &end, 10);
+    if (errno == ERANGE || *end || value > limit)
+        LOG_FAIL(MODES_TAG, "identity is outside the supported range");
+    *out = value;
+    return true;
+}
+
+static bool parse_identities(const char *agent, const char *expected,
+                             unsigned long long *agent_id,
+                             unsigned long long *expected_id)
+{
+    unsigned long long uid_max = (uid_t)-1, gid_max = (gid_t)-1;
+    unsigned long long agent_max = uid_max < gid_max ? uid_max : gid_max;
+    if (!parse_identity(agent, agent_max, agent_id) ||
+        !parse_identity(expected, uid_max, expected_id))
+        LOG_FAIL(MODES_TAG, "refusing invalid broker identity option");
+    return true;
+}
+
 static bool ensure_dir(const char *path)
 {
     if (mkdir(path, 0700) == 0 || errno == EEXIST)
@@ -163,14 +192,14 @@ resolve_provider(int argc, char **argv, const char **why)
 
 #if !defined(_WIN32)
 static int broker_listen(struct agent_broker_session *s, const char *dir,
-                         const char *euid_s, char *sockpath, size_t sockcap,
+                         uid_t expected_uid, char *sockpath, size_t sockcap,
                          int *served)
 {
     /* The listening surface: any local process can reach it, which is
      * exactly why the credential check is the first thing that runs. */
     snprintf(sockpath, sockcap, "%s/agent.sock", dir);
     s->expect.require_uid = true;
-    s->expect.uid = euid_s ? (uid_t)strtoul(euid_s, NULL, 10) : getuid();
+    s->expect.uid = expected_uid;
 
     int lfd = agent_broker_listen(sockpath);
     if (lfd < 0) {
@@ -189,7 +218,7 @@ static int broker_listen(struct agent_broker_session *s, const char *dir,
 
 static int broker_pair(struct agent_broker_session *s,
                        const struct agent_spawn_result *spawned,
-                       const char *auid_s, const char *reqs
+                       uid_t expected_uid, const char *reqs
 #ifdef ZCL_TESTING
                        , const char *revoke_s
 #endif
@@ -201,7 +230,7 @@ static int broker_pair(struct agent_broker_session *s,
     s->expect.require_pid = true;
     s->expect.pid = spawned->pid;
     s->expect.require_uid = true;
-    s->expect.uid = auid_s ? (uid_t)strtoul(auid_s, NULL, 10) : getuid();
+    s->expect.uid = expected_uid;
 
     uint64_t max = reqs ? strtoull(reqs, NULL, 10) : 0;
 #ifdef ZCL_TESTING
@@ -324,6 +353,9 @@ static int broker_run(int argc, char **argv, const char *dir,
 #endif
                       )
 {
+    unsigned long long agent_id = 0, expected_id = 0;
+    if (!parse_identities(auid_s, euid_s, &agent_id, &expected_id))
+        return 2;
     char scratch[448];
     if (!prepare_broker_dir(dir, scratch, sizeof(scratch)) || !ensure_dir(scratch))
         return 3;
@@ -346,8 +378,8 @@ static int broker_run(int argc, char **argv, const char *dir,
         .scratch_dir  = scratch,
         .script       = script,
         .canary       = canary,
-        .confined_uid = auid_s ? (uid_t)strtoul(auid_s, NULL, 10) : 0,
-        .confined_gid = auid_s ? (gid_t)strtoul(auid_s, NULL, 10) : 0,
+        .confined_uid = (uid_t)agent_id,
+        .confined_gid = (gid_t)agent_id,
     };
     struct agent_spawn_result spawned;
     if (listen_mode) {
@@ -385,8 +417,9 @@ static int broker_run(int argc, char **argv, const char *dir,
     char sockpath[512] = { 0 };
 
     int rc = listen_mode
-        ? broker_listen(&s, dir, euid_s, sockpath, sizeof(sockpath), &served)
-        : broker_pair(&s, &spawned, auid_s, reqs
+        ? broker_listen(&s, dir, euid_s ? (uid_t)expected_id : getuid(),
+                        sockpath, sizeof(sockpath), &served)
+        : broker_pair(&s, &spawned, auid_s ? (uid_t)agent_id : getuid(), reqs
 #ifdef ZCL_TESTING
                       , revoke_s
 #endif
