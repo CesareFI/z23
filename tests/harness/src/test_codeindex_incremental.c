@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <utime.h>
 
 #define CIN_CHECK(name, expression)                                    \
     do {                                                               \
@@ -643,6 +644,71 @@ static int cin_scope_refusals(void)
     return failures;
 }
 
+static bool cin_source_line_result(struct codeindex *index, bool malformed)
+{
+    char rows[2][256], cause[CODEINDEX_INCLUDE_UNSAFE_CAUSE_MAX];
+    enum codeindex_include_dim dim = CODEINDEX_INCLUDE_DIM_UNAVAILABLE;
+    int count = codeindex_reverse_includes(index, "contexts/demo/b.h", rows,
+                                           2, &dim);
+    bool unsafe = codeindex_include_unsafe_cause(index, cause, sizeof(cause));
+    return malformed ? count >= 0 && dim != CODEINDEX_INCLUDE_DIM_COMPLETE &&
+                       unsafe && strcmp(cause,
+                           "text_line_nul build/fixture.d -> contexts/demo/a.c") == 0
+                     : count == 1 && dim == CODEINDEX_INCLUDE_DIM_COMPLETE &&
+                       strcmp(rows[0], "contexts/demo/a.c") == 0 && !unsafe &&
+                       cause[0] == '\0';
+}
+
+static bool cin_source_line_case(const char *root, const char *body, size_t len,
+                                 bool malformed)
+{
+    char source[PATH_MAX], depfile[PATH_MAX];
+    int sn = snprintf(source, sizeof(source), "%s/contexts/demo/a.c", root);
+    int dn = snprintf(depfile, sizeof(depfile), "%s/build/fixture.d", root);
+    if (sn <= 0 || (size_t)sn >= sizeof(source) || dn <= 0 ||
+        (size_t)dn >= sizeof(depfile)) return false;
+    FILE *file = fopen(source, "wb");
+    if (!file) return false;
+    bool ok = fwrite(body, 1, len, file) == len;
+    if (fclose(file) != 0) ok = false;
+    if (!ok || !cin_write_file(root, "build/fixture.d",
+                               "a.o: contexts/demo/a.c\n")) return false;
+    struct stat st;
+    if (stat(depfile, &st) != 0) return false;
+    struct utimbuf times = {.actime = st.st_mtime, .modtime = st.st_mtime};
+    if (utime(source, &times) != 0 || !cin_force_cold(root)) return false;
+    struct codeindex *index = codeindex_open(root);
+    if (!index) return false;
+    ok = cin_source_line_result(index, malformed);
+    codeindex_close(index);
+    return ok;
+}
+
+static int cin_source_line_cases(const char *workspace)
+{
+    int failures = 0;
+    char root[PATH_MAX];
+    int n = snprintf(root, sizeof(root), "%s/source-lines", workspace);
+    bool ready = n > 0 && (size_t)n < sizeof(root) &&
+                 cin_write_file(root, "contexts/demo/a.c", "") &&
+                 cin_write_file(root, "contexts/demo/b.h", "/* header */\n");
+    CIN_CHECK("source-line fixture is ready", ready);
+    if (!ready) return failures;
+    static const char leading[] = "\0#include \"b.h\"";
+    static const char prefix[] = "/* prefix */\0#include \"b.h\"";
+    static const char nonfinal[] = "\0#include \"b.h\"\n/* final */";
+    static const char valid[] = "#include \"b.h\"";
+    CIN_CHECK("final source line with leading NUL refuses narrowing",
+              cin_source_line_case(root, leading, sizeof(leading) - 1, true));
+    CIN_CHECK("final source line with prefix before NUL refuses narrowing",
+              cin_source_line_case(root, prefix, sizeof(prefix) - 1, true));
+    CIN_CHECK("nonfinal source line with NUL refuses narrowing",
+              cin_source_line_case(root, nonfinal, sizeof(nonfinal) - 1, true));
+    CIN_CHECK("final include without newline retains its complete edge",
+              cin_source_line_case(root, valid, sizeof(valid) - 1, false));
+    return failures;
+}
+
 static int cin_depfile_cases(const char *live, const char *reference)
 {
     int failures = 0;
@@ -684,6 +750,7 @@ int test_codeindex_incremental(void)
     failures += cin_identity_reread();
     failures += cin_depfile_cases(live, reference);
     failures += cin_vanished_cases(workspace);
+    failures += cin_source_line_cases(workspace);
 
     /* One file. The narrowest incremental case and the one the dev loop
      * actually runs; the spare it leaves behind is what makes the NEXT

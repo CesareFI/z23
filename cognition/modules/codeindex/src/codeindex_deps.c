@@ -637,6 +637,20 @@ static void text_include_resolve(struct text_includes *t, const char *from,
         text_include_near(t, t->unit, quoted);
 }
 
+/* Preserve the measured extent even when a source line contains zero bytes. */
+static size_t text_read_line(FILE *file, char *line, size_t cap)
+{
+    size_t used = 0;
+    int byte;
+    while (used < cap - 1 && (byte = fgetc(file)) != EOF) {
+        line[used++] = (char)byte;
+        if (byte == '\n')
+            break;
+    }
+    line[used] = '\0';
+    return used;
+}
+
 static void text_scan_file(struct text_includes *t, const char *from)
 {
     char path[CI_PATH_MAX];
@@ -650,11 +664,15 @@ static void text_scan_file(struct text_includes *t, const char *from)
      * existing generated registries without turning normal scans into a
      * closure refusal. Lines beyond it still fail closed below. */
     char line[8192];
-    while (fgets(line, sizeof line, file) != NULL) {
-        /* A directive can straddle two fgets chunks. Do not certify a
+    size_t used;
+    while ((used = text_read_line(file, line, sizeof line)) > 0) {
+        if (memchr(line, '\0', used) != NULL) {
+            note_include_narrow_unsafe("text_line_nul", from);
+            continue;
+        }
+        /* A directive can straddle two bounded chunks. Do not certify a
          * complete include closure when this bounded text scan cannot see
          * one whole source line. A short final line needs no newline. */
-        size_t used = strlen(line);
         if (used > 0 && line[used - 1] != '\n' && !feof(file))
             note_include_narrow_unsafe("text_line_truncated", from);
         char *quoted = strstr(line, "#include \"");
@@ -669,6 +687,8 @@ static void text_scan_file(struct text_includes *t, const char *from)
         if (!dep_quoted_absolute(quoted))
             text_include_resolve(t, from, quoted);
     }
+    if (ferror(file))
+        note_include_narrow_unsafe("scan_unreadable", from);
     fclose(file);
 }
 
