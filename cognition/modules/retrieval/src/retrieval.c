@@ -171,14 +171,20 @@ static bool toks_grow(struct zcl_retrieval *r)
 /* Find `token`, inserting it if absent. NULL on allocation failure. */
 static struct token_entry *tok_slot(struct zcl_retrieval *r, const char *token)
 {
-    if ((r->n_toks + 1) * 2 > r->cap_toks && !toks_grow(r))
-        return NULL;
-
     size_t idx = str_hash(token) % r->cap_toks;
     while (r->toks[idx].token) {
         if (strcmp(r->toks[idx].token, token) == 0)
             return &r->toks[idx];
         idx = (idx + 1) % r->cap_toks;
+    }
+    /* An existing token needs no new slot. Grow only for a new token,
+     * then find its slot again because the table has been rehashed. */
+    if (r->n_toks >= r->cap_toks / 2) {
+        if (!toks_grow(r))
+            return NULL;
+        idx = str_hash(token) % r->cap_toks;
+        while (r->toks[idx].token)
+            idx = (idx + 1) % r->cap_toks;
     }
     r->toks[idx].token = retrieval_strdup(token, "retrieval_token");
     if (!r->toks[idx].token)

@@ -16,7 +16,9 @@
  *     every query is refused.
  *  6. Tokenizing is not locale-shaped: case folds, punctuation and
  *     underscores separate, non-ASCII bytes separate, and a run longer than
- *     the token limit is chunked rather than truncated. */
+ *     the token limit is chunked rather than truncated.
+ *  7. Reusing a token does not grow a half-full token table or poison the
+ *     index on an allocation that the insertion did not need. */
 
 #include "test/test_core.h"
 
@@ -260,6 +262,42 @@ static int case_reproducible(void)
 
     zcl_retrieval_destroy(a);
     zcl_retrieval_destroy(b);
+    return failures;
+}
+
+/* A half-full token table must not grow merely to reuse a token. */
+static int case_existing_token_growth(void)
+{
+    int failures = 0;
+    struct zcl_retrieval *r = zcl_retrieval_create();
+    RT_CHECK("the token-growth corpus builds", r != NULL);
+    if (!r)
+        return failures;
+    const char *seed =
+        "t00 t01 t02 t03 t04 t05 t06 t07 "
+        "t08 t09 t10 t11 t12 t13 t14 t15 "
+        "t16 t17 t18 t19 t20 t21 t22 t23 "
+        "t24 t25 t26 t27 t28 t29 t30 t31";
+    const bool seeded = zcl_retrieval_add(r, "seed", seed) == 1 &&
+                        zcl_retrieval_tokens(r) == 32;
+    RT_CHECK("32 distinct tokens fill half of the initial table", seeded);
+    if (!seeded) {
+        zcl_retrieval_destroy(r);
+        return failures;
+    }
+
+    zcl_alloc_fault_fail_next("retrieval_toks_grow");
+    const uint32_t repeated = zcl_retrieval_add(r, "repeat", "t00 t00");
+    const bool growth_pending = zcl_alloc_fault_armed_label() != NULL;
+    zcl_alloc_fault_clear();
+    struct zcl_retrieval_hit hits[2] = {0};
+    RT_CHECK("reusing tokens needs no token-table allocation",
+             repeated == 2 && growth_pending && zcl_retrieval_ok(r) &&
+             zcl_retrieval_tokens(r) == 32 &&
+             zcl_retrieval_doc_len(r, 2) == 2 &&
+             zcl_retrieval_df(r, "t00") == 2 &&
+             zcl_retrieval_query(r, "t00", hits, 2) == 2);
+    zcl_retrieval_destroy(r);
     return failures;
 }
 
@@ -822,6 +860,7 @@ int test_retrieval(void)
     failures += case_shape();
     failures += case_known_answers();
     failures += case_reproducible();
+    failures += case_existing_token_growth();
     failures += case_tokenizer();
     failures += case_poisoned();
     failures += case_allocation_failures();
