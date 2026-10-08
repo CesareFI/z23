@@ -16,6 +16,7 @@
 #include "views/ui_present_host_transport.h"
 #include "vcs/zcode_work_node.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -168,6 +169,32 @@ static void qr_case_render_argument_boundaries(void)
     }
 }
 
+static void qr_case_overflow_optional_diagnostic(const struct qr_matrix *matrix)
+{
+    uint8_t sentinel = 0;
+    uint8_t *pixels = &sentinel;
+    uint32_t side = 99;
+    char bounded[] = { 'x', 'y', 'z', '!' };
+    bool refused = !qr_matrix_render_rgb(matrix, 2, 2, &pixels, &side,
+                                         bounded, 3);
+    QR_CHECK("QR overflow diagnostic respects short capacity",
+             refused && pixels == NULL && side == 0 &&
+             memcmp(bounded, "QR\0!", sizeof bounded) == 0);
+    bounded[0] = 'x';
+    pixels = &sentinel;
+    side = 99;
+    refused = !qr_matrix_render_rgb(matrix, 2, 2, &pixels, &side,
+                                    bounded, 1);
+    QR_CHECK("QR overflow diagnostic respects one-byte capacity",
+             refused && pixels == NULL && side == 0 &&
+             memcmp(bounded, "\0R\0!", sizeof bounded) == 0);
+    pixels = &sentinel;
+    side = 99;
+    refused = !qr_matrix_render_rgb(matrix, 2, 2, &pixels, &side, NULL, 128);
+    QR_CHECK("QR overflow refuses without diagnostic buffer",
+             refused && pixels == NULL && side == 0);
+}
+
 static void qr_case_render_size_refuses(void)
 {
     uint8_t sentinel = 0;
@@ -181,8 +208,15 @@ static void qr_case_render_size_refuses(void)
         bool refused = !qr_matrix_render_rgb(&matrix, 2, 2, &pixels, &side,
                                              err, sizeof err);
         QR_CHECK("overflowing QR dimensions clear outputs",
-                 refused && pixels == NULL && side == 0 &&
-                 strcmp(err, "QR render dimensions overflow") == 0);
+                 refused && pixels == NULL && side == 0);
+        char expected[128];
+        snprintf(expected, sizeof expected,
+                 "QR render dimensions overflow: width=%" PRIu32
+                 " scale=2 quiet=2; reduce width or scale", widths[i]);
+        QR_CHECK("QR overflow reports dimensions and correction",
+                 strcmp(err, expected) == 0);
+
+        qr_case_overflow_optional_diagnostic(&matrix);
     }
 }
 

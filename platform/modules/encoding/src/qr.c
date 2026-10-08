@@ -4,6 +4,7 @@
 #include "encoding/qr.h"
 #include "base/safe_alloc.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -142,7 +143,12 @@ bool qr_matrix_render_rgb(const struct qr_matrix *matrix, uint32_t scale,
     size_t bytes;
     if (!qr_render_size(matrix->width, scale, quiet_modules,
                         &out_side, &bytes)) {
-        qr_error(error, error_cap, "QR render dimensions overflow");
+        if (error && error_cap > 0)
+            snprintf(error, error_cap,
+                     "QR render dimensions overflow: width=%" PRIu32
+                     " scale=%" PRIu32 " quiet=%" PRIu32
+                     "; reduce width or scale",
+                     matrix->width, scale, quiet_modules);
         return false;
     }
     uint8_t *rgb = zcl_malloc((size_t)bytes, "qr.render.rgb");
