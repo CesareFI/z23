@@ -27,8 +27,38 @@
 
 #include "platform/time_compat.h"
 #include <stdarg.h>
+#include "platform/os_proc.h"
+#include "platform/clock.h"
+static int64_t ma_fixed_mono(void *self) { (void)self; return INT64_C(1000000000); }
+static int64_t ma_fixed_wall(void *self) { (void)self; return INT64_C(1700000000000); }
+static const clock_iface_t ma_clock = {
+    .now_monotonic_ns = ma_fixed_mono,
+    .now_wall_ms = ma_fixed_wall,
+};
+static bool ma_read_fails;
+static int ma_read_attempts;
+static struct os_proc_mem ma_mem = {.rss_bytes = 0};
+static bool ma_mem_read(struct os_proc_mem *out) {
+    ++ma_read_attempts;
+    *out = ma_mem;
+    return !ma_read_fails;
+}
+static char ma_worker_diagnostic[256];
+static bool ma_diagnostic_ok;
+static int ma_diagnostic_count;
+static int ma_worker_fprintf(FILE *stream, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int rc = vsnprintf(ma_worker_diagnostic, sizeof(ma_worker_diagnostic), fmt, ap);
+    va_end(ap);
+    ++ma_diagnostic_count;
+    ma_diagnostic_ok &= stream == stderr && rc >= 0 &&
+                        (size_t)rc < sizeof(ma_worker_diagnostic);
+    return rc;
+}
 static bool ma_terminal;
 static char ma_worker_output[16384];
+static void ma_worker_sleep(int ms);
 static int ma_worker_printf(const char *fmt, ...) {
     size_t n = strlen(ma_worker_output);
     va_list ap;
@@ -43,7 +73,9 @@ static int ma_worker_printf(const char *fmt, ...) {
 #define metrics_start ma_metrics_start
 #define metrics_stop ma_metrics_stop
 #define printf ma_worker_printf
-#define platform_sleep_ms(ms) ((void)(ms))
+#define fprintf ma_worker_fprintf
+#define os_proc_mem_read ma_mem_read
+#define platform_sleep_ms(ms) ma_worker_sleep(ms)
 #ifdef _WIN32
 #define GetStdHandle(kind) ((HANDLE)(uintptr_t)1)
 #define GetConsoleMode(handle, mode) ((void)(handle), (void)(mode), ma_terminal)
@@ -57,6 +89,8 @@ static int ma_worker_printf(const char *fmt, ...) {
 #undef metrics_start
 #undef metrics_stop
 #undef printf
+#undef fprintf
+#undef os_proc_mem_read
 #undef platform_sleep_ms
 #ifdef _WIN32
 #undef GetStdHandle
@@ -68,11 +102,32 @@ static void ma_end_tick(struct metrics_external_gauges *out, void *ctx) {
     (void)out;
     atomic_store(&((struct metrics_context *)ctx)->running, false);
 }
+static struct metrics_context *ma_episode_ctx;
+static int ma_episode_tick;
+static bool ma_episode_values_ok;
+static int ma_episode_diagnostic_base;
+static void ma_worker_sleep(int ms) {
+    (void)ms;
+    if (!ma_episode_ctx) return;
+    char rendered[16384];
+    size_t n = metrics_prometheus_render_prometheus(rendered, sizeof(rendered));
+    const char *value = ma_episode_tick == 3 ? "zcl_rss_mb 1.50\n" : "zcl_rss_mb -1.00\n";
+    ma_episode_values_ok &= n < sizeof(rendered) - 1 && strstr(rendered, value) != NULL;
+    ma_episode_values_ok &= ma_diagnostic_count - ma_episode_diagnostic_base ==
+                            (ma_episode_tick < 4 ? 1 : 2);
+    ++ma_episode_tick;
+    ma_mem.rss_bytes = ma_episode_tick == 3 ? INT64_C(1572864) : -1;
+    ma_read_fails = ma_episode_tick == 1 || ma_episode_tick == 4;
+    ma_worker_output[0] = '\0';
+    if (ma_episode_tick == 6) atomic_store(&ma_episode_ctx->running, false);
+}
 static int test_worker_display_hint(void) {
     int failures = 0;
     static struct main_state ms;
     zcl_mutex_init(&ms.cs_main);
     struct metrics_context ctx = {.ms = &ms, .external_gauges = ma_end_tick, .external_gauges_ctx = &ctx};
+    const clock_iface_t *saved_clock = clock_default();
+    clock_set_default(&ma_clock);
     TEST("metric_alerts: worker gives effective terminal hide instruction") {
         for (int terminal = 0; terminal < 2; terminal++) {
             ma_terminal = terminal != 0;
@@ -85,6 +140,7 @@ static int test_worker_display_hint(void) {
         }
         PASS();
     } _test_next:;
+    clock_set_default(saved_clock);
     zcl_mutex_destroy(&ms.cs_main);
     return failures;
 }
@@ -502,6 +558,100 @@ static int test_rss_high_rule(void)
     return failures;
 }
 
+struct ma_rss_result {
+    bool values_ok;
+    bool diagnostics_ok;
+};
+
+static bool ma_rss_gauges_match(const char *expected, uint64_t fires) {
+    char rendered[16384];
+    size_t n = metrics_prometheus_render_prometheus(rendered, sizeof(rendered));
+    return n < sizeof(rendered) - 1 && strstr(rendered, expected) != NULL &&
+           metrics_prometheus_alert_fire_count("rss_high") == fires;
+}
+
+static struct ma_rss_result ma_rss_samples(struct metrics_context *ctx) {
+    static const int64_t bytes[] = {INT64_C(7340032000), -1, INT64_C(7340032000), 0, INT64_C(1572864)};
+    static const char *expected[] = {"zcl_rss_mb 7000.00\n", "zcl_rss_mb -1.00\n",
+                                   "zcl_rss_mb -1.00\n", "zcl_rss_mb 0.00\n", "zcl_rss_mb 1.50\n"};
+    struct ma_rss_result result = {true, true};
+    ma_read_attempts = 0;
+    ma_diagnostic_ok = true;
+    for (int i = 0; i < 5; i++) {
+        ma_mem.rss_bytes = bytes[i];
+        ma_read_fails = i == 2;
+        metrics_prometheus_reset();
+        ma_worker_output[0] = '\0';
+        ma_worker_diagnostic[0] = '\0';
+        atomic_store(&ctx->running, true);
+        metrics_thread_fn(ctx);
+        bool diagnostic = i == 1 || i == 2;
+        bool reported = strstr(ma_worker_diagnostic,
+            "metrics: RSS unavailable: process memory reader") != NULL;
+        result.diagnostics_ok &= diagnostic ? reported : ma_worker_diagnostic[0] == '\0';
+        result.values_ok &= ma_rss_gauges_match(expected[i], i == 0 ? 1u : 0u);
+    }
+    return result;
+}
+
+static int test_rss_tick(void) {
+    int failures = 0;
+    TEST("metric_alerts: tick publishes fresh RSS or unavailable with a diagnostic") {
+        static struct main_state ms;
+        zcl_mutex_init(&ms.cs_main);
+        struct metrics_context ctx = {.ms = &ms, .external_gauges = ma_end_tick};
+        ctx.external_gauges_ctx = &ctx;
+        const clock_iface_t *saved_clock = clock_default();
+        clock_set_default(&ma_clock);
+        struct ma_rss_result samples = ma_rss_samples(&ctx);
+        ma_read_fails = false;
+        ma_mem.rss_bytes = 0;
+        clock_set_default(saved_clock);
+        zcl_mutex_destroy(&ms.cs_main);
+        metrics_prometheus_reset();
+        ASSERT(samples.values_ok && ma_read_attempts == 5);
+        ASSERT(samples.diagnostics_ok && ma_diagnostic_ok);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_rss_unavailable_episodes(void) {
+    int failures = 0;
+    TEST("metric_alerts: worker logs each RSS unavailable episode once and resets per session") {
+        static struct main_state ms;
+        zcl_mutex_init(&ms.cs_main);
+        struct metrics_context ctx = {.ms = &ms};
+        const clock_iface_t *saved_clock = clock_default();
+        clock_set_default(&ma_clock);
+        ma_terminal = false;
+        ma_diagnostic_count = 0;
+        ma_diagnostic_ok = true;
+        ma_read_attempts = 0;
+        ma_episode_values_ok = true;
+        for (int session = 0; session < 2; ++session) {
+            ma_episode_ctx = &ctx;
+            ma_episode_tick = 0;
+            ma_episode_diagnostic_base = ma_diagnostic_count;
+            ma_mem.rss_bytes = -1;
+            ma_read_fails = false;
+            ma_worker_output[0] = '\0';
+            atomic_store(&ctx.running, true);
+            metrics_thread_fn(&ctx);
+        }
+        ma_episode_ctx = NULL;
+        ma_read_fails = false;
+        ma_mem.rss_bytes = 0;
+        clock_set_default(saved_clock);
+        zcl_mutex_destroy(&ms.cs_main);
+        metrics_prometheus_reset();
+        ASSERT(ma_episode_values_ok && ma_read_attempts == 12);
+        ASSERT(ma_diagnostic_ok && ma_diagnostic_count == 4);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── header_gap_growing, peer_count_collapsed, sync_state_stuck,
  * consensus_reject_spike ─────────────────────────────────────────
  *
@@ -769,6 +919,8 @@ int test_metric_alerts(void)
     failures += test_mirror_lag_critical_rule();
     failures += test_blocker_permanent_active_rule();
     failures += test_rss_high_rule();
+    failures += test_rss_tick();
+    failures += test_rss_unavailable_episodes();
 
     failures += test_header_gap_growing_rule();
     failures += test_peer_count_collapsed_rule();

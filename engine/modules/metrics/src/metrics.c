@@ -13,6 +13,7 @@
 #include "util/timedata.h"
 #include "event/event.h"
 #include "platform/os_sandbox.h"
+#include "platform/os_proc.h"
 #include "platform/time_compat.h"
 #include "sync/sync_state.h"
 #include "util/thread_liveness.h"
@@ -351,6 +352,20 @@ static void metrics_print_footer(bool is_tty)
         printf("----------------------------------------\n");
 }
 
+/* Negative RSS is unavailable, never a measured zero or a cached sample. */
+static double metrics_sample_rss_mb(bool *unavailable)
+{
+    struct os_proc_mem mem = {.rss_bytes = -1};
+    if (!os_proc_mem_read(&mem) || mem.rss_bytes < 0) {
+        if (!*unavailable)
+            fprintf(stderr, "metrics: RSS unavailable: process memory reader did not provide a resident set\n");
+        *unavailable = true;
+        return -1.0;
+    }
+    *unavailable = false;
+    return (double)mem.rss_bytes / (1024.0 * 1024.0);
+}
+
 static void *metrics_thread_fn(void *arg)
 {
     struct metrics_context *ctx = (struct metrics_context *)arg;
@@ -364,14 +379,15 @@ static void *metrics_thread_fn(void *arg)
     }
 
     int64_t metrics_beats = 0;
+    bool rss_unavailable = false;
     while (atomic_load(&ctx->running)) {
         int lines = 1;
 
         /* Landlock retrofit join — see os_sandbox_landlock_apply_to_self().
          * This thread predates -sandbox=steady's late sandbox entry, so it
          * must join that domain itself; idempotent no-op once joined (or
-         * while the sandbox is inactive). Its one FS dependency beyond the
-         * datadir grant — fopen("/proc/self/status") below, for RSS — is
+         * while the sandbox is inactive). Its Linux RSS dependency beyond the
+         * datadir grant — the platform process-memory reader — is
          * covered by the extra read-only grant sr_sandbox_enter adds. */
         if (os_sandbox_active())
             (void)os_sandbox_landlock_apply_to_self();
@@ -417,20 +433,7 @@ static void *metrics_thread_fn(void *arg)
             int64_t gpc = ext.connection_count;
             int64_t gup = GetTime() - g_start_time;
 
-            /* RSS from /proc/self/status (Linux) */
-            double grss = 0.0;
-            FILE *sf = fopen("/proc/self/status", "r");
-            if (sf) {
-                char ln[256];
-                while (fgets(ln, sizeof(ln), sf)) {
-                    long kb;
-                    if (sscanf(ln, "VmRSS: %ld kB", &kb) == 1) {
-                        grss = (double)kb / 1024.0;
-                        break;
-                    }
-                }
-                fclose(sf);
-            }
+            double grss = metrics_sample_rss_mb(&rss_unavailable);
 
             metrics_prometheus_set_node_gauges(gh, gpc, grss, ext.utxo_count, gup);
 

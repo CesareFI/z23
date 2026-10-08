@@ -760,7 +760,7 @@ ZCL_MODULE_CAPABILITY("contexts/wallet/modules/keys/src/key.c", CAP_RANDOM|CAP_W
 ZCL_MODULE_CAPABILITY("cognition/modules/kpi/src/kpi_metrics.c", CAP_FS_READ, "")
 ZCL_MODULE_CAPABILITY("contexts/commons/modules/metaverse/src/adapter_content.c", CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("contexts/commons/modules/metaverse/src/manifest_read.c", CAP_FS_WRITE|CAP_FS_READ, "")
-ZCL_MODULE_CAPABILITY("engine/modules/metrics/src/metrics.c", CAP_FS_READ|CAP_CLOCK, "")
+ZCL_MODULE_CAPABILITY("engine/modules/metrics/src/metrics.c", CAP_FS_READ|CAP_FS_WRITE|CAP_CLOCK, "reports unavailable process memory measurements to stderr")
 ZCL_MODULE_CAPABILITY("core/modules/mining/src/gen.c", CAP_FS_WRITE|CAP_CLOCK|CAP_RANDOM, "draws GetRand while searching fresh block-header nonces")
 ZCL_MODULE_CAPABILITY("core/modules/mining/src/miner.c", CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("core/modules/net/src/acme_alpn_challenge.c", CAP_NETWORK|CAP_WALLET, "the TLS-ALPN-01 responder: answers the CA's validation connection directly on the listening socket")
