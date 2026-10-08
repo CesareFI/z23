@@ -280,15 +280,43 @@ ENGINE_PROMPT_TEMPLATE(c23-service-operation, task,
 ENGINE_PROMPT_TEMPLATE(c23-service-operation, protocol,
     "Use existing transaction helpers, never a generic transaction API. "
     "Finalize statements, release locks and owned resources on every path; "
-    "log context and propagate caller-visible refusal with the contracted "
-    "output state. Require idempotence only under the existing service's "
+    "log context and preserve the contracted failure visibility and output "
+    "state. This exemplar rolls back paired database writes; its transition "
+    "caller advances memory and discards the result. Do not infer caller "
+    "refusal or memory rollback. Require idempotence only under the service's "
     "contract. Database rollback does not promise atomic external effects. "
     "Stay within claimed source and existing authority.")
 ENGINE_PROMPT_TEMPLATE(c23-service-operation, judging,
-    "In isolated fixtures, exercise the production caller: valid success, "
-    "invalid-input refusal with unchanged state, and injected second-step "
-    "failure where transactional, proving rollback, output state and cleanup. "
+    "In isolated fixtures, exercise valid success and contracted invalid-input "
+    "failure through the production caller. Inject second-step failure where "
+    "transactional; prove database rollback, actual caller visibility, memory "
+    "state and cleanup without promising uncontracted unchanged state. "
     "Check repeat calls only when idempotence is contracted. Record the exact "
     "registered group and source identity; mark unexecuted proof NOTRUN.")
+
+ENGINE_PROMPT_TEMPLATE(c23-resource-owner, rules,
+    "Implement non-custody resource ownership. Require owned caller, borrowed "
+    "extents/lifetimes, release and transfer contracts, refusal outputs and "
+    "registered group; report the missing input before proposing code. Never "
+    "free borrowed storage or weaken refusal thresholds.")
+ENGINE_PROMPT_TEMPLATE(c23-resource-owner, task,
+    "Reuse qr_matrix_render_rgb in platform/modules/encoding/src/qr.c. "
+    "Matrix/modules are borrowed for the call with width squared readable "
+    "bytes. Require writable empty output slots, scale 1..64, quiet 0..32 and "
+    "optional writable error capacity. Success transfers RGB for free(); "
+    "refusal clears supplied outputs and bounds diagnostics.")
+ENGINE_PROMPT_TEMPLATE(c23-resource-owner, protocol,
+    "Check size arithmetic before allocation/indexing and every acquisition "
+    "result. Clear outputs before fallible work; retain local ownership until "
+    "complete success. On failure release only acquired resources, exactly "
+    "once in reverse order. Render has no fallible post-allocation stage; "
+    "partial acquisition belongs to encode-success/render-refusal composition.")
+ENGINE_PROMPT_TEMPLATE(c23-resource-owner, judging,
+    "Use isolated qr fixtures for success/use/free, argument/overflow refusal "
+    "and tagged allocation refusal. Clear faults before assertions/cleanup. "
+    "After encode succeeds and render refuses, assert unchanged matrix "
+    "pointer, width and bytes, NULL pixels/zero side, diagnostic and caller "
+    "release. Observe release counts and leaks separately; existing assertions "
+    "are not proof. Record exact source/group or NOTRUN.")
 
 /* clang-format on */

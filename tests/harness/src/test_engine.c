@@ -2017,6 +2017,7 @@ static int case_c23_prompt_selection(void)
         {"c23-wire-codec", "vcs_zcode_action_input_parse"},
         {"c23-cas-operation", "vcs_object_load_raw_bounded"},
         {"c23-service-operation", "service_state_persist_to_progress_store"},
+        {"c23-resource-owner", "qr_matrix_render_rgb"},
     };
     int failures = 0;
     uint8_t previous[32] = {0};

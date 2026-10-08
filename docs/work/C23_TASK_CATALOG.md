@@ -13,9 +13,10 @@ claims follow from this catalog.
 
 ## Selection and escalation
 
-The source defines seven C23 prompt kinds: `c23-byte-validator`,
+The source defines these C23 prompt kinds: `c23-byte-validator`,
 `c23-command-handler`, `c23-model-save`, `c23-regression-fixture`,
-`c23-wire-codec`, `c23-cas-operation`, and `c23-service-operation`. Existing kinds `fix-gate`,
+`c23-wire-codec`, `c23-cas-operation`, `c23-service-operation`, and
+`c23-resource-owner`. Existing kinds `fix-gate`,
 `add-test`, `port-arm`, `doc-claim`, and `review` remain. Rows marked
 `PROPOSED:<family>` still need a procedure; they are not dispatchable kinds.
 The compiled selection owner is `engine/composition/prompt_templates.def`,
@@ -51,7 +52,14 @@ contracts. Missing fields require a named refusal before code is proposed.
 For service operations, supply transaction ownership, the existing ActiveRecord
 lifecycle, authority, invariants and the production caller's failure outputs.
 The service exemplar illustrates paired-write transaction ownership; it does
-not establish atomic external effects or a generic transaction API.
+not establish atomic external effects or a generic transaction API. Its
+transition caller advances memory and discards persistence status; database
+rollback does not imply caller-visible refusal or memory rollback.
+For resource ownership, supply borrowed extents and lifetimes, empty writable
+output slots, transfer and release obligations, and the exact failure outputs.
+The QR renderer has no fallible post-allocation stage; partial acquisition
+coverage belongs to its encode-success/render-refusal composition. Release
+counts and leak freedom require separate observation.
 This is a worker instruction; the prompt composer checks section presence,
 not completeness of these task-specific fields.
 Load the selected procedure and relevant source capsule, then produce only the

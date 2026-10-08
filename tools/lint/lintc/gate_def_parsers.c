@@ -18,8 +18,8 @@
 #include "lintc.h"
 
 enum {
-    DEF_SLURP = 65536, DEF_CALLS = 48, DEF_LITS = 16, DEF_LIT_W = 2048,
-    DEF_RAW = 8192, DEF_STANCE = 4096, DEF_LS = 262144, PRT_ROWS = 48,
+    DEF_SLURP = 65536, DEF_CALLS = 64, DEF_LITS = 16, DEF_LIT_W = 2048,
+    DEF_RAW = 8192, DEF_STANCE = 4096, DEF_LS = 262144, PRT_ROWS = DEF_CALLS,
     PRT_KINDS = 24, PRT_ALWAYS = 16, PRT_FIELD = 96, PR_STANCE_MIN = 40,
     PR_STANCE_MAX = 700, PRT_SEC_FLOOR = 3
 };
@@ -452,7 +452,7 @@ static int prt_collect_sections(struct def_calls *scalls, struct sr_set *declare
         char id[PRT_FIELD], need[PRT_FIELD], unused[DEF_RAW];
         int skip = prt_split3(scalls->row[i].raw, "ENGINE_PROMPT_SECTION(",
                               id, sizeof id, need, sizeof need, unused, sizeof unused);
-        if (skip < 0) return 2;
+        if (skip == 2) return 2;
         if (skip || !id[0]) continue;
         (*nsec)++;
         if (sr_add(declared, id)) return 2;
@@ -473,7 +473,7 @@ static int prt_collect_templates(struct def_calls *tcalls,
         char k[PRT_FIELD], s[PRT_FIELD], body[DEF_RAW];
         int skip = prt_split3(tcalls->row[i].raw, "ENGINE_PROMPT_TEMPLATE(",
                               k, sizeof k, s, sizeof s, body, sizeof body);
-        if (skip < 0) return 2;
+        if (skip == 2) return 2;
         if (skip || !strcmp(body, "\"\")") || !k[0] || !s[0]) continue;
         if (*nrows >= PRT_ROWS) return die("z23-lint: derived buffer overflow\n", "");
         memcpy(kind[*nrows], k, strlen(k) + 1);
@@ -685,12 +685,93 @@ static int prt_pairs_selftest(void)
     return bad;
 }
 
+static int prt_overflow_selftest(void)
+{
+    static char faults[4096], buf[1024];
+    char field[PRT_FIELD + 1];
+    memset(field, 'x', PRT_FIELD);
+    field[PRT_FIELD] = '\0';
+    const char *formats[] = {
+        "%sENGINE_PROMPT_TEMPLATE(%s,task,\"body\")\n",
+        "%sENGINE_PROMPT_TEMPLATE(fix-gate,%s,\"body\")\n",
+        "%sENGINE_PROMPT_SECTION(%s,ENGINE_PROMPT_NEED_NO_SYSTEM_CHANNEL,\"X\")\n",
+        "%sENGINE_PROMPT_SECTION(extra,%s,\"X\")\n"
+    };
+    int nrows = 0, nsec = 0, nkinds = 0, nf = 0, bad = 0;
+    for (size_t i = 0; i < sizeof formats / sizeof formats[0]; i++) {
+        int sections = i >= 2;
+        if (ovf(snprintf(buf, sizeof buf, formats[i],
+                         sections ? k_prt_secs : k_prt_good, field), sizeof buf)
+            || prt_scan(sections ? k_prt_good : buf,
+                        sections ? buf : k_prt_secs, faults, sizeof faults,
+                        &nrows, &nsec, &nkinds, &nf) != 2)
+            bad = 1;
+    }
+    return bad;
+}
+
+static int prt_skips_selftest(void)
+{
+    static char faults[4096], buf[1024];
+    const char *skips =
+        "ENGINE_PROMPT_TEMPLATE(no-comma)\n"
+        "ENGINE_PROMPT_TEMPLATE(one,comma)\n"
+        "ENGINE_PROMPT_TEMPLATE(,task,\"body\")\n"
+        "ENGINE_PROMPT_TEMPLATE(fix-gate,,\"body\")\n"
+        "ENGINE_PROMPT_TEMPLATE(fix-gate,task,\"\")\n";
+    const char *secs =
+        "ENGINE_PROMPT_SECTION(no-comma)\n"
+        "ENGINE_PROMPT_SECTION(one,comma)\n"
+        "ENGINE_PROMPT_SECTION(,ENGINE_PROMPT_NEED_ALWAYS,\"X\")\n";
+    int nrows = 0, nsec = 0, nkinds = 0, nf = 0;
+    if (ovf(snprintf(buf, sizeof buf, "%s%s", k_prt_good, skips), sizeof buf)
+        || prt_scan(buf, k_prt_secs, faults, sizeof faults,
+                    &nrows, &nsec, &nkinds, &nf)
+        || nf || nrows != 2 || nsec != 3 || nkinds != 1)
+        return 1;
+    return ovf(snprintf(buf, sizeof buf, "%s%s", k_prt_secs, secs), sizeof buf)
+        || prt_scan(k_prt_good, buf, faults, sizeof faults,
+                    &nrows, &nsec, &nkinds, &nf)
+        || nf || nrows != 2 || nsec != 3 || nkinds != 1;
+}
+
+static int prt_capacity_selftest(void)
+{
+    static char faults[4096], buf[8192], secs[1024];
+    const char *sections[] = { "rules", "task", "protocol", "judging" };
+    size_t used = 0;
+    if (ovf(snprintf(secs, sizeof secs, "%s%s", k_prt_secs,
+                     "ENGINE_PROMPT_SECTION(judging,ENGINE_PROMPT_NEED_ALWAYS,\"J\")\n"), sizeof secs))
+        return 1;
+    for (int i = 0; i <= PRT_ROWS; i++) {
+        if (i == PRT_ROWS) {
+            int nrows = 0, nsec = 0, nkinds = 0, nf = 0;
+            if (prt_scan(buf, secs, faults, sizeof faults,
+                         &nrows, &nsec, &nkinds, &nf)
+                || nf || nrows != PRT_ROWS || nsec != 4 || nkinds != PRT_ROWS / 4)
+                return 1;
+        }
+        int n = snprintf(buf + used, sizeof buf - used,
+                         "ENGINE_PROMPT_TEMPLATE(kind%d,%s,\"body\")\n",
+                         i / 4, sections[i % 4]);
+        if (ovf(n, sizeof buf - used)) return 1;
+        used += (size_t)n;
+    }
+    int nrows = 0, nsec = 0, nkinds = 0, nf = 0;
+    return prt_scan(buf, secs, faults, sizeof faults,
+                    &nrows, &nsec, &nkinds, &nf) != 2;
+}
+
 int check_prompt_templates_selftest(void)
 {
     static char faults[4096], buf[1024];
     int nrows = 0, nsec = 0, nkinds = 0, nf = 0, bad = prt_pairs_selftest();
+    bad |= prt_overflow_selftest();
+    bad |= prt_skips_selftest();
+    bad |= prt_capacity_selftest();
     if (prt_scan(k_prt_good, k_prt_secs, faults, sizeof faults,
-                 &nrows, &nsec, &nkinds, &nf) || nf)
+                 &nrows, &nsec, &nkinds, &nf)
+        || nf || nrows != 2 || nsec != 3 || nkinds != 1)
         bad = 1;
     const char *dirty[] = {
         "ENGINE_PROMPT_TEMPLATE(fix-gate, epilogue, \"and finally\")\n",

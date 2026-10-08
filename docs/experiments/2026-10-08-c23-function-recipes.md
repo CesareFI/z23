@@ -85,6 +85,38 @@ After canonical inventory regeneration, host-admitted `lint-fast` passed for
 the combined candidate. Follow-up logs are retained with the earlier evidence.
 Exact publication proof and publication remain NOTRUN.
 
+## Follow-up corrections and resource ownership
+
+Independent source reviews identified an overstatement in the service recipe:
+its exemplar rolls back paired database writes, but the transition caller
+advances memory and discards persistence status. The procedure now distinguishes
+those outcomes instead of promising caller-visible refusal or memory rollback.
+The resource-owner procedure binds the QR renderer's borrowed extent, cleared
+outputs, success transfer and caller release. Its selection fixture uses the
+existing bounded template-identity path. No provider cost improvement is claimed.
+
+The lint scanner now propagates oversized-field status 2 from both collectors.
+Its prior positive-status skip path could print an overflow diagnostic and
+still accept a valid seed. Four 96-byte-field fixtures exercise the production
+scanner. Valid skipped rows and duplicate-pair checks remain covered.
+The new procedure exposed the former 48-row storage capacity. Checked call
+storage now admits 64 rows, with the prompt-row bound derived from that same
+capacity; full-capacity acceptance and capacity-plus-one refusal are tested.
+This increases bounded static storage and the maximum pair-comparison work;
+it is a capacity change, not a measured performance improvement.
+
+On 2026-10-08, using GCC 14.2.0 on an AMD Ryzen 9 7950X3D,
+host-admitted focused engine acceptance passed with zero failures and zero
+skips (10.5 seconds test wall time). The rebuilt prompt gate passed with 52
+rows and 13 kinds; its self-test passed. Reverting both collector predicates
+to the prior positive-status skip defect compiled and made that self-test exit
+1. Restoring the exact source rebuilt and passed. Restored parser SHA-256:
+`e87801a196717e2ddf0a1aa9747ce2280123362325d97acd607f56aaae56ed66`.
+Canonical inventory regeneration and `lint-fast` passed. Exact post-commit
+publication proof remains NOTRUN. Evidence is retained in
+`build/handoff/sol-followup-collected/` and the isolated development-host
+checkout's `build/followup-*` logs.
+
 ## Efficiency experiment still required
 
 Freeze a matched cohort of real root tasks and acceptance policies. Compare
