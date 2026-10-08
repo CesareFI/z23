@@ -305,7 +305,8 @@ bool cm_emit_deferred(struct cm_core *c)
     char **used = NULL;
     size_t nused = 0, capused = 0;
     bool ok = true;
-    qsort(c->exps, c->nexps, sizeof(*c->exps), cm_exp_cmp);
+    if (c->nexps > 1)
+        qsort(c->exps, c->nexps, sizeof(*c->exps), cm_exp_cmp);
     for (size_t k = 0; ok && k < c->nexps; k++) {
         if (c->exps[k].file->origin == VCS_SEMANTIC_ORIGIN_V1_MAIN)
             ok = cm_grow((void **)&used, &capused, nused, sizeof(*used)) &&
@@ -315,7 +316,8 @@ bool cm_emit_deferred(struct cm_core *c)
         free(used);
         return cm_fail(c, "out of memory");
     }
-    qsort(used, nused, sizeof(*used), cm_str_cmp);
+    if (nused > 1)
+        qsort(used, nused, sizeof(*used), cm_str_cmp);
     ok = cm_emit_macros(c, used, nused);
     free(used);
     for (size_t k = 0; ok && k < c->nfns; k++)

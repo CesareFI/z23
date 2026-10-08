@@ -101,7 +101,8 @@ static void cm_hash_images(struct cm_images *im, uint8_t out[32])
 {
     struct sha3_256_ctx h;
     uint8_t len[4];
-    qsort(im->v, im->n, sizeof(im->v[0]), cm_image_cmp);
+    if (im->n > 1)
+        qsort(im->v, im->n, sizeof(im->v[0]), cm_image_cmp);
     sha3_256_init(&h);
     sha3_256_write(&h, (const unsigned char *)CM_PRODUCER_DOMAIN,
                    strlen(CM_PRODUCER_DOMAIN));

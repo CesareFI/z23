@@ -176,7 +176,8 @@ static int read_names(struct walker *w, int fd, struct dir_names *names)
     }
     if (errno != 0 && ok) { w->error = "directory_read_failed"; ok = 0; }
     if (closedir(dir) != 0 && ok) { w->error = "directory_close_failed"; ok = 0; }
-    if (ok) qsort(names->v, names->count, sizeof(*names->v), name_order);
+    if (ok && names->count > 1)
+        qsort(names->v, names->count, sizeof(*names->v), name_order);
     return ok;
 }
 
