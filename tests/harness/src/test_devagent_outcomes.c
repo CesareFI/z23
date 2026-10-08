@@ -528,6 +528,89 @@ _test_next:;
     return failures;
 }
 
+/* Build one token event and, for unknowns, a measured sentinel event. */
+static bool dvx_exact_fixture(const char *root, const char *field,
+                              const char *token, bool unknown)
+{
+    char records[2048];
+    const char *prefix = strcmp(field, "thinking_tokens") == 0
+                         ? "\"output_tokens_details\":{" : "";
+    const char *suffix = *prefix ? "}" : "";
+    int n = snprintf(records, sizeof(records),
+        "{\"type\":\"assistant\",\"timestamp\":\"2026-09-19T01:02:03Z\","
+        "\"message\":{\"id\":\"exact\",\"model\":\"m1\",\"usage\":{%s%s%s%s%s%s}}}\n",
+        token ? prefix : "", token ? "\"" : "", token ? field : "",
+        token ? "\":" : "", token ? token : "", token ? suffix : "");
+    if (n < 0 || (size_t)n >= sizeof(records)) return false;
+    if (unknown) {
+        int extra = snprintf(records + n, sizeof(records) - (size_t)n,
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-09-19T01:02:03Z\","
+            "\"message\":{\"id\":\"sentinel\",\"model\":\"m1\","
+            "\"usage\":{%s\"%s\":7%s}}}\n", prefix, field, suffix);
+        if (extra < 0 || (size_t)extra >= sizeof(records) - (size_t)n)
+            return false;
+    }
+    return dvx_write(root, "exact.jsonl", records);
+}
+
+static int dvx_exact_case(const char *root, const char *ledger,
+                           const char *field, const char *output,
+                           const char *token, int64_t expected)
+{
+    int failures = 0;
+    struct dvx_call c;
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/exact.jsonl", root);
+    bool unknown = expected < 0;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: only exact integer tokens contribute; unknowns are unreported") {
+        ASSERT(n >= 0 && (size_t)n < sizeof(path));
+        ASSERT(dvx_exact_fixture(root, field, token, unknown));
+        ASSERT(dvx_run(&c));
+        ASSERT(dvx_ok(&c));
+        const struct json_value *u = dvx_usage(&c);
+        ASSERT(u != NULL);
+        ASSERT_EQ(dvx_entry_int(u, "events"), unknown ? 2 : 1);
+        const struct json_value *model = dvx_usage_model(&c, "claude", "m1");
+        ASSERT(model != NULL);
+        const struct json_value *hours = json_get(u, "by_hour");
+        ASSERT(hours && hours->type == JSON_ARR && hours->num_children == 1);
+        const struct json_value *hour = &hours->children[0];
+        ASSERT_EQ(dvx_unreported(model, output), unknown ? 1 : 0);
+        ASSERT_EQ(dvx_unreported(hour, output), unknown ? 1 : 0);
+        /* Unknown cases retain the measured seven, never a measured zero. */
+        ASSERT_EQ(dvx_entry_int(model, output), unknown ? 7 : expected);
+        ASSERT_EQ(dvx_entry_int(hour, output), unknown ? 7 : expected);
+        PASS();
+    }
+_test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_exact_counters(const char *root, const char *ledger)
+{
+    static const struct { const char *token; int64_t expected; } cases[] = {
+        {"42", 42}, {"0", 0}, {"9223372036854775807", INT64_MAX},
+        {"42.0", -1}, {"1e3", -1}, {"42.0000000000000000001", -1},
+        {"9007199254740992.1", -1}, {"-1", -1}, {"null", -1}, {NULL, -1},
+    };
+    static const char *const fields[][2] = {
+        {"input_tokens", "input_tokens"},
+        {"output_tokens", "output_tokens"},
+        {"cache_read_input_tokens", "cache_read_tokens"},
+        {"cache_creation_input_tokens", "cache_write_tokens"},
+        {"thinking_tokens", "reasoning_tokens"},
+        {"input_tokens", "uncached_input_tokens"},
+    };
+    int failures = 0;
+    for (size_t f = 0; f < sizeof(fields) / sizeof(fields[0]); f++)
+        for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); k++)
+            failures += dvx_exact_case(root, ledger, fields[f][0], fields[f][1],
+                                       cases[k].token, cases[k].expected);
+    return failures;
+}
+
 static bool dvx_counter_fixture(const char *root, const char *field, int second)
 {
     char records[1024];
@@ -1199,6 +1282,7 @@ int test_devagent_outcomes(void)
     failures += dvx_invalid_usage_path(ledger);
     failures += dvx_derived_utf8(root, ledger);
     failures += dvx_counter_boundaries(root, ledger);
+    failures += dvx_exact_counters(root, ledger);
 
 _test_next:;
     (void)test_rm_rf_recursive(root);

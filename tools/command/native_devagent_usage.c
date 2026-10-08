@@ -57,7 +57,7 @@
  * unreadable, unkeyed, events (distinct ids kept), duplicate_lines,
  * truncated, by_model:[{format, model, input_includes_cache_read, events,
  * <counters>, unreported:{...}}], hours_total, by_hour: newest
- * DVU_MAX_HOURS {hour, format, model, events, <counters>}}.
+ * DVU_MAX_HOURS {hour, format, model, events, <counters>, unreported:{...}}}.
  *
  * FAILURE. usage_log present but not a nonempty UTF-8 string is BAD_INPUT; a path
  * that does not exist is USAGE_LOG_NOT_FOUND; one that is neither a file
@@ -202,16 +202,13 @@ static const char *dvu_str(const struct json_value *obj, const char *key)
     return v && v->type == JSON_STR ? json_get_str(v) : NULL;
 }
 
-/* A reported counter is a non-negative number; anything else is -1. */
+/* Only an integer-encoded nonnegative int64_t is reported; else unknown (-1).
+ * JSON_REAL loses its token spelling, so even integral doubles are unknown. */
 static int64_t dvu_counter(const struct json_value *obj, const char *key)
 {
     const struct json_value *v = dvu_get(obj, key);
     if (v && v->type == JSON_INT)
         return json_get_int(v) >= 0 ? json_get_int(v) : -1;
-    if (v && v->type == JSON_REAL) {
-        double d = json_get_real(v);
-        return d >= 0.0 && d < 9.0e18 ? (int64_t)d : -1;
-    }
     return -1;
 }
 
@@ -796,7 +793,7 @@ static bool dvu_push_by_hour(struct json_value *usage, struct dvu_scan *s)
             json_set_object(&row);
             ok = dvu_json_str(&row, "hour", s->ev[i].hour) &&
                  dvu_push_group_head(&row, &s->ev[i]) &&
-                 dvu_push_sum(&row, &t, false) && dvu_json_back(&arr, &row);
+                 dvu_push_sum(&row, &t, true) && dvu_json_back(&arr, &row);
             json_free(&row);
         }
         i = j;
