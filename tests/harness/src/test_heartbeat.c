@@ -12,6 +12,7 @@
 #include "health/heartbeat.h"
 #include "json/json.h"
 #include "core/utiltime.h"
+#include "platform/clock.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -241,6 +242,102 @@ static int test_heartbeat_registry_full(void)
     return failures;
 }
 
+static int64_t heartbeat_fixed_time(void *self)
+{
+    (void)self;
+    return INT64_C(1000000);
+}
+
+static const clock_iface_t heartbeat_fixed_clock = {
+    .now_monotonic_ns = heartbeat_fixed_time,
+    .now_wall_ms = heartbeat_fixed_time,
+};
+
+/* Each refused call must leave the occupied slot and remaining capacity intact. */
+static int heartbeat_refused_interval(bool periodic, int64_t seconds)
+{
+    int failures = 0;
+    TEST("heartbeat: overflowing interval preserves registry") {
+        health_reset_for_test();
+        health_subsystem_id kept = health_register("test.kept", 10, stall_cb, NULL);
+        ASSERT(kept == 0);
+        health_subsystem_id refused = periodic
+            ? health_register_periodic("test.overflow", seconds, stall_cb, NULL)
+            : health_register("test.overflow", seconds, stall_cb, NULL);
+        ASSERT(refused == HEALTH_INVALID_ID);
+        struct health_snapshot snap[2];
+        ASSERT(health_snapshot_all(snap, 2) == 1);
+        ASSERT(strcmp(snap[0].name, "test.kept") == 0);
+        ASSERT(snap[0].deadline_secs == 10);
+        ASSERT(snap[0].on_stall_fired == 0);
+        ASSERT(snap[0].last_beat_age_secs == 0);
+        ASSERT(!snap[0].periodic);
+        ASSERT(health_register("test.next", 1, stall_cb, NULL) == 1);
+        PASS();
+    } _test_next:;
+    health_reset_for_test();
+    return failures;
+}
+
+static int heartbeat_valid_interval(bool periodic, int64_t seconds)
+{
+    int failures = 0;
+    TEST("heartbeat: representable positive interval remains valid") {
+        health_reset_for_test();
+        health_subsystem_id id = periodic
+            ? health_register_periodic("test.bound", seconds, stall_cb, NULL)
+            : health_register("test.bound", seconds, stall_cb, NULL);
+        ASSERT(id == 0);
+        struct health_snapshot snap[1];
+        ASSERT(health_snapshot_all(snap, 1) == 1);
+        ASSERT(snap[0].deadline_secs == seconds);
+        ASSERT(snap[0].periodic == periodic);
+        ASSERT(snap[0].last_beat_age_secs == 0);
+        ASSERT(snap[0].on_stall_fired == 0);
+        health_unregister(id);
+        ASSERT(health_snapshot_all(snap, 1) == 0);
+        PASS();
+    } _test_next:;
+    health_reset_for_test();
+    return failures;
+}
+
+static int heartbeat_periodic_invalid_inputs(void)
+{
+    int failures = 0;
+    TEST("heartbeat: invalid periodic inputs preserve empty registry") {
+        health_reset_for_test();
+        ASSERT(health_register_periodic(NULL, 10, stall_cb, NULL) == HEALTH_INVALID_ID);
+        ASSERT(health_register_periodic("test.null", 10, NULL, NULL) == HEALTH_INVALID_ID);
+        ASSERT(health_register_periodic("test.bad", 0, stall_cb, NULL) == HEALTH_INVALID_ID);
+        ASSERT(health_register_periodic("test.bad", -1, stall_cb, NULL) == HEALTH_INVALID_ID);
+        struct health_snapshot snap[1];
+        ASSERT(health_snapshot_all(snap, 1) == 0);
+        PASS();
+    } _test_next:;
+    health_reset_for_test();
+    return failures;
+}
+
+static int test_heartbeat_interval_bounds(void)
+{
+    int failures = 0;
+    const clock_iface_t *saved_clock = clock_default();
+    health_reset_for_test();
+    clock_set_default(&heartbeat_fixed_clock);
+    failures += heartbeat_periodic_invalid_inputs();
+    const int64_t limit = INT64_MAX / INT64_C(1000000);
+    for (int periodic = 0; periodic < 2; periodic++) {
+        failures += heartbeat_refused_interval(periodic, limit + 1);
+        failures += heartbeat_refused_interval(periodic, INT64_MAX);
+        failures += heartbeat_valid_interval(periodic, 1);
+        failures += heartbeat_valid_interval(periodic, limit);
+    }
+    health_reset_for_test();
+    clock_set_default(saved_clock);
+    return failures;
+}
+
 static int test_heartbeat_invalid_inputs(void)
 {
     int failures = 0;
@@ -368,6 +465,7 @@ int test_heartbeat(void)
     failures += test_heartbeat_assertion_cleanup();
     failures += test_heartbeat_register_and_snapshot();
     failures += test_heartbeat_invalid_inputs();
+    failures += test_heartbeat_interval_bounds();
     failures += test_heartbeat_registry_full();
     failures += test_heartbeat_resets_freshness();
     failures += test_heartbeat_edge_triggered_stall();

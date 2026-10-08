@@ -71,7 +71,9 @@ static health_subsystem_id slot_alloc_and_fill(const char *name,
                                                void *ctx,
                                                bool periodic)
 {
-    if (!name || !cb || period_secs <= 0)
+    /* The sweeper converts this interval to signed microseconds. */
+    if (!name || !cb || period_secs <= 0 ||
+        period_secs > INT64_MAX / INT64_C(1000000))
         return HEALTH_INVALID_ID;
 
     int64_t now_us = GetTimeMicros();
