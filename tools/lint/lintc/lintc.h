@@ -396,6 +396,8 @@ int check_no_new_repair_rung_run(int argc, char **argv);
 int check_no_new_repair_rung_selftest(void);
 int check_no_bare_tmp_fixture_run(int argc, char **argv);
 int check_no_bare_tmp_fixture_selftest(void);
+int check_network_tool_hardening_run(int argc, char **argv);
+int check_network_tool_hardening_selftest(void);
 int check_tor_full_default_run(int argc, char **argv);
 int check_tor_full_default_selftest(void);
 int check_installed_acceptance_tools_run(int argc, char **argv);

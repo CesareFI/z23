@@ -299,6 +299,7 @@ gate_command() {
         check-consensus-parity)            echo './tools/scripts/check_consensus_parity.sh --selftest && ./tools/scripts/check_consensus_parity.sh' ;;
         check-no-new-repair-rung)          echo './tools/scripts/check_no_new_repair_rung.sh --selftest && ./tools/scripts/check_no_new_repair_rung.sh' ;;
         check-no-bare-tmp-fixture)         echo './tools/lint/check_no_bare_tmp_fixture.sh --selftest && ./tools/lint/check_no_bare_tmp_fixture.sh' ;;
+        check-network-tool-hardening)         echo './tools/lint/check_network_tool_hardening.sh --selftest && ./tools/lint/check_network_tool_hardening.sh' ;;
         check-sqlite-cursor-lifetime)      echo './tools/scripts/check_sqlite_cursor_lifetime.sh --selftest && ./tools/scripts/check_sqlite_cursor_lifetime.sh' ;;
         check-no-new-borrowed-seed)        echo './tools/lint/check_no_new_borrowed_seed.sh .' ;;
         check-no-new-coin-backfill-caller) echo './tools/lint/check_no_new_coin_backfill_caller.sh .' ;;
