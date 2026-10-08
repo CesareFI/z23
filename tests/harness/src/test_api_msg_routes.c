@@ -290,12 +290,69 @@ static int named_message_save_report(bool query_only)
     return ok ? 0 : 1;
 }
 
+static bool message_read_result(bool called, const struct json_value *result,
+                                const char *hex, bool query_only)
+{
+    if (query_only) {
+        const char *error = json_get_str(result);
+        return !called && result->type == JSON_STR && error &&
+               strstr(error, hex) && strstr(error, "persistent read mark failed") &&
+               strstr(error, "restore a writable message store before retrying") &&
+               json_get(result, "status") == NULL;
+    }
+    const char *id = json_get_str(json_get(result, "msg_id"));
+    const char *status = json_get_str(json_get(result, "status"));
+    return called && result->type == JSON_OBJ && id && status &&
+           strcmp(id, hex) == 0 && strcmp(status, "read") == 0;
+}
+
+static int message_read_report(bool query_only)
+{
+    const char *hex =
+        "4242424242424242424242424242424242424242424242424242424242424242";
+    struct node_db ndb = {0};
+    struct rpc_table table;
+    struct json_value params = {0}, arg = {0}, result = {0};
+    rpc_table_init(&table);
+    register_msg_rpc_commands(&table);
+    const struct rpc_command *cmd = rpc_table_find(&table, "msg_read");
+    /* Index 65 seeds an unread row whose 32 ID bytes are all 0x42. */
+    bool ready = node_db_open(&ndb, ":memory:") && seed_inbox_row(&ndb, 65, false);
+    json_set_array(&params);
+    json_set_str(&arg, hex);
+    ready = ready && json_push_back(&params, &arg);
+    if (ready && query_only)
+        ready = sqlite3_exec(ndb.db, "PRAGMA query_only=ON", NULL, NULL,
+                             NULL) == SQLITE_OK;
+    rpc_msg_set_state(&ndb, NULL);
+    bool called = ready && cmd && cmd->actor(&params, false, &result);
+    bool ok = ready && cmd;
+    ok &= message_read_result(called, &result, hex, query_only);
+    struct zmsg_message row = {0};
+    ok &= db_zmsg_list(&ndb, &row, 1, false) == 1;
+    ok &= row.read == !query_only;
+    uint8_t expected_id[32];
+    memset(expected_id, 0x42, sizeof(expected_id));
+    ok &= memcmp(row.msg_id, expected_id, sizeof(expected_id)) == 0;
+    json_free(&result);
+    json_free(&arg);
+    json_free(&params);
+    rpc_msg_set_state(NULL, NULL);
+    node_db_close(&ndb);
+    printf("api: message read %s... %s\n", query_only ?
+           "refuses failed persistent mark" : "marks durable row read",
+           ok ? "OK" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int api_msg_routes_focused_tests(void)
 {
     int failures = 0;
 
     failures += named_message_save_report(true);
     failures += named_message_save_report(false);
+    failures += message_read_report(true);
+    failures += message_read_report(false);
 
     /* ── Fitting inbox: the window holds everything ──────────────── */
     printf("api: /api/messages/index returns the inbox index object... ");

@@ -463,8 +463,14 @@ static bool rpc_msg_read(const struct json_value *params, bool help,
     (void)ParseHex(hex, msg_id, 32);  /* hex already validated by zcl_is_hex_string */
 
     zmsg_store_mark_read(msg_id);
-    if (g_msg_ndb)
-        db_zmsg_mark_read(g_msg_ndb, msg_id);
+    if (g_msg_ndb && !db_zmsg_mark_read(g_msg_ndb, msg_id)) {
+        char error[256];
+        snprintf(error, sizeof(error),
+                 "msg_read: persistent read mark failed for msg_id=%s; "
+                 "restore a writable message store before retrying.", hex);
+        json_set_str(result, error);
+        LOG_FAIL("zmsg", "%s", error);
+    }
 
     json_set_object(result);
     json_push_kv_str(result, "msg_id", hex);
