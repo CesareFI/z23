@@ -10,6 +10,7 @@
 #include "sha3/sha3.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -131,6 +132,25 @@ static bool fleet_field(const char *body, const char *key,
     return false;
 }
 
+/* Plain unsigned decimal: 1..20 ASCII digits and nothing else, no sign, no
+ * space, no empty value, and not above max. *out is written only on success. */
+static bool fleet_decimal(const char *text, unsigned long long max,
+                          unsigned long long *out)
+{
+    size_t length = strlen(text);
+    if (length < 1u || length > 20u) return false;
+    unsigned long long value = 0;
+    for (size_t i = 0; i < length; i++) {
+        if (text[i] < '0' || text[i] > '9') return false;
+        unsigned digit = (unsigned)(text[i] - '0');
+        if (value > (ULLONG_MAX - digit) / 10u) return false;
+        value = value * 10u + digit;
+    }
+    if (value > max) return false;
+    *out = value;
+    return true;
+}
+
 static bool fleet_read_receipt(const char *dir, const char *name,
                                struct fleet_receipt *receipt)
 {
@@ -191,23 +211,30 @@ static bool fleet_read_receipt(const char *dir, const char *name,
                      sizeof(expect_text)) &&
          fleet_field(raw, "forbid_present", forbid_text,
                      sizeof(forbid_text));
-    char *end = NULL, *exit_end = NULL, *expect_end = NULL, *forbid_end = NULL;
-    receipt->index = strtoull(index_text, &end, 10);
-    receipt->exit_status = strtoul(exit_text, &exit_end, 10);
-    receipt->expect_missing = strtoul(expect_text, &expect_end, 10);
-    receipt->forbid_present = strtoul(forbid_text, &forbid_end, 10);
+    unsigned long long index_value = 0, exit_value = 0, expect_value = 0;
+    unsigned long long forbid_value = 0;
+    bool numbers_ok = ok &&
+        fleet_decimal(index_text, ULLONG_MAX, &index_value) &&
+        fleet_decimal(exit_text, ULONG_MAX, &exit_value) &&
+        fleet_decimal(expect_text, ULONG_MAX, &expect_value) &&
+        fleet_decimal(forbid_text, ULONG_MAX, &forbid_value);
     bool head_ok = fleet_lower_hex(receipt->head, 40) ||
                    fleet_lower_hex(receipt->head, 64);
     bool prev_ok = strcmp(receipt->prev_sha, "GENESIS") == 0 ||
                    fleet_lower_hex(receipt->prev_sha, 64);
-    if (!ok || !end || *end || !exit_end || *exit_end || !expect_end ||
-        *expect_end || !forbid_end || *forbid_end ||
+    if (!numbers_ok ||
         strcmp(receipt->head, receipt->head_after) != 0 ||
         !head_ok || !prev_ok || !fleet_lower_hex(receipt->status_sha, 64) ||
         !fleet_lower_hex(receipt->diff_sha, 64) || !receipt->branch[0] ||
         strchr(receipt->output, '/') ||
         strchr(receipt->output, '\\') || !fleet_lower_hex(receipt->output_sha, 64))
         ok = false;
+    if (ok) {
+        receipt->index = index_value;
+        receipt->exit_status = (unsigned long)exit_value;
+        receipt->expect_missing = (unsigned long)expect_value;
+        receipt->forbid_present = (unsigned long)forbid_value;
+    }
     (void)snprintf(receipt->file, sizeof(receipt->file), "%s", name);
     free(raw);
     return ok;
