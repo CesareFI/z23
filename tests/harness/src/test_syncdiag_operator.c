@@ -58,6 +58,102 @@ static int test_mvp_c6_requires_full_judge(void)
     return ok ? 0 : 1;
 }
 
+static void mvp_c8_positive_fixture(struct mvp_evidence *ev)
+{
+    ev->c8_parity_present = true;
+    ev->c8_parity_mismatches = 0;
+    ev->c8_canary_present = true;
+    ev->c8_genesis_pass = true;
+    ev->c8_genesis_fresh = true;
+    ev->c8_running_identity_match = true;
+    ev->c8_live_coarse_match = true;
+    ev->c8_full_window_qualified = true;
+}
+
+static bool mvp_c8_expect(const struct mvp_evidence *ev, const char *state,
+                         const char *reason_part)
+{
+    struct json_value out = {0};
+    bool ok = mvp_build_status_json(ev, &out);
+    const struct json_value *c8 = mvp_find_criterion(
+        json_get(&out, "criteria"), "C8");
+    const char *actual = json_get_str(json_get(c8, "met_state"));
+    const char *reason = json_get_str(json_get(c8, "reason"));
+    ok = ok && actual && strcmp(actual, state) == 0 && reason &&
+         strstr(reason, reason_part) != NULL;
+    if (strcmp(state, "unknown") == 0)
+        ok = ok && json_is_null(json_get(c8, "met")) &&
+             json_get_int(json_get(&out, "met_count")) == 0 &&
+             !json_get_bool(json_get(&out, "ready_for_v1"));
+    json_free(&out);
+    return ok;
+}
+
+static int test_mvp_c8_requires_exact_window(void)
+{
+    struct mvp_evidence ev = {0};
+    ev.c8_parity_present = true;
+    ev.c8_parity_mismatches = 0;
+    bool ok = mvp_c8_expect(&ev, "unknown", "genesis");
+    mvp_c8_positive_fixture(&ev);
+    ok = mvp_c8_expect(&ev, "met", "168h") && ok;
+    struct {
+        bool *flag;
+        const char *reason;
+    } required[] = {
+        {&ev.c8_canary_present, "genesis"},
+        {&ev.c8_genesis_pass, "genesis"},
+        {&ev.c8_genesis_fresh, "freshness"},
+        {&ev.c8_running_identity_match, "source and artifact"},
+        {&ev.c8_live_coarse_match, "live coarse"},
+        {&ev.c8_full_window_qualified, "168h"},
+    };
+    for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
+        *required[i].flag = false;
+        ok = mvp_c8_expect(&ev, "unknown", required[i].reason) && ok;
+        *required[i].flag = true;
+    }
+    ev.c8_parity_mismatches = -1;
+    ok = mvp_c8_expect(&ev, "unknown", "mismatch count unavailable") && ok;
+    printf("mvp C8 zero counters require exact genesis and complete window... %s\n",
+           ok ? "OK" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+static int test_mvp_c8_negative_precedence(void)
+{
+    struct mvp_evidence ev = {0};
+    ev.c8_canary_fail_active = true;
+    bool ok = mvp_c8_expect(&ev, "unmet", "latched FAIL");
+    ev.c8_canary_fail_active = false;
+    ev.c8_parity_present = true;
+    ev.c8_parity_mismatches = 1;
+    ok = mvp_c8_expect(&ev, "unmet", "mismatches") && ok;
+    mvp_c8_positive_fixture(&ev);
+    ev.c8_canary_fail_active = true;
+    ok = mvp_c8_expect(&ev, "unmet", "latched FAIL") && ok;
+    printf("mvp C8 explicit failures precede missing/positive evidence... %s\n",
+           ok ? "OK" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+static int test_mvp_c8_live_evidence_gap(void)
+{
+    struct json_value out = {0};
+    bool ok = mvp_dump_state_json(&out, NULL);
+    const struct json_value *c8 = mvp_find_criterion(
+        json_get(&out, "criteria"), "C8");
+    const struct json_value *evidence = json_get(c8, "evidence");
+    ok = ok && c8 && !json_get_bool(json_get(c8, "met")) && evidence &&
+         !json_get_bool(json_get(evidence, "genesis_pass")) &&
+         !json_get_bool(json_get(evidence, "running_identity_match")) &&
+         !json_get_bool(json_get(evidence, "full_window_qualified"));
+    json_free(&out);
+    printf("mvp C8 live collector reports missing positive producers... %s\n",
+           ok ? "OK" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int syncdiag_cases_operator(void)
 {
     int failures = 0;
@@ -865,11 +961,8 @@ int syncdiag_cases_operator(void)
             /* C7: a recovery drill within the 2min budget. */
             ev.c7_recovery_drill_present = true;
             ev.c7_recovery_secs = 30;
-            /* C8: standing oracle at 0 mismatches, canary present not failing. */
-            ev.c8_parity_present = true;
-            ev.c8_parity_mismatches = 0;
-            ev.c8_canary_present = true;
-            ev.c8_canary_fail_active = false;
+            /* Synthetic complete C8 evidence exercises the pure classifier. */
+            mvp_c8_positive_fixture(&ev);
 
             struct json_value out = {0};
             ok = ok && mvp_build_status_json(&ev, &out);
@@ -971,5 +1064,8 @@ int syncdiag_cases_operator(void)
     }
 
     failures += test_mvp_c6_requires_full_judge();
+    failures += test_mvp_c8_requires_exact_window();
+    failures += test_mvp_c8_negative_precedence();
+    failures += test_mvp_c8_live_evidence_gap();
     return failures;
 }

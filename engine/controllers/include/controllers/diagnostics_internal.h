@@ -369,6 +369,15 @@ struct mvp_evidence {
     long long c8_parity_mismatches;               /* -1 when unknown */
     bool      c8_canary_present;
     bool      c8_canary_fail_active;
+    /* Positive qualification requires current genesis PASS, <=7d age,
+     * matching running source/artifact identities, a live coarse match,
+     * and retained identity-bound zero-mismatch coverage for 168h.
+     * Live producers for these positive claims are not wired here. */
+    bool      c8_genesis_pass;
+    bool      c8_genesis_fresh;
+    bool      c8_running_identity_match;
+    bool      c8_live_coarse_match;
+    bool      c8_full_window_qualified;
 };
 
 /* Pure classifier: build schema zcl.mvp_status.v1 into `out` (set to a fresh

@@ -100,6 +100,38 @@ static void mvp_evidence_begin(struct json_value *e, const char *source,
     json_push_kv_bool(e, "runtime_observable", runtime_observable);
 }
 
+static bool mvp_c8_qualified(const struct mvp_evidence *ev)
+{
+    return ev->c8_canary_present && ev->c8_genesis_pass &&
+        ev->c8_genesis_fresh && ev->c8_running_identity_match &&
+        ev->c8_live_coarse_match && ev->c8_full_window_qualified;
+}
+
+static const char *mvp_c8_missing_reason(const struct mvp_evidence *ev)
+{
+    if (!ev->c8_canary_present || !ev->c8_genesis_pass)
+        return "current from=genesis replay-canary PASS not supplied";
+    if (!ev->c8_genesis_fresh)
+        return "replay-canary PASS freshness within 7 days not qualified";
+    if (!ev->c8_running_identity_match)
+        return "replay-canary PASS not bound to running source and artifact";
+    if (!ev->c8_live_coarse_match)
+        return "current live coarse parity match not supplied";
+    if (!ev->c8_full_window_qualified)
+        return "identity-bound zero-mismatch 168h parity coverage not supplied";
+    return "fresh exact genesis PASS, live coarse match and qualified 168h "
+           "zero-mismatch parity coverage";
+}
+
+static const char *mvp_c8_oracle_gap(const struct mvp_evidence *ev)
+{
+    if (ev->c8_parity_present)
+        return "standing parity oracle mismatch count unavailable; "
+               "zero-mismatch coverage is unqualified";
+    return "replay-canary not failing, but no standing parity oracle "
+           "for the 0-mismatch-over-soak claim";
+}
+
 bool mvp_build_status_json(const struct mvp_evidence *ev, struct json_value *out)
 {
     if (!out)
@@ -325,10 +357,9 @@ bool mvp_build_status_json(const struct mvp_evidence *ev, struct json_value *out
         if (st == MVP_MET) met_count++;
     }
 
-    /* ── C8: consensus parity with zclassicd ─────────────────────────
-     * Live evidence = the standing utxo_parity oracle (0 mismatches) + the
-     * replay-canary watch (no FAIL latch). Absent oracle AND absent canary
-     * verdict → unknown with a named reason. */
+    /* C8 counter observations and a quiet canary latch are supporting facts.
+     * Positive qualification additionally requires exact, fresh genesis proof
+     * and retained coverage of the complete parity window. */
     {
         struct json_value e = {0};
         mvp_evidence_begin(&e,
@@ -337,15 +368,20 @@ bool mvp_build_status_json(const struct mvp_evidence *ev, struct json_value *out
         json_push_kv_int(&e, "parity_mismatches", ev->c8_parity_mismatches);
         json_push_kv_bool(&e, "canary_present", ev->c8_canary_present);
         json_push_kv_bool(&e, "canary_fail_active", ev->c8_canary_fail_active);
+        json_push_kv_bool(&e, "genesis_pass", ev->c8_genesis_pass);
+        json_push_kv_bool(&e, "genesis_fresh", ev->c8_genesis_fresh);
+        json_push_kv_bool(&e, "running_identity_match",
+                          ev->c8_running_identity_match);
+        json_push_kv_bool(&e, "live_coarse_match", ev->c8_live_coarse_match);
+        json_push_kv_bool(&e, "full_window_qualified",
+                          ev->c8_full_window_qualified);
+        json_push_kv_int(&e, "window_hours_required",
+                         MVP_SOAK_WINDOW_HOURS_REQUIRED);
 
         enum mvp_met st;
         const char *blocker = NULL;
         const char *reason;
-        if (!ev->c8_parity_present && !ev->c8_canary_present) {
-            st = MVP_UNKNOWN;
-            reason = "no zclassicd parity oracle resolved and no replay-canary "
-                     "verdict present";
-        } else if (ev->c8_canary_fail_active) {
+        if (ev->c8_canary_fail_active) {
             st = MVP_UNMET;
             blocker = "consensus.replay_canary_failed";
             reason = "a replay-canary kind is latched FAIL";
@@ -354,14 +390,16 @@ bool mvp_build_status_json(const struct mvp_evidence *ev, struct json_value *out
             blocker = "consensus.utxo_drift";
             reason = "utxo_parity oracle detected mismatches";
         } else if (ev->c8_parity_present && ev->c8_parity_mismatches == 0) {
-            st = MVP_MET;
-            reason = "standing parity oracle at 0 mismatches, canary not failing";
-        } else {
-            /* canary present + not failing, but no standing parity oracle for
-             * the "0 mismatches over the soak window" claim. */
+            static const enum mvp_met verdict[2] = {MVP_UNKNOWN, MVP_MET};
+            st = verdict[mvp_c8_qualified(ev)];
+            reason = mvp_c8_missing_reason(ev);
+        } else if (!ev->c8_parity_present && !ev->c8_canary_present) {
             st = MVP_UNKNOWN;
-            reason = "replay-canary not failing, but no standing parity oracle "
-                     "for the 0-mismatch-over-soak claim";
+            reason = "no zclassicd parity oracle resolved and no replay-canary "
+                     "verdict present";
+        } else {
+            st = MVP_UNKNOWN;
+            reason = mvp_c8_oracle_gap(ev);
         }
         mvp_push_criterion(&arr, "C8", "Consensus parity with zclassicd", st, 0,
                            blocker, reason, &e);
@@ -451,6 +489,11 @@ bool mvp_dump_state_json(struct json_value *out, const char *key)
         }
         json_free(&cw);
     }
+
+    /* Watch slots retain history after sentinel deletion; scans and a quiet
+     * latch therefore cannot establish current genesis PASS or freshness.
+     * Parity counters carry no retained, identity-bound 168h coverage.
+     * Positive qualification flags remain false until those producers exist. */
 
     return mvp_build_status_json(&ev, out);
 }
