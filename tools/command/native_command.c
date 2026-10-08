@@ -26,6 +26,7 @@
 #include "framework/app_definition.h"
 #include "kernel/command_registry.h"
 #include "json/json.h"
+#include "json/json_secret.h"
 #include "zutf8/zutf8.h"
 #if defined(ZCL_TESTING) && !defined(ZCL_DEV_BUILD)
 #include "devloop.h"

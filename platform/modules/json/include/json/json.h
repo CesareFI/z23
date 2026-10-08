@@ -6,9 +6,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
-
-#include "base/cleanse.h"
 
 enum json_type {
     JSON_NULL,
@@ -48,22 +45,6 @@ void json_free(struct json_value *v);
  * No instrumentation or observation API exists in production builds. */
 size_t json_test_live_blocks(void);
 #endif
-
-/* Overwrite every owned string value and object key in place without changing
- * the tree shape. Call immediately before json_free() for secret-bearing
- * documents whose storage has reached its last use. */
-static inline void json_cleanse_strings(struct json_value *v)
-{
-    if (!v)
-        return;
-    if (v->type == JSON_STR && v->val.s)
-        memory_cleanse(v->val.s, strlen(v->val.s) + 1);
-    for (size_t i = 0; i < v->num_children; i++) {
-        json_cleanse_strings(&v->children[i]);
-        if (v->keys && v->keys[i])
-            memory_cleanse(v->keys[i], strlen(v->keys[i]) + 1);
-    }
-}
 
 
 void json_set_null(struct json_value *v);

@@ -14,6 +14,7 @@
 #include "rpc/httpserver.h"
 
 #include "json/json.h"
+#include "json/json_secret.h"
 #include "support/cleanse.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"

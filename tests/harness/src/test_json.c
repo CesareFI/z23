@@ -2,6 +2,7 @@
 #include "test/test_core.h"
 #include "base/safe_alloc.h"
 #include "json/json.h"
+#include "json/json_secret.h"
 
 #include <string.h>
 int cgo_decoder_tests(void);

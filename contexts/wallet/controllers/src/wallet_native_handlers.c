@@ -16,6 +16,7 @@
 
 #include "base/cleanse.h"
 #include "json/json.h"
+#include "json/json_secret.h"
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
 #include "core/amount.h"

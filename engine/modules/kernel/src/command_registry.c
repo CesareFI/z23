@@ -4,6 +4,7 @@
 
 #include "base/cleanse.h"
 #include "command_registry_internal.h"
+#include "json/json_secret.h"
 
 #include "crypto/sha256.h"
 #include "platform/time_compat.h"
