@@ -7,7 +7,8 @@
 Extend template-driven C23 production using the existing compiled prompt
 selector, template identity and receipt path. The source base is
 `ed3b192029bbe4fc9df534a26fb021cc84993f6d`. The change adds
-`c23-wire-codec`, `c23-cas-operation` and `c23-service-operation` to
+`c23-wire-codec`, `c23-cas-operation`, `c23-service-operation` and
+`c23-resource-owner` to
 `engine/composition/prompt_templates.def`, extends the registered `engine`
 selection fixture, and updates `docs/work/C23_TASK_CATALOG.md`.
 The canonical generator also refreshes the source-root identity in
@@ -16,7 +17,7 @@ The canonical generator also refreshes the source-root identity in
 Each procedure specifies required task inputs, a real source exemplar,
 implementation order, ownership/refusal behavior and production-caller
 acceptance. Only the selected procedure enters a prompt. The existing
-1800-byte per-procedure test applies to both additions. Template identities
+1800-byte per-procedure test applies to all four additions. Template identities
 continue through the existing canonical serialization and CAS path; this
 change creates no scheduler, task authority or evidence store.
 
@@ -33,7 +34,10 @@ they do not establish that every possible C23 function has a template.
 
 ## Verification
 
-- Source inspection verified both exemplar symbols at the exact base.
+The following observations cover the initial wire-codec and CAS stage;
+later sections record the service and resource-owner follow-ups.
+
+- Source inspection verified the two initial exemplar symbols at the exact base.
 - The existing local `z23-lint check-prompt-templates` passed: 44 rows,
   11 complete kinds. This is a source gate, not a rebuilt-runner claim.
 - `git diff --check` passed before remote qualification.
@@ -113,7 +117,7 @@ to the prior positive-status skip defect compiled and made that self-test exit
 1. Restoring the exact source rebuilt and passed. Restored parser SHA-256:
 `e87801a196717e2ddf0a1aa9747ce2280123362325d97acd607f56aaae56ed66`.
 Canonical inventory regeneration and `lint-fast` passed. Exact post-commit
-publication proof remains NOTRUN. Evidence is retained in
+publication proof is not established by these focused checks. Evidence is retained in
 `build/handoff/sol-followup-collected/` and the isolated development-host
 checkout's `build/followup-*` logs.
 
@@ -130,4 +134,17 @@ remains unknown; splitting tasks cannot increase the accepted-output count.
 Report complete tokens per accepted task, first-attempt acceptance,
 end-to-end latency, escaped defects and accounting coverage. Functional
 selection and bounded text do not demonstrate savings. Provider-token
-comparison, fleet recovery, independent review and publication are NOTRUN.
+comparison, fleet recovery and publication are NOTRUN for this efficiency
+experiment. The source reviews below do not qualify workflow cost savings.
+
+## Exact-candidate source review
+
+Independent Linux and macOS reviews inspected candidate
+`0b605966df26636dd8cdf13c8637fa2e86a9b4f3` against the stated base without
+executing its code. The scanner review accepted its bounded source obligations.
+The template review found no blocking source defect, but rejected this
+document's stale addition count and ambiguous independent-review status.
+An independent source review accepted the correction of those two
+documentation findings; the earlier source verdicts do not bind a later
+candidate automatically. Neither review establishes execution or publication
+acceptance.
