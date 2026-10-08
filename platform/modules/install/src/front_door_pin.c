@@ -115,10 +115,12 @@ bool fd_pin_parse(const char *text, struct fd_pin *out)
 {
     if (!out)
         return false;
-    memset(out, 0, sizeof *out);
 
+    /* Preserve input held in out->text before resetting the output. */
     char trimmed[FD_PIN_MAX];
-    if (!trim_into(text, trimmed, sizeof trimmed))
+    const bool fits = trim_into(text, trimmed, sizeof trimmed);
+    memset(out, 0, sizeof *out);
+    if (!fits)
         return false;
     /* The unset sentinel declares that nothing is pinned. It is NOT a pin,
      * and reporting it as one would install the all-zero release. */

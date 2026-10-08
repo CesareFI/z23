@@ -91,16 +91,32 @@ static int case_pin_parse(void)
 {
     int failures = 0;
     struct fd_pin pin;
+    const unsigned char zero[sizeof pin] = {0};
+    static const char text[FD_PIN_MAX] =
+        "z23-pin-v1:"
+        "1234567812345678123456781234567812345678123456781234567812345678:"
+        "abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01";
+    static const char manifest[] =
+        "1234567812345678123456781234567812345678123456781234567812345678";
+    static const char installer[] =
+        "abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01";
 
     FD_CHECK("a well-formed pin parses", fd_pin_parse(k_pin_a, &pin));
     FD_CHECK("the manifest half is carried out",
-             strncmp(pin.manifest, "12345678", 8) == 0 &&
-             strlen(pin.manifest) == FD_HEX_LEN);
+             memcmp(pin.manifest, manifest, sizeof pin.manifest) == 0);
     FD_CHECK("the installer half is carried out",
-             strncmp(pin.installer, "abcdef01", 8) == 0 &&
-             strlen(pin.installer) == FD_HEX_LEN);
+             memcmp(pin.installer, installer, sizeof pin.installer) == 0);
     FD_CHECK("the whole record is carried out verbatim",
-             strcmp(pin.text, k_pin_a) == 0);
+             memcmp(pin.text, text, sizeof pin.text) == 0);
+
+    /* The input may be the previous result's text: it must be read before
+     * the output is reset. The header imposes no non-overlap restriction. */
+    FD_CHECK("a pin reparses from its own output text",
+             fd_pin_parse(pin.text, &pin));
+    FD_CHECK("reparsing preserves every output field",
+             memcmp(pin.text, text, sizeof pin.text) == 0 &&
+             memcmp(pin.manifest, manifest, sizeof pin.manifest) == 0 &&
+             memcmp(pin.installer, installer, sizeof pin.installer) == 0);
 
     /* THE SENTINEL. If this ever parses, "no release is pinned yet" becomes
      * "the all-zero release is pinned" and the front door installs it. */
@@ -109,7 +125,23 @@ static int case_pin_parse(void)
              fd_pin_is_sentinel(FD_PIN_SENTINEL));
     FD_CHECK("a real pin is not the sentinel", !fd_pin_is_sentinel(k_pin_a));
     FD_CHECK("out is zeroed when the sentinel is refused",
-             !fd_pin_parse(FD_PIN_SENTINEL, &pin) && pin.text[0] == '\0');
+             !fd_pin_parse(FD_PIN_SENTINEL, &pin) &&
+             memcmp(&pin, zero, sizeof pin) == 0);
+
+    static const char *const refused[] = {
+        FD_PIN_SENTINEL, NULL, "z23-pin-v1:short:short",
+        "z23-pin-v2:"
+        "1234567812345678123456781234567812345678123456781234567812345678:"
+        "abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01abcdef01"
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        FD_CHECK("a valid pin seeds the refusal fixture",
+                 fd_pin_parse(k_pin_a, &pin));
+        memset(&pin, 0xa5, sizeof pin);
+        FD_CHECK("refusal clears every poisoned output byte",
+                 !fd_pin_parse(refused[i], &pin) &&
+                 memcmp(&pin, zero, sizeof pin) == 0);
+    }
 
     FD_CHECK("a short pin does not parse", !parses("z23-pin-v1:short:short"));
     FD_CHECK("a foreign pin version does not parse",
