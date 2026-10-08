@@ -1757,6 +1757,34 @@ static int test_ic_utxo_snapshot_proof_mapping(void)
     return failures;
 }
 
+static int test_ic_fleet_ledger_proof_mapping(void)
+{
+    int failures = 0;
+    TEST("impact composition: fleet export paths select their regression without a graph") {
+        static const char *const paths[] = {
+            "tools/command/native_fleet_command.c",
+            "tests/harness/src/test_fleet_ledger.c",
+        };
+        for (size_t i = 0; i < sizeof paths / sizeof paths[0]; i++) {
+            struct agent_impact_acc impact = {0};
+            ASSERT(agent_impact_apply_shared_rules(paths[i], &impact));
+            ASSERT(ic_acc_has_group(&impact, "fleet_ledger"));
+            ASSERT(ic_acc_has_group(&impact, "make_lint_gates"));
+            struct zcl_devloop_plan plan;
+            ASSERT(zcl_devloop_plan_files(&paths[i], 1, &plan));
+            ASSERT(ic_group_in(plan.path_groups, plan.path_groups_len,
+                               "fleet_ledger"));
+            ASSERT(plan.closure_groups_len == 0);
+            ASSERT(plan.dims[ZCL_DEVLOOP_DIM_SEMANTIC].status ==
+                   ZCL_DEVLOOP_DIM_UNAVAILABLE);
+            ASSERT(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].status ==
+                   ZCL_DEVLOOP_DIM_UNAVAILABLE);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_fleet_triggers_proof_mapping(void)
 {
     int failures = 0;
@@ -11789,6 +11817,7 @@ int test_impact_composition(void)
     failures += test_ic_sqlq_proof_mapping();
     failures += test_ic_wallet_recovery_status_proof_mapping();
     failures += test_ic_fleet_triggers_proof_mapping();
+    failures += test_ic_fleet_ledger_proof_mapping();
     failures += test_ic_utxo_snapshot_proof_mapping();
     failures += test_ic_code_capsule_stays_with_code_owner();
     failures += test_ic_generated_inventory_stays_focused();

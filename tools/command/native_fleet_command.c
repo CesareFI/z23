@@ -31,6 +31,7 @@
 #include "platform/os_proc.h"
 #include "platform/time_compat.h"
 #include "vcs/zcode_dht_identity.h"
+#include "zutf8/zutf8.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -1336,12 +1337,17 @@ static bool fleet_export_parse_filter(
     return true;
 }
 
+/* Retained fields are bounded and terminated; validate scalar encoding before
+ * any of their bytes enter the successful JSON response. */
+static bool fleet_export_utf8(const char *text, size_t cap)
+{
+    const char *end = memchr(text, 0, cap);
+    return end && zutf8_validate_n(text, (size_t)(end - text));
+}
+
 /* Opens the ledger under `dir`, walks it with `filter`, and closes it
- * again before returning — the ledger's whole lifetime lives in this one
- * call so the caller never has to reason about it. Refuses `reply` and
- * returns false on either an unopenable ledger or a refused walk; the two
- * carry different error codes because they are different facts for an
- * operator to act on. */
+ * before returning. Refuses unavailable ledgers, refused walks, and retained
+ * text that cannot be represented in a UTF-8 JSON response. */
 static bool fleet_export_query(struct zcl_command_reply *reply,
                                const char *dir,
                                const struct fleet_export_filter *filter,
@@ -1372,6 +1378,15 @@ static bool fleet_export_query(struct zcl_command_reply *reply,
         fleet_refuse(reply, "LEDGER_REFUSED", zcl_fleet_status_label(status),
                      "query", false);
         return false;
+    }
+    for (size_t i = 0; i < *count; i++) {
+        if (!fleet_export_utf8(rows[i].task_id, sizeof rows[i].task_id) ||
+            !fleet_export_utf8(rows[i].story, sizeof rows[i].story)) {
+            fleet_refuse(reply, "MALFORMED_TEXT",
+                         "stored task_id or story is not valid UTF-8",
+                         "query", false);
+            return false;
+        }
     }
     *truncated = status == ZCL_FLEET_FULL;
     return true;

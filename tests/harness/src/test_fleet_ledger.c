@@ -46,6 +46,7 @@
 #include "net/protocol.h"
 #include "platform/private_file.h"
 #include "platform/time_compat.h"
+#include "platform/clock.h"
 #include "sha3/sha3.h"
 #include "vcs/zcode_dht_identity.h"
 
@@ -311,6 +312,107 @@ static void fl_sample(struct json_value *input, struct zcl_command_reply *reply)
 }
 
 #if !defined(_WIN32)
+static int64_t fl_export_monotonic_ns(void *self)
+{
+    (void)self;
+    return INT64_C(1000000000);
+}
+
+static int64_t fl_export_wall_ms(void *self)
+{
+    (void)self;
+    return INT64_C(1700000000000);
+}
+
+static int fl_export_utf8_case(const char *sample, bool valid,
+                                unsigned field, const char *escaped)
+{
+    int failures = 0;
+    struct json_value input;
+    struct zcl_command_reply reply = {0};
+    json_init(&input);
+    char dd[320] = {0};
+    const clock_iface_t *saved_clock = clock_default();
+    char saved_datadir[512];
+    int saved_port = zcl_native_command_rpc_port();
+    (void)snprintf(saved_datadir, sizeof saved_datadir, "%s",
+                   zcl_native_command_datadir());
+    static const clock_iface_t fixed_clock = {
+        .now_monotonic_ns = fl_export_monotonic_ns,
+        .now_wall_ms = fl_export_wall_ms,
+    };
+    clock_set_default(&fixed_clock);
+    TEST("fleet export refuses malformed UTF-8 in either retained field") {
+        char serialized[8192];
+        ASSERT(test_mkdtemp(dd, sizeof dd, "fleet_export_utf8") != NULL);
+        uint8_t box[32], signer[32];
+        ASSERT(fl_provision(dd, box, signer));
+        zcl_native_bridge_bind_rpc(dd, 0);
+        json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "task_id", field ? sample : "t"));
+        ASSERT(json_push_kv_str(&input, "story", field ? "s" : sample));
+        ASSERT(json_push_kv_str(&input, "task_class", "read"));
+        ASSERT(json_push_kv_str(&input, "harness", "manual"));
+        ASSERT(json_push_kv_str(&input, "model", "grok"));
+        ASSERT(json_push_kv_str(&input, "effort", "low"));
+        struct zcl_command_request req = { .input = &input };
+        zcl_native_handle_fleet_experiment_predict(&req, &reply);
+        ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_PASSED);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        req.input = NULL;
+        zcl_native_handle_fleet_experiment_export(&req, &reply);
+        if (!valid) {
+            ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_FAILED);
+            ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+            ASSERT_STR_EQ(reply.error.code, "MALFORMED_TEXT");
+            ASSERT(!reply.error.mutated);
+            ASSERT(strstr(reply.error.message, "UTF-8") != NULL);
+            ASSERT(json_get(&reply.data, "text") == NULL);
+        } else {
+            ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_PASSED);
+            ASSERT_EQ(json_get_int(json_get(&reply.data, "rows")), INT64_C(1));
+            const char *text = json_get_str(json_get(&reply.data, "text"));
+            ASSERT(text != NULL && strstr(text, sample) != NULL);
+            ASSERT(json_write(&reply.data, serialized, sizeof serialized) <
+                   sizeof serialized);
+            ASSERT(strstr(serialized, escaped) != NULL);
+        }
+        zcl_command_reply_free(&reply);
+        ASSERT(test_rm_rf_recursive(dd) == 0);
+        dd[0] = '\0';
+        PASS();
+    }
+
+_test_next:
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+    zcl_native_bridge_bind_rpc(saved_datadir, saved_port);
+    clock_set_default(saved_clock);
+    if (dd[0]) {
+        if (test_rm_rf_recursive(dd) != 0) {
+            printf("FAIL cleanup: %s\n", dd);
+            failures++;
+        }
+    }
+    return failures;
+}
+
+static int fl_export_utf8_cases(void)
+{
+    static const char *const cases[] = {
+        "\xff", "\xc3\x28", "\xe2\x82", "\xed\xa0\x80",
+        "\xc0\xaf", "\xf4\x90\x80\x80", "a\"b\\c", "\xf0\x9f\x98\x80"
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char *escaped = i == 6 ? "a\\\"b\\\\c" : cases[i];
+        for (unsigned field = 0; field < 2; field++)
+            failures += fl_export_utf8_case(cases[i], i >= 6, field, escaped);
+    }
+    return failures;
+}
+
 static int fl_open_refusal_location(void)
 {
     int failures = 0;
@@ -497,6 +599,7 @@ static int test_fleet_ledger_observation(void)
 {
     int failures = fl_admission_regression();
     failures += fl_open_refusal_location();
+    failures += fl_export_utf8_cases();
     char root[256], dir[320], peer[352], self[352];
     struct stat info;
     struct zcl_fleet_report report;
