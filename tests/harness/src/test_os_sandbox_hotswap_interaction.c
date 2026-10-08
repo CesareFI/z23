@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,15 +63,64 @@ static int failures;
 
 /* Run fn() in a forked child; returns its exit code, or the negated
  * terminating signal so a SIGSYS kill is distinguishable from a return. */
+static unsigned ch_wait_interruptions;
+static pid_t (*ch_wait_child)(pid_t, int *, int) = waitpid;
+
+static pid_t ch_wait_eintr_once(pid_t pid, int *st, int options)
+{
+    (void)pid;
+    (void)st;
+    (void)options;
+    ch_wait_child = waitpid;
+    errno = EINTR;
+    return -1;
+}
+
 static int ch_run_child(int (*fn)(void))
 {
     pid_t pid = fork();
     if (pid < 0) return -1000;
     if (pid == 0) _exit(fn());
     int st = 0;
-    if (waitpid(pid, &st, 0) != pid) return -1001;
+    pid_t waited;
+    do {
+        waited = ch_wait_child(pid, &st, 0);
+        if (waited < 0 && errno == EINTR) ch_wait_interruptions++;
+    } while (waited < 0 && errno == EINTR);
+    if (waited != pid) return -1001;
     if (WIFSIGNALED(st)) return -WTERMSIG(st);
     return WEXITSTATUS(st);
+}
+
+static int c_exit_42(void)
+{
+    return 42;
+}
+
+static int c_interrupted_wait_reaps_child(void)
+{
+    /* This deadline also bounds orphan cleanup on the restored defect. */
+    if (signal(SIGALRM, SIG_DFL) == SIG_ERR) return 86;
+    alarm(5);
+    ch_wait_interruptions = 0;
+    ch_wait_child = ch_wait_eintr_once;
+    int result = ch_run_child(c_exit_42);
+    ch_wait_child = waitpid;
+    int st = 0;
+    errno = 0;
+    pid_t leftover = waitpid(-1, &st, WNOHANG);
+    bool reaped = leftover == -1 && errno == ECHILD;
+    if (leftover == 0) {
+        /* Baseline returns while its child lives: settle that ownership
+         * before reporting the original result, without hiding failure. */
+        do {
+            leftover = waitpid(-1, &st, 0);
+        } while (leftover < 0 && errno == EINTR);
+        if (leftover < 0) return 84;
+    }
+    alarm(0);
+    return result == 42 && ch_wait_interruptions == 1 &&
+           reaped ? 0 : 85;
 }
 
 /* ── fixture paths (built by the parent, read by the children) ─────────── */
@@ -331,6 +381,9 @@ int test_os_sandbox_hotswap_interaction(void)
 {
     failures = 0;
     printf("=== confinement visibility + hot-swap interaction ===\n");
+
+    CH_CHECK("interrupted child wait returns 42 and leaves no child",
+             ch_run_child(c_interrupted_wait_reaps_child) == 0);
 
     if (!build_fixture()) {
         printf("confinement: FIXTURE SETUP FAILED (%s)\n", strerror(errno));
