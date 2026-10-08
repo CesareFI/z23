@@ -893,6 +893,23 @@ static int cm_usage(void)
     return 2;
 }
 
+static bool cm_section_limit(const char *v, uint64_t *out)
+{
+    uint64_t n = 0;
+    if (*v == '\0')
+        return false;
+    for (; *v != '\0'; v++) {
+        if (*v < '0' || *v > '9')
+            return false;
+        unsigned digit = (unsigned)(*v - '0');
+        if (n > (UINT64_MAX - digit) / 10)
+            return false;
+        n = n * 10 + digit;
+    }
+    *out = n;
+    return true;
+}
+
 static bool cm_max_records(const char *v, uint32_t *out)
 {
     char *end;
@@ -924,7 +941,7 @@ static bool cm_opt_value(struct cm_opts *o, const char *key, const char *v)
     else if (strcmp(key, "--max-records") == 0)
         return cm_max_records(v, &o->max_records);
     else if (strcmp(key, "--max-section-bytes") == 0)
-        o->max_section_bytes = strtoull(v, NULL, 10);
+        return cm_section_limit(v, &o->max_section_bytes);
     else
         return false;
     return true;

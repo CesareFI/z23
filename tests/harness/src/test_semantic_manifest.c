@@ -1916,6 +1916,73 @@ int semantic_sensor_identity_tests(void);
 /* semantic_sensor_probe.c: probes the conditional-lookup scan must see. */
 int semantic_sensor_probe_tests(void);
 
+static bool smt_section_limit_result(int rc, const char *message,
+                                    const char *out, int expected)
+{
+    struct stat sb;
+    bool present = stat(out, &sb) == 0;
+    bool absent = !present && errno == ENOENT;
+    if (rc != expected)
+        return false;
+    if (expected == 0)
+        return present && sb.st_size > 0;
+    if (!absent)
+        return false;
+    if (expected == 2)
+        return strstr(message, "usage: z23-clang-manifest emit") != NULL;
+    return strstr(message, "clang-manifest: refused: facts caps out of range") != NULL;
+}
+
+static bool smt_section_limit_case(const char *dir, const char *value,
+                                  int expected)
+{
+    char out[PATH_MAX], message[4096] = "";
+    bool timed_out = false;
+    int n = snprintf(out, sizeof(out), "%s/limit.bin", dir);
+    if (n < 0 || (size_t)n >= sizeof(out)) {
+        printf("FAIL section limit output path too long\n");
+        return false;
+    }
+    const char *argv[] = {SMT_SENSOR, "emit", "--root", dir, "--source",
+                          "limit.c", "--out", out, "--max-section-bytes",
+                          value, "--facts", "--", "-std=c23", NULL};
+    int rc = zcl_spawn_capture_merged_observed(argv, message, sizeof(message),
+                                               60000, &timed_out);
+    bool ok = !timed_out && smt_section_limit_result(rc, message, out, expected);
+    if (!ok)
+        printf("FAIL section limit '%s': rc=%d expected=%d timeout=%d: %s\n",
+               value, rc, expected, (int)timed_out, message);
+    if (unlink(out) != 0 && errno != ENOENT) {
+        printf("FAIL section limit cleanup %s: %s\n", out, strerror(errno));
+        return false;
+    }
+    return ok;
+}
+
+static int smt_t_section_limits(void)
+{
+    int failures = 0;
+    char dir[1024] = {0};
+    static const char *const bad[] = {
+        "1x", "-1", "18446744073709551616", "", "+1", " 1", "1 "
+    };
+    TEST_CASE("semantic_sensor: section byte budgets require complete uint64 decimals") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_limit") != NULL);
+        ASSERT(smt_write(dir, "limit.c", "int limit_value(void) { return 1; }\n"));
+        for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++)
+            ASSERT(smt_section_limit_case(dir, bad[k], 2));
+        /* Parsed uint64 boundaries reach the existing facts-cap refusal. */
+        ASSERT(smt_section_limit_case(dir, "1", 3));
+        ASSERT(smt_section_limit_case(dir, "18446744073709551615", 3));
+        ASSERT(smt_section_limit_case(dir, "0", 0));
+    } TEST_END
+    if (dir[0] != '\0' && test_rm_rf_recursive(dir) != 0) {
+        printf("FAIL section limit fixture cleanup %s\n", dir);
+        failures++;
+    }
+    return failures;
+}
+
 static int smt_t_max_records(void)
 {
     int failures = 0;
@@ -2002,6 +2069,7 @@ int test_semantic_sensor(void)
     }
     failures += smt_t_root_failed_read();
     failures += smt_t_max_records();
+    failures += smt_t_section_limits();
     failures += smt_t_sensor_invariance(&r);
     failures += smt_t_sensor_seeds(&r);
     failures += smt_t_sensor_home_guard();
