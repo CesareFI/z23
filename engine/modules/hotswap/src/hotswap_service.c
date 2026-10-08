@@ -287,6 +287,40 @@ void zcl_hotswap_service_reset(void)
     service_unlock();
 }
 
+static bool service_fields_reject(
+    const struct zcl_hotswap_service_contract *contract,
+    const struct zcl_hotswap_service_candidate *candidate,
+    struct zcl_hotswap_service_report *report)
+{
+    const char *field = !contract ? "contract" :
+        !candidate ? "candidate" :
+        !contract->service_id ? "contract.service_id" :
+        !contract->source_tu ? "contract.source_tu" :
+        !candidate->service_id ? "candidate.service_id" :
+        !candidate->source_tu ? "candidate.source_tu" :
+        !contract->frozen_kat ? "contract.frozen_kat" : "candidate.vtable";
+    char detail[256];
+    (void)snprintf(detail, sizeof(detail),
+                   "missing %s; correct the field and reprobe", field);
+    return reject(report, "fields", false, detail);
+}
+
+static bool service_identity_reject(
+    const struct zcl_hotswap_service_contract *contract,
+    const struct zcl_hotswap_service_candidate *candidate,
+    struct zcl_hotswap_service_report *report)
+{
+    bool id = !equal_text(contract->service_id, candidate->service_id);
+    char detail[256];
+    (void)snprintf(detail, sizeof(detail),
+                   "%s mismatch: got '%.80s', expected '%.80s'; "
+                   "correct the field and reprobe",
+                   id ? "service_id" : "source_tu",
+                   id ? candidate->service_id : candidate->source_tu,
+                   id ? contract->service_id : contract->source_tu);
+    return reject(report, "service", false, detail);
+}
+
 bool zcl_hotswap_service_publish(
     const struct zcl_hotswap_service_contract *contract,
     const struct zcl_hotswap_service_candidate *candidate,
@@ -308,12 +342,10 @@ bool zcl_hotswap_service_publish(
         !contract->source_tu || !candidate->service_id ||
         !candidate->source_tu || !contract->frozen_kat ||
         !candidate->vtable)
-        return reject(report, "fields", false,
-                      "contract or candidate has missing required fields");
+        return service_fields_reject(contract, candidate, report);
     if (!equal_text(contract->service_id, candidate->service_id) ||
         !equal_text(contract->source_tu, candidate->source_tu))
-        return reject(report, "service", false,
-                      "service id or owning source mismatch");
+        return service_identity_reject(contract, candidate, report);
     if (contract->abi_version != candidate->abi_version ||
         contract->vtable_size != candidate->vtable_size ||
         !equal_text(contract->abi_fingerprint,

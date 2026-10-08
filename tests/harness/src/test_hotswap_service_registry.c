@@ -103,6 +103,58 @@ static int t_publish_and_lease(void)
     return failures;
 }
 
+static unsigned fields_kat_calls;
+
+static bool fields_kat(const void *vtable, char *why, size_t why_sz)
+{
+    fields_kat_calls++;
+    return frozen_kat(vtable, why, why_sz);
+}
+
+static int t_service_field_diagnostics(void)
+{
+    int failures = 0;
+    TEST("service field refusals identify correction without publication or KAT") {
+        zcl_hotswap_service_reset();
+        struct zcl_hotswap_service_contract contract = k_contract;
+        contract.frozen_kat = fields_kat;
+        struct zcl_hotswap_service_candidate c = candidate();
+        struct zcl_hotswap_service_report report = {0};
+        ASSERT(zcl_hotswap_service_publish(&contract, &c, true, &report));
+        uint32_t generation = zcl_hotswap_service_generation();
+        unsigned calls = fields_kat_calls;
+        const char *fields[] = {"candidate.vtable", "source_tu", "service_id"};
+        const char *actual[] = {"missing", "wrong.c", "other.v1"};
+        const char *expected[] = {"candidate.vtable", contract.source_tu,
+                                  contract.service_id};
+        for (size_t i = 0; i < 3; i++) {
+            c = candidate();
+            if (i == 0) c.vtable = NULL;
+            if (i == 1) c.source_tu = actual[i];
+            if (i == 2) c.service_id = actual[i];
+            ASSERT(!zcl_hotswap_service_publish(&contract, &c, true, &report));
+            ASSERT(!report.ok && !report.activated && !report.probed);
+            ASSERT(report.rolled_back && !report.dev_restart);
+            ASSERT_STR_EQ(report.stage, i == 0 ? "fields" : "service");
+            ASSERT(strstr(report.error, fields[i]) != NULL);
+            ASSERT(strstr(report.error, actual[i]) != NULL);
+            ASSERT(strstr(report.error, expected[i]) != NULL);
+            ASSERT(strstr(report.error, "correct the field and reprobe") != NULL);
+            ASSERT_EQ(fields_kat_calls, calls);
+            ASSERT_EQ(zcl_hotswap_service_generation(), generation);
+            struct zcl_hotswap_service_lease lease = {0};
+            const void *active = zcl_hotswap_service_acquire(
+                contract.service_id, &lease);
+            bool unchanged = active == &k_candidate;
+            zcl_hotswap_service_release(&lease);
+            ASSERT(unchanged);
+        }
+        zcl_hotswap_service_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int t_contract_drift_restarts(void)
 {
     int failures = 0;
@@ -1179,6 +1231,7 @@ int test_hotswap_service_registry(void)
     int failures = t_publish_and_lease() + t_contract_drift_restarts() +
                    t_manifest_mapping() + t_market_purchase_view() +
                    t_market_moderation_view() + t_zcode_package_view();
+    failures += t_service_field_diagnostics();
     failures += t_zcode_moderation_view() + t_shop_reputation_view() +
                 t_zcode_workspace_view() + t_zcode_passport_view() +
                 t_zcode_goal_context_calc() + t_zcode_lane_view() +
