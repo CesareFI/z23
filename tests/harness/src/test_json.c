@@ -8,6 +8,82 @@ int cgo_decoder_tests(void);
 int cgo_passive_tests(void);
 int cga_goal_tests(void);
 
+static bool json_append_read(int fd, char text[256])
+{
+    if (lseek(fd, 0, SEEK_SET) < 0) return false;
+    ssize_t n = read(fd, text, 255);
+    if (n < 0 || n == 255) return false;
+    text[n] = '\0';
+    return true;
+}
+
+static bool json_append_capture(struct json_value *target,
+                                const struct json_value *child, bool keyed,
+                                bool *pushed, char text[256])
+{
+    char path[PATH_MAX];
+    int fd = test_mkstemp(path, sizeof(path), "json_append");
+    if (fd < 0) return false;
+    bool ok = fflush(stderr) == 0;
+    int saved = dup(STDERR_FILENO);
+    if (saved < 0) ok = false;
+    if (ok && dup2(fd, STDERR_FILENO) >= 0) {
+        *pushed = keyed ? json_push_kv(target, "k", child)
+                       : json_push_back(target, child);
+        ok = fflush(stderr) == 0;
+        if (dup2(saved, STDERR_FILENO) < 0) abort();
+        if (!json_append_read(fd, text)) ok = false;
+    } else ok = false;
+    if (saved >= 0 && close(saved) != 0) ok = false;
+    if (close(fd) != 0) ok = false;
+    if (unlink(path) != 0) ok = false;
+    return ok;
+}
+
+static bool json_append_scalar_unchanged(const struct json_value *target)
+{
+    return target->type == JSON_INT && target->val.i == 7 &&
+        target->children == NULL && target->keys == NULL &&
+        target->num_children == 0 && target->children_cap == 0;
+}
+
+static bool json_append_target_case(bool keyed)
+{
+    struct json_value target, child;
+    json_init(&target); json_set_int(&target, 7);
+    json_init(&child); json_set_int(&child, 9);
+    char text[256] = {0}, type[32];
+    snprintf(type, sizeof(type), "target type=%d", (int)JSON_INT);
+    bool pushed = true;
+    bool captured = json_append_capture(&target, &child, keyed, &pushed, text);
+    bool unchanged = json_append_scalar_unchanged(&target);
+    bool message = strstr(text, keyed ? "json_push_kv:" : "json_push_back:") &&
+        strstr(text, type) &&
+        strstr(text, keyed ? "json_set_object" : "json_set_array");
+    bool refused = captured && !pushed && unchanged && message;
+    if (keyed) json_set_object(&target); else json_set_array(&target);
+    text[0] = '\0'; pushed = false;
+    captured = json_append_capture(&target, &child, keyed, &pushed, text);
+    const struct json_value *stored = keyed ? json_get(&target, "k")
+                                          : json_at(&target, 0);
+    bool accepted = captured && pushed && text[0] == '\0' &&
+        json_size(&target) == 1 && json_get_int(stored) == 9;
+    json_free(&target); json_free(&child);
+    return refused && accepted;
+}
+
+static int json_append_target_cases(void)
+{
+    int failures = 0;
+    printf("json array append identifies scalar target and recovery, succeeds quietly... ");
+    if (json_append_target_case(false)) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    printf("json object append identifies scalar target and recovery, succeeds quietly... ");
+    if (json_append_target_case(true)) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    return failures;
+}
+
 static int json_heap_accounting_cases(void)
 {
     int failures = 0;
@@ -315,7 +391,7 @@ static int json_number_cases(void)
 
 int test_json(void)
 {
-    int failures = json_unicode_cases() + json_number_cases() + json_heap_accounting_cases() + json_growth_cases() + cgo_decoder_tests() + cgo_passive_tests() + cga_goal_tests();
+    int failures = json_unicode_cases() + json_number_cases() + json_heap_accounting_cases() + json_growth_cases() + json_append_target_cases() + cgo_decoder_tests() + cgo_passive_tests() + cga_goal_tests();
 
     printf("json parse integer... ");
     {

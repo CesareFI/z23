@@ -206,7 +206,11 @@ void json_copy(struct json_value *dst, const struct json_value *src)
 
 bool json_push_back(struct json_value *arr, const struct json_value *child)
 {
-    if (arr->type != JSON_ARR) return false;
+    if (arr->type != JSON_ARR) {
+        fprintf(stderr, "json_push_back: target type=%d; initialize an array "
+                "with json_set_array before appending\n", (int)arr->type);
+        return false;
+    }
     if (!json_grow(arr)) return false;
     json_copy(&arr->children[arr->num_children], child);
     arr->keys[arr->num_children] = NULL;
@@ -217,7 +221,11 @@ bool json_push_back(struct json_value *arr, const struct json_value *child)
 bool json_push_kv(struct json_value *obj, const char *key,
                   const struct json_value *child)
 {
-    if (obj->type != JSON_OBJ) return false;
+    if (obj->type != JSON_OBJ) {
+        fprintf(stderr, "json_push_kv: target type=%d; initialize an object "
+                "with json_set_object before appending\n", (int)obj->type);
+        return false;
+    }
     if (!json_grow(obj)) return false;
     /* Allocate the key first so an OOM here doesn't leave a copied
      * child stranded with a NULL key — json_get does
