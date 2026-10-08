@@ -1025,6 +1025,19 @@ static void render_statecatalog(struct buf *b,
         emit_more_footer(b, total - rows);
 }
 
+static void render_error_next_action(struct buf *b,
+                                     const struct zcl_cli_render_env *e,
+                                     const struct json_value *err)
+{
+    const char *action = err ? json_get_str(json_get(err, "next_action")) : NULL;
+    if (!action || !action[0])
+        return;
+    size_t room = (size_t)e->width > 6 ? (size_t)e->width - 6 : 1;
+    ansi_dim(b, e, "next: ");
+    buf_puts_trunc(b, action, room);
+    buf_putc(b, '\n');
+}
+
 static void render_error(struct buf *b, const struct zcl_cli_render_env *e,
                          const struct json_value *root)
 {
@@ -1060,6 +1073,8 @@ static void render_error(struct buf *b, const struct zcl_cli_render_env *e,
         buf_puts_trunc(b, evidence, room > 4 ? room - 4 : 1);
         buf_putc(b, '\n');
     }
+
+    render_error_next_action(b, e, err);
 
     char suggestion[512];
     suggestion[0] = '\0';

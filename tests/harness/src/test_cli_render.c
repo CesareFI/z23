@@ -357,6 +357,33 @@ static int test_error_render(void)
     return failures;
 }
 
+static int test_error_explicit_action(const char *name, const char *next)
+{
+    int failures = 0;
+    TEST(name) {
+        char doc[1024];
+        int len = snprintf(doc, sizeof(doc),
+            "{\"schema\":\"zcl.result.v1\",\"command\":\"code.owner\","
+            "\"ok\":false,\"status\":\"failed\",\"error\":{"
+            "\"code\":\"NOT_IN_A_CHECKOUT\",\"message\":\"checkout required\","
+            "\"next_action\":\"cd into a Z23 checkout and rerun\"},"
+            "\"next\":%s}", next);
+        ASSERT(len > 0 && (size_t)len < sizeof(doc));
+        struct zcl_cli_render_env e = cr_env(80, false);
+        char out[4096];
+        size_t n = zcl_cli_render_doc(doc, (size_t)len, "code.owner", &e,
+                                      out, sizeof(out));
+        ASSERT(n > 0);
+        ASSERT(strstr(out, "NOT_IN_A_CHECKOUT") != NULL);
+        ASSERT(strstr(out, "checkout required") != NULL);
+        ASSERT(strstr(out, "next: cd into a Z23 checkout and rerun") != NULL);
+        ASSERT(cr_max_line_width(out) <= 80);
+        ASSERT(!cr_has_esc(out));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_error_unknown_command_uses_envelope_query(void)
 {
     int failures = 0;
@@ -912,6 +939,12 @@ int test_cli_render(void)
     failures += test_menu_row_cap();
     failures += test_menu_width_and_ansi();
     failures += test_error_render();
+    failures += test_error_explicit_action(
+        "explicit error recovery survives an empty next array", "[]");
+    failures += test_error_explicit_action(
+        "explicit error recovery survives a generic next command",
+        "[{\"command\":\"discover.describe\",\"input\":{"
+        "\"path\":\"code.owner\"},\"reason\":\"inspect the contract\"}]");
     failures += test_error_unknown_command_uses_envelope_query();
     failures += test_error_ansi_and_unknown_schema_fallback();
     failures += test_data_tree_render();
