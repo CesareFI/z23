@@ -10,6 +10,7 @@
 #include "views/explorer_dashboard_view.h"
 #include "controllers/explorer_internal.h"
 #include "views/format_helpers.h"
+#include "util/template.h"
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -181,12 +182,20 @@ size_t explorer_dashboard_view_rpc(uint8_t *r, size_t max,
 
     for (int i = 0; i < v->row_count && off + 600 < max; i++) {
         const struct explorer_dashboard_rpc_row *row = &v->rows[i];
+        char label[sizeof(row->short_hash) * 6];
+        html_escape(label, sizeof(label), row->short_hash);
         APPEND(off, r, max,
             "<tr><td><a href='/explorer/block/%d'><b>%d</b></a></td>"
-            "<td class='hash'><a href='/explorer/block/%s'>%s</a></td>"
+            "<td class='hash'>", row->height, row->height);
+        if (zcl_is_hex_string(row->hash, 64))
+            APPEND(off, r, max, "<a href='/explorer/block/%s'>%s</a>",
+                   row->hash, label);
+        else
+            APPEND(off, r, max, "%s", label);
+        APPEND(off, r, max,
+            "</td>"
             "<td>%s<br><small style='color:#666'>%s</small></td>"
             "<td>%d</td><td>%.2f</td></tr>",
-            row->height, row->height, row->hash, row->short_hash,
             row->ago, row->ts, row->tx_count, row->difficulty);
     }
 

@@ -3,6 +3,7 @@
 
 #include "platform/directory_compat.h"
 #include "platform/environment_compat.h"
+#include "platform/clock.h"
 #include "test/test_core.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/explorer_internal.h"
@@ -33,6 +34,71 @@ static int ex_environment_unset(const char *name)
 #endif
 }
 
+static int64_t ex_dashboard_fixed_time(void *self)
+{
+    (void)self;
+    return 0;
+}
+
+static int ex_dashboard_rpc_hash_cases(void)
+{
+    static const struct {
+        const char *hash, *label, *escaped;
+        bool linked;
+    } cases[] = {
+        {"x' onclick='alert(1)", "<b>", "&lt;b&gt;", false},
+        {"a?b#c", "a?b#c", "a?b#c", false},
+        {"a/b", "a/b", "a/b", false},
+        {"abc", "&\"'<>", "&amp;&quot;&#39;&lt;&gt;", false},
+        {"", "", "", false},
+        {"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde",
+         "short", "short", false},
+        {"g123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+         "nonhex", "nonhex", false},
+        {"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+         "01234567...cdef", "01234567...cdef", true},
+        {"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+         "<b>", "&lt;b&gt;", true},
+        {"ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789",
+         "ABCDEF01...6789", "ABCDEF01...6789", true},
+    };
+    static const clock_iface_t fixed_clock = {
+        .now_monotonic_ns = ex_dashboard_fixed_time,
+        .now_wall_ms = ex_dashboard_fixed_time,
+    };
+    const clock_iface_t *saved_clock = clock_default();
+    clock_set_default(&fixed_clock);
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uint8_t out[65536];
+        struct explorer_dashboard_rpc_row row = {.height = 7, .tx_count = 3};
+        struct explorer_dashboard_rpc_view v = {.rows = &row, .row_count = 1};
+        snprintf(row.hash, sizeof(row.hash), "%s", cases[i].hash);
+        snprintf(row.short_hash, sizeof(row.short_hash), "%s", cases[i].label);
+        size_t n = explorer_dashboard_view_rpc(out, sizeof(out) - 1, &v);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+        char expected[256];
+        if (cases[i].linked)
+            snprintf(expected, sizeof(expected),
+                "<td class='hash'><a href='/explorer/block/%s'>%s</a></td>",
+                cases[i].hash, cases[i].escaped);
+        else
+            snprintf(expected, sizeof(expected), "<td class='hash'>%s</td>",
+                     cases[i].escaped);
+        bool ok = n > 0 && n < sizeof(out) - 1 &&
+            strstr((char *)out, expected) != NULL &&
+            strstr((char *)out, " onclick=") == NULL &&
+            strstr((char *)out, "<b></a>") == NULL &&
+            strstr((char *)out, "<td>3</td><td>0.00</td></tr>") != NULL &&
+            strstr((char *)out, "</table>") != NULL;
+        printf("explorer: RPC dashboard hash case %zu... %s\n", i,
+               ok ? "OK" : "FAIL");
+        failures += !ok;
+    }
+    clock_set_default(saved_clock);
+    return failures;
+}
+
 static int ex_rpc_tx_rows(void)
 {
     const struct {
@@ -45,7 +111,7 @@ static int ex_rpc_tx_rows(void)
         {"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
          "01234567...cdef", "01234567...cdef", true},
     };
-    int failures = 0;
+    int failures = ex_dashboard_rpc_hash_cases();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         struct explorer_block_rpc_tx_row row = {.index = 0};
         snprintf(row.txid, sizeof(row.txid), "%s", cases[i].txid);
