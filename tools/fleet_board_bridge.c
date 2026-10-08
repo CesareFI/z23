@@ -189,6 +189,16 @@ static int row_cmp(const void *a, const void *b)
 {
     const struct row *x=a,*y=b; int c=strcmp(x->ts,y->ts); return c?c:strcmp(x->id,y->id);
 }
+/* r->v stays NULL until the first row is added, so an empty board (or a
+ * merge whose every incoming row is already known) reaches the sort with
+ * v == NULL and n == 0 — UB on qsort's nonnull base even though the sort
+ * is a no-op at that size. Guard centrally; the comparator order for
+ * n >= 2 is unchanged. */
+static void rows_sort(struct rows *r)
+{
+    if (r->n > 1)
+        qsort(r->v, r->n, sizeof(*r->v), row_cmp);
+}
 static bool load_all(int dirfd, struct rows *r, uint64_t *bytes_out,
                      size_t *files_out)
 {
@@ -204,7 +214,7 @@ static bool load_all(int dirfd, struct rows *r, uint64_t *bytes_out,
     }
     if (closedir(d)!=0) ok=false;
     if (ok) {
-        qsort(r->v,r->n,sizeof(*r->v),row_cmp);
+        rows_sort(r);
         *bytes_out=total;
         if (files_out) *files_out=files;
     }
@@ -429,7 +439,7 @@ static int merge_snapshot(int dirfd,const char *peer,const char *incoming_path,
              prior.n>all->n||merged.n>ROW_CAP-(all->n-prior.n))) {
         error("merge refused: board file or row capacity");ok=false;
     }
-    if (ok) qsort(merged.v,merged.n,sizeof(*merged.v),row_cmp);
+    if (ok) rows_sort(&merged);
     char temp[192]={0};int temp_fd=-1;bool temp_owned=false;
     for (unsigned attempt=0;ok&&attempt<64&&temp_fd<0;attempt++) {
         nn=snprintf(temp,sizeof(temp),".%s.merge.%ld.%u",peer,(long)getpid(),attempt);

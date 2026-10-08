@@ -527,6 +527,15 @@ static int cmp_entry(const void *a, const void *b)
     return strcmp(ea->path, eb->path);
 }
 
+/* An empty stdin list leaves ents NULL with n == 0; qsort's base is
+ * declared nonnull, so the no-op sort of zero entries is UB without the
+ * guard (UBSan: "null pointer passed as argument 1"). */
+static void entries_sort(struct entry *ents, size_t n)
+{
+    if (n > 1)
+        qsort(ents, n, sizeof(*ents), cmp_entry);
+}
+
 /* Read NUL-separated paths from stdin — NUL and nothing else, because that is
  * the one separator `git ls-files -z` guarantees cannot occur inside a path.
  * Excludes the manifest path itself. Hashes each file, returns a path-sorted
@@ -614,7 +623,7 @@ static struct entry *read_and_hash(const char *manifest_path, size_t *out_n)
     }
     free(data);
 
-    qsort(ents, n, sizeof(*ents), cmp_entry);
+    entries_sort(ents, n);
     for (size_t k = 1; k < n; k++)
         if (strcmp(ents[k - 1].path, ents[k].path) == 0) {
             errno = 0;
