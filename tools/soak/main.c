@@ -475,8 +475,9 @@ static int soak_validate_args(uint64_t interval_sec, soak_thresholds_t *cfg,
     return 0;
 }
 
-/* Keep argument routing bounded; each helper reports whether it owns the flag. */
-static bool soak_parse_threshold(const char *a, soak_thresholds_t *cfg,
+/* Threshold routing: 0 unmatched, 1 accepted, -1 malformed numeric value.
+ * A parse refusal leaves the associated configuration value unchanged. */
+static int soak_parse_threshold(const char *a, soak_thresholds_t *cfg,
                                   uint64_t *interval_sec)
 {
     struct { const char *flag; uint64_t *dst; } rows[] = {
@@ -488,17 +489,23 @@ static bool soak_parse_threshold(const char *a, soak_thresholds_t *cfg,
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
         size_t n = strlen(rows[i].flag);
         if (strncmp(a, rows[i].flag, n) == 0) {
-            parse_u64(a + n, rows[i].dst);
-            return true;
+            if (!parse_u64(a + n, rows[i].dst)) {
+                fprintf(stderr, "invalid numeric argument: %s\n", a);
+                return -1;
+            }
+            return 1;
         }
     }
     if (strncmp(a, "--rss-growth-mib=", 17) == 0) {
         uint64_t mib = 0;
-        if (parse_u64(a + 17, &mib))
-            cfg->max_rss_growth_bytes = mib * 1024ULL * 1024ULL;
-        return true;
+        if (!parse_u64(a + 17, &mib)) {
+            fprintf(stderr, "invalid numeric argument: %s\n", a);
+            return -1;
+        }
+        cfg->max_rss_growth_bytes = mib * 1024ULL * 1024ULL;
+        return 1;
     }
-    return false;
+    return 0;
 }
 
 static bool soak_parse_spawn(const char *a, struct spawn_cfg *sp,
@@ -546,7 +553,9 @@ static int soak_parse_args(int argc, char **argv, soak_thresholds_t *cfg,
         if (strncmp(a, "--service=", 10) == 0) { *service = a + 10; continue; }
         if (strncmp(a, "--rpc=",      6) == 0) { *rpc_bin = a + 6; continue; }
         if (strncmp(a, "--log=",      6) == 0) { *log_src = a + 6; continue; }
-        if (soak_parse_threshold(a, cfg, interval_sec)) continue;
+        int threshold = soak_parse_threshold(a, cfg, interval_sec);
+        if (threshold < 0) return 2;
+        if (threshold > 0) continue;
         if (soak_parse_spawn(a, sp, datadir_src, connect_src)) continue;
         fprintf(stderr, "unknown flag: %s\n", a);
         usage(argv[0]);

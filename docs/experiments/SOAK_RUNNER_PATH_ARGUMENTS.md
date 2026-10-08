@@ -17,9 +17,17 @@ the wall clock only after validation (`tools/soak/main.c:593`).
 
 The registered `soak_runner` group executes the real CLI through bounded merged
 output capture (`tests/harness/src/test_soak_runner.c:28`). The host-needs table
-requires `build/bin/soak_runner` on POSIX. Non-help probes specify a zero
+requires `build/bin/soak_runner` on POSIX. Non-help path probes specify a zero
 interval, so both the corrected and unchecked-copy implementations exit before
 log opening, process discovery, RPC or node startup.
+
+Numeric-refusal probes put an empty numeric flag before help and require exit 2,
+a flag-specific diagnostic and no created log. Duration-precedence probes use
+nonzero intervals: a final duration of 3 with interval 2 reaches log opening
+against an existing directory and requires the open failure; a final duration
+of 1 with interval 2 requires the interval refusal. Help before an empty numeric
+flag still requires exit 0. These are assertions in the proposed regression,
+not execution evidence.
 
 The refusal cases require exit 2, no timeout, and a flag-specific `too long`
 diagnostic. A downstream interval refusal cannot satisfy those assertions.

@@ -1,8 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * CLI path bounds, help and last-argument precedence. A zero interval
- * stops each non-help probe before log opening, RPC or node spawn, including
- * when unchecked path copies replace the production refusal. */
+ * CLI path bounds, numeric refusals, help and last-argument precedence.
+ * Path probes use a zero interval to stop before log opening or node spawn. */
 
 #include "test/test_core.h"
 #include "util/spawn.h"
@@ -173,6 +172,77 @@ static int test_soak_runner_path_boundaries(void)
     } _test_next:;
     return failures;
 }
+static int test_soak_runner_numeric_refused(void)
+{
+    int failures = 0;
+    char dir[256] = {0};
+    TEST("soak_runner: empty numeric flags refuse before log opening") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "soak_numeric") != NULL);
+        char log_flag[280], path[272], buf[4096];
+        bool timed_out = false;
+        int n = snprintf(path, sizeof(path), "%s/run.log", dir);
+        ASSERT(n > 0 && (size_t)n < sizeof(path));
+        n = snprintf(log_flag, sizeof(log_flag), "--log=%s", path);
+        ASSERT(n > 0 && (size_t)n < sizeof(log_flag));
+        const char *const exact[] = {SOAK_RUNNER_BIN, "--duration-sec=1",
+            "--duration-sec=", "--interval-sec=1", log_flag, "--help", NULL};
+        int rc = soak_run_merged(buf, sizeof(buf), &timed_out, exact);
+        struct stat st;
+        bool absent = lstat(path, &st) != 0 && errno == ENOENT;
+        ASSERT(!timed_out);
+        ASSERT(rc == 2);
+        ASSERT(strstr(buf, "invalid numeric argument: --duration-sec=") != NULL);
+        ASSERT(absent);
+        static const char *const flags[] = {
+            "--duration-sec=", "--interval-sec=", "--stall-sec=",
+            "--warmup-sec=", "--rss-growth-mib=",
+        };
+        for (size_t i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
+            const char *const argv[] = {SOAK_RUNNER_BIN, flags[i],
+                "--interval-sec=1", log_flag, "--help", NULL};
+            rc = soak_run_merged(buf, sizeof(buf), &timed_out, argv);
+            ASSERT(!timed_out);
+            ASSERT(rc == 2);
+            ASSERT(strstr(buf, "invalid numeric argument:") != NULL);
+            ASSERT(strstr(buf, flags[i]) != NULL);
+            ASSERT(lstat(path, &st) != 0 && errno == ENOENT);
+        }
+        PASS();
+    } _test_next:;
+    if (dir[0]) test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int test_soak_runner_numeric_precedence(void)
+{
+    int failures = 0;
+    char dir[256] = {0};
+    TEST("soak_runner: valid duration duplicates and ordered help routing") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "soak_precedence") != NULL);
+        char log_flag[280], buf[4096];
+        bool timed_out = false;
+        int n = snprintf(log_flag, sizeof(log_flag), "--log=%s", dir);
+        ASSERT(n > 0 && (size_t)n < sizeof(log_flag));
+        const char *const longer[] = {SOAK_RUNNER_BIN, "--duration-sec=1",
+            "--duration-sec=3", "--interval-sec=2", log_flag, NULL};
+        ASSERT(soak_run_merged(buf, sizeof(buf), &timed_out, longer) == 2);
+        ASSERT(!timed_out);
+        ASSERT(strstr(buf, "cannot open log") != NULL);
+        const char *const shorter[] = {SOAK_RUNNER_BIN, "--duration-sec=3",
+            "--duration-sec=1", "--interval-sec=2", log_flag, NULL};
+        ASSERT(soak_run_merged(buf, sizeof(buf), &timed_out, shorter) == 2);
+        ASSERT(!timed_out);
+        ASSERT(strstr(buf, "interval-sec (2) out of range") != NULL);
+        const char *const help[] = {SOAK_RUNNER_BIN, "--help",
+            "--duration-sec=", log_flag, NULL};
+        ASSERT(soak_run_merged(buf, sizeof(buf), &timed_out, help) == 0);
+        ASSERT(!timed_out);
+        ASSERT(strstr(buf, "Usage:") != NULL);
+        PASS();
+    } _test_next:;
+    if (dir[0]) test_cleanup_tmpdir(dir);
+    return failures;
+}
 #endif
 
 int test_soak_runner(void)
@@ -193,6 +263,8 @@ int test_soak_runner(void)
     failures += test_soak_runner_connect_refused();
     failures += test_soak_runner_help_still_works();
     failures += test_soak_runner_path_boundaries();
+    failures += test_soak_runner_numeric_refused();
+    failures += test_soak_runner_numeric_precedence();
     return failures;
 #endif
 }
