@@ -155,6 +155,7 @@ fi
 
 mkdir -p "$DIR"
 DIR="$(cd "$DIR" && pwd)"
+command -v flock >/dev/null 2>&1 || die "flock is required for receipt publication"
 
 SHA3_BIN="$REPO/build/bin/agent_sha3"
 if [ ! -x "$SHA3_BIN" ]; then
@@ -193,32 +194,8 @@ user_v="${USER:-$(id -un 2>/dev/null || echo UNKNOWN)}"
 # receipts written in the same second distinguishable and un-guessable by
 # something reconstructing a chain after the fact.
 receipt_id="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-
-# Chain position: the newest existing receipt in this directory. A receipt
-# inserted into the middle of the chain after the fact does not link.
-chain_index=0
-prev_sha3="GENESIS"
-prev_name="NONE"
-newest=""
-# Ordered by the RECORDED index, not by mtime: several receipts can share a
-# second, and mtime is the one field a filesystem copy silently rewrites.
-best_idx=-1
-for f in "$DIR"/*.receipt; do
-    [ -e "$f" ] || continue
-    idx="$(sed -n 's/^chain_index=//p' "$f" | head -n1)"
-    case "$idx" in ''|*[!0-9]*) idx=0 ;; esac
-    if [ "$idx" -gt "$best_idx" ]; then best_idx="$idx"; newest="$f"; fi
-done
-if [ -n "$newest" ]; then
-    chain_index=$(( best_idx + 1 ))
-    prev_sha3="$(sha3_of_file "$newest")"
-    prev_name="$(basename "$newest")"
-fi
-
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-base="$(printf '%06d-%s-%s' "$chain_index" "$GATE" "$stamp")"
-receipt="$DIR/$base.receipt"
-log="$DIR/$base.log"
+log="$DIR/$receipt_id-$GATE-$stamp.log"
 
 started_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 started_ns="$(date +%s%N)"
@@ -306,6 +283,34 @@ command_display="$(printf '%q ' "${CMD[@]}")"
 command_display="${command_display% }"
 command_argv_sha3="$(printf '%s\0' "${CMD[@]}" | sha3_of_stdin)"
 
+# Hold the existing-receipt directory lock only through chain publication.
+exec {receipt_lock}>"$DIR/.receipt.lock" || die "cannot open receipt lock"
+flock -x "$receipt_lock" || die "cannot acquire receipt lock"
+# Chain position: the newest existing receipt in this directory. A receipt
+# inserted into the middle of the chain after the fact does not link.
+chain_index=0
+prev_sha3="GENESIS"
+prev_name="NONE"
+newest=""
+# Ordered by the RECORDED index, not by mtime: several receipts can share a
+# second, and mtime is the one field a filesystem copy silently rewrites.
+best_idx=-1
+for f in "$DIR"/*.receipt; do
+    [ -e "$f" ] || continue
+    idx="$(sed -n 's/^chain_index=//p' "$f" | head -n1)"
+    case "$idx" in ''|*[!0-9]*) idx=0 ;; esac
+    if [ "$idx" -gt "$best_idx" ]; then best_idx="$idx"; newest="$f"; fi
+done
+if [ -n "$newest" ]; then
+    chain_index=$(( best_idx + 1 ))
+    prev_sha3="$(sha3_of_file "$newest")"
+    prev_name="$(basename "$newest")"
+fi
+
+receipt="$DIR/$(printf '%06d-%s-%s-%s' "$chain_index" "$GATE" "$stamp" "$receipt_id").receipt"
+receipt_tmp="$receipt.tmp"
+trap 'rm -f "$cpu_tmp" "$receipt_tmp"' EXIT
+
 body="$(
 cat <<EOF
 receipt_schema=zcl.gate_receipt.v1
@@ -353,7 +358,10 @@ for t in ${FORBID[@]+"${FORBID[@]}"}; do echo "forbid_token=$t"; done
 {
     printf '%s\n' "$body"
     printf 'receipt_sha3=%s\n' "$(printf '%s\n' "$body" | sha3_of_stdin)"
-} > "$receipt"
+} > "$receipt_tmp"
+mv -- "$receipt_tmp" "$receipt" || die "cannot publish receipt"
+flock -u "$receipt_lock" || die "cannot release receipt lock"
+exec {receipt_lock}>&-
 
 {
     echo "gate-receipt: $GATE $verdict (exit $rc, ${wall_ms}ms wall, ${child_cpu_ms}ms child CPU)"
