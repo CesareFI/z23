@@ -20,6 +20,7 @@
 #include "util/timedata.h"
 
 #include <errno.h>
+#include "platform/clock.h"
 
 static int sanitize_capacity_cases(void)
 {
@@ -45,11 +46,77 @@ static int sanitize_capacity_cases(void)
     return failures;
 }
 
-int test_encoding(void)
+static int64_t encoding_fixed_wall_ms(void *self)
+{
+    (void)self;
+    return 1700000123000LL;
+}
+
+static int64_t encoding_fixed_monotonic_ns(void *self)
+{
+    (void)self;
+    return 123000000000LL;
+}
+
+static const clock_iface_t encoding_clock = {
+    .now_monotonic_ns = encoding_fixed_monotonic_ns,
+    .now_wall_ms = encoding_fixed_wall_ms,
+};
+
+/* Each zero-capacity row detects the unconditional terminator store. */
+static int encoding_base64_zero_capacity(void)
+{
+    const char *inputs[] = { "", "Hello" };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(inputs) / sizeof(inputs[0]); i++) {
+        char guarded[] = { 'X', 'X', 'X' };
+        size_t written = EncodeBase64((const unsigned char *)inputs[i],
+                                      strlen(inputs[i]), guarded + 1, 0);
+        printf("EncodeBase64 length=%zu capacity=0... ", strlen(inputs[i]));
+        if (written == 0 && memcmp(guarded, "XXX", sizeof(guarded)) == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: written=%zu guard=%d\n", written, guarded[1]);
+            failures++;
+        }
+    }
+    return failures;
+}
+
+/* Compatibility controls: these retain the positive-capacity behavior. */
+static int encoding_base64_positive_capacities(void)
+{
+    static const struct {
+        const char *input;
+        size_t len, capacity, written;
+        char expected[11];
+    } cases[] = {
+        { "", 0, 1, 0, "X\0XXXXXXXXX" },
+        { "Hello", 5, 1, 0, "X\0XXXXXXXXX" },
+        { "Hello", 5, 9, 8, "XSGVsbG8=\0X" },
+    };
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char guarded[11];
+        memset(guarded, 'X', sizeof(guarded));
+        size_t written = EncodeBase64((const unsigned char *)cases[i].input,
+                                      cases[i].len, guarded + 1, cases[i].capacity);
+        printf("EncodeBase64 length=%zu capacity=%zu... ",
+               cases[i].len, cases[i].capacity);
+        if (written == cases[i].written &&
+            memcmp(guarded, cases[i].expected, sizeof(guarded)) == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: written=%zu expected=%zu\n", written, cases[i].written);
+            failures++;
+        }
+    }
+    return failures;
+}
+
+static int encoding_uint256_base58(void)
 {
     int failures = 0;
-
-    failures += sanitize_capacity_cases();
 
     printf("uint256 hex... ");
     struct uint256 u;
@@ -118,6 +185,13 @@ int test_encoding(void)
             failures++;
         }
     }
+
+    return failures;
+}
+
+static int encoding_bech32_arithmetic(void)
+{
+    int failures = 0;
 
     printf("bech32 decode... ");
     {
@@ -192,6 +266,13 @@ int test_encoding(void)
         }
     }
 
+    return failures;
+}
+
+static int encoding_arithmetic_random_time(void)
+{
+    int failures = 0;
+
     printf("arith_uint256 division... ");
     {
         struct arith_uint256 a, b, r;
@@ -253,8 +334,11 @@ int test_encoding(void)
 
     printf("GetTime... ");
     {
+        const clock_iface_t *saved_clock = clock_default();
+        clock_set_default(&encoding_clock);
         int64_t t = GetTime();
-        if (t > 1700000000)
+        clock_set_default(saved_clock);
+        if (t == 1700000123)
             printf("OK (%lld)\n", (long long)t);
         else {
             printf("FAIL: %lld\n", (long long)t);
@@ -309,6 +393,13 @@ int test_encoding(void)
             failures++;
         }
     }
+
+    return failures;
+}
+
+static int encoding_money_hex_base64(void)
+{
+    int failures = 0;
 
     printf("ParseMoney... ");
     {
@@ -367,6 +458,13 @@ int test_encoding(void)
             failures++;
         }
     }
+
+    return failures;
+}
+
+static int encoding_decoding_parsing(void)
+{
+    int failures = 0;
 
     printf("DecodeBase64... ");
     {
@@ -440,6 +538,13 @@ int test_encoding(void)
             failures++;
         }
     }
+
+    return failures;
+}
+
+static int encoding_parameters_datadirs(void)
+{
+    int failures = 0;
 
     printf("CLIENT_NAME... ");
     {
@@ -522,6 +627,13 @@ int test_encoding(void)
         (void)test_rm_rf_recursive(datadir);
     }
 
+    return failures;
+}
+
+static int encoding_datadir_runtime(void)
+{
+    int failures = 0;
+
     printf("SetDataDir refuses a symlinked directory... ");
     {
         char root[512], target[600], datadir[600];
@@ -591,10 +703,20 @@ int test_encoding(void)
         }
     }
 
+    return failures;
+}
+
+static int encoding_adjusted_time_bits(void)
+{
+    int failures = 0;
+
     printf("GetAdjustedTime... ");
     {
+        const clock_iface_t *saved_clock = clock_default();
+        clock_set_default(&encoding_clock);
         int64_t t = GetAdjustedTime();
-        if (t > 1700000000)
+        clock_set_default(saved_clock);
+        if (t == 1700000123 + GetTimeOffset())
             printf("OK (%lld)\n", (long long)t);
         else {
             printf("FAIL: %lld\n", (long long)t);
@@ -616,13 +738,30 @@ int test_encoding(void)
         }
     }
 
-    /* --- HexStr: independent-oracle sweep, including truncating buffers ------
-     * Expected strings come from plain bit arithmetic, not HexStr. Covers
-     * lengths 0 to 96 (spanning the NEON fast path's 16-byte threshold, all
-     * vector lanes and the scalar tail) against exact-fit, one-short and
-     * one-long buffers; sentinel padding proves nothing beyond the
-     * terminating NUL was written.
-     */
+    return failures;
+}
+
+static bool encoding_hex_buffer_matches(const char *actual, size_t size,
+                                       const char *expect, size_t pairs)
+{
+    size_t nul = pairs * 2u;
+    if (memcmp(actual, expect, nul) != 0 || actual[nul] != '\0')
+        return false;
+    for (size_t k = nul + 1u; k < size; k++)
+        if (actual[k] != 'Z')
+            return false;
+    return true;
+}
+
+/* Expected strings come from plain bit arithmetic, not HexStr. Covers
+ * lengths 0 to 96 (spanning the NEON fast path's 16-byte threshold, all
+ * vector lanes and the scalar tail) against exact-fit, one-short and
+ * one-long buffers; sentinel padding proves nothing beyond the
+ * terminating NUL was written. */
+static int encoding_hex_oracle(void)
+{
+    int failures = 0;
+
     printf("HexStr oracle sweep... ");
     {
         static const char digits[] = "0123456789abcdef";
@@ -650,17 +789,7 @@ int test_encoding(void)
                 size_t pairs = (os - 1u) / 2u;
                 if (pairs > n)
                     pairs = n;
-                for (size_t k = 0; k < pairs * 2u; k++) {
-                    if (actual[k] != expect[k]) { ok = false; break; }
-                }
-                if (ok) {
-                    size_t nul = pairs * 2u;
-                    if (actual[nul] != '\0')
-                        ok = false;
-                    for (size_t k = nul + 1u; k < sizeof(actual) && ok; k++)
-                        if (actual[k] != 'Z')
-                            ok = false;
-                }
+                ok = encoding_hex_buffer_matches(actual, sizeof(actual), expect, pairs);
             }
         }
         printf("%s\n", ok ? "OK" : "FAIL");
@@ -668,8 +797,15 @@ int test_encoding(void)
             failures++;
     }
 
-    /* Overlap must retain the scalar loop's established byte order even when
-     * the process-wide implementation tier is NEON. */
+    return failures;
+}
+
+/* Overlap must retain the scalar loop's established byte order even when
+ * the process-wide implementation tier is NEON. */
+static int encoding_hex_variants(void)
+{
+    int failures = 0;
+
     printf("HexStr overlap fallback... ");
     {
         unsigned char actual[64], expect[64];
@@ -748,5 +884,24 @@ int test_encoding(void)
         }
     }
 
+    return failures;
+}
+
+int test_encoding(void)
+{
+    int failures = 0;
+    failures += sanitize_capacity_cases();
+    failures += encoding_uint256_base58();
+    failures += encoding_bech32_arithmetic();
+    failures += encoding_arithmetic_random_time();
+    failures += encoding_money_hex_base64();
+    failures += encoding_base64_zero_capacity();
+    failures += encoding_base64_positive_capacities();
+    failures += encoding_decoding_parsing();
+    failures += encoding_parameters_datadirs();
+    failures += encoding_datadir_runtime();
+    failures += encoding_adjusted_time_bits();
+    failures += encoding_hex_oracle();
+    failures += encoding_hex_variants();
     return failures;
 }
