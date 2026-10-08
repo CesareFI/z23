@@ -616,6 +616,13 @@ bool blocker_last_retired(struct blocker_retirement_info *out)
     return valid;
 }
 
+/* Each slot emits at most one diagnostic per sweep; all fields are bounded. */
+#define SWEEP_LOG_CAP 384
+static void emit_sweep_logs(char logs[BLOCKER_CAP][SWEEP_LOG_CAP], int count)
+{
+    for (int i = 0; i < count; i++) fputs(logs[i], stderr);
+}
+
 /* ── Sweep ─────────────────────────────────────────────────────────── */
 
 int blocker_supervisor_sweep(void)
@@ -628,6 +635,8 @@ int blocker_supervisor_sweep(void)
         blocker_escape_fn fn;
     } batch[BLOCKER_CAP];
     int batch_n = 0;
+    char logs[BLOCKER_CAP][SWEEP_LOG_CAP];
+    int log_n = 0;
 
     pthread_mutex_lock(&g_lock);
     int64_t now = mono_us();
@@ -672,7 +681,7 @@ int blocker_supervisor_sweep(void)
             } else if (!s->escalated) {
                 s->escalated = true;
                 atomic_fetch_add(&g_generation, 1);
-                fprintf(stderr,
+                snprintf(logs[log_n++], SWEEP_LOG_CAP,
                         "[blocker] %s escalated: deadline overdue after %d "
                         "re-arm(s) with no escape action (id=%s owner=%s)\n",
                         blocker_class_name(s->class), s->rearm_count,
@@ -694,7 +703,7 @@ int blocker_supervisor_sweep(void)
          * the declared budget is spent rather than retrying forever against
          * a budget the record claims is finite. */
         if (s->retry_budget > 0 && s->retry_count >= s->retry_budget) {
-            fprintf(stderr,
+            snprintf(logs[log_n++], SWEEP_LOG_CAP,
                     "[blocker] escape '%s' budget exhausted "
                     "(retry_count=%d budget=%d id=%s) — not dispatching\n",
                     s->escape_action, s->retry_count, s->retry_budget,
@@ -714,7 +723,7 @@ int blocker_supervisor_sweep(void)
         if (!fn) {
             /* Action registered? No → log once per record, skip. We mark
              * escape_fired to avoid spam; operator must clear. */
-            fprintf(stderr, "[blocker] escape '%s' not registered (id=%s)\n",
+            snprintf(logs[log_n++], SWEEP_LOG_CAP, "[blocker] escape '%s' not registered (id=%s)\n",
                     s->escape_action, s->id);  // obs-ok:blocker-escape-unregistered
             s->escape_fired = true;
             continue;
@@ -726,6 +735,8 @@ int blocker_supervisor_sweep(void)
         s->escape_fired = true;
     }
     pthread_mutex_unlock(&g_lock);
+
+    emit_sweep_logs(logs, log_n);
 
     /* Dispatch outside lock. */
     for (int i = 0; i < batch_n; i++) {

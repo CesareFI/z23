@@ -20,12 +20,17 @@
  *     a deadline with no escape_action, and PERMANENT/DEPENDENCY/RESOURCE
  *     staying unaffected by both rules */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "test/test_core.h"
 #include "util/blocker.h"
 #include "json/json.h"
 #include "hotswap/hotswap_retire_blocker.h"
 #include "config/boot_declaration_drift.h"
 
+#include <pthread.h>
+#include <time.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -43,6 +48,7 @@ static char        g_esc_last_id[BLOCKER_ID_MAX];
 
 static void esc_a(const struct blocker_snapshot *s)
 {
+    (void)blocker_count_active(); /* Registered callbacks may reenter. */
     atomic_fetch_add(&g_esc_a_count, 1);
     snprintf(g_esc_last_id, sizeof(g_esc_last_id), "%s", s->id);
 }
@@ -74,12 +80,98 @@ static bool test_reconcile_stub(void *ctx)
     return atomic_load(&g_reconcile_converged);
 }
 
+#if defined(__linux__)
+/* The sink stays blocked until publication finishes or its deadline expires. */
+struct paused_sink {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    struct timespec deadline;
+    bool entered, done, observed;
+    char text[384];
+    int writes;
+};
+static ssize_t paused_sink_write(void *arg, const char *text, size_t size)
+{
+    struct paused_sink *s = arg;
+    pthread_mutex_lock(&s->mu);
+    snprintf(s->text, sizeof(s->text), "%.*s", (int)size, text);
+    s->writes++;
+    s->entered = true;
+    pthread_cond_broadcast(&s->cv);
+    int rc = 0;
+    while (!s->done && rc == 0)
+        rc = pthread_cond_timedwait(&s->cv, &s->mu, &s->deadline);
+    s->observed = s->done;
+    pthread_mutex_unlock(&s->mu);
+    return (ssize_t)size;
+}
+static void *publish_during_log(void *arg)
+{
+    struct paused_sink *s = arg;
+    pthread_mutex_lock(&s->mu);
+    int rc = 0;
+    while (!s->entered && rc == 0)
+        rc = pthread_cond_timedwait(&s->cv, &s->mu, &s->deadline);
+    bool entered = s->entered;
+    pthread_mutex_unlock(&s->mu);
+    if (!entered) return NULL;
+    struct blocker_record r;
+    struct blocker_snapshot snap[2];
+    bool ok = blocker_init(&r, "during-log", "test", BLOCKER_RESOURCE, "x");
+    ok = ok && blocker_set(&r) == 0 && blocker_snapshot_all(snap, 2) == 2;
+    pthread_mutex_lock(&s->mu);
+    s->done = ok;
+    pthread_cond_broadcast(&s->cv);
+    pthread_mutex_unlock(&s->mu);
+    return NULL;
+}
+static bool check_paused_diagnostic(void)
+{
+    struct paused_sink s = {.mu = PTHREAD_MUTEX_INITIALIZER,
+                            .cv = PTHREAD_COND_INITIALIZER};
+    bool ok = false;
+    FILE *sink = fopencookie(&s, "w", (cookie_io_functions_t){.write = paused_sink_write});
+    if (!sink) { perror("blocker sink"); goto cleanup; }
+    if (setvbuf(sink, NULL, _IONBF, 0) != 0 ||
+        clock_gettime(CLOCK_REALTIME, &s.deadline) != 0) goto close_sink;
+    s.deadline.tv_sec += 2;
+    blocker_reset_for_testing();
+    blocker_set_clock_for_testing(1000000);
+    struct blocker_record r;
+    if (!blocker_init(&r, "paused-log", "test", BLOCKER_RESOURCE, "x")) goto close_sink;
+    r.escape_deadline_secs = 1;
+    snprintf(r.escape_action, sizeof(r.escape_action), "audit-unregistered");
+    if (blocker_set(&r) != 0) goto close_sink;
+    blocker_advance_clock_for_testing(2000000);
+    pthread_t publisher;
+    if (pthread_create(&publisher, NULL, publish_during_log, &s) != 0) goto close_sink;
+    FILE *saved = stderr;
+    stderr = sink;
+    int dispatched = blocker_supervisor_sweep();
+    blocker_supervisor_sweep(); /* Edge-triggered: no second diagnostic. */
+    stderr = saved;
+    pthread_join(publisher, NULL);
+    ok = s.observed && s.writes == 1 && dispatched == 0 &&
+         strcmp(s.text, "[blocker] escape 'audit-unregistered' not registered (id=paused-log)\n") == 0;
+close_sink:
+    if (fclose(sink) != 0) ok = false;
+cleanup:
+    pthread_cond_destroy(&s.cv);
+    pthread_mutex_destroy(&s.mu);
+    if (!ok) fprintf(stderr, "blocker: paused diagnostic publication failed\n");
+    return ok;
+}
+#endif
+
 int test_blocker(void)
 {
     printf("\n=== blocker tests ===\n");
     int failures = 0;
 
     blocker_module_init();
+#if defined(__linux__)
+    BCK_CHECK("publication completes while diagnostic sink is paused", check_paused_diagnostic());
+#endif
 
     /* ── blocker_init basic ─────────────────────────────────────── */
     {
