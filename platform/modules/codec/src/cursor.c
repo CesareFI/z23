@@ -13,7 +13,12 @@ const char *zcl_codec_error_string(enum zcl_codec_error error)
 {
     switch (error) {
     case ZCL_CODEC_OK: return "ok";
-    case ZCL_CODEC_INVALID: return "invalid-argument";
+    case ZCL_CODEC_INVALID:
+        return "invalid-argument: supply a non-NULL cursor and required output "
+               "pointers; supply a non-NULL buffer or source for nonzero length; "
+               "remove embedded NUL bytes from strings and provide output "
+               "capacity for the terminator; correct the input and reinitialize "
+               "the cursor before retrying";
     case ZCL_CODEC_BOUNDS: return "buffer-bounds";
     case ZCL_CODEC_LENGTH: return "length-bound";
     case ZCL_CODEC_TRAILING: return "trailing-bytes";

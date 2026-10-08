@@ -237,8 +237,80 @@ static int codec_test_properties(void)
     return failures;
 }
 
+static int codec_test_invalid_buffer_guidance(void)
+{
+    int failures = 0;
+    TEST("codec cursor: invalid buffer guidance and sticky refusal") {
+        struct zcl_codec_reader r;
+        uint8_t out = 77;
+        zcl_codec_reader_init(&r, NULL, 1);
+        ASSERT(!zcl_codec_read_u8(&r, &out));
+        ASSERT(r.error == ZCL_CODEC_INVALID);
+        ASSERT(r.position == 0 && out == 77);
+        const char *message = zcl_codec_error_string(r.error);
+        ASSERT(strstr(message, "buffer"));
+        ASSERT(strstr(message, "non-NULL"));
+        ASSERT(strstr(message, "nonzero length"));
+        ASSERT(strstr(message, "reinitialize"));
+        ASSERT(!zcl_codec_read_u8(&r, &out));
+        ASSERT(r.error == ZCL_CODEC_INVALID && r.position == 0 && out == 77);
+        uint8_t input = 23;
+        zcl_codec_reader_init(&r, &input, 1);
+        ASSERT(zcl_codec_read_u8(&r, &out) && out == input);
+        ASSERT(zcl_codec_reader_finish(&r));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int codec_test_invalid_output_guidance(void)
+{
+    int failures = 0;
+    TEST("codec cursor: invalid output guidance and retained input") {
+        struct zcl_codec_reader r;
+        uint8_t input = 23, out = 77;
+        zcl_codec_reader_init(&r, &input, 1);
+        ASSERT(!zcl_codec_read_u8(&r, NULL));
+        ASSERT(r.error == ZCL_CODEC_INVALID && r.position == 0);
+        const char *message = zcl_codec_error_string(r.error);
+        ASSERT(strstr(message, "output"));
+        ASSERT(strstr(message, "non-NULL"));
+        ASSERT(strstr(message, "reinitialize"));
+        ASSERT(!zcl_codec_read_u8(&r, &out));
+        ASSERT(r.error == ZCL_CODEC_INVALID && r.position == 0);
+        ASSERT(input == 23 && out == 77);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int codec_test_invalid_string_guidance(void)
+{
+    int failures = 0;
+    TEST("codec cursor: embedded NUL guidance and atomic refusal") {
+        const uint8_t input[4] = {2, 0, 'x', 0};
+        struct zcl_codec_reader r;
+        char out[3] = {'a', 'b', 'c'};
+        uint16_t length = 77;
+        zcl_codec_reader_init(&r, input, sizeof(input));
+        ASSERT(!zcl_codec_read_u16_string(&r, out, sizeof(out), &length));
+        ASSERT(r.error == ZCL_CODEC_INVALID && r.position == 0);
+        ASSERT(memcmp(out, "abc", sizeof(out)) == 0 && length == 77);
+        const char *message = zcl_codec_error_string(r.error);
+        ASSERT(strstr(message, "remove embedded NUL"));
+        ASSERT(strstr(message, "reinitialize"));
+        ASSERT(!zcl_codec_read_u16_string(&r, out, sizeof(out), &length));
+        ASSERT(r.error == ZCL_CODEC_INVALID && r.position == 0);
+        ASSERT(memcmp(out, "abc", sizeof(out)) == 0 && length == 77);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_codec_cursor(void)
 {
     return codec_test_kat() + codec_test_failures() + codec_test_properties() +
-           codec_test_string_bounds() + codec_test_string_controls();
+           codec_test_string_bounds() + codec_test_string_controls() +
+           codec_test_invalid_buffer_guidance() +
+           codec_test_invalid_output_guidance() + codec_test_invalid_string_guidance();
 }
