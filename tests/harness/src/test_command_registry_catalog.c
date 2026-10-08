@@ -75,6 +75,72 @@ static bool exec_leaf(const struct zcl_command_registry *reg,
     return n > 0;
 }
 
+static int test_app_sync_unknown_topic_guidance(void)
+{
+    int failures = 0;
+    char root[PATH_MAX] = "", path[PATH_MAX] = "";
+    const char *dirs[] = { "contexts", "contexts/commons",
+                          "contexts/commons/apps", "contexts/commons/apps/social" };
+    size_t made = 0;
+    bool file_created = false;
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    struct zcl_command_reply reply = {0};
+    TEST("dev.app.sync identifies the App and repairs an undeclared topic") {
+        ASSERT(test_mkdtemp(root, sizeof(root), "app_sync_topic") != NULL);
+        for (; made < sizeof(dirs) / sizeof(dirs[0]); made++) {
+            ASSERT((size_t)snprintf(path, sizeof(path), "%s/%s", root,
+                                    dirs[made]) < sizeof(path));
+            ASSERT(mkdir(path, 0700) == 0);
+        }
+        ASSERT((size_t)snprintf(path, sizeof(path), "%s/%s/app.def", root,
+                                dirs[3]) < sizeof(path));
+        FILE *file = fopen(path, "wb");
+        ASSERT(file != NULL);
+        file_created = true;
+        int wrote = fputs("ZCL_APP(\"social\", \"Fixture\", \"1.0.0\")\n"
+                          "ZCL_APP_CAPABILITY(SIGNED_EVENTS)\n"
+                          "ZCL_APP_CAPABILITY(P2P_TOPICS)\n"
+                          "ZCL_APP_TOPIC(\"private.fixture.v1\", 1, 1024)\n", file);
+        int closed = fclose(file);
+        ASSERT(wrote >= 0 && closed == 0);
+        ASSERT(json_push_kv_str(&input, "app_id", "social"));
+        ASSERT(json_push_kv_str(&input, "topic", "not.declared"));
+        const struct zcl_command_registry *reg = zcl_command_catalog();
+        const struct zcl_command_spec *spec = find_spec(reg, "dev.app.sync");
+        struct zcl_command_context ctx = { .registry = reg, .source_root = root };
+        struct zcl_command_request request = {
+            .spec = spec, .context = &ctx, .input = &input,
+        };
+        char why[192];
+        ASSERT(spec != NULL && spec->handler == zcl_native_handle_dev_app_sync);
+        ASSERT(zcl_command_registry_input_validate(spec, &input, why, sizeof(why)));
+        spec->handler(&request, &reply);
+        ASSERT_STR_EQ(reply.error.code, "UNKNOWN_TOPIC");
+        ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_FAILED);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.evidence, "app_id=social topic=not.declared");
+        ASSERT_STR_EQ(reply.error.next_action,
+                      "Inspect the App's declared topics with dev.app.describe");
+        ASSERT_EQ(reply.next_count, 1);
+        ASSERT_STR_EQ(reply.next[0].command, "dev.app.describe");
+        ASSERT_STR_EQ(reply.next[0].input_json, "{\"app_id\":\"social\"}");
+        ASSERT(strstr(reply.error.message, "private.fixture.v1") == NULL);
+        ASSERT(json_size(&reply.data) == 0 && !reply.error.mutated);
+        PASS();
+    } _test_next:;
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+    if (file_created && unlink(path) != 0) failures++;
+    while (made > 0) {
+        (void)snprintf(path, sizeof(path), "%s/%s", root, dirs[--made]);
+        if (rmdir(path) != 0) failures++;
+    }
+    if (root[0] && rmdir(root) != 0) failures++;
+    return failures;
+}
+
 static int test_code_corpus_roots_follow_registry(void)
 {
     int failures = 0;
@@ -4659,6 +4725,7 @@ static int test_ops_statecatalog_paging_covers_all(void)
 int test_command_registry_catalog(void)
 {
     int failures = 0;
+    failures += test_app_sync_unknown_topic_guidance();
     failures += test_catalog_wellformed();
     failures += test_code_corpus_roots_follow_registry();
     failures += test_code_map_governed_count_matches_corpus();

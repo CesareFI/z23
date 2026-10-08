@@ -66,8 +66,9 @@ static const char *app_sync_source_root(
 static bool app_sync_scope(const char *root, const char *app_id,
                            const char *topic,
                            struct zcl_app_event_scope_v1 *out,
-                           const char **why)
+                           const char **why, bool *unknown_topic)
 {
+    *unknown_topic = false;
     struct zcl_app_definition_v1 def;
     struct zcl_result parsed = zcl_app_definition_load_v1(root, app_id, &def);
     if (!parsed.ok) {
@@ -92,6 +93,7 @@ static bool app_sync_scope(const char *root, const char *app_id,
         return true;
     }
     *why = "that App declares no such P2P topic";
+    *unknown_topic = true;
     return false;
 }
 
@@ -199,9 +201,21 @@ void zcl_native_handle_dev_app_sync(const struct zcl_command_request *request,
 
     struct zcl_app_event_scope_v1 scope;
     const char *why = "";
+    bool unknown_topic;
     if (!app_sync_scope(app_sync_source_root(request), app_id, topic, &scope,
-                        &why)) {
+                        &why, &unknown_topic)) {
         app_sync_refuse(reply, "UNKNOWN_TOPIC", "resolve", why, topic);
+        if (unknown_topic) {
+            (void)snprintf(reply->error.evidence, sizeof(reply->error.evidence),
+                           "app_id=%s topic=%s", app_id, topic);
+            (void)snprintf(reply->error.next_action,
+                           sizeof(reply->error.next_action),
+                           "Inspect the App's declared topics with dev.app.describe");
+            char input[512];
+            (void)snprintf(input, sizeof(input), "{\"app_id\":\"%s\"}", app_id);
+            (void)zcl_command_reply_add_next(
+                reply, "dev.app.describe", input, "List the App's declared topics");
+        }
         return;
     }
 
