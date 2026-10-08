@@ -142,6 +142,31 @@ static int test_plan_records_failed_state_in_boot_snapshot(void) {
     return failures;
 }
 
+static int test_boot_snapshot_begin_boot_clears_prior_run(void) {
+    int failures = 0;
+    TEST("chain restore boot snapshot resets between in-process boots") {
+        struct chain_restore_boot_snapshot snap;
+
+        chain_restore_boot_snapshot_reset_for_testing();
+        chain_restore_record_fast_restart(true, 1234,
+                                          "all-bindings-verified");
+        chain_restore_record_snapshot_import(true, 55, 1234);
+
+        chain_restore_boot_snapshot_begin_boot();
+        chain_restore_get_boot_snapshot(&snap);
+        ASSERT(!snap.has_data);
+        ASSERT(!snap.fast_restart_evaluated);
+        ASSERT(!snap.fast_restart_taken);
+        ASSERT(snap.fast_restart_tip_height == 0);
+        ASSERT(snap.fast_restart_reason[0] == '\0');
+        ASSERT(!snap.snapshot_imported_pre_restore);
+        ASSERT(snap.snapshot_imported_utxos == 0);
+        ASSERT(snap.snapshot_imported_height == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Assisted snapshot recovery consumes a typed dumpstate proof, not node.log
  * prose; the proof is absent until every verified reseed step completed. */
 static int test_assisted_snapshot_proof_defaults_fail_closed(void) {
@@ -2098,6 +2123,7 @@ int test_chain_restore_service(void) {
     failures += test_plan_null_hash();
     failures += test_plan_no_utxos();
     failures += test_plan_records_failed_state_in_boot_snapshot();
+    failures += test_boot_snapshot_begin_boot_clears_prior_run();
     failures += test_assisted_snapshot_proof_defaults_fail_closed();
     failures += test_assisted_snapshot_proof_binds_verified_reseed();
     failures += test_plan_snapshot_source();

@@ -68,6 +68,9 @@ struct chain_restore_boot_snapshot {
 };
 
 void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out);
+/* Start a new in-process boot observation.  No diagnostic from an earlier
+ * app_init() may survive this boundary. */
+void chain_restore_boot_snapshot_begin_boot(void);
 void chain_restore_record_plan_result(const struct chain_restore_plan *p);
 void chain_restore_record_integrity_result(
     const struct chain_integrity_result *r);
