@@ -394,6 +394,19 @@ static bool hh_next_fill_height(void *self,
     return true;
 }
 
+static bool hh_snapshot_types_valid(sqlite3_stmt *s)
+{
+    for (int col = 0; col < 11; col++) {
+        int type = sqlite3_column_type(s, col);
+        if (type != SQLITE_INTEGER && !(col >= 7 && type == SQLITE_FLOAT)) {
+            LOG_FAIL("hodl_history",
+                     "load-all malformed numeric column=%d type=%d", col, type);
+            return false;
+        }
+    }
+    return true;
+}
+
 static int hh_load_all(void *self,
                        struct hodl_history_snapshot *out,
                        int max_rows)
@@ -427,17 +440,22 @@ static int hh_load_all(void *self,
     sqlite3_bind_int(s, 2, HODL_HISTORY_SNAPSHOT_CALC_VERSION);
     int n = 0;
     while (n < max_rows && AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-        out[n].height       = sqlite3_column_int64(s, 0);
-        out[n].time         = sqlite3_column_int64(s, 1);
-        out[n].total_zat    = sqlite3_column_int64(s, 2);
-        out[n].older_6m_zat = sqlite3_column_int64(s, 3);
-        out[n].older_1y_zat = sqlite3_column_int64(s, 4);
-        out[n].older_2y_zat = sqlite3_column_int64(s, 5);
-        out[n].older_5y_zat = sqlite3_column_int64(s, 6);
-        out[n].older_6m_pct = sqlite3_column_double(s, 7);
-        out[n].older_1y_pct = sqlite3_column_double(s, 8);
-        out[n].older_2y_pct = sqlite3_column_double(s, 9);
-        out[n].older_5y_pct = sqlite3_column_double(s, 10);
+        if (!hh_snapshot_types_valid(s))
+            break;
+        struct hodl_history_snapshot row = {
+            .height       = sqlite3_column_int64(s, 0),
+            .time         = sqlite3_column_int64(s, 1),
+            .total_zat    = sqlite3_column_int64(s, 2),
+            .older_6m_zat = sqlite3_column_int64(s, 3),
+            .older_1y_zat = sqlite3_column_int64(s, 4),
+            .older_2y_zat = sqlite3_column_int64(s, 5),
+            .older_5y_zat = sqlite3_column_int64(s, 6),
+            .older_6m_pct = sqlite3_column_double(s, 7),
+            .older_1y_pct = sqlite3_column_double(s, 8),
+            .older_2y_pct = sqlite3_column_double(s, 9),
+            .older_5y_pct = sqlite3_column_double(s, 10),
+        };
+        out[n] = row;
         n++;
     }
     sqlite3_finalize(s);

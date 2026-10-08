@@ -164,128 +164,183 @@ static bool seed_scenario(sqlite3 *db)
     return true;
 }
 
-int test_hodl_history_port(void)
+static int test_history_numeric_storage(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    struct hodl_history_port port = {0};
+    if (!make_fixture_db(&db) || !hodl_history_sqlite_bind(db, &port)) {
+        HH_CHECK("numeric fixture builds", false);
+        if (db) sqlite3_close(db);
+        return failures;
+    }
+    HH_CHECK("numeric row seeds", exec_sql(db,
+        "INSERT INTO hodl_history(height,time,calc_version,source_tip_height)"
+        " VALUES(1,123,2147483647,1)"));
+    static const char *bad[] = {
+        "time='123tail'",
+        "time=CAST(x'313233006a756e6b' AS TEXT)",
+        "time='9223372036854775808tail'",
+        "time=123,older_6m_pct='12.5tail'",
+        "older_6m_pct=CAST(x'31322e35006a' AS TEXT)",
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        char sql[192];
+        snprintf(sql, sizeof sql, "UPDATE hodl_history SET %s", bad[i]);
+        HH_CHECK(bad[i], exec_sql(db, sql));
+        struct hodl_history_snapshot row, sentinel;
+        memset(&row, 0xa5, sizeof row);
+        memcpy(&sentinel, &row, sizeof row);
+        HH_CHECK("malformed numeric row refused",
+                 port.load_all(port.self, &row, 1) == 0);
+        HH_CHECK("refused row leaves destination unchanged",
+                 memcmp(&row, &sentinel, sizeof row) == 0);
+    }
+    HH_CHECK("repair numeric row", exec_sql(db,
+        "UPDATE hodl_history SET time=123,older_6m_pct=12.5,older_1y_pct=12"));
+    struct hodl_history_snapshot row;
+    HH_CHECK("integer timestamp and numeric percentages accepted",
+             port.load_all(port.self, &row, 1) == 1 && row.time == 123 &&
+             row.older_6m_pct == 12.5 && row.older_1y_pct == 12.0);
+    HH_CHECK("empty numeric fixture", exec_sql(db, "DELETE FROM hodl_history"));
+    HH_CHECK("empty history returns zero", port.load_all(port.self, &row, 1) == 0);
+    HH_CHECK("zero capacity returns zero", port.load_all(port.self, &row, 0) == 0);
+    sqlite3_close(db);
+    return failures;
+}
+
+static int test_history_adapter(void)
 {
     int failures = 0;
     const int64_t YEAR = 31557600;
+    sqlite3 *db = NULL;
+    HH_CHECK("fixture db builds", make_fixture_db(&db));
+    HH_CHECK("scenario seeds", db && seed_scenario(db));
 
-    /* ---- Layer 1: adapter through the port directly ---- */
-    {
-        sqlite3 *db = NULL;
-        HH_CHECK("fixture db builds", make_fixture_db(&db));
-        HH_CHECK("scenario seeds", db && seed_scenario(db));
+    struct hodl_history_port port = {0};
+    HH_CHECK("bind sqlite port", hodl_history_sqlite_bind(db, &port));
 
-        struct hodl_history_port port = {0};
-        HH_CHECK("bind sqlite port", hodl_history_sqlite_bind(db, &port));
+    int64_t bt = -1;
+    HH_CHECK("block_time(3) hit", port.block_time(port.self, 3, &bt));
+    HH_CHECK("block_time(3) == 2y", bt == 2 * YEAR);
 
-        int64_t bt = -1;
-        HH_CHECK("block_time(3) hit", port.block_time(port.self, 3, &bt));
-        HH_CHECK("block_time(3) == 2y", bt == 2 * YEAR);
+    int64_t bt_miss = -1;
+    HH_CHECK("block_time(99) miss",
+             !port.block_time(port.self, 99, &bt_miss));
 
-        int64_t bt_miss = -1;
-        HH_CHECK("block_time(99) miss",
-                 !port.block_time(port.self, 99, &bt_miss));
+    int64_t total = -1;
+    int64_t older[HODL_HISTORY_THRESHOLDS] = {-1, -1, -1, -1};
+    int64_t cutoffs[HODL_HISTORY_THRESHOLDS] = {
+        (2 * YEAR) - HODL_HISTORY_HALF_YEAR_SECONDS,
+        (2 * YEAR) - HODL_HISTORY_ONE_YEAR_SECONDS,
+        (2 * YEAR) - HODL_HISTORY_TWO_YEAR_SECONDS,
+        (2 * YEAR) - HODL_HISTORY_FIVE_YEAR_SECONDS,
+    };
+    HH_CHECK("compute_snapshot ok",
+             port.compute_snapshot(port.self, 3, cutoffs, &total, older));
+    HH_CHECK("total alive at 3 == 300", total == 300);
+    HH_CHECK("older-than-6m == 300",
+             older[HODL_HISTORY_THRESHOLD_6M] == 300);
+    HH_CHECK("older-than-1y == 100",
+             older[HODL_HISTORY_THRESHOLD_1Y] == 100);
+    HH_CHECK("older-than-2y includes exact boundary",
+             older[HODL_HISTORY_THRESHOLD_2Y] == 100);
+    HH_CHECK("older-than-5y == 0",
+             older[HODL_HISTORY_THRESHOLD_5Y] == 0);
 
-        int64_t total = -1;
-        int64_t older[HODL_HISTORY_THRESHOLDS] = {-1, -1, -1, -1};
-        int64_t cutoffs[HODL_HISTORY_THRESHOLDS] = {
-            (2 * YEAR) - HODL_HISTORY_HALF_YEAR_SECONDS,
-            (2 * YEAR) - HODL_HISTORY_ONE_YEAR_SECONDS,
-            (2 * YEAR) - HODL_HISTORY_TWO_YEAR_SECONDS,
-            (2 * YEAR) - HODL_HISTORY_FIVE_YEAR_SECONDS,
-        };
-        HH_CHECK("compute_snapshot ok",
-                 port.compute_snapshot(port.self, 3, cutoffs, &total, older));
-        HH_CHECK("total alive at 3 == 300", total == 300);
-        HH_CHECK("older-than-6m == 300",
-                 older[HODL_HISTORY_THRESHOLD_6M] == 300);
-        HH_CHECK("older-than-1y == 100",
-                 older[HODL_HISTORY_THRESHOLD_1Y] == 100);
-        HH_CHECK("older-than-2y includes exact boundary",
-                 older[HODL_HISTORY_THRESHOLD_2Y] == 100);
-        HH_CHECK("older-than-5y == 0",
-                 older[HODL_HISTORY_THRESHOLD_5Y] == 0);
+    HH_CHECK("max_filled empty == 0",
+             port.max_filled_height(port.self) == 0);
 
-        HH_CHECK("max_filled empty == 0",
-                 port.max_filled_height(port.self) == 0);
+    struct hodl_history_snapshot row = {
+        .height = 3, .time = 2 * YEAR,
+        .total_zat = total,
+        .older_6m_zat = older[HODL_HISTORY_THRESHOLD_6M],
+        .older_1y_zat = older[HODL_HISTORY_THRESHOLD_1Y],
+        .older_2y_zat = older[HODL_HISTORY_THRESHOLD_2Y],
+        .older_5y_zat = older[HODL_HISTORY_THRESHOLD_5Y],
+        .older_6m_pct = 100.0,
+        .older_1y_pct = (double)older[HODL_HISTORY_THRESHOLD_1Y] /
+                         (double)total * 100.0,
+        .older_2y_pct = (double)older[HODL_HISTORY_THRESHOLD_2Y] /
+                         (double)total * 100.0,
+        .older_5y_pct = 0.0,
+    };
+    HH_CHECK("upsert ok", port.upsert_snapshot(port.self, &row));
+    HH_CHECK("max_filled == 3", port.max_filled_height(port.self) == 3);
 
-        struct hodl_history_snapshot row = {
-            .height = 3, .time = 2 * YEAR,
-            .total_zat = total,
-            .older_6m_zat = older[HODL_HISTORY_THRESHOLD_6M],
-            .older_1y_zat = older[HODL_HISTORY_THRESHOLD_1Y],
-            .older_2y_zat = older[HODL_HISTORY_THRESHOLD_2Y],
-            .older_5y_zat = older[HODL_HISTORY_THRESHOLD_5Y],
-            .older_6m_pct = 100.0,
-            .older_1y_pct = (double)older[HODL_HISTORY_THRESHOLD_1Y] /
-                             (double)total * 100.0,
-            .older_2y_pct = (double)older[HODL_HISTORY_THRESHOLD_2Y] /
-                             (double)total * 100.0,
-            .older_5y_pct = 0.0,
-        };
-        HH_CHECK("upsert ok", port.upsert_snapshot(port.self, &row));
-        HH_CHECK("max_filled == 3", port.max_filled_height(port.self) == 3);
+    /* Idempotent INSERT OR REPLACE: re-upsert same key, still 1 row. */
+    HH_CHECK("upsert idempotent", port.upsert_snapshot(port.self, &row));
 
-        /* Idempotent INSERT OR REPLACE: re-upsert same key, still 1 row. */
-        HH_CHECK("upsert idempotent", port.upsert_snapshot(port.self, &row));
+    struct hodl_history_snapshot loaded[8];
+    int n = port.load_all(port.self, loaded, 8);
+    HH_CHECK("load_all returns 1 row", n == 1);
+    HH_CHECK("loaded height", n == 1 && loaded[0].height == 3);
+    HH_CHECK("loaded total", n == 1 && loaded[0].total_zat == 300);
+    HH_CHECK("loaded older 6m", n == 1 && loaded[0].older_6m_zat == 300);
+    HH_CHECK("loaded older", n == 1 && loaded[0].older_1y_zat == 100);
+    HH_CHECK("loaded older 2y", n == 1 && loaded[0].older_2y_zat == 100);
+    HH_CHECK("loaded older 5y", n == 1 && loaded[0].older_5y_zat == 0);
+    HH_CHECK("loaded pct 6m", n == 1 && loaded[0].older_6m_pct == 100.0);
+    HH_CHECK("loaded pct ~33.33",
+             n == 1 && loaded[0].older_1y_pct > 33.0 &&
+             loaded[0].older_1y_pct < 33.5);
 
-        struct hodl_history_snapshot loaded[8];
-        int n = port.load_all(port.self, loaded, 8);
-        HH_CHECK("load_all returns 1 row", n == 1);
-        HH_CHECK("loaded height", n == 1 && loaded[0].height == 3);
-        HH_CHECK("loaded total", n == 1 && loaded[0].total_zat == 300);
-        HH_CHECK("loaded older 6m", n == 1 && loaded[0].older_6m_zat == 300);
-        HH_CHECK("loaded older", n == 1 && loaded[0].older_1y_zat == 100);
-        HH_CHECK("loaded older 2y", n == 1 && loaded[0].older_2y_zat == 100);
-        HH_CHECK("loaded older 5y", n == 1 && loaded[0].older_5y_zat == 0);
-        HH_CHECK("loaded pct 6m", n == 1 && loaded[0].older_6m_pct == 100.0);
-        HH_CHECK("loaded pct ~33.33",
-                 n == 1 && loaded[0].older_1y_pct > 33.0 &&
-                 loaded[0].older_1y_pct < 33.5);
+    sqlite3_close(db);
+    return failures;
+}
 
-        sqlite3_close(db);
+static int test_history_service(void)
+{
+    int failures = 0;
+    const int64_t YEAR = 31557600;
+    sqlite3 *db = NULL;
+    if (!make_fixture_db(&db) || !seed_scenario(db)) {
+        HH_CHECK("service fixture builds", false);
+        if (db) sqlite3_close(db);
+        return failures;
     }
 
-    /* ---- Layer 2: the service produces identical rows via the port ---- */
-    {
-        sqlite3 *db = NULL;
-        if (!make_fixture_db(&db) || !seed_scenario(db)) {
-            HH_CHECK("service fixture builds", false);
-            if (db) sqlite3_close(db);
-            return failures;
-        }
+    /* fill_one drives the same aggregate + clamp + pct + upsert. */
+    HH_CHECK("service fill_one(3)", hodl_history_fill_one(db, 3).ok);
 
-        /* fill_one drives the same aggregate + clamp + pct + upsert. */
-        HH_CHECK("service fill_one(3)", hodl_history_fill_one(db, 3).ok);
+    struct hodl_history_row rows[8];
+    int n = hodl_history_load_all(db, rows, 8);
+    HH_CHECK("service load_all 1 row", n == 1);
+    HH_CHECK("service height 3", n == 1 && rows[0].height == 3);
+    HH_CHECK("service time 2y", n == 1 && rows[0].time == 2 * YEAR);
+    HH_CHECK("service total 300", n == 1 && rows[0].total_zat == 300);
+    HH_CHECK("service older 6m 300",
+             n == 1 && rows[0].older_6m_zat == 300);
+    HH_CHECK("service older 100", n == 1 && rows[0].older_1y_zat == 100);
+    HH_CHECK("service older 2y 100",
+             n == 1 && rows[0].older_2y_zat == 100);
+    HH_CHECK("service older 5y 0",
+             n == 1 && rows[0].older_5y_zat == 0);
+    HH_CHECK("service pct 6m",
+             n == 1 && rows[0].older_6m_pct == 100.0);
+    HH_CHECK("service pct ~33.33",
+             n == 1 && rows[0].older_1y_pct > 33.0 &&
+             rows[0].older_1y_pct < 33.5);
 
-        struct hodl_history_row rows[8];
-        int n = hodl_history_load_all(db, rows, 8);
-        HH_CHECK("service load_all 1 row", n == 1);
-        HH_CHECK("service height 3", n == 1 && rows[0].height == 3);
-        HH_CHECK("service time 2y", n == 1 && rows[0].time == 2 * YEAR);
-        HH_CHECK("service total 300", n == 1 && rows[0].total_zat == 300);
-        HH_CHECK("service older 6m 300",
-                 n == 1 && rows[0].older_6m_zat == 300);
-        HH_CHECK("service older 100", n == 1 && rows[0].older_1y_zat == 100);
-        HH_CHECK("service older 2y 100",
-                 n == 1 && rows[0].older_2y_zat == 100);
-        HH_CHECK("service older 5y 0",
-                 n == 1 && rows[0].older_5y_zat == 0);
-        HH_CHECK("service pct 6m",
-                 n == 1 && rows[0].older_6m_pct == 100.0);
-        HH_CHECK("service pct ~33.33",
-                 n == 1 && rows[0].older_1y_pct > 33.0 &&
-                 rows[0].older_1y_pct < 33.5);
+    /* fill_one on a missing height is a clean no-op false (block
+     * not indexed) and must NOT persist a row. */
+    HH_CHECK("service fill_one(99) false",
+             !hodl_history_fill_one(db, 99).ok);
+    n = hodl_history_load_all(db, rows, 8);
+    HH_CHECK("still 1 row after miss", n == 1);
 
-        /* fill_one on a missing height is a clean no-op false (block
-         * not indexed) and must NOT persist a row. */
-        HH_CHECK("service fill_one(99) false",
-                 !hodl_history_fill_one(db, 99).ok);
-        n = hodl_history_load_all(db, rows, 8);
-        HH_CHECK("still 1 row after miss", n == 1);
+    sqlite3_close(db);
+    return failures;
+}
 
-        sqlite3_close(db);
-    }
+int test_hodl_history_port(void)
+{
+    int failures = test_history_numeric_storage();
+    const int64_t YEAR = 31557600;
+
+    failures += test_history_adapter();
+
+    failures += test_history_service();
 
     /* ---- fill_pending repairs stale/missing rows below the max height ---- */
     {
