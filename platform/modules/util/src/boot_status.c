@@ -201,7 +201,10 @@ static void boot_status_publish_locked(void)
     char resolved[640], parent[600];
     if (!platform_private_destination_resolve(
             final_path, resolved, sizeof(resolved), parent, sizeof(parent))) {
-        LOG_WARN("boot_status", "cannot resolve private status destination");
+        LOG_WARN("boot_status",
+                 "cannot resolve private status destination %s; "
+                 "create or repair the private directory %s and retry publication",
+                 final_path, g_datadir);
         return;
     }
 
@@ -515,8 +518,10 @@ bool boot_status_read(const char *datadir, struct boot_status_snapshot *out,
 {
     if (err && errlen)
         err[0] = '\0';
-    if (!datadir || !datadir[0] || !out)
-        LOG_FAIL("boot_status", "read: datadir/out required");
+    if (!out)
+        LOG_FAIL("boot_status", "read: out required; supply an output snapshot");
+    if (!datadir || !datadir[0])
+        LOG_FAIL("boot_status", "read: datadir required; supply a nonempty datadir");
     memset(out, 0, sizeof(*out));
     out->stage_ordinal = -1;
     out->height = -1;

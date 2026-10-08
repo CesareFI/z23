@@ -18,12 +18,83 @@
 #include "test/test_core.h"
 #include "util/boot_status.h"
 #include "util/boot_phase.h"
+#include "base/log_level.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/wait.h>
+#include <signal.h>
+
+/* Run the real caller in a bounded child; the parent's stderr and writer
+ * state stay intact even if capture setup or the caller fails. */
+static bool bs_diagnostic_call(const char *dir, bool publish)
+{
+    if (!publish) {
+        char why[128] = "sentinel";
+        return !boot_status_read(dir, NULL, why, sizeof(why)) && !why[0];
+    }
+    char target[600];
+    int n = snprintf(target, sizeof(target), "%s/%s", dir,
+                     ZCL_BOOT_STATUS_FILENAME);
+    if (n < 0 || (size_t)n >= sizeof(target))
+        return false;
+    boot_status_init(dir);
+    boot_status_note_stage((int)BOOT_STAGE_DB_OPEN);
+    boot_status_init(NULL);
+    struct stat st;
+    return lstat(target, &st) == -1 && errno == ENOENT;
+}
+
+static void bs_diagnostic_child(FILE *capture, const char *dir, bool publish)
+{
+    sigset_t signals;
+    if (sigemptyset(&signals) != 0 || sigaddset(&signals, SIGALRM) != 0 ||
+        sigprocmask(SIG_UNBLOCK, &signals, NULL) != 0 ||
+        signal(SIGALRM, SIG_DFL) == SIG_ERR)
+        _exit(2);
+    alarm(10);
+    if (dup2(fileno(capture), STDERR_FILENO) < 0)
+        _exit(2);
+    if (fclose(capture) != 0)
+        _exit(2);
+    zcl_log_level_set(ZCL_LOG_ALL);
+    bool ok = bs_diagnostic_call(dir, publish);
+    if (fflush(stderr) != 0)
+        _exit(2);
+    _exit(ok ? 0 : 1);
+}
+
+static bool bs_capture_diagnostic(const char *dir, bool publish, char log[2048])
+{
+    log[0] = '\0';
+    FILE *capture = tmpfile();
+    if (!capture)
+        return false;
+    pid_t child = fork();
+    if (child == 0)
+        bs_diagnostic_child(capture, dir, publish);
+    int status = 0;
+    pid_t waited = -1;
+    if (child > 0) {
+        do { waited = waitpid(child, &status, 0); }
+        while (waited < 0 && errno == EINTR);
+    }
+    bool ok = waited == child && child > 0 && WIFEXITED(status);
+    if (ok)
+        ok = WEXITSTATUS(status) == 0;
+    if (fseek(capture, 0, SEEK_SET) != 0)
+        ok = false;
+    size_t n = fread(log, 1, 2047, capture);
+    log[n] = '\0';
+    if (ferror(capture) || !feof(capture))
+        ok = false;
+    if (fclose(capture) != 0)
+        ok = false;
+    return ok;
+}
 
 #define BS_CHECK(name, expr) do {          \
     printf("boot_status: %s... ", (name)); \
@@ -41,6 +112,33 @@ static void bs_write_file(const char *dir, const char *name, const char *body)
             (void)!write(fd, body, strlen(body));
         close(fd);
     }
+}
+
+static int bs_diagnostic_checks(const char *dir)
+{
+    int failures = 0;
+    char missing[512], target[600], log[2048];
+    int n = snprintf(missing, sizeof(missing), "%s/absent-parent", dir);
+    BS_CHECK("missing parent path fits", n > 0 && (size_t)n < sizeof(missing));
+    if (failures)
+        return failures;
+    n = snprintf(target, sizeof(target), "%s/%s", missing,
+                 ZCL_BOOT_STATUS_FILENAME);
+    BS_CHECK("missing beacon path fits", n > 0 && (size_t)n < sizeof(target));
+    if (failures)
+        return failures;
+    bool captured = bs_capture_diagnostic(missing, true, log);
+    BS_CHECK("publication failure continues with no beacon", captured);
+    BS_CHECK("publication warning names destination and private repair",
+             captured && strstr(log, target) && strstr(log, missing) &&
+             strstr(log, "create or repair the private directory") &&
+             strstr(log, "retry publication"));
+    captured = bs_capture_diagnostic(dir, false, log);
+    BS_CHECK("NULL out refusal preserves empty error buffer", captured);
+    BS_CHECK("reader refusal identifies out and caller repair",
+             captured && strstr(log, "out required") &&
+             strstr(log, "supply an output snapshot"));
+    return failures;
 }
 
 int test_boot_status(void)
@@ -76,6 +174,8 @@ int test_boot_status(void)
     BS_CHECK("mkdtemp created a scratch datadir", dir != NULL);
     if (!dir)
         return failures;
+
+    failures += bs_diagnostic_checks(dir);
 
     {
         struct boot_status_snapshot in;
