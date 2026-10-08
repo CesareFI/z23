@@ -20,6 +20,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -108,6 +109,12 @@ struct emit_buf {
 
 static bool emit_buf_reserve(struct emit_buf *b, size_t file_bytes)
 {
+    static_assert(EMIT_MAX_FILE_BYTES <= SIZE_MAX - 2,
+                  "emitter byte buffers fit size_t");
+    static_assert(EMIT_MAX_FILE_BYTES / 2 + 1 <= SIZE_MAX / sizeof(struct emit_run),
+                  "emitter run table fits size_t");
+    if (file_bytes > EMIT_MAX_FILE_BYTES)
+        LOG_FAIL("codeindex", "emit file exceeds byte limit: %zu", file_bytes);
     size_t want_text = file_bytes + 1;
     if (want_text > b->text_cap) {
         char *nt = zcl_malloc(want_text, "ci_emit_text");
@@ -124,7 +131,9 @@ static bool emit_buf_reserve(struct emit_buf *b, size_t file_bytes)
         b->lit = nl;
         b->lit_cap = want_lit;
     }
-    size_t want_runs = file_bytes / 8 + 16;
+    /* Each complete run consumes at least two quotes; allow a final open quote.
+     * The caller caps file_bytes at EMIT_MAX_FILE_BYTES before allocation. */
+    size_t want_runs = file_bytes / 2 + 1;
     if (want_runs > b->runs_cap) {
         struct emit_run *nr = zcl_malloc(want_runs * sizeof(*nr), "ci_emit_runs");
         if (!nr) LOG_FAIL("codeindex", "emit run table alloc %zu", want_runs);
@@ -505,6 +514,17 @@ static void emit_scan_runs(struct emit_scan *sc, const char *relpath)
     }
 }
 
+static bool emit_snapshot_equal(const struct platform_positioned_file_snapshot *a,
+                                const struct platform_positioned_file_snapshot *b)
+{
+    return a->size == b->size && a->volume == b->volume &&
+        a->file_low == b->file_low && a->file_high == b->file_high &&
+        a->modified_seconds == b->modified_seconds &&
+        a->modified_nanoseconds == b->modified_nanoseconds &&
+        a->changed_seconds == b->changed_seconds &&
+        a->changed_nanoseconds == b->changed_nanoseconds;
+}
+
 static bool emit_file_cb(const char *relpath, const struct stat *st, void *user)
 {
     struct emit_scan *sc = user;
@@ -534,14 +554,13 @@ static bool emit_file_cb(const char *relpath, const struct stat *st, void *user)
         got += (size_t)k;
     }
     bool stable = platform_positioned_file_snapshot(&file, &after) &&
-        before.size == after.size && before.volume == after.volume &&
-        before.file_low == after.file_low && before.file_high == after.file_high &&
-        before.modified_seconds == after.modified_seconds &&
-        before.modified_nanoseconds == after.modified_nanoseconds &&
-        before.changed_seconds == after.changed_seconds &&
-        before.changed_nanoseconds == after.changed_nanoseconds;
+        emit_snapshot_equal(&before, &after);
     platform_positioned_file_close(&file);
     if (got != (size_t)st->st_size || !stable) {
+        sc->report.files_unreadable++;
+        return true;
+    }
+    if (memchr(sc->buf.text, '\0', got) != NULL) {
         sc->report.files_unreadable++;
         return true;
     }

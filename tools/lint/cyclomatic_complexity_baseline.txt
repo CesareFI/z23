@@ -67,7 +67,6 @@ cognition/modules/codeindex/src/codeindex_emitter.c:codeindex_emitter_sites:17
 cognition/modules/codeindex/src/codeindex_emitter.c:emit_call_context:17
 cognition/modules/codeindex/src/codeindex_emitter.c:emit_collect_literals:30
 cognition/modules/codeindex/src/codeindex_emitter.c:emit_conv_len:17
-cognition/modules/codeindex/src/codeindex_emitter.c:emit_file_cb:20
 cognition/modules/codeindex/src/codeindex_emitter.c:emit_scan_markers:16
 cognition/modules/codeindex/src/codeindex_emitter.c:emit_skip_gap:21
 cognition/modules/codeindex/src/codeindex_fetch.c:fetch_copy_image:23

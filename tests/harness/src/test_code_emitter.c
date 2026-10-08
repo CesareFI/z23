@@ -25,7 +25,11 @@
  *                             resolved=false WITH which joins missed and a
  *                             next step, never a bare empty result.
  *   6. budget               — the serialized reply fits
- *                             ZCL_COMMAND_RESULT_BUDGET. */
+ *                             ZCL_COMMAND_RESULT_BUDGET.
+ *   7. dense literals       — isolated source-view queries retain a late site
+ *                             and preserve concatenation boundaries.
+ *   8. source byte admission — embedded NUL refuses the entire file; a final
+ *                             line without a newline remains admitted. */
 
 #include "test/test_core.h"
 #include "codeindex/codeindex.h"
@@ -264,6 +268,156 @@ static int test_code_emitter_budget(void)
     return failures;
 }
 
+static bool emitter_pad_file(FILE *f)
+{
+    long used = ftell(f);
+    if (used < 0) return false;
+    for (size_t i = (size_t)used; i < (1u << 21); i++)
+        if (fputc(' ', f) == EOF) return false;
+    return true;
+}
+
+static bool emitter_write_runs(const char *path, size_t empty_runs, bool large)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool ok = fputs("void f(void){", f) >= 0;
+    for (size_t i = 0; i < empty_runs; i++)
+        ok = fputs("\"\";", f) >= 0 && ok;
+    ok = fputs("puts(\"unique-message\");}\n", f) >= 0 && ok;
+    if (large) ok = emitter_pad_file(f) && ok;
+    return fclose(f) == 0 && ok;
+}
+
+static bool emitter_final_site(struct codeindex *ci)
+{
+    struct ci_emit_site site;
+    struct ci_emit_scan_report report;
+    int hits = codeindex_emitter_sites(ci, "unique-message", NULL, &site, 1, &report);
+    return hits == 1 && report.files_scanned == 1 &&
+           report.files_unreadable == 0 && !report.enumeration_incomplete &&
+           report.literal_runs == 1 && site.kind == CI_EMIT_LITERAL_EXACT &&
+           site.line == 1 && strcmp(site.path, "cognition/dense.c") == 0;
+}
+
+static bool emitter_dense_fixture(char *root, size_t root_cap,
+                                  char *path, size_t path_cap)
+{
+    char dir[PATH_MAX];
+    if (!test_mkdtemp(root, root_cap, "emitter")) {
+        root[0] = '\0';
+        return false;
+    }
+    int n = snprintf(dir, sizeof(dir), "%s/cognition", root);
+    if (n <= 0 || (size_t)n >= sizeof(dir)) return false;
+    if (mkdir(dir, 0700) != 0) return false;
+    n = snprintf(path, path_cap, "%s/dense.c", dir);
+    if (n <= 0 || (size_t)n >= path_cap) return false;
+    return emitter_write_runs(path, 0, false);
+}
+
+static bool emitter_check_dense_runs(struct codeindex *ci, const char *path)
+{
+    /* Small controls, then densities that exceed the old bytes/8 + 16 table.
+     * The last fixture is exactly the largest admitted file size. */
+    static const size_t counts[] = {0, 17, 200, 699000};
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(counts) / sizeof(counts[0]); i++) {
+        if (!emitter_write_runs(path, counts[i], i == 3)) return false;
+        ok = emitter_final_site(ci) && ok;
+    }
+    return ok;
+}
+
+static bool emitter_check_joined_runs(struct codeindex *ci, const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool wrote = fputs("void f(void){puts(\"adjacent-\" /* gap */ \"message\");"
+                       "puts(\"separate-\");puts(\"message\");}\n", f) >= 0;
+    wrote = fclose(f) == 0 && wrote;
+    if (!wrote) return false;
+    struct ci_emit_site site;
+    struct ci_emit_scan_report report;
+    int joined = codeindex_emitter_sites(ci, "adjacent-message", NULL,
+                                         &site, 1, &report);
+    int separate = codeindex_emitter_sites(ci, "separate-message", NULL,
+                                           &site, 1, NULL);
+    return joined == 1 && separate == 0 && report.literal_runs == 3;
+}
+
+static int test_code_emitter_dense_runs(void)
+{
+    int failures = 0;
+    TEST("code_emitter: dense literals retain the final unique-message site") {
+        char root[PATH_MAX], path[PATH_MAX];
+        bool setup = emitter_dense_fixture(root, sizeof(root), path, sizeof(path));
+        struct codeindex *ci = setup ? codeindex_open_source_view(root) : NULL;
+        bool opened = ci != NULL;
+        bool dense = ci && emitter_check_dense_runs(ci, path);
+        bool joined = ci && emitter_check_joined_runs(ci, path);
+        codeindex_close(ci);
+        int cleanup = test_rm_rf_recursive(root);
+        ASSERT(setup && opened);
+        ASSERT(dense);
+        ASSERT(joined);
+        ASSERT_EQ(cleanup, 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool emitter_write_bytes(const char *path, const char *bytes, size_t size)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool wrote = fwrite(bytes, 1, size, f) == size;
+    return fclose(f) == 0 && wrote;
+}
+
+static bool emitter_refused_source(struct codeindex *ci)
+{
+    struct ci_emit_site site;
+    struct ci_emit_scan_report report;
+    int hits = codeindex_emitter_sites(ci, "unique-message", NULL, &site, 1, &report);
+    return hits == 0 && report.files_scanned == 0 &&
+           report.files_unreadable == 1 && report.literal_runs == 0 &&
+           report.candidates == 0 && !report.enumeration_incomplete;
+}
+
+static bool emitter_check_source_bytes(struct codeindex *ci, const char *path)
+{
+    static const char no_newline[] = "void f(void){puts(\"unique-message\");}";
+    static const char nul_inside[] = "void f(void){puts(\"unique-message\0suffix\");}";
+    static const char nul_after[] = "void f(void){puts(\"unique-message\");}\0suffix";
+    if (!emitter_write_bytes(path, no_newline, sizeof(no_newline) - 1)) return false;
+    bool admitted = emitter_final_site(ci);
+    if (!emitter_write_bytes(path, nul_inside, sizeof(nul_inside) - 1)) return false;
+    bool inside = emitter_refused_source(ci);
+    if (!emitter_write_bytes(path, nul_after, sizeof(nul_after) - 1)) return false;
+    bool after = emitter_refused_source(ci);
+    return admitted && inside && after;
+}
+
+static int test_code_emitter_source_bytes(void)
+{
+    int failures = 0;
+    TEST("code_emitter: NUL-bearing sources refuse; final no-newline stays valid") {
+        char root[PATH_MAX] = {0}, path[PATH_MAX];
+        bool setup = emitter_dense_fixture(root, sizeof(root), path, sizeof(path));
+        struct codeindex *ci = setup ? codeindex_open_source_view(root) : NULL;
+        bool opened = ci != NULL;
+        bool bytes = ci && emitter_check_source_bytes(ci, path);
+        codeindex_close(ci);
+        int cleanup = test_rm_rf_recursive(root);
+        ASSERT(setup && opened);
+        ASSERT(bytes);
+        ASSERT_EQ(cleanup, 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 struct emitter_segment_case {
     size_t repeated;
     const char *tail, *query_tail;
@@ -364,5 +518,7 @@ int test_code_emitter(void)
     failures += test_code_emitter_honest_miss();
     failures += test_code_emitter_empty_input();
     failures += test_code_emitter_budget();
+    failures += test_code_emitter_dense_runs();
+    failures += test_code_emitter_source_bytes();
     return failures;
 }
