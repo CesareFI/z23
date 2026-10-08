@@ -795,6 +795,129 @@ static int test_acp_dumper_safety_invariant(void)
     return failures;
 }
 
+static int test_acp_dumper_complete_file(void)
+{
+    int failures = 0;
+    char work[512], path[700], bytes[16384];
+    test_make_tmpdir(work, sizeof(work), "acp_dump", "complete");
+    snprintf(path, sizeof(path), "%s/span.json", work);
+    struct acp_saved_env saved;
+    acp_env_save(&saved, "ZCL_COPY_PROVE_STATUS_DIR");
+    ACP_CHECK("set isolated status directory",
+              setenv("ZCL_COPY_PROVE_STATUS_DIR", work, 1) == 0);
+    const struct { const char *label; size_t length; int tail; bool valid; } cases[] = {
+        { "complete empty object", 2, -1, true },
+        { "complete exact-cap object", 16383, -1, true },
+        { "exact-cap prefix with unread X", 16384, 'X', false },
+        { "cap plus one whitespace byte", 16384, ' ', false },
+        { "raw NUL and suffix", 4, 0, false },
+        { "escaped NUL", 14, -1, false },
+        { "incomplete object", 1, -1, false },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        memset(bytes, ' ', sizeof(bytes));
+        memcpy(bytes, "{}", 2);
+        if (cases[i].tail >= 0) bytes[cases[i].length - 1] = (char)cases[i].tail;
+        if (cases[i].length == 4) { bytes[2] = '\0'; bytes[3] = 'X'; }
+        if (cases[i].length == 14) memcpy(bytes, "{\"s\":\"\\u0000\"}", 14);
+        FILE *f = fopen(path, "wb");
+        ACP_CHECK("open status fixture", f != NULL);
+        if (!f) continue;
+        ACP_CHECK("write entire status fixture",
+                  fwrite(bytes, 1, cases[i].length, f) == cases[i].length);
+        ACP_CHECK("close status fixture", fclose(f) == 0);
+        struct json_value dump;
+        json_init(&dump);
+        ACP_CHECK("read status fixture", agent_copy_prove_dump_state_json(&dump, "span"));
+        ACP_CHECK(cases[i].label,
+                  strcmp(json_get_str(json_get(&dump, "status")),
+                         cases[i].valid ? "ok" : "error") == 0 &&
+                  (cases[i].valid ||
+                   (strcmp(json_get_str(json_get(&dump, "error")),
+                           "status_file_invalid_json") == 0 &&
+                    json_get(&dump, "result") == NULL)));
+        json_free(&dump);
+    }
+#ifndef _WIN32
+    ACP_CHECK("remove regular fixture", unlink(path) == 0);
+    ACP_CHECK("create unreadable directory fixture", platform_directory_create(path, 0700) == 0);
+    struct json_value dump;
+    json_init(&dump);
+    ACP_CHECK("read error refuses status",
+              agent_copy_prove_dump_state_json(&dump, "span") &&
+              strcmp(json_get_str(json_get(&dump, "error")),
+                     "status_file_invalid_json") == 0 && json_get(&dump, "result") == NULL);
+    json_free(&dump);
+#endif
+    acp_env_restore(&saved);
+    test_rm_rf_recursive(work);
+    return failures;
+}
+
+/* Exercise the diagnostic boundary, rather than the validator in isolation. */
+static int acp_check_utf8_status(const char *path, const char *label,
+                                 const char *payload, bool valid)
+{
+    int failures = 0;
+    char bytes[64];
+    int length = snprintf(bytes, sizeof(bytes), "{\"s\":\"%s\"}", payload);
+    ACP_CHECK("bounded UTF-8 fixture", length > 0 && (size_t)length < sizeof(bytes));
+    if (length <= 0 || (size_t)length >= sizeof(bytes)) return failures;
+    FILE *f = fopen(path, "wb");
+    ACP_CHECK("open UTF-8 status fixture", f != NULL);
+    if (!f) return failures;
+    ACP_CHECK("write UTF-8 status fixture",
+              fwrite(bytes, 1, (size_t)length, f) == (size_t)length);
+    ACP_CHECK("close UTF-8 status fixture", fclose(f) == 0);
+    struct json_value dump;
+    json_init(&dump);
+    ACP_CHECK("read UTF-8 status fixture", agent_copy_prove_dump_state_json(&dump, "utf8"));
+    ACP_CHECK(label, strcmp(json_get_str(json_get(&dump, "status")),
+                            valid ? "ok" : "error") == 0);
+    if (valid) {
+        ACP_CHECK("preserve valid multibyte result",
+                  strcmp(json_get_str(json_get(json_get(&dump, "result"), "s")),
+                         payload) == 0);
+    } else {
+        ACP_CHECK("invalid UTF-8 has no adopted result",
+                  strcmp(json_get_str(json_get(&dump, "error")),
+                         "status_file_invalid_json") == 0 &&
+                  json_get(&dump, "result") == NULL);
+    }
+    json_free(&dump);
+    return failures;
+}
+
+static int test_acp_dumper_utf8(void)
+{
+    int failures = 0;
+    char work[512], path[700];
+    test_make_tmpdir(work, sizeof(work), "acp_dump", "utf8");
+    snprintf(path, sizeof(path), "%s/utf8.json", work);
+    struct acp_saved_env saved;
+    acp_env_save(&saved, "ZCL_COPY_PROVE_STATUS_DIR");
+    ACP_CHECK("set isolated UTF-8 status directory",
+              setenv("ZCL_COPY_PROVE_STATUS_DIR", work, 1) == 0);
+    const struct { const char *label; const char *payload; bool valid; } cases[] = {
+        { "reject FF lead", "\xff", false },
+        { "reject lone continuation", "\x80", false },
+        { "reject overlong encoding", "\xc0\xaf", false },
+        { "reject bad continuation", "\xc2" "A", false },
+        { "reject truncated sequence", "\xe2\x82", false },
+        { "reject surrogate encoding", "\xed\xa0\x80", false },
+        { "reject above Unicode maximum", "\xf4\x90\x80\x80", false },
+        { "accept two-byte scalar", "\xc2\xa2", true },
+        { "accept three-byte scalar", "\xe2\x82\xac", true },
+        { "accept four-byte scalar", "\xf4\x8f\xbf\xbf", true },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+        failures += acp_check_utf8_status(path, cases[i].label,
+                                          cases[i].payload, cases[i].valid);
+    acp_env_restore(&saved);
+    test_rm_rf_recursive(work);
+    return failures;
+}
+
 int test_agent_copy_prove(void)
 {
     int failures = 0;
@@ -806,6 +929,8 @@ int test_agent_copy_prove(void)
     failures += test_acp_rpc_launch_and_poll();
     failures += test_acp_rpc_long_args();
     failures += test_acp_dumper_safety_invariant();
+    failures += test_acp_dumper_complete_file();
+    failures += test_acp_dumper_utf8();
     printf("[test_agent_copy_prove] %d failure(s)\n", failures);
     return failures;
 }

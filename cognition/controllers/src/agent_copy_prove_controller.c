@@ -38,6 +38,7 @@
 #include "controllers/strong_params.h"
 
 #include "json/json.h"
+#include "zutf8/zutf8.h"
 #include "platform/time_compat.h"
 #include "platform/directory_compat.h"
 #include "util/safe_alloc.h"
@@ -480,12 +481,14 @@ bool agent_copy_prove_dump_state_json(struct json_value *out, const char *key)
     }
     char buf[16384];
     size_t used = fread(buf, 1, sizeof(buf) - 1, f);
+    bool complete = fgetc(f) == EOF && !ferror(f);
     fclose(f);
     buf[used] = '\0';
 
     struct json_value parsed;
     json_init(&parsed);
-    if (!json_read(&parsed, buf, used) || parsed.type != JSON_OBJ) {
+    if (!complete || !zutf8_validate_n(buf, used) ||
+        !json_read(&parsed, buf, used) || parsed.type != JSON_OBJ) {
         json_free(&parsed);
         json_push_kv_str(out, "status", "error");
         json_push_kv_str(out, "error", "status_file_invalid_json");
