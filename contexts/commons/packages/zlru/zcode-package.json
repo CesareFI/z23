@@ -9,7 +9,7 @@
   "dependencies": [
     {
       "name": "zmap/zmap",
-      "root": "318a37d54d64c8f49c4167e32e4464fbac97c0e5c13588517ef746512a875d2c",
+      "root": "22f06857b16c6bce140af7884485cfe431fa90c17f7ef8c794d4caaa7980dfc6",
       "semver": "0.1.0"
     }
   ],
