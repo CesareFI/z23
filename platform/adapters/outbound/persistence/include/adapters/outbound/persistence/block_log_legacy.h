@@ -49,9 +49,11 @@ struct block_log_legacy;
  * copy the struct, but the `self` pointer remains owned by the
  * handle).
  *
- * On failure: returns a non-OK zcl_result with one of:
+ * On failure: leaves *out_handle and *out_port unchanged and returns a
+ * non-OK zcl_result with one of:
  *   - BLOCK_LOG_ERR_NOT_FOUND : datadir missing or no blocks/index
- *   - BLOCK_LOG_ERR_IO        : LevelDB locked (zclassicd running) or
+ *   - BLOCK_LOG_ERR_IO        : blocks or index path too long,
+ *                               LevelDB locked (zclassicd running) or
  *                               mmap_reader open failed
  *   - BLOCK_LOG_ERR_CORRUPT   : couldn't iterate the index records
  *

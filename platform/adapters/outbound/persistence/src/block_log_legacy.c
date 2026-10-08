@@ -157,14 +157,19 @@ struct zcl_result block_log_legacy_open(const char *datadir,
         return ZCL_ERR(BLOCK_LOG_ERR_IO, "block_log_legacy_open: null args");
 
     char blocks_dir[1024];
-    snprintf(blocks_dir, sizeof blocks_dir, "%s/blocks", datadir);
+    int n = snprintf(blocks_dir, sizeof blocks_dir, "%s/blocks", datadir);
+    if (n < 0 || (size_t)n >= sizeof blocks_dir)
+        return ZCL_ERR(BLOCK_LOG_ERR_IO,
+                       "block_log_legacy_open: blocks path too long");
+    char index_dir[1024];
+    n = snprintf(index_dir, sizeof index_dir, "%s/blocks/index", datadir);
+    if (n < 0 || (size_t)n >= sizeof index_dir)
+        return ZCL_ERR(BLOCK_LOG_ERR_IO,
+                       "block_log_legacy_open: index path too long");
     struct stat st;
     if (stat(blocks_dir, &st) != 0)
         return ZCL_ERR(BLOCK_LOG_ERR_NOT_FOUND,
                        "block_log_legacy_open: %s missing", blocks_dir);
-
-    char index_dir[1024];
-    snprintf(index_dir, sizeof index_dir, "%s/blocks/index", datadir);
 
     struct block_log_legacy *h = calloc(1, sizeof *h);
     if (!h)

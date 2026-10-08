@@ -2555,7 +2555,6 @@ tests/harness/src/test_block_index_rebuild.c:run_rebuild_n_headers:19
 tests/harness/src/test_block_index_topup.c:run_bound_topup_integration:42
 tests/harness/src/test_block_index_topup.c:test_block_index_topup:53
 tests/harness/src/test_block_locator_bounds.c:test_block_locator_bounds:28
-tests/harness/src/test_block_log_legacy.c:test_block_log_legacy:25
 tests/harness/src/test_block_parse_cache.c:test_borrowed_contract:26
 tests/harness/src/test_block_parse_cache.c:test_deep_clone_equality:16
 tests/harness/src/test_block_parse_cache.c:test_evict_removes_one_key:16
