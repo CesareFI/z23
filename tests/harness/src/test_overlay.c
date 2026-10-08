@@ -169,6 +169,74 @@ static int test_codec_helpers(void)
 
 /* ── Registry + ingest seam ──────────────────────────────────────────── */
 
+static bool registry_identity_apply(struct node_db *ndb,
+                                    const struct transaction *tx,
+                                    const uint8_t *script, size_t len,
+                                    int height, void *ctx)
+{
+    (void)ndb; (void)tx; (void)script; (void)len; (void)height; (void)ctx;
+    return true;
+}
+
+static bool registry_descriptor_matches(const struct overlay_descriptor *hit,
+                                        const struct overlay_descriptor *want)
+{
+    return hit && memcmp(hit->lokad, want->lokad, OVERLAY_LOKAD_LEN) == 0 &&
+           hit->name == want->name && hit->apply == want->apply &&
+           hit->ctx == want->ctx;
+}
+
+static int registry_lookup_identity(void)
+{
+    struct overlay_registry reg;
+    char name_a[] = "A", name_b[] = "B";
+    struct zfix_sink ctx_a = {0}, ctx_b = {0};
+    const struct overlay_descriptor a = {
+        .lokad = {'A', 'F', 'I', 'X'}, .name = name_a,
+        .apply = zfix_apply, .ctx = &ctx_a,
+    };
+    const struct overlay_descriptor b = {
+        .lokad = {'B', 'F', 'I', 'X'}, .name = name_b,
+        .apply = registry_identity_apply, .ctx = &ctx_b,
+    };
+    overlay_registry_init(&reg);
+    if (!overlay_registry_add(&reg, &a) || !overlay_registry_add(&reg, &b)) {
+        printf("overlay_registry: lookup identity setup FAIL\n");
+        return 1;
+    }
+
+    int failures = 0;
+    const struct overlay_descriptor *hit = overlay_registry_find(&reg, "BFIX");
+    if (registry_descriptor_matches(hit, &b))
+        printf("overlay_registry: later hit preserves tag/name/apply/ctx OK\n");
+    else {
+        printf("overlay_registry: later hit preserves tag/name/apply/ctx FAIL\n");
+        failures++;
+    }
+    if (overlay_registry_find(&reg, "CFIX") == NULL)
+        printf("overlay_registry: lookup identity miss OK\n");
+    else {
+        printf("overlay_registry: lookup identity miss FAIL\n");
+        failures++;
+    }
+
+    struct overlay_descriptor duplicate = b;
+    duplicate.name = a.name;
+    duplicate.apply = a.apply;
+    duplicate.ctx = a.ctx;
+    bool refused = !overlay_registry_add(&reg, &duplicate);
+    hit = overlay_registry_find(&reg, "BFIX");
+    if (refused && overlay_registry_count(&reg) == 2 &&
+        registry_descriptor_matches(hit, &b) &&
+        registry_descriptor_matches(overlay_registry_find(&reg, "AFIX"), &a))
+        printf("overlay_registry: duplicate retains original descriptors OK\n");
+    else {
+        printf("overlay_registry: duplicate retains original descriptors FAIL\n");
+        failures++;
+    }
+    return failures;
+}
+
 static int test_registry(void)
 {
     int f = 0;
@@ -324,6 +392,7 @@ int test_overlay(void)
     printf("\n=== Overlay SDK Tests ===\n");
     failures += test_codec_helpers();
     failures += test_registry();
+    failures += registry_lookup_identity();
     failures += test_fixture_roundtrip();
     printf("\n%d overlay SDK test(s) failed\n", failures);
     return failures;
