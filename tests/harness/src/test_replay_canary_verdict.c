@@ -22,6 +22,7 @@
 #include "crypto/sha256.h"
 #include "platform/os_proc.h"
 #include "platform/time_compat.h"
+#include "util/spawn.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1205,7 +1206,7 @@ static int test_source_guard_mvp_binds_canary_to_running_binary(void)
                                   sizeof(body)));
         ASSERT(strstr(body, "exe=\"/proc/$pid/exe\"") != NULL);
         ASSERT(strstr(body, "zcl_binary_source_id \"$exe\"") != NULL);
-        ASSERT(strstr(body, "C_ARTIFACT=\"$(json_str \"$blob\" artifact_sha256)\"") != NULL);
+        ASSERT(strstr(body, "C_ARTIFACT=\"$(canary_field \"$document\" artifact_sha256 string)\"") != NULL);
         ASSERT(strstr(body, "\"$G_ARTIFACT\" == \"$LIVE_ARTIFACT\"") != NULL);
         ASSERT(strstr(body,
                       "PASS belongs to different or unreadable bytes") != NULL);
@@ -1238,10 +1239,146 @@ static int test_source_guard_mvp_binds_c3_stopwatch_to_running_binary(void)
 
 /* ── Registration ───────────────────────────────────────────────── */
 
+static bool copy_gate_function(FILE *out, const char *source, const char *name)
+{
+    const char *start = strstr(source, name);
+    if (!start) return false;
+    const char *end = strstr(start, "\n}\n");
+    if (!end) return false;
+    size_t len = (size_t)(end + 3 - start);
+    return fwrite(start, 1, len, out) == len;
+}
+
+static bool write_freshness_probe(const char *path, const char *source)
+{
+    FILE *out = fopen(path, "w");
+    if (!out) return false;
+    bool ok = copy_gate_function(out, source, "canary_decimal() {");
+    ok = copy_gate_function(out, source, "canary_field() {") && ok;
+    ok = copy_gate_function(out, source, "canary_read() {") && ok;
+    const char *probe =
+        "CANARY_DIR=$1; NOW_TS=$3; CANARY_MAX_AGE_S=$4; ZCL_JSONQ=$5\n"
+        "f=$1/replay_canary_genesis.json\n"
+        "case $2 in\n"
+        "  @nul) printf '{\"verdict\":\"PASS\",\"ts\":1000000}\\0' > \"$f\";;\n"
+        "  @oversize) dd if=/dev/zero of=\"$f\" bs=1048576 count=17 2>/dev/null;;\n"
+        "  '{'*|'['*) printf '%s' \"$2\" > \"$f\";;\n"
+        "  *) printf '{\"verdict\":\"PASS\",\"ts\":%s}' \"$2\" > \"$f\";;\n"
+        "esac || exit 1\n"
+        "canary_read genesis\n"
+        "if [[ ${6:-} == identity ]]; then\n"
+        "  printf '%s|%s|%s\\n' \"$C_SRC\" \"$C_ARTIFACT\" \"$C_VERDICT\"\n"
+        "else printf '%s %s\\n' \"$C_FRESH\" \"$C_AGE\"; fi\n";
+    ok = fputs(probe, out) >= 0 && ok;
+    return fclose(out) == 0 && ok;
+}
+
+static bool run_freshness_probes(const char *script, const char *dir, const char *parser)
+{
+    static const struct { const char *ts, *now, *max, *expected; } cases[] = {
+        {"1000000", "1000000", "604800", "1 0\n"},
+        {"395200", "1000000", "604800", "1 604800\n"},
+        {"395199", "1000000", "604800", "0 604801\n"},
+        {"1000001", "1000000", "604800", "0 -1\n"},
+        {"0", "1000000", "604800", "0 -1\n"},
+        {"08", "1000000", "604800", "0 -1\n"},
+        {"123oops", "1000000", "604800", "0 -1\n"},
+        {"1e6", "1000000", "604800", "0 -1\n"},
+        {"\"1000000\"", "1000000", "604800", "0 -1\n"},
+        {"-1", "1000000", "604800", "0 -1\n"},
+        {"9223372036854775808", "1000000", "604800", "0 -1\n"},
+        {"999999999999999999999999999999", "1000000", "604800", "0 -1\n"},
+        {"9223372036854775807", "9223372036854775807", "0", "1 0\n"},
+        {"8", "10", "2", "1 2\n"},
+        {"7", "10", "2", "0 3\n"},
+        {"8", "010", "2", "0 -1\n"},
+        {"8", "10", "9223372036854775808", "0 -1\n"},
+        {"{\"note\":\"\\\"ts\\\":1000000,\",\"verdict\":\"PASS\"}", "1000000", "604800", "0 -1\n"},
+        {"{\"nested\":{\"ts\":1000000},\"verdict\":\"PASS\"}", "1000000", "604800", "0 -1\n"},
+        {"{\"ts\":1000000,\"ts\":1000000}", "1000000", "604800", "0 -1\n"},
+        {"[1000000]", "1000000", "604800", "0 -1\n"},
+        {"{\"ts\":1000000", "1000000", "604800", "0 -1\n"},
+        {"@nul", "1000000", "604800", "0 -1\n"},
+        {"@oversize", "1000000", "604800", "0 -1\n"}
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        const char *argv[] = {"bash", script, dir, cases[i].ts,
+                              cases[i].now, cases[i].max, parser, NULL};
+        char output[128];
+        int rc = zcl_spawn_capture(argv, output, sizeof(output), 5000);
+        if (rc != 0 || strcmp(output, cases[i].expected) != 0) {
+            fprintf(stderr, "canary freshness case %zu: rc=%d output=%s\n", i, rc, output);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+#define MVP_SOURCE_HALF "11111111111111111111111111111111"
+#define MVP_SOURCE_HASH MVP_SOURCE_HALF MVP_SOURCE_HALF
+#define MVP_ARTIFACT_HASH "2222222222222222222222222222222222222222222222222222222222222222"
+
+static bool run_canary_identity_probes(const char *script, const char *dir, const char *parser)
+{
+    static const struct { const char *json, *expected; } cases[] = {
+        {"{\"ts\":1000000,\"verdict\":\"PASS\",\"source_id_sha256\":\"" MVP_SOURCE_HASH "\",\"artifact_sha256\":\"" MVP_ARTIFACT_HASH "\"}", MVP_SOURCE_HASH "|" MVP_ARTIFACT_HASH "|PASS\n"},
+        {"{\"ts\":1000000,\"verdict\":\"PASS\",\"note\":\"\\\"source_id_sha256\\\":\\\"" MVP_SOURCE_HASH "\\\",\\\"artifact_sha256\\\":\\\"" MVP_ARTIFACT_HASH "\\\"\"}", "||PASS\n"},
+        {"{\"ts\":1000000,\"verdict\":\"FAIL\",\"source_id_sha256\":\"" MVP_SOURCE_HASH "\",\"artifact_sha256\":\"" MVP_ARTIFACT_HASH "\"}", MVP_SOURCE_HASH "|" MVP_ARTIFACT_HASH "|FAIL\n"},
+        {"{\"ts\":1000000,\"verdict\":\"PASS\",\"source_id_sha256\":\"" MVP_SOURCE_HASH "\",\"source_id_sha256\":\"" MVP_ARTIFACT_HASH "\",\"artifact_sha256\":\"" MVP_SOURCE_HASH "\",\"artifact_sha256\":\"" MVP_ARTIFACT_HASH "\"}", "||PASS\n"},
+        {"{\"ts\":1000000,\"verdict\":\"FAIL\",\"verdict\":\"PASS\"}", "||unreadable\n"},
+        {"{\"ts\":1000000,\"verdict\":\"PASS\",\"source_id_sha256\":\"" MVP_SOURCE_HASH "\\u0000\",\"artifact_sha256\":\"" MVP_ARTIFACT_HASH "\\u0000\"}", "||PASS\n"},
+        {"{\"ts\":1000000,\"verdict\":\"PASS\",\"source_id_sha256\":\"" MVP_SOURCE_HALF "\\u0000" MVP_SOURCE_HALF "\",\"artifact_sha256\":\"" MVP_ARTIFACT_HASH "\"}", "|" MVP_ARTIFACT_HASH "|PASS\n"},
+        {"{\"ts\":1000000,\"verdict\":\"PASS\",\"source_id_sha256\":\"" MVP_SOURCE_HASH "\\n\",\"artifact_sha256\":\"" MVP_ARTIFACT_HASH "\\n\"}", "||PASS\n"},
+        {"{\"ts\":1000000,\"verdict\":\"PASS\\u0000\",\"source_id_sha256\":\"" MVP_SOURCE_HASH "\",\"artifact_sha256\":\"" MVP_ARTIFACT_HASH "\"}", MVP_SOURCE_HASH "|" MVP_ARTIFACT_HASH "|unreadable\n"}
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        const char *argv[] = {"bash", script, dir, cases[i].json, "1000000", "604800", parser, "identity", NULL};
+        char output[256];
+        int rc = zcl_spawn_capture(argv, output, sizeof(output), 5000);
+        if (rc != 0 || strcmp(output, cases[i].expected) != 0) {
+            fprintf(stderr, "canary identity case %zu: rc=%d output=%s\n", i, rc, output);
+            ok = false;
+        }
+    }
+    const char *missing[] = {"bash", script, dir, cases[0].json, "1000000",
+                             "604800", "/nonexistent/z23-jsonq", "identity", NULL};
+    char output[128];
+    int rc = zcl_spawn_capture(missing, output, sizeof(output), 5000);
+    return rc == 0 && strcmp(output, "||unavailable\n") == 0 && ok;
+}
+
+static int test_mvp_canary_freshness(void)
+{
+    int failures = 0;
+    char dir[PATH_MAX] = "", script[PATH_MAX] = "", verdict[PATH_MAX] = "";
+    TEST("MVP canary: production freshness refuses future and invalid decimals") {
+        const char *root = repo_root();
+        ASSERT(root != NULL);
+        static char source[65536];
+        ASSERT(read_script_source(root, "tools/mvp_gate.sh", source, sizeof(source)));
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "mvp-canary-freshness") != NULL);
+        ASSERT(snprintf(script, sizeof(script), "%s/probe.sh", dir) < (int)sizeof(script));
+        ASSERT(snprintf(verdict, sizeof(verdict), "%s/replay_canary_genesis.json", dir) < (int)sizeof(verdict));
+        ASSERT(write_freshness_probe(script, source));
+        char parser[PATH_MAX];
+        ASSERT(snprintf(parser, sizeof(parser), "%s/build/bin/jsonq", root) < (int)sizeof(parser));
+        ASSERT(access(parser, X_OK) == 0);
+        ASSERT(run_freshness_probes(script, dir, parser));
+        ASSERT(run_canary_identity_probes(script, dir, parser));
+    } _test_next:;
+    if (script[0]) unlink(script);
+    if (verdict[0]) unlink(verdict);
+    if (dir[0]) rmdir(dir);
+    return failures;
+}
+
 static int test_replay_canary_verdict_platform_arm(void)
 {
     int failures = 0;
     failures += test_pass_writes_pass_sentinel();
+    failures += test_mvp_canary_freshness();
     failures += test_source_guard_mvp_binds_c3_stopwatch_to_running_binary();
     failures += test_fail_rejects_fires();
     failures += test_fail_sha3_fires();

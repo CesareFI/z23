@@ -312,20 +312,57 @@ CANARY_DIR="${ZCL_CANARY_VERDICT_DIR:-$HOME/.local/state/zclassic23-canary}"
 CANARY_MAX_AGE_S="${CANARY_MAX_AGE_S:-604800}"
 NOW_TS="$(date +%s)"
 
+# Admit canonical nonnegative decimals before signed shell arithmetic.
+canary_decimal() {
+    local LC_ALL=C
+    [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+    [[ ${#1} -lt 19 ]] && return 0
+    [[ ${#1} -eq 19 && ! "$1" > 9223372036854775807 ]]
+}
+
+# Read one direct, uniquely named field from an already validated root object.
+canary_field() {
+    [[ "$(printf '%s' "$1" | "$C_JSONQ" key-count . "$2" 2>/dev/null)" == 1 ]] || return 1
+    [[ "$(printf '%s' "$1" | "$C_JSONQ" type "$2" 2>/dev/null)" == "$3" ]] || return 1
+    local value
+    value="$(printf '%s' "$1" | "$C_JSONQ" raw "$2" 2>/dev/null)" || return 1
+    if [[ "$3" == number ]]; then printf '%s\n' "$value"; return 0; fi
+    if [[ "$2" == verdict ]]; then
+        [[ "$value" =~ ^\"(PASS|FAIL|BLOCKED|UNKNOWN)\"$ ]] || return 1
+    else
+        [[ "$value" =~ ^\"[0-9a-f]{64}\"$ ]] || return 1
+    fi
+    printf '%s\n' "${value:1:${#value}-2}"
+}
+
 # canary_read <track> → sets verdict, freshness, and exact binary identity.
 canary_read() {
     local f="$CANARY_DIR/replay_canary_$1.json"
     C_VERDICT="absent"; C_TS=0; C_AGE=-1; C_FRESH=0; C_SRC=""; C_ARTIFACT=""
     [[ -f "$f" ]] || return 0
-    local blob; blob="$(cat "$f" 2>/dev/null)"
-    C_VERDICT="$(json_str "$blob" verdict)"; C_VERDICT="${C_VERDICT:-unreadable}"
-    C_TS="$(json_num "$blob" ts)"; C_TS="${C_TS:-0}"
-    C_SRC="$(json_str "$blob" source_id_sha256)"
-    C_ARTIFACT="$(json_str "$blob" artifact_sha256)"
-    if [[ "$C_TS" =~ ^[0-9]+$ && "$C_TS" -gt 0 ]]; then
+    local C_JSONQ="${ZCL_JSONQ:-$MVP_REPO_ROOT/build/bin/jsonq}"
+    C_VERDICT="unreadable"
+    if [[ ! -x "$C_JSONQ" ]]; then
+        C_VERDICT="unavailable"
+        printf 'MVP canary: JSON parser unavailable: %s (run make jsonq)\n' "$C_JSONQ" >&2
+        return 0
+    fi
+    local document
+    document="$("$C_JSONQ" raw . < "$f" 2>/dev/null)" || return 0
+    [[ "$(printf '%s' "$document" | "$C_JSONQ" type . 2>/dev/null)" == object ]] || return 0
+    C_VERDICT="$(canary_field "$document" verdict string)"
+    C_VERDICT="${C_VERDICT:-unreadable}"
+    C_TS="$(canary_field "$document" ts number)"
+    C_TS="${C_TS:-0}"
+    C_SRC="$(canary_field "$document" source_id_sha256 string)"
+    C_ARTIFACT="$(canary_field "$document" artifact_sha256 string)"
+    if canary_decimal "$C_TS" && canary_decimal "$NOW_TS" &&
+       canary_decimal "$CANARY_MAX_AGE_S" &&
+       [[ "$C_TS" -gt 0 && "$C_TS" -le "$NOW_TS" ]]; then
         C_AGE=$(( NOW_TS - C_TS ))
         [[ "$C_AGE" -le "$CANARY_MAX_AGE_S" ]] && C_FRESH=1
     fi
+    return 0
 }
 
 canary_read genesis
