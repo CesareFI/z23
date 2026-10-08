@@ -1046,6 +1046,225 @@ static int dvx_codex_unknowns(const char *root, const char *ledger)
     return failures;
 }
 
+/* ── usage by_run: a delegated Claude run as a countable attempt ──────────── */
+
+/* Append one Claude assistant line; a NULL session omits sessionId, a NULL
+ * agent omits agentId (the lead thread), a NULL type omits attributionAgent. */
+static void dvx_run_line(char *buf, size_t cap, const char *session,
+                         const char *agent, const char *type, bool side,
+                         const char *id, const char *model, int out, int cread)
+{
+    char ses[256] = "", ag[256] = "", ty[256] = "";
+    size_t at = strlen(buf);
+    if (session)
+        (void)snprintf(ses, sizeof(ses), "\"sessionId\":\"%s\",", session);
+    if (agent)
+        (void)snprintf(ag, sizeof(ag), "\"agentId\":\"%s\",", agent);
+    if (type)
+        (void)snprintf(ty, sizeof(ty), "\"attributionAgent\":\"%s\",", type);
+    (void)snprintf(buf + at, cap - at,
+        "{\"type\":\"assistant\",\"timestamp\":\"2026-09-19T01:02:03Z\",%s%s%s"
+        "\"isSidechain\":%s,\"message\":{\"id\":\"%s\",\"model\":\"%s\","
+        "\"usage\":{\"input_tokens\":1,\"output_tokens\":%d,"
+        "\"cache_read_input_tokens\":%d}}}\n",
+        ses, ag, ty, side ? "true" : "false", id, model, out, cread);
+}
+
+static const struct json_value *dvx_run_rows(const struct dvx_call *c)
+{
+    const struct json_value *u = dvx_usage(c);
+    const struct json_value *arr = u ? json_get(u, "by_run") : NULL;
+    return arr && arr->type == JSON_ARR ? arr : NULL;
+}
+
+static bool dvx_run_is(const struct json_value *arr, size_t i,
+                       const char *session, const char *agent,
+                       const char *type, bool side, const char *model,
+                       int64_t events, int64_t out, int64_t cread)
+{
+    if (!arr || i >= arr->num_children)
+        return false;
+    const struct json_value *r = &arr->children[i];
+    const struct json_value *sc = json_get(r, "sidechain");
+    return strcmp(json_get_str(json_get(r, "format")), "claude") == 0 &&
+           strcmp(json_get_str(json_get(r, "session")), session) == 0 &&
+           strcmp(json_get_str(json_get(r, "agent")), agent) == 0 &&
+           strcmp(json_get_str(json_get(r, "agent_type")), type) == 0 &&
+           sc && sc->type == JSON_BOOL && sc->val.b == side &&
+           strcmp(json_get_str(json_get(r, "model")), model) == 0 &&
+           dvx_entry_int(r, "events") == events &&
+           dvx_entry_int(r, "output_tokens") == out &&
+           dvx_entry_int(r, "cache_read_tokens") == cread;
+}
+
+/* Two sessions; session s1 has a lead thread and two sidechain agents with
+ * different attributionAgent values, one agent on two models. */
+static void dvx_runs_fixture(char *buf, size_t cap)
+{
+    buf[0] = 0;
+    dvx_run_line(buf, cap, "s1", NULL, NULL, false, "a1", "mA", 5, 100);
+    dvx_run_line(buf, cap, "s1", "ag1", "reviewer", true, "b1", "mA", 7, 200);
+    dvx_run_line(buf, cap, "s1", "ag1", "reviewer", true, "b3", "mA", 1, 1);
+    dvx_run_line(buf, cap, "s1", "ag1", "reviewer", true, "b2", "mB", 9, 300);
+    dvx_run_line(buf, cap, "s1", "ag2", "explorer", true, "c1", "mA", 11, 400);
+    dvx_run_line(buf, cap, "s2", NULL, NULL, false, "d1", "mA", 13, 500);
+}
+
+static int dvx_runs_grouping(const char *root, const char *ledger, const char *model)
+{
+    int failures = 0;
+    char text[8192];
+    char path[1024];
+    (void)snprintf(path, sizeof(path), "%s/runs.jsonl", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, model);
+    TEST(model ? "usage: by_run applies the model filter"
+               : "usage: by_run groups Claude events by session, agent and model") {
+        dvx_runs_fixture(text, sizeof(text));
+        ASSERT(dvx_write(root, "runs.jsonl", text));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        const struct json_value *u = dvx_usage(&c);
+        const struct json_value *rows = dvx_run_rows(&c);
+        ASSERT(rows != NULL);
+        ASSERT_EQ(dvx_entry_int(u, "runs_unkeyed"), 0);
+        if (model) {
+            ASSERT_EQ(dvx_entry_int(u, "runs_total"), 1);
+            ASSERT_EQ(rows->num_children, 1);
+            ASSERT(dvx_run_is(rows, 0, "s1", "ag1", "reviewer", true, "mB", 1, 9, 300));
+        } else {
+            ASSERT_EQ(dvx_entry_int(u, "runs_total"), 5);
+            ASSERT_EQ(rows->num_children, 5);
+            ASSERT(dvx_run_is(rows, 0, "s1", "", "", false, "mA", 1, 5, 100));
+            ASSERT(dvx_run_is(rows, 1, "s1", "ag1", "reviewer", true, "mA", 2, 8, 201));
+            ASSERT(dvx_run_is(rows, 2, "s1", "ag1", "reviewer", true, "mB", 1, 9, 300));
+            ASSERT(dvx_run_is(rows, 3, "s1", "ag2", "explorer", true, "mA", 1, 11, 400));
+            ASSERT(dvx_run_is(rows, 4, "s2", "", "", false, "mA", 1, 13, 500));
+        }
+        PASS();
+    } _test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_runs_dedup_unkeyed(const char *root, const char *ledger)
+{
+    int failures = 0;
+    char text[8192] = "";
+    char path[1024];
+    (void)snprintf(path, sizeof(path), "%s/runs-dedup.jsonl", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: by_run keeps the last line per id and leaves sessionless lines out") {
+        dvx_run_line(text, sizeof(text), "s1", NULL, NULL, false, "r1", "mA", 3, 30);
+        dvx_run_line(text, sizeof(text), "s1", NULL, NULL, false, "r1", "mA", 8, 80);
+        dvx_run_line(text, sizeof(text), NULL, NULL, NULL, false, "n1", "mN", 4, 40);
+        ASSERT(dvx_write(root, "runs-dedup.jsonl", text));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        const struct json_value *u = dvx_usage(&c);
+        const struct json_value *rows = dvx_run_rows(&c);
+        ASSERT(rows != NULL);
+        ASSERT_EQ(dvx_entry_int(u, "duplicate_lines"), 1);
+        ASSERT_EQ(dvx_entry_int(u, "runs_total"), 1);
+        ASSERT_EQ(dvx_entry_int(u, "runs_unkeyed"), 1);
+        ASSERT_EQ(rows->num_children, 1);
+        ASSERT(dvx_run_is(rows, 0, "s1", "", "", false, "mA", 1, 8, 80));
+        ASSERT(dvx_usage_model(&c, "claude", "mN") != NULL);
+        ASSERT_EQ(dvx_entry_int(dvx_usage_model(&c, "claude", "mN"), "events"), 1);
+        PASS();
+    } _test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_runs_overlong(const char *root, const char *ledger)
+{
+    int failures = 0;
+    char text[4096] = "";
+    char path[1024];
+    char longid[130];
+    memset(longid, 'x', 129);
+    longid[129] = 0;
+    (void)snprintf(path, sizeof(path), "%s/runs-long.jsonl", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: by_run treats an overlong session, agent or agent_type as unkeyed") {
+        dvx_run_line(text, sizeof(text), longid, NULL, NULL, false, "l1", "mA", 1, 1);
+        dvx_run_line(text, sizeof(text), "s1", longid, NULL, true, "l2", "mA", 1, 1);
+        dvx_run_line(text, sizeof(text), "s1", NULL, longid, true, "l3", "mA", 1, 1);
+        ASSERT(dvx_write(root, "runs-long.jsonl", text));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "events"), 3);
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "runs_total"), 0);
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "runs_unkeyed"), 3);
+        ASSERT(dvx_run_rows(&c) != NULL);
+        ASSERT_EQ(dvx_run_rows(&c)->num_children, 0);
+        PASS();
+    } _test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_runs_non_claude(const char *root, const char *ledger)
+{
+    int failures = 0;
+    char dir[1024];
+    (void)snprintf(dir, sizeof(dir), "%s/runs-other", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, dir, NULL);
+    TEST("usage: Muse and Codex events produce no by_run rows") {
+        ASSERT(dvx_mkdir(dir));
+        ASSERT(dvx_write(dir, "muse.jsonl",
+            "{\"id\":\"ev-a\",\"recorded_at\":1789762861658881,\"payload\":{"
+            "\"event\":{\"kind\":\"model_completed\",\"model\":\"m1\",\"usage\":"
+            "{\"input_tokens\":10,\"output_tokens\":5}}}}\n"));
+        ASSERT(dvx_write(dir, "codex.jsonl",
+            DVX_CODEX_META("a", "g") DVX_CODEX_COUNT("1", DVX_CODEX_ONE)));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "events"), 2);
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "runs_total"), 0);
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "runs_unkeyed"), 0);
+        ASSERT(dvx_run_rows(&c) != NULL);
+        ASSERT_EQ(dvx_run_rows(&c)->num_children, 0);
+        PASS();
+    } _test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_runs_bound(const char *root, const char *ledger)
+{
+    int failures = 0;
+    enum { RUNS = 300, LINE = 400 };
+    char *text = calloc(RUNS, LINE);
+    char path[1024];
+    (void)snprintf(path, sizeof(path), "%s/runs-many.jsonl", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: by_run emits at most 256 rows while runs_total stays exact") {
+        ASSERT(text != NULL);
+        for (int i = 0; i < RUNS; i++) {
+            char ses[16], id[16];
+            (void)snprintf(ses, sizeof(ses), "s%03d", i);
+            (void)snprintf(id, sizeof(id), "m%03d", i);
+            dvx_run_line(text, (size_t)RUNS * LINE, ses, NULL, NULL, false, id,
+                         "mA", 1, 1);
+        }
+        ASSERT(dvx_write(root, "runs-many.jsonl", text));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        const struct json_value *rows = dvx_run_rows(&c);
+        ASSERT(rows != NULL);
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "events"), RUNS);
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "runs_total"), RUNS);
+        ASSERT_EQ(rows->num_children, 256);
+        ASSERT(dvx_run_is(rows, 0, "s000", "", "", false, "mA", 1, 1, 1));
+        ASSERT(dvx_run_is(rows, 255, "s255", "", "", false, "mA", 1, 1, 1));
+        PASS();
+    } _test_next:;
+    free(text);
+    dvx_end(&c);
+    return failures;
+}
+
 #undef DVX_CODEX_META
 #undef DVX_CODEX_COUNT
 #undef DVX_CODEX_ONE
@@ -1275,6 +1494,12 @@ int test_devagent_outcomes(void)
     failures += dvx_codex_refusals(root, ledger);
     failures += dvx_codex_nul_metadata(root, ledger);
     failures += dvx_codex_unknowns(root, ledger);
+    failures += dvx_runs_grouping(root, ledger, NULL);
+    failures += dvx_runs_grouping(root, ledger, "mB");
+    failures += dvx_runs_dedup_unkeyed(root, ledger);
+    failures += dvx_runs_overlong(root, ledger);
+    failures += dvx_runs_non_claude(root, ledger);
+    failures += dvx_runs_bound(root, ledger);
     failures += dvx_usage_path_floor();
     failures += dvx_sort_boundaries(root, ledger);
     failures += dvx_byte_boundaries(root, ledger);

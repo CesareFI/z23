@@ -57,7 +57,17 @@
  * unreadable, unkeyed, events (distinct ids kept), duplicate_lines,
  * truncated, by_model:[{format, model, input_includes_cache_read, events,
  * <counters>, unreported:{...}}], hours_total, by_hour: newest
- * DVU_MAX_HOURS {hour, format, model, events, <counters>, unreported:{...}}}.
+ * DVU_MAX_HOURS {hour, format, model, events, <counters>, unreported:{...}},
+ * runs_total, runs_unkeyed, by_run:[{format, session, agent, agent_type,
+ * sidechain, model, events, <counters>, unreported:{...}}]}.
+ *   by_run: Claude events only, grouped by (sessionId, agentId, model) so a
+ *           delegated run is a countable attempt; agent is "" for the lead
+ *           thread and agent_type "" when attributionAgent is absent. Rows
+ *           are ordered by session, agent, model; at most DVU_MAX_RUNS are
+ *           emitted while runs_total stays the true group count.
+ *   runs_total: the number of distinct (session, agent, model) groups.
+ *   runs_unkeyed: kept Claude events in no run row, because the line has no
+ *           sessionId or a session, agent or agent_type over 128 bytes.
  *
  * FAILURE. usage_log present but not a nonempty UTF-8 string is BAD_INPUT; a path
  * that does not exist is USAGE_LOG_NOT_FOUND; one that is neither a file
@@ -112,6 +122,8 @@ void dvu_test_set_ops(const struct dvu_test_ops *ops)
 #define DVU_MAX_FILES 50000
 #define DVU_MAX_EVENTS 1000000u
 #define DVU_MAX_HOURS 48u
+#define DVU_MAX_RUNS 256u
+#define DVU_RUN_STR_MAX 128u
 #define DVU_HOUR_LEN 13u /* YYYY-MM-DDTHH */
 #define DVU_PATH_MAX 4096u
 
@@ -142,11 +154,19 @@ struct dvu_fields {
     char hour[DVU_HOUR_LEN + 1];
     int64_t v[DVU_NF];
     int64_t ordinal;
+    const char *session; /* NULL: not in any run row */
+    const char *agent;
+    const char *agent_type;
+    bool sidechain;
 };
 
 struct dvu_event {
     char *id;
     char *model;
+    char *session; /* NULL: not in any run row */
+    char *agent;
+    char *agent_type;
+    bool sidechain;
     char hour[DVU_HOUR_LEN + 1];
     enum dvu_format format;
     size_t seq; /* input order: the latest line for an id wins */
@@ -259,6 +279,33 @@ static bool dvu_parse_muse(const struct json_value *row, struct dvu_fields *f)
     return true;
 }
 
+/* An absent or non-string field is "", an overlong one cannot be a run key. */
+static bool dvu_run_field(const struct json_value *row, const char *key,
+                          const char **out)
+{
+    const char *v = dvu_str(row, key);
+    *out = v ? v : "";
+    return strlen(*out) <= DVU_RUN_STR_MAX;
+}
+
+/* Run identity of one Claude line; f->session stays NULL when unkeyed. */
+static void dvu_claude_run(const struct json_value *row, struct dvu_fields *f)
+{
+    const char *session = dvu_str(row, "sessionId");
+    const char *agent;
+    const char *type;
+    f->session = NULL;
+    if (!session || !session[0] || strlen(session) > DVU_RUN_STR_MAX ||
+        !dvu_run_field(row, "agentId", &agent) ||
+        !dvu_run_field(row, "attributionAgent", &type))
+        return;
+    const struct json_value *side = dvu_get(row, "isSidechain");
+    f->session = session;
+    f->agent = agent;
+    f->agent_type = type;
+    f->sidechain = side && side->type == JSON_BOOL && side->val.b;
+}
+
 static bool dvu_parse_claude(const struct json_value *row, struct dvu_fields *f)
 {
     const char *type = dvu_str(row, "type");
@@ -277,6 +324,7 @@ static bool dvu_parse_claude(const struct json_value *row, struct dvu_fields *f)
     f->v[DVU_REASON] = dvu_counter(dvu_get(u, "output_tokens_details"),
                                    "thinking_tokens");
     f->v[DVU_UNCACHED] = f->v[DVU_IN];
+    dvu_claude_run(row, f);
     return true;
 }
 
@@ -336,6 +384,34 @@ static bool dvu_filtered_out(const struct dvu_scan *s, const struct dvu_fields *
                         strncmp(f->hour, s->since, DVU_HOUR_LEN) < 0);
 }
 
+static void dvu_event_free(struct dvu_event *e)
+{
+    free(e->id);
+    free(e->model);
+    free(e->session);
+    free(e->agent);
+    free(e->agent_type);
+}
+
+/* Copy the run identity; false (nothing left allocated) on allocation failure. */
+static bool dvu_keep_run(struct dvu_event *e, const struct dvu_fields *f)
+{
+    e->session = e->agent = e->agent_type = NULL;
+    e->sidechain = f->sidechain;
+    if (!f->session)
+        return true;
+    e->session = zcl_strdup(f->session, "devagent_usage_session");
+    e->agent = zcl_strdup(f->agent, "devagent_usage_agent");
+    e->agent_type = zcl_strdup(f->agent_type, "devagent_usage_agent_type");
+    if (e->session && e->agent && e->agent_type)
+        return true;
+    free(e->session);
+    free(e->agent);
+    free(e->agent_type);
+    e->session = e->agent = e->agent_type = NULL;
+    return false;
+}
+
 static void dvu_keep(struct dvu_scan *s, const struct dvu_fields *f)
 {
     if (!f->id || !f->id[0]) {
@@ -362,7 +438,7 @@ static void dvu_keep(struct dvu_scan *s, const struct dvu_fields *f)
     struct dvu_event *e = &s->ev[s->n];
     e->id = zcl_strdup(f->id, "devagent_usage_id");
     e->model = zcl_strdup(f->model ? f->model : "", "devagent_usage_model");
-    if (!e->id || !e->model) {
+    if (!e->id || !e->model || !dvu_keep_run(e, f)) {
         free(e->id);
         free(e->model);
         s->alloc_failed = true;
@@ -598,8 +674,7 @@ static int64_t dvu_dedup(struct dvu_scan *s)
         } else {
             if (!last)
                 dropped++;
-            free(s->ev[i].id);
-            free(s->ev[i].model);
+            dvu_event_free(&s->ev[i]);
         }
     }
     s->n = out;
@@ -804,12 +879,94 @@ static bool dvu_push_by_hour(struct json_value *usage, struct dvu_scan *s)
     return ok;
 }
 
+static const char *dvu_run_text(const char *s)
+{
+    return s ? s : "";
+}
+
+/* The run key: session, agent, model. Unkeyed events (no session) lead. */
+static int dvu_cmp_run_key(const struct dvu_event *x, const struct dvu_event *y)
+{
+    int c = strcmp(dvu_run_text(x->session), dvu_run_text(y->session));
+    if (c)
+        return c;
+    c = strcmp(dvu_run_text(x->agent), dvu_run_text(y->agent));
+    return c ? c : strcmp(x->model, y->model);
+}
+
+/* Key order, then the non-key fields so the sort is deterministic. */
+static int dvu_cmp_run(const void *a, const void *b)
+{
+    const struct dvu_event *x = a, *y = b;
+    int c = dvu_cmp_run_key(x, y);
+    if (c)
+        return c;
+    c = strcmp(dvu_run_text(x->agent_type), dvu_run_text(y->agent_type));
+    return c ? c : (int)x->sidechain - (int)y->sidechain;
+}
+
+static bool dvu_push_run_row(struct json_value *arr, const struct dvu_event *e,
+                             const struct dvu_sum *t)
+{
+    struct json_value row;
+    json_init(&row);
+    json_set_object(&row);
+    bool ok = dvu_json_str(&row, "format", dvu_format_names[e->format]) &&
+              dvu_json_str(&row, "session", e->session) &&
+              dvu_json_str(&row, "agent", e->agent) &&
+              dvu_json_str(&row, "agent_type", e->agent_type) &&
+              json_push_kv_bool(&row, "sidechain", e->sidechain) &&
+              dvu_json_str(&row, "model", e->model) &&
+              dvu_push_sum(&row, t, true) && dvu_json_back(arr, &row);
+    json_free(&row);
+    return ok;
+}
+
+/* Kept Claude events that are in no run row. */
+static int64_t dvu_runs_unkeyed(const struct dvu_scan *s)
+{
+    int64_t n = 0;
+    for (size_t i = 0; i < s->n; i++)
+        if (s->ev[i].format == DVU_CLAUDE && !s->ev[i].session)
+            n++;
+    return n;
+}
+
+static bool dvu_push_by_run(struct json_value *usage, struct dvu_scan *s)
+{
+    struct json_value arr;
+    json_init(&arr);
+    json_set_array(&arr);
+    if (s->n > 1)
+        qsort(s->ev, s->n, sizeof(*s->ev), dvu_cmp_run);
+    int64_t groups = 0;
+    bool ok = true;
+    for (size_t i = 0; ok && i < s->n;) {
+        size_t j = i;
+        struct dvu_sum t;
+        memset(&t, 0, sizeof(t));
+        while (ok && j < s->n && dvu_cmp_run_key(&s->ev[i], &s->ev[j]) == 0)
+            ok = dvu_sum_add(&t, &s->ev[j++]);
+        if (!ok) {
+            s->sum_overflow = true;
+            break;
+        }
+        /* Groups past the bound still count in runs_total. */
+        if (s->ev[i].session && (size_t)groups++ < DVU_MAX_RUNS)
+            ok = dvu_push_run_row(&arr, &s->ev[i], &t);
+        i = j;
+    }
+    ok = ok && json_push_kv_int(usage, "runs_total", groups) &&
+         json_push_kv_int(usage, "runs_unkeyed", dvu_runs_unkeyed(s)) &&
+         dvu_json_kv(usage, "by_run", &arr);
+    json_free(&arr);
+    return ok;
+}
+
 static void dvu_scan_free(struct dvu_scan *s)
 {
-    for (size_t i = 0; i < s->n; i++) {
-        free(s->ev[i].id);
-        free(s->ev[i].model);
-    }
+    for (size_t i = 0; i < s->n; i++)
+        dvu_event_free(&s->ev[i]);
     free(s->ev);
 }
 
@@ -898,6 +1055,7 @@ void dvu_push_usage(const struct json_value *input, const char *model,
               dvu_push_counts(&usage, &s, duplicates) &&
               dvu_push_by_model(&usage, &s) &&
               dvu_push_by_hour(&usage, &s) &&
+              dvu_push_by_run(&usage, &s) &&
               dvu_json_kv(&reply->data, "usage", &usage);
     json_free(&usage);
     dvu_scan_free(&s);
