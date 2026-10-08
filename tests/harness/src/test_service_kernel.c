@@ -3,6 +3,7 @@
 #include "test/test_core.h"
 #include "config/boot.h"
 #include "kernel/service_kernel.h"
+#include "platform/clock.h"
 #include <string.h>
 
 struct service_kernel_test_ctx {
@@ -227,6 +228,32 @@ static int test_service_kernel_independent_failure_spares_siblings(void)
     return failures;
 }
 
+static int64_t service_timing_now_us;
+
+static int64_t service_timing_monotonic_us(void *user)
+{
+    (void)user;
+    return service_timing_now_us;
+}
+
+static int64_t service_timing_wall_unix(void *user)
+{
+    (void)user;
+    return 0;
+}
+
+static struct platform_clock_source service_timing_clock = {
+    .monotonic_us = service_timing_monotonic_us,
+    .wall_unix = service_timing_wall_unix,
+};
+
+static bool test_service_timed_start(void *raw)
+{
+    bool ok = test_service_start(raw);
+    service_timing_now_us = 1004321;
+    return ok;
+}
+
 /* Per-service timing, and the in-flight description a watchdog reads. */
 static int test_service_kernel_start_timing(void)
 {
@@ -242,6 +269,7 @@ static int test_service_kernel_start_timing(void)
 
         zcl_service_kernel_init(&kernel);
         struct zcl_service_spec spec_a = test_spec("https_explorer", &a);
+        spec_a.start = test_service_timed_start;
         ASSERT(zcl_service_kernel_register(&kernel, &spec_a));
 
         /* Nothing in flight before the start, and nothing after it. */
@@ -250,11 +278,17 @@ static int test_service_kernel_start_timing(void)
             desc, sizeof(desc)));
         ASSERT_EQ(desc[0], '\0');
 
-        ASSERT(zcl_service_kernel_start_all(&kernel));
+        /* Static source storage outlives readers; clear before any assertion
+         * can leave this fixture and affect another test's clock. */
+        service_timing_now_us = 1000000;
+        platform_clock_set_source(&service_timing_clock);
+        bool started = zcl_service_kernel_start_all(&kernel);
+        platform_clock_clear_source();
+        ASSERT(started);
         const struct zcl_service_entry *e =
             zcl_service_kernel_find(&kernel, "https_explorer");
         ASSERT(e != NULL);
-        ASSERT(e->start_us >= 0);
+        ASSERT_EQ(e->start_us, 4321);
         ASSERT(!zcl_service_kernel_describe_starting(
             &kernel, "frontend", 0, ZCL_SERVICE_SLOW_START_US,
             desc, sizeof(desc)));
