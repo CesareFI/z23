@@ -3360,9 +3360,22 @@ static int test_ic_proof_reads_the_harness_banners(void)
         ASSERT(!zcl_dev_proof_timing_parse_group_line(
             "SUITE VERDICT groups_ran=4\n", group, sizeof(group), &ms));
 
+        const char *bad_status =
+            "==================== alpha (PASSING_BUT_FAILED, 12s) ====================\n";
+        ASSERT(!zcl_dev_proof_timing_parse_group_line(
+            bad_status, group, sizeof(group), &ms));
+
         char state[4096], log[4096];
         ic_budget_fixture("ingest", state);
         snprintf(log, sizeof(log), "%s/test.log", state);
+        ASSERT(ic_write(state, "test.log", bad_status));
+        ASSERT(zcl_dev_proof_timing_ingest_test_log(state, log) == 0);
+        ASSERT(zcl_dev_proof_timing_allowance_ms(state, "alpha", 77) == 77);
+        char table[4096];
+        struct stat table_stat;
+        snprintf(table, sizeof(table), "%s/timing/table.tsv", state);
+        ASSERT(stat(table, &table_stat) == -1 && errno == ENOENT);
+        /* Valid PASS and PASS-with-skip records still populate this history. */
         ASSERT(ic_write(
             state, "test.log",
             "noise before\n"

@@ -278,8 +278,8 @@ bool zcl_dev_proof_timing_parse_group_line(const char *line, char *group,
     size_t name_len = (size_t)(open - name);
     if (name_len >= group_size) return false;
     const char *status = open + 2;
-    /* Only a passing group is evidence of how long the work takes. */
-    if (strncmp(status, "PASS", 4) != 0) return false;
+    /* Require the complete status field, including its comma delimiter. */
+    if (strncmp(status, "PASS,", 5) != 0) return false;
     const char *close = strstr(status, ") ====");
     if (!close) return false;
     /* The seconds are the last comma-separated field before the paren; a
