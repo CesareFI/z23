@@ -768,6 +768,10 @@ enum zcl_fleet_status zcl_fleet_ledger_append(
     const char *story, const uint8_t seed[ZCL_FLEET_SEED_BYTES],
     uint64_t *out_seq)
 {
+    uint64_t unused_seq;
+    if (!out_seq)
+        out_seq = &unused_seq;
+    *out_seq = 0;
     if (!ledger_writable(ledger) || !seed || (!pairs && pair_count))
         return ZCL_FLEET_ARGUMENT;
     if (!ledger->have_self)
@@ -845,8 +849,7 @@ enum zcl_fleet_status zcl_fleet_ledger_append(
         index_row(ledger, box_index(ledger, box), &row, NULL);
         index_experiment(ledger, &row);
     }
-    if (out_seq)
-        *out_seq = row.seq;
+    *out_seq = row.seq;
     return ZCL_FLEET_OK;
 }
 

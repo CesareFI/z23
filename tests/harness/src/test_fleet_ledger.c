@@ -710,8 +710,17 @@ int test_fleet_ledger(void)
          "rows, and a gauge does not") {
         ASSERT(fl_box_open(&ma, root, "a", 0x11));
         ma_open = true;
-        ASSERT_EQ(fl_add_usage(&ma, ZCL_FLEET_PROVIDER_GROK, 100, 10, "t1"),
+        struct zcl_fleet_pair first_pairs[2] = {
+            { ZCL_FLEET_PAIR_TOKENS_IN, 100 },
+            { ZCL_FLEET_PAIR_TOKENS_OUT, 10 }
+        };
+        uint64_t first_seq = 77;
+        ASSERT_EQ(zcl_fleet_ledger_append(
+                      ma.ledger, ZCL_FLEET_KIND_USAGE, ZCL_FLEET_PROVIDER_GROK,
+                      first_pairs, 2, "t1", NULL, ma.seed, &first_seq),
                   ZCL_FLEET_OK);
+        ASSERT_EQ(first_seq, UINT64_C(1));
+        ASSERT_EQ(zcl_fleet_ledger_peer_seq(ma.ledger, ma.box_id), first_seq);
         ASSERT_EQ(fl_add_usage(&ma, ZCL_FLEET_PROVIDER_GROK, 200, 20, "t2"),
                   ZCL_FLEET_OK);
         struct zcl_fleet_bucket bucket;
@@ -763,6 +772,31 @@ int test_fleet_ledger(void)
                                        ZCL_FLEET_PROVIDER_GROK,
                                        ZCL_FLEET_PAIR_TOKENS_IN),
                   ZCL_FLEET_MERGE_COUNTER);
+        PASS();
+    }
+
+    TEST("fleet ledger: refused appends clear the sequence output") {
+        uint64_t seq = 77;
+        ASSERT_EQ(zcl_fleet_ledger_append(NULL, 1, 0, NULL, 0, NULL, NULL,
+                                          NULL, &seq), ZCL_FLEET_ARGUMENT);
+        ASSERT_EQ(seq, UINT64_C(0));
+        struct zcl_fleet_report report;
+        struct zcl_fleet_ledger *readonly = zcl_fleet_ledger_open_readonly(
+            ma.dir, ma.box_id, ma.signer, &report);
+        ASSERT(readonly);
+        seq = 77;
+        enum zcl_fleet_status status = zcl_fleet_ledger_append(
+            readonly, ZCL_FLEET_KIND_USAGE, ZCL_FLEET_PROVIDER_GROK,
+            NULL, 0, NULL, NULL, ma.seed, &seq);
+        zcl_fleet_ledger_close(readonly);
+        ASSERT_EQ(status, ZCL_FLEET_ARGUMENT);
+        ASSERT_EQ(seq, UINT64_C(0));
+        seq = 77;
+        struct zcl_fleet_pair pair = { ZCL_FLEET_PAIR_VALUE, 1 };
+        ASSERT_EQ(zcl_fleet_ledger_append(ma.ledger, ZCL_FLEET_KIND_ATTEST, 0,
+                                          &pair, 1, NULL, NULL, ma.seed, &seq),
+                  ZCL_FLEET_KIND_NOT_WRITABLE);
+        ASSERT_EQ(seq, UINT64_C(0));
         PASS();
     }
 
