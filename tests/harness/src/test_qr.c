@@ -41,8 +41,10 @@ static void qr_case_alloc_failure_refuses(void)
     bool refused = !qr_matrix_encode("hello", &m, err, sizeof err);
     zcl_alloc_fault_clear();
     QR_CHECK("QR encode refuses allocation failure",
-             refused && m.modules == NULL && m.width == 0 &&
-             strcmp(err, "QR matrix allocation failed") == 0);
+             refused && m.modules == NULL && m.width == 0);
+    QR_CHECK("QR encode allocation diagnostic gives stage, bytes and recovery",
+             strcmp(err, "QR matrix allocation failed during encode (441 bytes); "
+                         "retry after freeing memory") == 0);
     qr_matrix_free(&m);
 
     if (!qr_matrix_encode("hello", &m, err, sizeof err)) {
@@ -71,7 +73,8 @@ static void qr_case_popup_alloc_failure_refuses(void)
         return;
     }
     const char *labels[] = { "qr.matrix.modules", "qr.render.rgb" };
-    const char *errors[] = { "QR matrix allocation failed",
+    const char *errors[] = { "QR matrix allocation failed during encode (441 bytes); "
+                             "retry after freeing memory",
                              "QR render allocation failed" };
     for (size_t i = 0; i < 2; i++) {
         struct qr_popup_card card = { .width = 99, .height = 99 };
@@ -83,6 +86,24 @@ static void qr_case_popup_alloc_failure_refuses(void)
                  strcmp(err, errors[i]) == 0);
         qr_popup_card_free(&card);
     }
+}
+
+static void qr_case_encode_alloc_optional_diagnostic(void)
+{
+    uint8_t sentinel = 0;
+    char tiny[2] = { 'x', 'y' };
+    char *errors[] = { tiny, NULL };
+    for (size_t i = 0; i < 2; i++) {
+        struct qr_matrix m = { .modules = &sentinel, .width = 1 };
+        zcl_alloc_fault_fail_next("qr.matrix.modules");
+        bool refused = !qr_matrix_encode("hello", &m, errors[i], 1);
+        zcl_alloc_fault_clear();
+        QR_CHECK("QR encode allocation refusal with optional diagnostic",
+                 refused && m.modules == NULL && m.width == 0);
+        qr_matrix_free(&m);
+    }
+    QR_CHECK("QR encode allocation diagnostic respects one-byte capacity",
+             tiny[0] == '\0' && tiny[1] == 'y');
 }
 
 static void qr_case_render_refusal_outputs(void)
@@ -135,6 +156,7 @@ int test_qr(void)
 
     if (!qr_case_payment_uri_encode_and_finders()) return (*qr_failures_ptr());
     qr_case_alloc_failure_refuses();
+    qr_case_encode_alloc_optional_diagnostic();
     qr_case_popup_alloc_failure_refuses();
     qr_case_render_refusal_outputs();
     qr_case_render_size_refuses();

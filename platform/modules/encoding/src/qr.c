@@ -66,7 +66,11 @@ bool qr_matrix_encode(const char *payload, struct qr_matrix *out,
     size_t count = (size_t)width * (size_t)width;
     uint8_t *modules = zcl_malloc(count, "qr.matrix.modules");
     if (!modules) {
-        qr_error(error, error_cap, "QR matrix allocation failed");
+        char message[128];
+        snprintf(message, sizeof message,
+                 "QR matrix allocation failed during encode (%zu bytes); "
+                 "retry after freeing memory", count);
+        qr_error(error, error_cap, message);
         return false;
     }
     for (uint32_t y = 0; y < width; y++) {
