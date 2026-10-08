@@ -91,7 +91,10 @@ static bool mrr_fold_tempfile(const char *rundir, char *tmp, size_t tmpcap,
         (void)unlink(tmp);
         return false;
     }
-    fclose(f);
+    if (fclose(f) != 0) {
+        (void)unlink(tmp);
+        return false;
+    }
     return true;
 }
 
@@ -165,7 +168,7 @@ bool muse_candidate_fold(const char *workspace, const char *rundir,
     if (used < MUSE_FOLD_MAX) acc[used] = '\0';
     if (!mrr_fold_tempfile(rundir, tmp, sizeof(tmp), acc, used))
         return mrr_fold_failed(hex_out, hex_cap, fold_out, acc, why,
-            why_cap, "the fold could not be written under the run dir");
+            why_cap, "the fold tempfile write or close failed under the run dir");
     if (!mrr_hash_file(tmp, hex_out, hex_cap)) {
         (void)unlink(tmp);
         return mrr_fold_failed(hex_out, hex_cap, fold_out, acc, why,

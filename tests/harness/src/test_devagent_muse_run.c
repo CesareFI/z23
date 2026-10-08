@@ -108,6 +108,37 @@ static bool mr_evidence_parent(const char *parent)
 #undef fclose
 #undef platform_file_sync
 
+/* Refuse exactly the fold temporary's close after releasing the real stream. */
+static FILE *mr_fold_stream;
+static bool mr_fold_refuse;
+static int mr_fold_closes;
+static FILE *mr_fold_open(const char *path, const char *mode)
+{
+    FILE *f = fopen(path, mode);
+    const char *leaf = strrchr(path, '/');
+    if (leaf && strcmp(leaf, "/.candidate.in") == 0) mr_fold_stream = f;
+    return f;
+}
+static int mr_fold_close(FILE *f)
+{
+    bool target = f == mr_fold_stream;
+    int rc = fclose(f);
+    if (!target) return rc;
+    mr_fold_stream = NULL;
+    ++mr_fold_closes;
+    if (mr_fold_refuse) { mr_fold_refuse = false; errno = ENOSPC; return EOF; }
+    return rc;
+}
+#define fopen mr_fold_open
+#define fclose mr_fold_close
+#define muse_candidate_fold mr_fault_candidate_fold
+#define muse_restore_workspace mr_fault_restore_workspace
+#include "../../../contexts/commons/services/src/muse_run_restore.c"
+#undef muse_restore_workspace
+#undef muse_candidate_fold
+#undef fclose
+#undef fopen
+
 static int mr_failures_evidence(int fault)
 {
     const char *old = "{\"verdict\":\"fail\",\"seq\":7,\"name\":\"fixture\",\"attempt\":1,"
@@ -3673,10 +3704,48 @@ static int mr_failures_glue(void)
     return failures;
 }
 
+static int mr_fold_close_success(const struct mr_dirs *d)
+{
+    char hex[64], why[MUSE_FOLD_NOTE_MAX], path[8192], identity[64];
+    char *fold = NULL;
+    int failures = 0;
+    MR_CHECK("ordinary fold close succeeds", mr_fault_candidate_fold(d->wt, d->run,
+        hex, sizeof(hex), &fold, why, sizeof(why)));
+    MR_CHECK("ordinary fold complete", fold && strstr(fold, "+new") && why[0] == '\0');
+    MR_CHECK("ordinary fold artifact identity", fold &&
+        mr_path_in(d->run, "fold.diff", path, sizeof(path)) && mr_write(path, fold, 0) &&
+        mrr_hash_file(path, identity, sizeof(identity)) && strcmp(hex, identity) == 0);
+    (void)mrr_fold_failed(hex, sizeof(hex), &fold, fold, NULL, 0, "");
+    return failures;
+}
+
+static int mr_fold_close_failure(void)
+{
+    struct mr_dirs d;
+    char hex[64], why[MUSE_FOLD_NOTE_MAX], path[8192];
+    char *fold = NULL;
+    int failures = 0;
+    if (!mr_lane(&d) || !mr_seed_committed(&d, "src/fold.c", "old\n") ||
+        !mr_path_in(d.wt, "src/fold.c", path, sizeof(path)) ||
+        !mr_write(path, "new\n", 0)) return 1;
+    mr_fold_refuse = true;
+    mr_fold_closes = 0;
+    MR_CHECK("fold close refusal", !mr_fault_candidate_fold(d.wt, d.run,
+        hex, sizeof(hex), &fold, why, sizeof(why)));
+    MR_CHECK("fold close injected once", mr_fold_closes == 1 && !mr_fold_refuse);
+    MR_CHECK("refused fold has no identity", strcmp(hex, "none") == 0 && fold == NULL);
+    MR_CHECK("fold refusal names write/close", strstr(why, "close") != NULL);
+    (void)mrr_fold_failed(hex, sizeof(hex), &fold, fold, NULL, 0, "");
+    MR_CHECK("fold temporary path", mr_path_in(d.run, ".candidate.in", path, sizeof(path)));
+    MR_CHECK("refused fold temporary removed", access(path, F_OK) != 0 && errno == ENOENT);
+    return failures + mr_fold_close_success(&d);
+}
+
 int test_devagent_muse_run(void)
 {
     int failures = 0;
     (void)mr_fake_lifecycle_refs;
+    failures += mr_fold_close_failure();
     for (int fault = 0; fault < 4; ++fault) failures += mr_failures_evidence(fault);
     failures += mr_failures_validate();
     failures += mr_failures_parse();
