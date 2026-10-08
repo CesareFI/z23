@@ -25,6 +25,69 @@
 #include <sys/wait.h>
 #endif
 
+#include "platform/time_compat.h"
+#include <stdarg.h>
+static bool ma_terminal;
+static char ma_worker_output[16384];
+static int ma_worker_printf(const char *fmt, ...) {
+    size_t n = strlen(ma_worker_output);
+    va_list ap;
+    va_start(ap, fmt);
+    int rc = vsnprintf(ma_worker_output + n, sizeof(ma_worker_output) - n, fmt, ap);
+    va_end(ap);
+    return rc;
+}
+#define g_transactions_validated ma_transactions_validated
+#define g_eh_solver_runs ma_eh_solver_runs
+#define metrics_print_art ma_print_art
+#define metrics_start ma_metrics_start
+#define metrics_stop ma_metrics_stop
+#define printf ma_worker_printf
+#define platform_sleep_ms(ms) ((void)(ms))
+#ifdef _WIN32
+#define GetStdHandle(kind) ((HANDLE)(uintptr_t)1)
+#define GetConsoleMode(handle, mode) ((void)(handle), (void)(mode), ma_terminal)
+#else
+#define isatty(fd) (ma_terminal)
+#endif
+#include "../../../engine/modules/metrics/src/metrics.c"
+#undef g_transactions_validated
+#undef g_eh_solver_runs
+#undef metrics_print_art
+#undef metrics_start
+#undef metrics_stop
+#undef printf
+#undef platform_sleep_ms
+#ifdef _WIN32
+#undef GetStdHandle
+#undef GetConsoleMode
+#else
+#undef isatty
+#endif
+static void ma_end_tick(struct metrics_external_gauges *out, void *ctx) {
+    (void)out;
+    atomic_store(&((struct metrics_context *)ctx)->running, false);
+}
+static int test_worker_display_hint(void) {
+    int failures = 0;
+    static struct main_state ms;
+    zcl_mutex_init(&ms.cs_main);
+    struct metrics_context ctx = {.ms = &ms, .external_gauges = ma_end_tick, .external_gauges_ctx = &ctx};
+    TEST("metric_alerts: worker gives effective terminal hide instruction") {
+        for (int terminal = 0; terminal < 2; terminal++) {
+            ma_terminal = terminal != 0;
+            ma_worker_output[0] = '\0';
+            atomic_store(&ctx.running, true);
+            metrics_thread_fn(&ctx);
+            ASSERT((strstr(ma_worker_output, "[Restart with startup argument '-showmetrics=0' to hide]") != NULL) == ma_terminal);
+            ASSERT((strstr(ma_worker_output, "----------------------------------------\n") != NULL) == !ma_terminal);
+            ASSERT(strstr(ma_worker_output, "[Set 'showmetrics=0'") == NULL);
+        }
+        PASS();
+    } _test_next:;
+    zcl_mutex_destroy(&ms.cs_main);
+    return failures;
+}
 static const enum event_type ma_subscription_types[] = {
     EV_PEER_MISBEHAVE, EV_PEER_BANNED,
     EV_CONSENSUS_REJECT_TX, EV_CONSENSUS_REJECT_BLOCK
@@ -691,6 +754,7 @@ int test_metric_alerts(void)
 #endif
     int failures = 0;
 
+    failures += test_worker_display_hint();
     failures += test_subscription_retries();
     failures += test_rule_count_and_names();
     failures += test_peer_floor_env_bounds();

@@ -342,6 +342,15 @@ static int print_metrics(bool mining)
     return lines;
 }
 
+static void metrics_print_footer(bool is_tty)
+{
+    if (is_tty)
+        printf("[Press Ctrl+C to exit] "
+               "[Restart with startup argument '-showmetrics=0' to hide]\n");
+    else
+        printf("----------------------------------------\n");
+}
+
 static void *metrics_thread_fn(void *arg)
 {
     struct metrics_context *ctx = (struct metrics_context *)arg;
@@ -445,12 +454,7 @@ static void *metrics_thread_fn(void *arg)
             metrics_stage_set_samples(ext.stage_cursor, ext.stage_step_us_ewma);
         }
 
-        if (is_tty) {
-            printf("[Press Ctrl+C to exit] "
-                   "[Set 'showmetrics=0' to hide]\n");
-        } else {
-            printf("----------------------------------------\n");
-        }
+        metrics_print_footer(is_tty);
 
         fflush(stdout);
         platform_sleep_ms(1000);
