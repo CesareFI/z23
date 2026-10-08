@@ -402,7 +402,9 @@ enum zcl_chainlog_status zcl_chainlog_append(struct zcl_chainlog *log,
     if (!chainlog_writable(log) || (len && !payload) || len > ZCL_CHAINLOG_PAYLOAD_MAX)
         return ZCL_CHAINLOG_ARGUMENT;
     if (log->write_failed)
-        LOG_RETURN(ZCL_CHAINLOG_IO, "chainlog", "append refused after failed write; close and reopen");
+        LOG_RETURN(ZCL_CHAINLOG_IO, "chainlog",
+            "append refused after failed write: kind=%u len=%zu seq=%llu; close and reopen",
+            (unsigned)kind, len, (unsigned long long)(log->count + 1));
 
     uint64_t seq = log->count + 1;
     uint8_t prefix[PRE];
@@ -419,7 +421,9 @@ enum zcl_chainlog_status zcl_chainlog_append(struct zcl_chainlog *log,
     uint64_t at = log->size;
     log->write_failed = true;
     if (!chainlog_write_frame(log, prefix, payload, len, chain, at))
-        return ZCL_CHAINLOG_IO;
+        LOG_RETURN(ZCL_CHAINLOG_IO, "chainlog",
+            "append frame write/flush failed: kind=%u len=%zu seq=%llu; close and reopen",
+            (unsigned)kind, len, (unsigned long long)seq);
 
     log->offset[seq - 1] = at;
     log->write_failed = false;

@@ -39,6 +39,7 @@
 #include "test/test_core.h"
 
 #include "base/safe_alloc.h"
+#include "base/log_macros.h"
 #include "platform/private_file.h"
 #if !defined(_WIN32)
 #include <sys/stat.h>
@@ -47,12 +48,24 @@
 #endif
 
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* Compile the real module with local I/O interception, without global hooks. */
 static unsigned cl_fault_at, cl_io_calls;
 static bool cl_injection_ok;
+static char cl_diagnostic[512];
+static void cl_capture_log(enum zcl_log_level level, const char *fmt, ...)
+    ZCL_PRINTF_LIKE(2, 3);
+static void cl_capture_log(enum zcl_log_level level, const char *fmt, ...)
+{
+    (void)level;
+    va_list ap;
+    va_start(ap, fmt);
+    (void)vsnprintf(cl_diagnostic, sizeof cl_diagnostic, fmt, ap);
+    va_end(ap);
+}
 static bool cl_fault_write(struct platform_private_file *f, const void *p, size_t n, uint64_t at)
 {
     if (++cl_io_calls == cl_fault_at) {
@@ -78,7 +91,9 @@ static bool cl_fault_flush(struct platform_private_file *f)
 #include "chainlog/chainlog.h"
 #define platform_private_file_write_at cl_fault_write
 #define platform_private_file_flush cl_fault_flush
+#define zcl_log_emit_at cl_capture_log
 #include "../../../engine/modules/chainlog/src/chainlog.c"
+#undef zcl_log_emit_at
 #undef platform_private_file_write_at
 #undef platform_private_file_flush
 
@@ -819,7 +834,12 @@ static int failed_append_retry(struct zcl_chainlog *log, const char *path)
     unsigned calls = cl_io_calls;
     uint64_t seq = 99;
     memset(out, 0xCC, sizeof out); memcpy(untouched, out, sizeof out);
+    cl_diagnostic[0] = '\0';
     CL_CHECK("failed append retry refuses", zcl_chainlog_append(log, 2, NULL, 0, &seq, out) == ZCL_CHAINLOG_IO);
+    CL_CHECK("retry diagnostic names operation, inputs and recovery",
+        strstr(cl_diagnostic, "append refused after failed write:") &&
+        strstr(cl_diagnostic, "kind=2 len=0 seq=1;") &&
+        strstr(cl_diagnostic, "close and reopen"));
     CL_CHECK("retry performs no I/O", cl_io_calls == calls);
     CL_CHECK("retry outputs unchanged", seq == 99 && memcmp(out, untouched, 32) == 0);
     bool same = append_snapshot(path, after, &after_size);
@@ -840,8 +860,17 @@ static int case_failed_append(void)
         CL_CHECK("failed append fixture", log != NULL);
         if (log) {
             uint8_t payload[100]; memset(payload, 0x41, sizeof payload);
+            uint64_t seq = 99;
+            uint8_t out[32], untouched[32];
+            memset(out, 0xCC, sizeof out); memcpy(untouched, out, sizeof out);
             cl_io_calls = 0; cl_fault_at = step; cl_injection_ok = true;
-            CL_CHECK("injected append fails", zcl_chainlog_append(log, 1, payload, sizeof payload, NULL, NULL) == ZCL_CHAINLOG_IO);
+            cl_diagnostic[0] = '\0';
+            CL_CHECK("injected append fails", zcl_chainlog_append(log, 1, payload, sizeof payload, &seq, out) == ZCL_CHAINLOG_IO);
+            CL_CHECK("first failure outputs unchanged", seq == 99 && memcmp(out, untouched, 32) == 0);
+            CL_CHECK("first failure diagnostic names operation, inputs and recovery",
+                strstr(cl_diagnostic, "append frame write/flush failed:") &&
+                strstr(cl_diagnostic, "kind=1 len=100 seq=1;") &&
+                strstr(cl_diagnostic, "close and reopen"));
             cl_fault_at = 0;
             CL_CHECK("partial write injection completed", cl_injection_ok);
             failures += failed_append_retry(log, path);
