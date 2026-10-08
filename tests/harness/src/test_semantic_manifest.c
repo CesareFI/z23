@@ -2034,6 +2034,72 @@ static int smt_t_max_records(void)
     return failures;
 }
 
+static bool smt_diff_refusal(const char *a, const char *b, const char *bad,
+                             const char *reason, const char *recovery)
+{
+    char message[4096] = "", expected[PATH_MAX + 64];
+    bool timed_out = false;
+    const char *argv[] = {SMT_SENSOR, "diff", a, b, NULL};
+    int n = snprintf(expected, sizeof(expected),
+                     "clang-manifest: diff: %s: %s", bad, reason);
+    if (n < 0 || (size_t)n >= sizeof(expected)) {
+        printf("FAIL diff diagnostic expectation too long\n");
+        return false;
+    }
+    int rc = zcl_spawn_capture_merged_observed(argv, message, sizeof(message),
+                                               60000, &timed_out);
+    bool ok = !timed_out && rc == 2 && strstr(message, expected) != NULL &&
+              strstr(message, recovery) != NULL &&
+              strstr(message, "function ") == NULL &&
+              strstr(message, "changed\n") == NULL;
+    if (!ok)
+        printf("FAIL diff refusal: rc=%d timeout=%d: %s\n",
+               rc, (int)timed_out, message);
+    return ok;
+}
+
+static int smt_t_diff_operands(void)
+{
+    int failures = 0;
+    char dir[1024] = {0}, absent[PATH_MAX], malformed[PATH_MAX];
+    const char *valid = SMT_FIXTURES "/base.bin";
+    TEST_CASE("semantic_sensor: diff identifies unreadable and invalid operands") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_diff") != NULL);
+        int n = snprintf(absent, sizeof(absent), "%s/absent.bin", dir);
+        ASSERT(n > 0 && (size_t)n < sizeof(absent));
+        n = snprintf(malformed, sizeof(malformed), "%s/malformed.bin", dir);
+        ASSERT(n > 0 && (size_t)n < sizeof(malformed));
+        ASSERT(smt_write(dir, "malformed.bin", "not a manifest\n"));
+        ASSERT(smt_diff_refusal(absent, valid, absent, "unreadable;",
+                                "check that the file exists and is readable"));
+        ASSERT(smt_diff_refusal(valid, absent, absent, "unreadable;",
+                                "check that the file exists and is readable"));
+        ASSERT(smt_diff_refusal(malformed, valid, malformed, "invalid manifest:",
+                                "regenerate this manifest with emit"));
+        ASSERT(smt_diff_refusal(valid, malformed, malformed, "invalid manifest:",
+                                "regenerate this manifest with emit"));
+        char message[4096] = "";
+        bool timed_out = false;
+        const char *argv[] = {SMT_SENSOR, "diff", valid, valid, NULL};
+        int rc = zcl_spawn_capture_merged_observed(argv, message, sizeof(message),
+                                                   60000, &timed_out);
+        ASSERT(!timed_out);
+        ASSERT_EQ(rc, 0);
+        ASSERT(strstr(message, "changed none\nexact equal hint equal\n") != NULL);
+        argv[3] = SMT_FIXTURES "/fn_body.bin";
+        rc = zcl_spawn_capture_merged_observed(argv, message, sizeof(message),
+                                              60000, &timed_out);
+        ASSERT(!timed_out);
+        ASSERT_EQ(rc, 1);
+        ASSERT(strstr(message, "exact differs") != NULL);
+    } TEST_END
+    if (dir[0] != '\0' && test_rm_rf_recursive(dir) != 0) {
+        printf("FAIL diff fixture cleanup %s\n", dir);
+        failures++;
+    }
+    return failures;
+}
+
 static int smt_t_root_failed_read(void)
 {
     int failures = 0;
@@ -2068,6 +2134,7 @@ int test_semantic_sensor(void)
         return 0;
     }
     failures += smt_t_root_failed_read();
+    failures += smt_t_diff_operands();
     failures += smt_t_max_records();
     failures += smt_t_section_limits();
     failures += smt_t_sensor_invariance(&r);

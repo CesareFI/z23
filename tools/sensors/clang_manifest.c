@@ -848,12 +848,29 @@ static void cm_print_fn(void *ctx, enum vcs_semantic_fn_change_v1 change,
            (int)name_len, name);
 }
 
+static bool cm_diff_read(const char *path, uint8_t **bytes, size_t *len)
+{
+    uint8_t root[32];
+    char why[256] = "invalid manifest";
+    if (!cm_read_file(path, bytes, len)) {
+        fprintf(stderr, "clang-manifest: diff: %s: unreadable; "
+                        "check that the file exists and is readable\n", path);
+        return false;
+    }
+    if (!vcs_semantic_root_v1(*bytes, *len, root, why, sizeof(why))) {
+        fprintf(stderr, "clang-manifest: diff: %s: invalid manifest: %s; "
+                        "regenerate this manifest with emit\n", path, why);
+        return false;
+    }
+    return true;
+}
+
 static int cm_cmd_diff(const char *a_path, const char *b_path)
 {
     uint8_t *a = NULL, *b = NULL;
     size_t an = 0, bn = 0;
     struct vcs_semantic_diff_v1 d;
-    bool ok = cm_read_file(a_path, &a, &an) && cm_read_file(b_path, &b, &bn) &&
+    bool ok = cm_diff_read(a_path, &a, &an) && cm_diff_read(b_path, &b, &bn) &&
               vcs_semantic_manifest_v1_diff(a, an, b, bn, &d, cm_print_fn, NULL);
     if (!ok) {
         fprintf(stderr, "clang-manifest: diff needs two valid manifests\n");
