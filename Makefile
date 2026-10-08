@@ -4923,7 +4923,8 @@ sovereign-source-roundtrip:
 # in the default set is verified clean under this posture — a red asan-ci
 # run is a real finding to fix, never an expected failure.
 ASAN_CI_GROUPS ?= test_bloom test_json test_parse_num test_zcl_result test_supervisor test_encoding test_zcode_site \
-	test_bn254_accel test_fr_mont_parity test_fr_accel test_mont_adx_honest
+	test_bn254_accel test_fr_mont_parity test_fr_accel test_mont_adx_honest \
+	test_semantic_manifest test_rolling_anchor_service
 T_ASAN_GROUPS = $(if $(strip $(ONLY)),$(ONLY),$(ASAN_CI_GROUPS))
 
 # With ONLY=, run the requested substring exactly as before.  With no selector,
