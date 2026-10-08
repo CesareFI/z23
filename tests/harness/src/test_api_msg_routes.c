@@ -20,6 +20,147 @@
 #include "models/database.h"
 #include "models/zmsg.h"
 #include "net/zmsg.h"
+#include "chain/chainparams.h"
+
+static int64_t msg_size_clock(void *self)
+{
+    (void)self;
+    return 1700000300000LL;
+}
+
+static bool msg_send_size_accepted(bool called, const struct json_value *result,
+                                   struct node_db *ndb, const char *body,
+                                   size_t length, int stored, int memory)
+{
+    struct zmsg_message rows[4] = {0};
+    bool ok = called && result->type == JSON_OBJ;
+    ok &= db_zmsg_count(ndb, false) == stored + 1;
+    int count = db_zmsg_list(ndb, rows, 4, false);
+    bool exact = false;
+    for (int i = 0; i < count; i++)
+        exact |= memcmp(rows[i].body, body, length + 1) == 0;
+    ok &= exact && zmsg_store_count() == memory + 1;
+    return ok;
+}
+
+/* Size refusal takes precedence even without a network or name database. */
+static bool msg_send_size_unwired(const struct rpc_command *cmd,
+                                  const struct json_value *params)
+{
+    rpc_msg_set_state(NULL, NULL);
+    struct json_value result = {0};
+    bool called = cmd->actor(params, false, &result);
+    bool ok = !called && result.type == JSON_STR &&
+              strstr(json_get_str(&result), "too long") != NULL;
+    json_free(&result);
+    return ok;
+}
+
+static bool msg_send_size_case(const struct rpc_command *cmd, bool named,
+                               struct node_db *ndb, struct p2p_node *peer,
+                               size_t length, bool multibyte)
+{
+    char body[sizeof(((struct zmsg_message *)0)->body) + 2];
+    /* Distinct bytes prevent ID collisions across actors and cases. */
+    memset(body, named ? 'n' : 'p', length);
+    body[0] = multibyte ? 'm' : 'a';
+    if (multibyte) {
+        body[length - 2] = (char)0xc3;
+        body[length - 1] = (char)0xa9;
+    }
+    body[length] = '\0';
+    struct json_value params = {0}, arg = {0}, result = {0};
+    json_set_array(&params);
+    if (named) json_set_str(&arg, "sizeprobe");
+    else json_set_int(&arg, 7);
+    json_push_back(&params, &arg);
+    json_set_str(&arg, body);
+    json_push_back(&params, &arg);
+    if (!named) {
+        json_set_str(&arg, "p2p");
+        json_push_back(&params, &arg);
+    }
+    json_free(&arg);
+    int stored = db_zmsg_count(ndb, false), memory = zmsg_store_count();
+    size_t sent = peer->send_size;
+    bool disconnected = peer->disconnect;
+    bool called = cmd->actor(&params, false, &result);
+    bool ok;
+    if (length >= sizeof(((struct zmsg_message *)0)->body)) {
+        ok = !called && result.type == JSON_STR &&
+             strstr(json_get_str(&result), "too long") != NULL;
+        ok &= db_zmsg_count(ndb, false) == stored;
+        ok &= zmsg_store_count() == memory && peer->send_size == sent;
+        ok &= peer->disconnect == disconnected;
+        ok &= msg_send_size_unwired(cmd, &params);
+    } else {
+        ok = msg_send_size_accepted(called, &result, ndb, body, length,
+                                    stored, memory);
+        ok &= named || peer->send_size > sent;
+    }
+    json_free(&params);
+    json_free(&result);
+    return ok;
+}
+
+/* Each case gets a fresh peer: sending on the inert socket disconnects it. */
+static bool msg_send_size_fixture(const struct rpc_command *cmd, bool named,
+                                  size_t length, bool multibyte)
+{
+    struct node_db ndb = {0};
+    struct connman cm = {0};
+    struct net_address addr;
+    struct p2p_node *peer = NULL;
+    struct znam_entry entry = {0};
+    snprintf(entry.name, sizeof(entry.name), "sizeprobe");
+    snprintf(entry.owner_address, sizeof(entry.owner_address), "owner");
+    snprintf(entry.target_value, sizeof(entry.target_value), "recipient");
+    entry.target_type = ZNAM_TYPE_CONTENT;
+    memset(entry.reg_txid, 0x63, sizeof(entry.reg_txid));
+    bool ok = node_db_open(&ndb, ":memory:") && db_znam_save(&ndb, &entry);
+    bool network = api_test_init_connman_peer(&cm, &addr, &peer, 0);
+    cm.params = chain_params_get();
+    ok &= network && cm.params != NULL;
+    rpc_msg_set_state(&ndb, &cm);
+    if (ok) {
+        peer->id = 7;
+        ok = msg_send_size_case(cmd, named, &ndb, peer, length, multibyte);
+    }
+    rpc_msg_set_state(NULL, NULL);
+    rpc_net_set_connman(NULL);
+    net_manager_free(&cm.manager);
+    node_db_close(&ndb);
+    return ok;
+}
+
+int api_msg_send_size_focused_tests(void)
+{
+    static const clock_iface_t clock = {
+        .now_monotonic_ns = msg_size_clock, .now_wall_ms = msg_size_clock
+    };
+    const clock_iface_t *saved_clock = clock_default();
+    clock_set_default(&clock);
+    struct rpc_table table;
+    rpc_table_init(&table);
+    register_msg_rpc_commands(&table);
+    const char *names[] = {"msg_send", "msg_send_named"};
+    size_t cap = sizeof(((struct zmsg_message *)0)->body);
+    const size_t lengths[] = {cap - 1, cap, cap + 1, cap, cap - 1};
+    bool ok = true;
+    for (size_t actor = 0; actor < 2; actor++) {
+        const struct rpc_command *cmd = rpc_table_find(&table, names[actor]);
+        if (!cmd) { ok = false; break; }
+        for (size_t i = 0; i < 5; i++) {
+            bool passed = msg_send_size_fixture(cmd, actor == 1,
+                                                lengths[i], i >= 3);
+            printf("api: %s body bytes=%zu multibyte=%d... %s\n",
+                   names[actor], lengths[i], i >= 3, passed ? "OK" : "FAIL");
+            ok &= passed;
+        }
+    }
+    clock_set_default(saved_clock);
+    return ok ? 0 : 1;
+}
 
 /* Seed one inbound inbox row. Fields satisfy db_zmsg_validate; ids are
  * unique per index (zmsg_compute_id would also do — the store dedups on

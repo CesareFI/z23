@@ -51,6 +51,21 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
+static bool msg_text_empty(const char *text)
+{
+    return !text || !text[0];
+}
+
+static bool msg_body_fits(const char *body, struct json_value *result)
+{
+    if (strnlen(body, sizeof(((struct zmsg_message *)0)->body)) >=
+        sizeof(((struct zmsg_message *)0)->body)) {
+        json_set_str(result, "Message body is too long");
+        LOG_FAIL("zmsg", "message body exceeds storage capacity");
+    }
+    return true;
+}
+
 static void msg_to_json(const struct zmsg_message *msg, struct json_value *obj)
 {
     json_set_object(obj);
@@ -200,48 +215,18 @@ static bool msg_send_onchain(const char *to_addr, const char *body,
 
 /* ── msg_send ───────────────────────────────────────────────────── */
 
-static bool rpc_msg_send(const struct json_value *params, bool help,
+static bool msg_send_p2p(const struct json_value *params,
                          struct json_value *result)
 {
-    if (help || !params || json_size(params) < 2) {
-        json_set_str(result,
-            "msg_send recipient \"message\" [channel] [from_address] [reply_to]\n"
-            "\nSend a message. Two channels:\n"
-            "  p2p (default) — instant, free, to a connected peer\n"
-            "  onchain       — permanent, shielded Sapling memo transaction\n"
-            "\nArguments:\n"
-            "1. recipient    (p2p: number peer ID | onchain: zs1... address)\n"
-            "2. message      (string) Message text (onchain max 474 bytes)\n"
-            "3. channel      (string, optional) \"p2p\" (default) or \"onchain\"\n"
-            "4. from_address (string) onchain only: funding z/t address (required)\n"
-            "5. reply_to     (string, optional) onchain only: 64-hex parent msg_id\n"
-            "\nResult: message ID and delivery/broadcast status.\n");
-        return true;
-    }
-
-    /* Channel selection — P2P is the default (backward compatible). */
-    const char *channel_str = json_size(params) >= 3
-                                  ? json_get_str(json_at(params, 2)) : NULL;
-    if (channel_str && strcmp(channel_str, "onchain") == 0) {
-        const char *to_addr = json_get_str(json_at(params, 0));
-        const char *body = json_get_str(json_at(params, 1));
-        const char *from_addr = json_size(params) >= 4
-                                    ? json_get_str(json_at(params, 3)) : NULL;
-        const char *reply_hex = json_size(params) >= 5
-                                    ? json_get_str(json_at(params, 4)) : NULL;
-        return msg_send_onchain(to_addr, body, from_addr, reply_hex, result);
-    }
-    if (channel_str && strcmp(channel_str, "p2p") != 0) {
-        json_set_str(result, "Invalid channel (expected \"p2p\" or \"onchain\")");
-        LOG_FAIL("zmsg", "msg_send: invalid channel '%s'", channel_str);
-    }
-
     int64_t peer_id = json_get_int(json_at(params, 0));
     const char *body = json_get_str(json_at(params, 1));
 
-    if (!body || !body[0]) {
+    if (msg_text_empty(body)) {
         json_set_str(result, "Empty message");
         return false;
+    }
+    if (!msg_body_fits(body, result)) {
+        LOG_FAIL("zmsg", "msg_send: oversized message body refused");
     }
 
     if (!g_msg_connman) {
@@ -310,6 +295,45 @@ static bool rpc_msg_send(const struct json_value *params, bool help,
              "body_bytes=%zu",
              hex, (long long)peer_id, strlen(msg.body));
     return true;
+}
+
+static bool rpc_msg_send(const struct json_value *params, bool help,
+                         struct json_value *result)
+{
+    if (help || !params || json_size(params) < 2) {
+        json_set_str(result,
+            "msg_send recipient \"message\" [channel] [from_address] [reply_to]\n"
+            "\nSend a message. Two channels:\n"
+            "  p2p (default) — instant, free, to a connected peer\n"
+            "  onchain       — permanent, shielded Sapling memo transaction\n"
+            "\nArguments:\n"
+            "1. recipient    (p2p: number peer ID | onchain: zs1... address)\n"
+            "2. message      (string) Message text (onchain max 474 bytes)\n"
+            "3. channel      (string, optional) \"p2p\" (default) or \"onchain\"\n"
+            "4. from_address (string) onchain only: funding z/t address (required)\n"
+            "5. reply_to     (string, optional) onchain only: 64-hex parent msg_id\n"
+            "\nResult: message ID and delivery/broadcast status.\n");
+        return true;
+    }
+
+    /* Channel selection — P2P is the default (backward compatible). */
+    const char *channel_str = json_size(params) >= 3
+                                  ? json_get_str(json_at(params, 2)) : NULL;
+    if (channel_str && strcmp(channel_str, "onchain") == 0) {
+        const char *to_addr = json_get_str(json_at(params, 0));
+        const char *body = json_get_str(json_at(params, 1));
+        const char *from_addr = json_size(params) >= 4
+                                    ? json_get_str(json_at(params, 3)) : NULL;
+        const char *reply_hex = json_size(params) >= 5
+                                    ? json_get_str(json_at(params, 4)) : NULL;
+        return msg_send_onchain(to_addr, body, from_addr, reply_hex, result);
+    }
+    if (channel_str && strcmp(channel_str, "p2p") != 0) {
+        json_set_str(result, "Invalid channel (expected \"p2p\" or \"onchain\")");
+        LOG_FAIL("zmsg", "msg_send: invalid channel '%s'", channel_str);
+    }
+
+    return msg_send_p2p(params, result);
 }
 
 /* ── msg_inbox ──────────────────────────────────────────────────── */
@@ -450,6 +474,14 @@ static bool rpc_msg_read(const struct json_value *params, bool help,
 
 /* ── msg_send_named ─────────────────────────────────────────────── */
 
+static const char *msg_named_target_type(int target_type)
+{
+    if (target_type == ZNAM_TYPE_ONION) return "onion";
+    if (target_type == ZNAM_TYPE_ZADDR) return "z-address";
+    if (target_type == ZNAM_TYPE_TADDR) return "t-address";
+    return "unknown";
+}
+
 static bool rpc_msg_send_named(const struct json_value *params, bool help,
                                struct json_value *result)
 {
@@ -468,9 +500,12 @@ static bool rpc_msg_send_named(const struct json_value *params, bool help,
     const char *name = json_get_str(json_at(params, 0));
     const char *body = json_get_str(json_at(params, 1));
 
-    if (!name || !name[0] || !body || !body[0]) {
+    if (msg_text_empty(name) || msg_text_empty(body)) {
         json_set_str(result, "name and message required");
         return false;
+    }
+    if (!msg_body_fits(body, result)) {
+        LOG_FAIL("zmsg", "msg_send_named: oversized message body refused");
     }
 
     /* Resolve the ZCL Name */
@@ -511,10 +546,7 @@ static bool rpc_msg_send_named(const struct json_value *params, bool help,
     json_push_kv_str(result, "resolved_name", name);
     json_push_kv_str(result, "resolved_to", entry.target_value);
 
-    const char *type = "unknown";
-    if (entry.target_type == ZNAM_TYPE_ONION) type = "onion";
-    else if (entry.target_type == ZNAM_TYPE_ZADDR) type = "z-address";
-    else if (entry.target_type == ZNAM_TYPE_TADDR) type = "t-address";
+    const char *type = msg_named_target_type(entry.target_type);
     json_push_kv_str(result, "target_type", type);
     json_push_kv_str(result, "status", "queued");
     json_push_kv_str(result, "note",
