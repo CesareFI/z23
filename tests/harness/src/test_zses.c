@@ -84,6 +84,32 @@ int test_zses(void)
         PASS();
     }
 
+    TEST("endpoint buffer refusal names bad_endpoint without writing") {
+        char out = 'X';
+        enum zses_refuse r = ZSES_OK;
+        ASSERT(!zses_pick_endpoint("onion", NULL, NULL, &out, 1, &r));
+        ASSERT_EQ(r, ZSES_REFUSE_BAD_ENDPOINT);
+        ASSERT_EQ(out, 'X');
+
+        r = ZSES_OK;
+        ASSERT(!zses_pick_endpoint("onion", NULL, NULL, &out, 0, &r));
+        ASSERT_EQ(r, ZSES_REFUSE_BAD_ENDPOINT);
+        ASSERT_EQ(out, 'X');
+
+        r = ZSES_OK;
+        ASSERT(!zses_pick_endpoint("onion", NULL, NULL, NULL,
+                                   ZSES_ENDPOINT_MAX + 1, &r));
+        ASSERT_EQ(r, ZSES_REFUSE_BAD_ENDPOINT);
+
+        ASSERT(!zses_pick_endpoint("onion", NULL, NULL, &out, 1, NULL));
+        ASSERT_EQ(out, 'X');
+        ASSERT(!zses_pick_endpoint("onion", NULL, NULL, &out, 0, NULL));
+        ASSERT_EQ(out, 'X');
+        ASSERT(!zses_pick_endpoint("onion", NULL, NULL, NULL,
+                                   ZSES_ENDPOINT_MAX + 1, NULL));
+        PASS();
+    }
+
     TEST("signed invite round-trips through the shipped codec") {
         struct privkey k;
         privkey_make_new(&k, true);

@@ -79,11 +79,14 @@ bool zses_pick_endpoint(const char *posture, const char *onion,
                         const char *clearnet, char *out, size_t out_cap,
                         enum zses_refuse *refuse)
 {
+    enum zses_refuse ignored;
+    if (!refuse)
+        refuse = &ignored;
+    *refuse = ZSES_REFUSE_BAD_ENDPOINT;
     if (!out || out_cap < 2)
         LOG_FAIL("zses", "pick_endpoint: out buffer missing");
     out[0] = '\0';
-    if (refuse)
-        *refuse = ZSES_OK;
+    *refuse = ZSES_OK;
     const char *p = (posture && posture[0]) ? posture : "onion";
     if (strcmp(p, "none") == 0) {
         if (refuse)
