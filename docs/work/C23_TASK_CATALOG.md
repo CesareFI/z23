@@ -13,15 +13,58 @@ claims follow from this catalog.
 
 ## Selection and escalation
 
-The candidate adds four prompt kinds not yet landed:
-`c23-byte-validator`, `c23-command-handler`, `c23-model-save`, and
-`c23-regression-fixture`. Existing kinds `fix-gate`, `add-test`, `port-arm`,
-`doc-claim`, and `review` remain. Rows that name one of the four additions
-select an existing-in-candidate kind; rows marked `PROPOSED:<family>` are
-coverage needs, not dispatchable prompt kinds. The catalog does not alter
-`engine/composition/prompt_templates.def`,
-`tools/engine_unit.c`, or task dispatch. Existing code remains the compiled
-selection owner.
+The source defines seven C23 prompt kinds: `c23-byte-validator`,
+`c23-command-handler`, `c23-model-save`, `c23-regression-fixture`,
+`c23-wire-codec`, `c23-cas-operation`, and `c23-service-operation`. Existing kinds `fix-gate`,
+`add-test`, `port-arm`, `doc-claim`, and `review` remain. Rows marked
+`PROPOSED:<family>` still need a procedure; they are not dispatchable kinds.
+The compiled selection owner is `engine/composition/prompt_templates.def`,
+consumed by `tools/engine_unit.c`. A source entry is not evidence that an
+installed runner has been rebuilt or qualified.
+
+Select one procedure per bounded patch. The wire recipe covers explicit
+encoding/decoding and structural admission; signature verification and policy
+acceptance remain separate obligations. The CAS recipe covers bounded reads,
+verified insertion and publication failure handling; it does not supply a
+transfer scheduler, garbage collector or index-recovery algorithm. Leave those
+catalog rows proposed until their own procedures exist.
+
+### Compact task input
+
+Supply the following task-specific fields with the selected `kind:` header.
+Resolve them from the canonical task and claim; this card is a prompt input,
+not a replacement task object or coordination ledger.
+
+```text
+kind: c23-wire-codec
+
+Outcome: <one externally observable behavior>
+Source: <exact candidate/base and owned paths>
+Caller: <production entry and existing reusable helper>
+Contract: <grammar/version, bounds, ownership and failure output state>
+Compatibility: <old bytes/roots and authority that must remain unchanged>
+Acceptance: <registered group, golden vector and rejecting boundary case>
+```
+
+For CAS, substitute address derivation, byte cap, durability and refusal
+contracts. Missing fields require a named refusal before code is proposed.
+For service operations, supply transaction ownership, the existing ActiveRecord
+lifecycle, authority, invariants and the production caller's failure outputs.
+The service exemplar illustrates paired-write transaction ownership; it does
+not establish atomic external effects or a generic transaction API.
+This is a worker instruction; the prompt composer checks section presence,
+not completeness of these task-specific fields.
+Load the selected procedure and relevant source capsule, then produce only the
+missing behavior. Do not paste the entire catalog into each task. Recipe
+selection does not acquire a claim or grant execution or publication authority.
+
+Expand from observed task needs: reuse a matching module first; select a
+qualified procedure second; add a narrowly described procedure when neither
+fits. Record its source exemplar, required inputs, failure semantics and exact
+acceptance. Compare matched root-task cohorts with and without the procedure,
+including discovery, implementation, review, repair, rejected attempts and
+integration tokens. Report missing usage explicitly. Template coverage and
+prompt byte limits are diagnostics, not measured token savings.
 
 Provisional profile for ordinary, bounded source proposals: Sol-low, with the
 row's exact verifier mandatory. Luna is appropriate for constrained checks,
@@ -190,31 +233,31 @@ Exemplars: `contexts/commons/modules/vcs/src/zcode_dev.c`; `contexts/commons/mod
 
 | ID | Task type / inclusion | Kind | Verifier |
 |---|---|---|---|
-| C101 | Add a version byte to a canonical task wire while preserving old decode | PROPOSED:wire | old fixture re-encodes identically; new version round-trips |
-| C102 | Reject noncanonical integer width in signed receipt encoding | PROPOSED:wire | alternate width fails canonical re-encode check |
-| C103 | Add a bounded optional field to candidate wire | PROPOSED:wire | absent/present round-trip; over-capacity refuses |
-| C104 | Enforce sorted member roots in proof-set encoding | PROPOSED:wire | unsorted duplicate fixture refuses; canonical order stable |
-| C105 | Add domain-separated root derivation for a new immutable object | PROPOSED:wire | cross-domain identical bytes yield distinct roots |
-| C106 | Make decoder report consumed byte count and reject suffixes | PROPOSED:wire | exact wire consumes all bytes; suffix is rejected |
-| C107 | Add cross-field task/candidate root binding validation | PROPOSED:wire | mismatched pair refuses before serialization |
-| C108 | Reject duplicate root members in a canonical collection | PROPOSED:wire | duplicate member refuses without order-dependent result |
-| C109 | Bound wire size before allocating nested arrays | PROPOSED:wire | one-over-limit input refuses before allocation |
-| C110 | Preserve unknown wire version as unsupported, not current version | PROPOSED:wire | future-version fixture yields typed unsupported result |
-| C111 | Add a canonical lowercase hex projection for a root | PROPOSED:wire | uppercase input refuses; projection round-trips exact bytes |
-| C112 | Validate a fixed-width public key in a signed object | PROPOSED:wire | wrong curve length and all-zero key refuse |
-| C113 | Ensure serializer zeroes reserved bytes deterministically | PROPOSED:wire | repeated serialization has identical reserved region |
-| C114 | Add a wire field whose presence is bound into the object root | PROPOSED:wire | absent and explicit zero produce documented distinct/equal roots |
-| C115 | Prevent decoder integer overflow while advancing cursor | PROPOSED:wire | near-SIZE_MAX offset fixture refuses before pointer arithmetic |
-| C116 | Add strict UTF-8 validation to a signed human-readable field | PROPOSED:wire | invalid byte sequence refuses before root derivation |
-| C117 | Encode a nested acceptance recipe by exact child root | PROPOSED:wire | substituted child root fails parent verification |
+| C101 | Add a version byte to a canonical task wire while preserving old decode | c23-wire-codec | old fixture re-encodes identically; new version round-trips |
+| C102 | Reject noncanonical integer width in signed receipt encoding | c23-wire-codec | alternate width fails canonical re-encode check |
+| C103 | Add a bounded optional field to candidate wire | c23-wire-codec | absent/present round-trip; over-capacity refuses |
+| C104 | Enforce sorted member roots in proof-set encoding | c23-wire-codec | unsorted duplicate fixture refuses; canonical order stable |
+| C105 | Add domain-separated root derivation for a new immutable object | c23-wire-codec | cross-domain identical bytes yield distinct roots |
+| C106 | Make decoder report consumed byte count and reject suffixes | c23-wire-codec | exact wire consumes all bytes; suffix is rejected |
+| C107 | Add cross-field task/candidate root binding validation | c23-wire-codec | mismatched pair refuses before serialization |
+| C108 | Reject duplicate root members in a canonical collection | c23-wire-codec | duplicate member refuses without order-dependent result |
+| C109 | Bound wire size before allocating nested arrays | c23-wire-codec | one-over-limit input refuses before allocation |
+| C110 | Preserve unknown wire version as unsupported, not current version | c23-wire-codec | future-version fixture yields typed unsupported result |
+| C111 | Add a canonical lowercase hex projection for a root | c23-wire-codec | uppercase input refuses; projection round-trips exact bytes |
+| C112 | Validate a fixed-width public key in a signed object | c23-wire-codec | wrong curve length and all-zero key refuse |
+| C113 | Ensure serializer zeroes reserved bytes deterministically | c23-wire-codec | repeated serialization has identical reserved region |
+| C114 | Add a wire field whose presence is bound into the object root | c23-wire-codec | absent and explicit zero produce documented distinct/equal roots |
+| C115 | Prevent decoder integer overflow while advancing cursor | c23-wire-codec | near-SIZE_MAX offset fixture refuses before pointer arithmetic |
+| C116 | Add strict UTF-8 validation to a signed human-readable field | c23-wire-codec | invalid byte sequence refuses before root derivation |
+| C117 | Encode a nested acceptance recipe by exact child root | c23-wire-codec | substituted child root fails parent verification |
 | C118 | Validate signature bytes before accepting decoded receipt | PROPOSED:wire | altered signature refuses at verification boundary |
-| C119 | Add deterministic field ordering to a signed map wire | PROPOSED:wire | permutation inputs normalize to one byte sequence |
-| C120 | Reject trailing padding that is not part of the canonical format | PROPOSED:wire | padded wire refuses; exact-length wire passes |
-| C121 | Make a result decoder reject partial final digest bytes | PROPOSED:wire | truncated digest at every byte boundary refuses |
-| C122 | Add a bounded list count to a work request wire | PROPOSED:wire | zero/max counts pass; max-plus-one refuses |
-| C123 | Bind proof policy and toolchain roots into action identity | PROPOSED:wire | changing either root changes action root |
-| C124 | Add explicit absent-value encoding for an optional signer field | PROPOSED:wire | absent and zero-key semantics are unambiguous |
-| C125 | Add golden vectors for a canonical wire version | PROPOSED:wire | source and independent decode agree on bytes and root |
+| C119 | Add deterministic field ordering to a signed map wire | c23-wire-codec | permutation inputs normalize to one byte sequence |
+| C120 | Reject trailing padding that is not part of the canonical format | c23-wire-codec | padded wire refuses; exact-length wire passes |
+| C121 | Make a result decoder reject partial final digest bytes | c23-wire-codec | truncated digest at every byte boundary refuses |
+| C122 | Add a bounded list count to a work request wire | c23-wire-codec | zero/max counts pass; max-plus-one refuses |
+| C123 | Bind proof policy and toolchain roots into action identity | c23-wire-codec | changing either root changes action root |
+| C124 | Add explicit absent-value encoding for an optional signer field | c23-wire-codec | absent and zero-key semantics are unambiguous |
+| C125 | Add golden vectors for a canonical wire version | c23-wire-codec | source and independent decode agree on bytes and root |
 
 ### C126–C150: content-addressed storage and indexes
 
@@ -222,11 +265,11 @@ Exemplars: `contexts/commons/modules/vcs/src/blob_store.c`; `contexts/commons/mo
 
 | ID | Task type / inclusion | Kind | Verifier |
 |---|---|---|---|
-| C126 | Verify stored blob bytes against requested root on read | PROPOSED:cas | corrupted fixture is refused and not returned |
-| C127 | Make duplicate CAS insertion idempotent for identical bytes | PROPOSED:cas | second insert preserves one object and same root |
-| C128 | Refuse same root with different object bytes | PROPOSED:cas | collision fixture reports integrity failure |
-| C129 | Bound blob read by caller capacity and declared object size | PROPOSED:cas | undersized output refuses without partial disclosure |
-| C130 | Recover an interrupted atomic object write | PROPOSED:cas | restart exposes either complete object or absence |
+| C126 | Verify stored blob bytes against requested root on read | c23-cas-operation | corrupted fixture is refused and not returned |
+| C127 | Make duplicate CAS insertion idempotent for identical bytes | c23-cas-operation | second insert preserves one object and same root |
+| C128 | Refuse same root with different object bytes | c23-cas-operation | collision fixture reports integrity failure |
+| C129 | Bound blob read by caller capacity and declared object size | c23-cas-operation | undersized output refuses without partial disclosure |
+| C130 | Recover an interrupted atomic object write | c23-cas-operation | restart exposes either complete object or absence |
 | C131 | Add index rebuild from immutable object roots | PROPOSED:cas | clean and rebuilt index return identical exact objects |
 | C132 | Keep a stale index from overriding verified CAS bytes | PROPOSED:cas | stale projection is discarded and rederived |
 | C133 | Reject path traversal in CAS shard path derivation | PROPOSED:cas | hostile root/path input cannot escape fixture root |
@@ -235,18 +278,18 @@ Exemplars: `contexts/commons/modules/vcs/src/blob_store.c`; `contexts/commons/mo
 | C136 | Fetch only missing chunks for a known manifest | PROPOSED:cas | present chunks are not requested; assembled root verifies |
 | C137 | Detect duplicate chunk indexes in a transfer manifest | PROPOSED:cas | duplicate index refuses before assembly |
 | C138 | Add resumable transfer cursor bound to manifest root | PROPOSED:cas | cursor for another root refuses |
-| C139 | Ensure temporary CAS files are cleaned after failed verification | PROPOSED:cas | injected failure leaves no staged file |
-| C140 | Make CAS directory creation safe under concurrent insertion | PROPOSED:cas | two writers yield one valid object and no corrupt path |
+| C139 | Ensure temporary CAS files are cleaned after failed verification | c23-cas-operation | injected failure leaves no staged file |
+| C140 | Make CAS directory creation safe under concurrent insertion | c23-cas-operation | two writers yield one valid object and no corrupt path |
 | C141 | Validate manifest metadata before scheduling chunk downloads | PROPOSED:cas | invalid count/length fails before network request |
 | C142 | Add bounded object eviction that preserves pinned roots | PROPOSED:cas | pinned fixture survives quota pressure |
 | C143 | Reconcile object references after interrupted index update | PROPOSED:cas | recovery derives references from durable roots |
-| C144 | Return explicit not-found separately from corrupt-object status | PROPOSED:cas | absent and corrupted fixtures return distinct codes |
+| C144 | Return explicit not-found separately from corrupt-object status | c23-cas-operation | absent and corrupted fixtures return distinct codes |
 | C145 | Prevent symlink substitution in a filesystem-backed CAS read | PROPOSED:cas | symlink fixture is refused under scoped directory handle |
 | C146 | Add deterministic inventory of stored root and byte count | PROPOSED:cas | same fixture emits same root ordering and totals |
-| C147 | Verify exact root after decompression of a stored object | PROPOSED:cas | altered compressed payload fails post-decode root check |
+| C147 | Verify exact root after decompression of a stored object | c23-cas-operation | altered compressed payload fails post-decode root check |
 | C148 | Enforce a maximum manifest fanout before recursive traversal | PROPOSED:cas | fanout cap and cap-plus-one are asserted |
 | C149 | Keep local SQLite object index rebuildable from verified CAS | PROPOSED:cas | deleting index then rebuilding preserves rooted query results |
-| C150 | Add fault injection for disk-full during CAS commit | PROPOSED:cas | operation fails with no published partial root |
+| C150 | Add fault injection for disk-full during CAS commit | c23-cas-operation | operation fails with no published partial root |
 
 ### C151–C175: service workflows and transaction composition
 
@@ -254,9 +297,9 @@ Exemplars: `engine/services/src/build_fabric_service.c`; `contexts/commons/modul
 
 | ID | Task type / inclusion | Kind | Verifier |
 |---|---|---|---|
-| C151 | Add a service operation that validates all inputs before writes | PROPOSED:service | invalid input leaves transaction and files unchanged |
-| C152 | Return typed `zcl_result` for each expected refusal branch | PROPOSED:service | branch fixtures assert result code and context |
-| C153 | Make a multi-model service operation atomic | PROPOSED:service | injected second-save failure rolls back first save |
+| C151 | Add a service operation that validates all inputs before writes | c23-service-operation | invalid input leaves transaction and files unchanged |
+| C152 | Return typed `zcl_result` for each expected refusal branch | c23-service-operation | branch fixtures assert result code and context |
+| C153 | Make a multi-model service operation atomic | c23-service-operation | injected second-save failure rolls back first save |
 | C154 | Keep remote fetch outside a database transaction | PROPOSED:service | network wait does not retain write transaction |
 | C155 | Add idempotent service retry keyed by immutable action root | PROPOSED:service | repeated same action returns prior exact result |
 | C156 | Refuse service execution when task and candidate roots disagree | PROPOSED:service | crossed-root fixture yields no writes |

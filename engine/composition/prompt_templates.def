@@ -214,4 +214,81 @@ ENGINE_PROMPT_TEMPLATE(c23-regression-fixture, judging,
     "and actual groups run. Mark unavailable stages NOTRUN; never infer "
     "mutation sensitivity from a green final state.")
 
+ENGINE_PROMPT_TEMPLATE(c23-wire-codec, rules,
+    "Implement a bounded C23 wire codec. Inputs required in the task: owned "
+    "caller, versioned grammar, limits, compatibility and refusal contracts, "
+    "registered group. If one is absent, report the missing input before "
+    "proposing code. Decoding grants no execution or acceptance authority.")
+ENGINE_PROMPT_TEMPLATE(c23-wire-codec, task,
+    "Reuse first: inspect contexts/commons/modules/vcs/src/zcode_action_input.c "
+    "(vcs_zcode_action_input_parse). Procedure: validate measured extent and "
+    "version; check remaining bytes before advancing; bound counts before "
+    "allocation; decode explicit endian fields; reject forbidden reserved "
+    "bits and suffixes; validate cross-field bindings; publish only complete "
+    "outputs. Never serialize native struct padding or unchecked enum values.")
+ENGINE_PROMPT_TEMPLATE(c23-wire-codec, protocol,
+    "Preserve the owned format's domain, absent-value semantics and old "
+    "vectors. Use checked size arithmetic and explicit resource ownership. "
+    "Keep structural decoding separate from signature and policy admission; "
+    "a valid hash is not proof of a valid computation. Log refusal context "
+    "at the existing diagnostic boundary without exposing payload secrets.")
+ENGINE_PROMPT_TEMPLATE(c23-wire-codec, judging,
+    "Exercise the production caller with golden bytes, every truncation "
+    "boundary, unsupported version, cap-plus-one, invalid binding and suffix. "
+    "Assert exact bytes and roots, failure output state and cleanup. Round-trip "
+    "alone can hide matching encoder/decoder defects; record independent "
+    "vectors, exact group and source identity, or NOTRUN.")
+
+ENGINE_PROMPT_TEMPLATE(c23-cas-operation, rules,
+    "Implement a bounded C23 content-store operation. Inputs required in "
+    "the task: owned caller, address derivation, byte cap, durability and "
+    "refusal contracts, registered group. If one is absent, report the "
+    "missing input before proposing code. Use isolated fixture storage.")
+ENGINE_PROMPT_TEMPLATE(c23-cas-operation, task,
+    "Reuse first: inspect contexts/commons/modules/vcs/src/vcs_object.c "
+    "(vcs_object_load_raw_bounded). Procedure: bound reads before allocation; "
+    "verify exact bytes using the object's declared address derivation; "
+    "stage writes through existing store APIs; verify existing content on "
+    "duplicate insertion; publish only after required durability barriers. "
+    "Raw loads of structurally addressed objects need owner-level verification.")
+ENGINE_PROMPT_TEMPLATE(c23-cas-operation, protocol,
+    "Keep CAS authoritative and indexes rebuildable. Preserve corrupt "
+    "objects as evidence; repair requires the existing explicit repair path. "
+    "Use platform filesystem helpers and the established ownership contract "
+    "for buffers, descriptors and temporary files. Reconcile uncertain "
+    "publication before retry; storage grants no build or execution authority.")
+ENGINE_PROMPT_TEMPLATE(c23-cas-operation, judging,
+    "Invoke the production caller for missing, exact, corrupt and oversized "
+    "objects; duplicate insertion; and interrupted publication. Assert exact "
+    "readback, preserved corrupt bytes, no visible partial object and fixture "
+    "cleanup. Inject write or flush failure when durability is in scope. "
+    "Record the registered group and exact source; unavailable proof is NOTRUN.")
+
+ENGINE_PROMPT_TEMPLATE(c23-service-operation, rules,
+    "Implement a C23 service operation. Inputs required in the task: owned "
+    "service and production caller, invariants, transaction ownership and AR "
+    "lifecycle, failure-output contract, authority, registered group. If one "
+    "is absent, report the missing input before proposing code. These are "
+    "worker instructions, not composer-enforced task fields.")
+ENGINE_PROMPT_TEMPLATE(c23-service-operation, task,
+    "Reuse first: inspect engine/services/src/service_state_driver.c "
+    "(service_state_persist_to_progress_store) for paired-write transaction "
+    "ownership and cleanup. Procedure: validate inputs and authority before "
+    "effects; invoke existing model saves through their AR validation and "
+    "before/after-save hooks; preserve the service's transaction boundary. "
+    "Name who begins, commits and rolls back, including caller-owned cases.")
+ENGINE_PROMPT_TEMPLATE(c23-service-operation, protocol,
+    "Use existing transaction helpers, never a generic transaction API. "
+    "Finalize statements, release locks and owned resources on every path; "
+    "log context and propagate caller-visible refusal with the contracted "
+    "output state. Require idempotence only under the existing service's "
+    "contract. Database rollback does not promise atomic external effects. "
+    "Stay within claimed source and existing authority.")
+ENGINE_PROMPT_TEMPLATE(c23-service-operation, judging,
+    "In isolated fixtures, exercise the production caller: valid success, "
+    "invalid-input refusal with unchanged state, and injected second-step "
+    "failure where transactional, proving rollback, output state and cleanup. "
+    "Check repeat calls only when idempotence is contracted. Record the exact "
+    "registered group and source identity; mark unexecuted proof NOTRUN.")
+
 /* clang-format on */

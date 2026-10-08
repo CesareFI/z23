@@ -484,6 +484,25 @@ static int prt_collect_templates(struct def_calls *tcalls,
     return 0;
 }
 
+static int prt_fault_duplicate_pairs(char kind[][PRT_FIELD],
+                                      char section[][PRT_FIELD], int nrows,
+                                      char *faults, size_t cap, size_t *used, int *nf)
+{
+    for (int i = 0; i < nrows; i++) {
+        for (int j = 0; j < i; j++) {
+            if (strcmp(kind[i], kind[j]) || strcmp(section[i], section[j])) continue;
+            char line[256];
+            if (ovf(snprintf(line, sizeof line,
+                             "  %s: duplicate template for section '%s'",
+                             kind[i], section[i]), sizeof line)
+                || add_fault(faults, cap, used, nf, line))
+                return 2;
+            break;
+        }
+    }
+    return 0;
+}
+
 static int prt_fault_undeclared_section(char kind[][PRT_FIELD],
                                         char section[][PRT_FIELD], int nrows,
                                         struct sr_set *declared, char *faults,
@@ -545,6 +564,8 @@ static int prt_scan(const char *tmpl, const char *secs, char *faults, size_t cap
     if (prt_collect_templates(&tcalls, kind, section, kinds, &nkind, nrows))
         return 2;
     *nkinds = nkind;
+    if (prt_fault_duplicate_pairs(kind, section, *nrows, faults, cap, &used, nf))
+        return 2;
     if (prt_fault_undeclared_section(kind, section, *nrows, &declared, faults,
                                      cap, &used, nf))
         return 2;
@@ -638,10 +659,36 @@ static const char k_prt_good[] =
     "ENGINE_PROMPT_TEMPLATE(fix-gate, task, \"do the thing\")\n"
     "ENGINE_PROMPT_TEMPLATE(fix-gate, protocol, \"write files\")\n";
 
-int check_prompt_templates_selftest(void)
+static int prt_pairs_selftest(void)
 {
     static char faults[4096], buf[1024];
     int nrows = 0, nsec = 0, nkinds = 0, nf = 0, bad = 0;
+    const char *duplicates[] = {
+        "ENGINE_PROMPT_TEMPLATE(fix-gate, task, \"do the thing\")\n",
+        "ENGINE_PROMPT_TEMPLATE(fix-gate, task, \"different body\")\n"
+    };
+    for (size_t i = 0; i < sizeof duplicates / sizeof duplicates[0]; i++) {
+        if (ovf(snprintf(buf, sizeof buf, "%s%s", k_prt_good, duplicates[i]), sizeof buf)
+            || prt_scan(buf, k_prt_secs, faults, sizeof faults,
+                        &nrows, &nsec, &nkinds, &nf)
+            || nf != 1 || !strstr(faults, "fix-gate: duplicate template for section 'task'"))
+            bad = 1;
+    }
+    const char *distinct =
+        "ENGINE_PROMPT_TEMPLATE(other-kind, task, \"do the thing\")\n"
+        "ENGINE_PROMPT_TEMPLATE(other-kind, protocol, \"write files\")\n";
+    if (ovf(snprintf(buf, sizeof buf, "%s%s", k_prt_good, distinct), sizeof buf)
+        || prt_scan(buf, k_prt_secs, faults, sizeof faults,
+                    &nrows, &nsec, &nkinds, &nf)
+        || nf || nrows != 4 || nkinds != 2)
+        bad = 1;
+    return bad;
+}
+
+int check_prompt_templates_selftest(void)
+{
+    static char faults[4096], buf[1024];
+    int nrows = 0, nsec = 0, nkinds = 0, nf = 0, bad = prt_pairs_selftest();
     if (prt_scan(k_prt_good, k_prt_secs, faults, sizeof faults,
                  &nrows, &nsec, &nkinds, &nf) || nf)
         bad = 1;

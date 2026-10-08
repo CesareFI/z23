@@ -2014,6 +2014,9 @@ static int case_c23_prompt_selection(void)
         {"c23-command-handler", "zcl_native_handle_code_have"},
         {"c23-model-save", "db_contact_save"},
         {"c23-regression-fixture", "case_rewrite"},
+        {"c23-wire-codec", "vcs_zcode_action_input_parse"},
+        {"c23-cas-operation", "vcs_object_load_raw_bounded"},
+        {"c23-service-operation", "service_state_persist_to_progress_store"},
     };
     int failures = 0;
     uint8_t previous[32] = {0};
