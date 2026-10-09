@@ -162,6 +162,8 @@ static const struct cr_int_bound *cr_find_int_bound(const char *key)
         { "raw_bytes", 1, 1024 },
         { "slot", 1, 100 },
         { "window_hours", 1, 168 },
+        /* dev.factory report window in hours. */
+        { "hours", 1, 720 },
         { "height", 0, INT64_MAX },
         { "start_height", 0, INT64_MAX },
         { "after", 0, INT64_MAX },

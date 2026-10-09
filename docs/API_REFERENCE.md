@@ -74,14 +74,14 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 901 |
+| Registry entries (branches + leaves) | 902 |
 | Top-level roots | 14 |
 | Branches | 199 |
-| Leaves (dispatchable command paths) | 702 |
+| Leaves (dispatchable command paths) | 703 |
 | … `ready` (live handler in this build) | 618 |
-| … `compat` (metadata only, names a fallback) | 54 |
+| … `compat` (metadata only, names a fallback) | 55 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
-| … dev-gated 🔧 (`ready` only in `z23-dev`) | 53 |
+| … dev-gated 🔧 (`ready` only in `z23-dev`) | 54 |
 | Leaves with `effect=mutate` | 257 |
 | Leaves with `effect=destructive` | 6 |
 | Leaves requiring **owner** authority | 131 |
@@ -96,7 +96,7 @@ Per source file:
 | `engine/composition/commands/app_features.def` | 75 | 20 | 55 |
 | `engine/composition/commands/store.def` | 19 | 0 | 19 |
 | `engine/composition/commands/ops.def` | 59 | 11 | 48 |
-| `engine/composition/commands/dev.def` | 117 | 22 | 95 |
+| `engine/composition/commands/dev.def` | 118 | 22 | 96 |
 | `engine/composition/commands/code.def` | 33 | 4 | 29 |
 | `engine/composition/commands/accounts.def` | 11 | 2 | 9 |
 | `engine/composition/commands/vault.def` | 24 | 4 | 20 |
@@ -857,6 +857,7 @@ represented by its children's sections.
 | `dev agent receive` | compat 🔧 → `z23-dev dev agent receive` | mutate / dev-mutation / operator · foreground/low | **`action`**, `receiver`, `workspace`, `deadline_s`, `wait_ms`, `max_beats`, `ref`, `from`, `sender_binding`, `body`, `to` | `zcl.agent_receive.v1` | `z23 dev agent receive status --receiver=box-a` | Turn directives arriving in this box's agent mail into queued work — *the resident receiver is a development-lane coordination surface* |
 | `dev agent mail` | compat 🔧 → `z23-dev dev agent mail` | mutate / dev-mutation / operator · fast/low | **`action`**, `to`, `kind`, `body`, `since`, `from`, **`cursor`**, `agent`, `ref`, `sender_binding`, `cwd` | `zcl.agent_mail.v1` | `z23 dev agent mail post --to=* --kind=note --body=hello` | Post, pull, and ack async agent mail without blocking — *agent mail is a development-lane coordination surface* |
 | `dev agent mail wait` | compat 🔧 → `z23-dev dev agent mail wait` | read / read / operator · persistent/low | **`since`**, `to`, `ref`, `from`, `kind`, `timeout_ms` | `zcl.agent_mail.v1` | `z23 dev agent mail wait --since=0 --to=me --timeout_ms=30000` | Wait for the next matching agent mail row after a cursor — *agent mail waiting is a development-lane coordination surface* |
+| `dev agent factory` (aliases: `dev.factory`) | compat 🔧 → `z23-dev dev factory` | read / read / operator · foreground/low | `hours` | `zcl.dev_factory.v1` | `z23-dev dev factory --hours=48` | Report factory waste over a window — *factory measurement reads dev-lane state and needs the dev binary* |
 
 #### `dev.lane` — Agent worktree with independent inodes
 
@@ -1916,6 +1917,7 @@ Every alias resolves through the same grammar as its canonical path
 | `dev.agent.shippable` | `dev.agent.ready` |
 | `dev.agent.group` | `dev.agent.test` |
 | `dev.agent.mutation` | `dev.agent.mutate` |
+| `dev.factory` | `dev.agent.factory` |
 | `general` | `code.general` |
 | `zcode.create` | `zcode.package.dev.create` |
 | `zcode.use` | `zcode.package.dev.use` |

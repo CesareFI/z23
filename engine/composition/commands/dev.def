@@ -2267,6 +2267,32 @@ ZCL_COMMAND_DEV_READ(
     "agent mail waiting is a development-lane coordination surface",
     "z23-dev dev agent mail wait")
 
+/* ── dev.factory ───────────────────────────────────────────────────────────
+ * Read-only factory waste report (tools/command/native_dev_factory.c). */
+ZCL_COMMAND_DEV_READ(
+    "dev.agent.factory", "dev.agent", "dev.factory",
+    "Report factory waste over a window",
+    "Reads the devbuild job ledger, the land outcomes ledger, the proof "
+    "attempt directories and the host pressure files for the last hours "
+    "(default 48, 1..720) and reports per job class counts, wait and run "
+    "percentiles, failures, duplicate non-land jobs, lander and lane busy "
+    "percentages, lane-side lint, land outcome counts with the top "
+    "non-landed details, short proof refusals, superseded proofs, "
+    "per test-selection cost, memory, io and cpu pressure and /dev/shm "
+    "use. A malformed ledger line is counted and skipped, an oversized one "
+    "is counted and refused, an absent source is reported as absent. It "
+    "reads only and writes nothing.", 32768,
+    "factory,waste,devbuild,land,proof,pressure,measure",
+    "zcl.dev_factory_input.v1", "zcl.dev_factory.v1", "hours", "",
+    "z23-dev dev factory --hours=48", ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_factory,
+    "factory measurement reads dev-lane state and needs the dev binary",
+    "z23-dev dev factory")
+
 /* ── dev.beta6 ─────────────────────────────────────────────────────────────
  * Preflight for the optional beta6 bootstrap-snapshot server
  * (engine/services/src/beta6_bootstrap_serve.c, docs/BOOTSTRAPPING.md). */
