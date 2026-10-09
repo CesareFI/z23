@@ -947,10 +947,35 @@ _test_next:;
     return failures;
 }
 
+static int ti_wallet_identity_lane_admission(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    TEST("wallet identity refuses invalid operator lanes before truncation") {
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        const uint8_t genesis[32] = { 0x72 };
+        struct wallet_identity_row out;
+        ASSERT(!wallet_identity_ensure(&ndb, genesis,
+                                       "abcdefghijklmnop", &out));
+        ASSERT(!wallet_identity_ensure(&ndb, genesis, "bad\nlane", &out));
+        ASSERT(!wallet_identity_find(&ndb, &out));
+        ASSERT(wallet_identity_ensure(&ndb, genesis,
+                                      "abcdefghijklmno", &out));
+        ASSERT_STR_EQ(out.operator_lane, "abcdefghijklmno");
+        PASS();
+    }
+_test_next:
+    if (ndb.open) node_db_close(&ndb);
+    return failures;
+}
+
 int test_transaction_intent(void)
 {
     int failures = 0;
     struct node_db ndb; memset(&ndb, 0, sizeof(ndb));
+    failures += ti_wallet_identity_lane_admission();
+    if (failures) goto _test_next;
     failures += ti_validation_cases();
     if (failures) goto _test_next;
     failures += ti_async_cases();
