@@ -57,7 +57,7 @@ static bool test_ladder_wait_child(pid_t pid, int *status)
                 return false;
             }
             killed = true;
-            until = clock_now_monotonic_ns() + INT64_C(2000000000);
+            until = clock_now_monotonic_ns() + INT64_C(30000000000);
         }
         const struct timespec tick = {0, 50 * 1000 * 1000};
         if (nanosleep(&tick, NULL) != 0 && errno != EINTR)

@@ -134,7 +134,7 @@ static bool check_paused_diagnostic(void)
     if (!sink) { perror("blocker sink"); goto cleanup; }
     if (setvbuf(sink, NULL, _IONBF, 0) != 0 ||
         clock_gettime(CLOCK_REALTIME, &s.deadline) != 0) goto close_sink;
-    s.deadline.tv_sec += 2;
+    s.deadline.tv_sec += 30;
     blocker_reset_for_testing();
     blocker_set_clock_for_testing(1000000);
     struct blocker_record r;

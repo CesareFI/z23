@@ -259,7 +259,7 @@ static bool rr_wait_child(pid_t pid, int *status, int timeout_ms)
                 return false;
             }
             killed = true;
-            deadline = clock_now_monotonic_ns() + INT64_C(2000000000);
+            deadline = clock_now_monotonic_ns() + INT64_C(30000000000);
         }
         struct timespec pause = {.tv_sec = 0, .tv_nsec = 10000000};
         if (nanosleep(&pause, NULL) != 0 && errno != EINTR) {

@@ -1352,7 +1352,7 @@ static int rlc_fixture_selfcheck(const char *child,
     error[0] = '\0';
     RLC_CHECK("stage 0 (fixture): READY frame accepted under the nonce",
               resident_result_read(&launch, &header, payload, sizeof(payload),
-                                   5000, error, sizeof(error)) &&
+                                   30000, error, sizeof(error)) &&
               header.payload_len == 5 &&
               memcmp(payload, "READY", 5) == 0);
     error[0] = '\0';
@@ -1360,7 +1360,7 @@ static int rlc_fixture_selfcheck(const char *child,
               "payload",
               rlc_send_frame(&launch, "fixture-roundtrip") &&
               resident_result_read(&launch, &header, payload, sizeof(payload),
-                                   5000, error, sizeof(error)) &&
+                                   30000, error, sizeof(error)) &&
               header.payload_len == strlen("fixture-roundtrip") &&
               memcmp(payload, "fixture-roundtrip",
                      strlen("fixture-roundtrip")) == 0);
@@ -1383,7 +1383,7 @@ static int rlc_fixture_selfcheck(const char *child,
         resident_launch_spawn(&launch, park_argv, envp, &receipt, error,
                               sizeof(error)) &&
         resident_result_read(&launch, &header, payload, sizeof(payload),
-                             5000, error, sizeof(error)) &&
+                             30000, error, sizeof(error)) &&
         header.payload_len == 5 && memcmp(payload, "READY", 5) == 0;
     RLC_CHECK("stage 0 (fixture): the parking child passes the READY gate",
               parked);

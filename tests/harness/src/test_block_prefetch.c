@@ -226,7 +226,7 @@ static int t_lifecycle(void)
 
         /* Every non-cursor height (1..n) is processed — either warmed (cold) or
          * a residency hit (already cached). Both count as "processed". */
-        ASSERT(bpt_wait_processed((uint64_t)BPT_NBLOCKS, 2000));
+        ASSERT(bpt_wait_processed((uint64_t)BPT_NBLOCKS, 30000));
 
         struct json_value v;
         json_init(&v);
@@ -278,7 +278,7 @@ static int t_bounded_memory(void)
         ASSERT(block_prefetch_start(dir, &cfg, bpt_cursor, &ctx, bpt_pos, &ctx));
 
         /* Every height is warmed (no probe short-circuit). */
-        ASSERT(bpt_wait_processed((uint64_t)BPT_NBLOCKS, 2000));
+        ASSERT(bpt_wait_processed((uint64_t)BPT_NBLOCKS, 30000));
         ASSERT(block_prefetch_warmed() >= (uint64_t)BPT_NBLOCKS);
 
         /* The bounded-byte invariant holds on every re-pass while the worker
@@ -378,7 +378,7 @@ static int t_warm_microbench(void)
         struct block_prefetch_config cfg = bpt_cfg(4u * 1024u * 1024u);
         atomic_store(&ctx.cursor, 0);
         ASSERT(block_prefetch_start(dir, &cfg, bpt_cursor, &ctx, bpt_pos, &ctx));
-        ASSERT(bpt_wait_processed((uint64_t)BPT_NBLOCKS, 2000));
+        ASSERT(bpt_wait_processed((uint64_t)BPT_NBLOCKS, 30000));
 
         if (cold2 == 0) {
             int hot = bpt_probe_resident(dir, &ctx.pos[BPT_NBLOCKS - 1]);

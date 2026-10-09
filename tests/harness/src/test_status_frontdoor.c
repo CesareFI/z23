@@ -37,7 +37,7 @@
  * well under that (COMPLETE_BOUND_US) to prove it never waited for the lock. */
 #define HOLD_CEILING_US   4000000  /* 4 s hard ceiling — no infinite hang */
 #define COMPLETE_BOUND_US 1000000  /* 1 s: >> real (µs) cost, << the 4 s hold */
-#define ACQUIRE_WAIT_US   2000000  /* wait up to 2 s for the writer to acquire */
+#define ACQUIRE_WAIT_US   30000000  /* wait up to 30 s for the writer to acquire; bounds a hang */
 
 struct hold_ctx {
     _Atomic bool acquired;

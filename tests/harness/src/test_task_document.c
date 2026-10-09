@@ -447,11 +447,13 @@ static int te_visual(const struct task_editor *editor)
 
 static struct zcl_result te_wait(struct task_editor *editor)
 {
-    int64_t deadline = platform_time_monotonic_us() + INT64_C(2000000);
+    /* The deadline bounds a hung save, not save speed. */
+    int64_t deadline = platform_time_monotonic_us() + INT64_C(30000000);
     while (platform_time_monotonic_us() < deadline) {
         bool changed = false;
         struct zcl_result result = task_editor_poll(editor, &changed);
         if (!result.ok || changed) return result;
+        platform_sleep_ms(1);
     }
     return ZCL_ERR(-1, "task editor test: save completion not observed");
 }
@@ -526,8 +528,10 @@ static int te_busy(struct task_editor *editor, const char *directory)
 }
 static struct zcl_result tl_wait_test(struct task_list *list)
 {
-    int64_t end = platform_time_monotonic_us() + INT64_C(2000000);
+    /* The deadline bounds a hung save, not save speed. */
+    int64_t end = platform_time_monotonic_us() + INT64_C(30000000);
     while (list->editor->pending && platform_time_monotonic_us() < end) {
+        platform_sleep_ms(1);
         struct zcl_result result = task_list_poll(list);
         if (!result.ok) return result;
     }

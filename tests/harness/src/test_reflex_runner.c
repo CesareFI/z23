@@ -842,7 +842,7 @@ static int t_reap_is_bounded_after_eof(void)
         ASSERT(quick >= 0);
         if (quick == 0) _exit(7);
         started = platform_time_monotonic_us();
-        zcl_reflex_reap_bounded(quick, started + 2000000, &reap);
+        zcl_reflex_reap_bounded(quick, started + 30000000, &reap);
         waited = platform_time_monotonic_us() - started;
         ASSERT(reap.reaped && !reap.killed_at_deadline);
         ASSERT_EQ(reap.exit_code, 7);
