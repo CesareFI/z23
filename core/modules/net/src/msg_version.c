@@ -452,6 +452,21 @@ void push_verack(struct msg_processor *mp, struct p2p_node *node)
     p2p_node_end_message(node);
 }
 
+/* The wire timestamp is arbitrary int64 and the wall clock is int64;
+ * subtracting them directly is UB at the int64 extremes. Compare in
+ * uint64 (defined) and only subtract when the bounded difference cannot
+ * overflow; a clock more than ~10k years from ours is not usable time
+ * evidence anyway. Zero added branches at the call site. */
+static int64_t peer_time_offset(int64_t peer_ts, int64_t now)
+{
+    uint64_t delta = (uint64_t)peer_ts > (uint64_t)now
+        ? (uint64_t)peer_ts - (uint64_t)now
+        : (uint64_t)now - (uint64_t)peer_ts;
+    if (delta > INT64_C(315360000000))
+        return 0;
+    return peer_ts - now;
+}
+
 bool process_version(struct msg_processor *mp, struct p2p_node *node,
                      struct byte_stream *s)
 {
@@ -521,7 +536,9 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
     strncpy(node->clean_sub_ver, ver.sub_version, MAX_SUBVERSION_LENGTH - 1);
     node->clean_sub_ver[MAX_SUBVERSION_LENGTH - 1] = '\0';
     node->starting_height = ver.start_height;
-    node->time_offset = ver.timestamp - (int64_t)platform_time_wall_time_t();
+    node->time_offset =
+        peer_time_offset(ver.timestamp,
+                         (int64_t)platform_time_wall_time_t());
     node->relay_txes = ver.relay;
 
     event_emitf(EV_PEER_VERSION, (uint32_t)node->id,
