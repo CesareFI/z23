@@ -113,33 +113,6 @@ bool hd_derive_pubkey_path(const struct ext_pubkey *parent,
 
 /* ── Serialization (encoding/base58 wrappers, not derivation math) ── */
 
-bool hd_serialize_xprv(const struct ext_key *ek,
-                       const unsigned char version[4],
-                       char *out, size_t out_size)
-{
-    GUARD_NOT_NULL(ek, DOMAIN, "ek");
-    GUARD_NOT_NULL(version, DOMAIN, "version");
-    GUARD_NOT_NULL(out, DOMAIN, "out");
-    GUARD(out_size >= HD_XKEY_STRING_SIZE,
-          DOMAIN, "out_size too small: %zu", out_size);
-
-    unsigned char data[BIP32_SERIALIZED_SIZE];
-    memcpy(data, version, 4);
-
-    unsigned char payload[BIP32_EXTKEY_SIZE];
-    ext_key_encode(ek, payload);
-    memcpy(data + 4, payload, BIP32_EXTKEY_SIZE);
-
-    size_t written = 0;
-    if (!domain_encoding_base58check_encode(data, BIP32_SERIALIZED_SIZE, out, out_size, &written)) {
-        memory_cleanse(data, sizeof(data));
-        LOG_FAIL(DOMAIN, "base58check_encode failed for xprv");
-    }
-
-    memory_cleanse(data, sizeof(data));
-    return true;
-}
-
 bool hd_serialize_xpub(const struct ext_pubkey *epk,
                        const unsigned char version[4],
                        char *out, size_t out_size)
@@ -163,38 +136,6 @@ bool hd_serialize_xpub(const struct ext_pubkey *epk,
     if (!domain_encoding_base58check_encode(data, BIP32_SERIALIZED_SIZE, out, out_size, &written))
         LOG_FAIL(DOMAIN, "base58check_encode failed for xpub");
 
-    return true;
-}
-
-bool hd_deserialize_xprv(const char *str,
-                         const unsigned char expected_version[4],
-                         struct ext_key *ek_out)
-{
-    GUARD_NOT_NULL(str, DOMAIN, "str");
-    GUARD_NOT_NULL(expected_version, DOMAIN, "expected_version");
-    GUARD_NOT_NULL(ek_out, DOMAIN, "ek_out");
-
-    unsigned char data[BIP32_SERIALIZED_SIZE + 4]; /* extra room for safety */
-    size_t decoded_len = 0;
-
-    if (!domain_encoding_base58check_decode(str, data, sizeof(data), &decoded_len))
-        LOG_FAIL(DOMAIN, "base58check_decode failed for xprv");
-
-    if (decoded_len != BIP32_SERIALIZED_SIZE)
-        LOG_FAIL(DOMAIN, "unexpected decoded length: %zu (expected %d)",
-                 decoded_len, BIP32_SERIALIZED_SIZE);
-
-    if (memcmp(data, expected_version, 4) != 0)
-        LOG_FAIL(DOMAIN, "version mismatch in xprv");
-
-    ext_key_decode(ek_out, data + 4);
-
-    if (!privkey_is_valid(&ek_out->key)) {
-        memory_cleanse(data, sizeof(data));
-        LOG_FAIL(DOMAIN, "decoded xprv has invalid private key");
-    }
-
-    memory_cleanse(data, sizeof(data));
     return true;
 }
 
