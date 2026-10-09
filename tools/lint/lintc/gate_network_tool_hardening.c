@@ -119,6 +119,39 @@ static const char *nth_line(const char *text, const char *needle)
     return NULL;
 }
 
+/* Last space-separated token of text[0..*len): returns its start and sets
+ * *len to the end of the text before it. An empty token means no text left. */
+static size_t nth_last_token(const char *text, size_t *len, size_t *end)
+{
+    size_t n = *len;
+    while (n > 0 && (text[n - 1] == ' ' || text[n - 1] == '\r'))
+        n--;
+    *end = n;
+    while (n > 0 && text[n - 1] != ' ')
+        n--;
+    *len = n;
+    return n;
+}
+
+/* True when the program-header entry starting at `entry` carries an E flag.
+ * `readelf -W -l` prints one entry per line ending "... MemSiz Flg Align":
+ * walk back from the Align token over the flag letters (R, W, E) up to the
+ * MemSiz hex field, so text of other entries is never scanned. */
+static bool nth_stack_is_exec(const char *entry)
+{
+    const char *eol = strchr(entry, '\n');
+    size_t len = eol ? (size_t)(eol - entry) : strlen(entry);
+    size_t end;
+    (void)nth_last_token(entry, &len, &end); /* Align */
+    for (;;) {
+        size_t start = nth_last_token(entry, &len, &end);
+        if (start == end || strncmp(entry + start, "0x", 2) == 0)
+            return false; /* no flag token left, or MemSiz reached */
+        if (memchr(entry + start, 'E', end - start))
+            return true;
+    }
+}
+
 /* Pure verdict over captured readelf text: returns true when every
  * declared mitigation is present. On refusal, why names what is missing. */
 static bool nth_verdict(const char *elf_h, const char *elf_l,
@@ -144,12 +177,9 @@ static bool nth_verdict(const char *elf_h, const char *elf_l,
         snprintf(why, why_cap, "no GNU_STACK segment");
         return false;
     }
-    /* The GNU_STACK line ends with its flag letters: RW is an NX stack,
-     * RWE is executable. Any E in the flag field is a violation. */
-    const char *flags = strrchr(stack, ' ');
-    const char *scan = flags ? flags + 1 : stack;
-    if (strchr(scan, 'E')) {
-        snprintf(why, why_cap, "executable GNU_STACK (%s)", scan);
+    bool exec = nth_stack_is_exec(stack);
+    if (exec) {
+        snprintf(why, why_cap, "executable GNU_STACK (flags include E)");
         return false;
     }
     return true;
@@ -159,7 +189,7 @@ static int nth_check_one(const struct nth_tool *tool, char *why, size_t why_cap)
 {
     char h[NTH_BUFCAP], l[NTH_BUFCAP], d[NTH_BUFCAP];
     if (!nth_capture("-h", tool->path, h, sizeof(h)) ||
-        !nth_capture("-l", tool->path, l, sizeof(l)) ||
+        !nth_capture("-W -l", tool->path, l, sizeof(l)) ||
         !nth_capture("-d", tool->path, d, sizeof(d))) {
         snprintf(why, why_cap, "UNPROVEN — readelf could not inspect %s",
                  tool->path);
@@ -318,8 +348,48 @@ static bool nth_selftest_setup(char *dir, size_t dir_cap, char *src,
     return true;
 }
 
+/* Fixture readelf texts in `readelf -W` layout: a fully hardened PIE whose
+ * GNU_STACK entry is followed by a GNU_RELRO entry, so the stack flags are
+ * not the tail of the program-header text. */
+#define NTH_FIX_H \
+    "  Type:                              DYN (Position-Independent Executable file)\n"
+#define NTH_FIX_L(stack_flags) \
+    "Program Headers:\n" \
+    "  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align\n" \
+    "  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x0010a8 0x0010a8 R   0x1000\n" \
+    "  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 " stack_flags " 0x10\n" \
+    "  GNU_RELRO      0x002e10 0x0000000000003e10 0x0000000000003e10 0x0001f0 0x0001f0 R   0x1\n"
+#define NTH_FIX_D \
+    " 0x000000000000001e (FLAGS)                BIND_NOW\n"
+
+static int nth_selftest_stack_fixtures(void)
+{
+    char why[NTH_WHY];
+    if (nth_verdict(NTH_FIX_H, NTH_FIX_L("RWE"), NTH_FIX_D, why,
+                    sizeof(why))) {
+        fprintf(stderr, "check_network_tool_hardening selftest: FAIL — an "
+                "executable GNU_STACK followed by GNU_RELRO was ACCEPTED\n");
+        return 1;
+    }
+    if (!strstr(why, "executable GNU_STACK")) {
+        fprintf(stderr, "check_network_tool_hardening selftest: FAIL — "
+                "executable GNU_STACK refused for the wrong reason: %s\n",
+                why);
+        return 1;
+    }
+    if (!nth_verdict(NTH_FIX_H, NTH_FIX_L("RW "), NTH_FIX_D, why,
+                     sizeof(why))) {
+        fprintf(stderr, "check_network_tool_hardening selftest: FAIL — a "
+                "non-executable GNU_STACK was REFUSED: %s\n", why);
+        return 1;
+    }
+    return 0;
+}
+
 int check_network_tool_hardening_selftest(void)
 {
+    if (nth_selftest_stack_fixtures() != 0)
+        return 1;
     if (!nth_on_linux()) {
         printf("check_network_tool_hardening selftest: UNOBSERVED — not a "
                "Linux host\n");
