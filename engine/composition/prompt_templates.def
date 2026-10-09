@@ -466,7 +466,9 @@ ENGINE_PROMPT_TEMPLATE(c23-gate-tail, task,
     "Repair only when a gate's own failure text dictates it: inventory "
     "regeneration, lowering (never raising) a complexity pin to the number "
     "the gate names, the doc-count fix command the gate prints, installing "
-    "git hooks.")
+    "git hooks. Before the tail, ask the change planner for the changed "
+    "files and report any selected group whose host need this host cannot "
+    "meet; the code-tests leaf does not predict the proof's selection.")
 ENGINE_PROMPT_TEMPLATE(c23-gate-tail, protocol,
     "Reply with tree state, the literal SUITE VERDICT line, each failing "
     "group or gate with its first lines, each repair made (file, old -> "
@@ -475,5 +477,37 @@ ENGINE_PROMPT_TEMPLATE(c23-gate-tail, judging,
     "Accepted when verdict lines are verbatim and groups_ran covers the "
     "routed set. Rejected on any hand-written source edit, a raised pin, or "
     "a summarized verdict.")
+
+/* ── c23-proof-triage ────────────────────────────────────────────────────
+ * Read-only triage of one failed landing proof. It classifies the failure
+ * from the proof's own evidence and names the next command; it repairs
+ * nothing. */
+ENGINE_PROMPT_TEMPLATE(c23-proof-triage, rules,
+    "Triage one failed proof. Read only: never edit, build, retry, "
+    "resubmit or post. Quote evidence verbatim with its file and line. If "
+    "the evidence does not decide between two classes, say UNDECIDED and "
+    "name the one command that would decide.")
+ENGINE_PROMPT_TEMPLATE(c23-proof-triage, task,
+    "Read the proof status reply for the exact local commit and remote "
+    "base, then the attempt's failure text, test-selection log and test "
+    "log. Classify as exactly one of: SUPERSEDED (the remote base moved "
+    "during the proof; a successor is queued), HOST_NEED (a selected group "
+    "needs a host capability this host lacks; the fixture's own tool error "
+    "says so), LOAD (a fixed deadline expired under host load and the "
+    "group passes alone), STICKY (the row failed at once on an earlier "
+    "verdict for the same commit and base), or REAL (an assertion about "
+    "the change itself). For HOST_NEED name the group, the unmet need and "
+    "which changed file the change planner routes to it.")
+ENGINE_PROMPT_TEMPLATE(c23-proof-triage, protocol,
+    "Reply with the class, the two or three evidence lines that decide it, "
+    "the failing group and assertion line if any, and the next command: "
+    "wait for the successor, land from a capable host or split the commit "
+    "the planner routes there, request a proof retry then resubmit, or "
+    "return to the writer with the assertion.")
+ENGINE_PROMPT_TEMPLATE(c23-proof-triage, judging,
+    "Accepted when the class follows from quoted evidence and the next "
+    "command matches the class. Rejected on a guess without a quoted line, "
+    "any mutation, or advice to loosen a selection, a host need or a "
+    "deadline to obtain a pass.")
 
 /* clang-format on */
