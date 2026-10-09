@@ -4888,7 +4888,8 @@ static int test_ops_statecatalog_page_bounds(void)
         int64_t total = (int64_t)diagnostics_dumper_count();
         int64_t pages = (total + limit - 1) / limit;
         ASSERT(pages > 1);
-        const int64_t cases[] = { 0, pages - 1, pages, INT64_MAX };
+        const int64_t max_page = 1000000; /* typed input range */
+        const int64_t cases[] = { 0, pages - 1, pages, max_page };
         for (size_t c = 0; c < 4; c++) {
             struct json_value env;
             ASSERT(statecatalog_page_fixture(reg, s, limit, cases[c], &env));
@@ -4907,12 +4908,16 @@ static int test_ops_statecatalog_page_bounds(void)
             ASSERT_EQ((int)json_get_bool(hm), (int)(cases[c] < pages - 1));
             json_free(&env);
         }
-        /* Largest page with the largest limit: the old unbounded multiply
-         * is reached here too. */
+        /* A page past the typed range never reaches the handler: the shared
+         * dispatch refuses it. */
+        struct json_value refused;
+        ASSERT(!statecatalog_page_fixture(reg, s, limit, INT64_MAX, &refused));
+        /* Largest admitted page with the largest limit: the page multiply
+         * stays bounded here too. */
         struct json_value env;
-        ASSERT(statecatalog_page_fixture(reg, s, 1000000, INT64_MAX, &env));
+        ASSERT(statecatalog_page_fixture(reg, s, 1000000, max_page, &env));
         const struct json_value *d = json_get(&env, "data");
-        ASSERT_EQ(json_get_int(json_get(d, "page")), INT64_MAX);
+        ASSERT_EQ(json_get_int(json_get(d, "page")), max_page);
         ASSERT_EQ((int64_t)json_size(json_get(d, "subsystems")), 0);
         ASSERT_EQ((int)json_get_bool(json_get(d, "has_more")), 0);
         json_free(&env);
