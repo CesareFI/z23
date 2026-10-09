@@ -31,16 +31,18 @@ int test_fleet_gateway(void)
     printf("fleet_gateway: POSIX-only gateway, noting Windows refusal\n");
     return 0;
 }
-#define GW_SHARD_FN(tag)                                                    \
-    int test_fleet_gateway_shard_##tag(void);                               \
-    int test_fleet_gateway_shard_##tag(void) { return test_fleet_gateway(); }
-GW_SHARD_FN(01)
-GW_SHARD_FN(02)
-GW_SHARD_FN(03)
-GW_SHARD_FN(04)
-GW_SHARD_FN(05)
-GW_SHARD_FN(06)
-#undef GW_SHARD_FN
+int test_fleet_gateway_shard_01(void);
+int test_fleet_gateway_shard_01(void) { return test_fleet_gateway(); }
+int test_fleet_gateway_shard_02(void);
+int test_fleet_gateway_shard_02(void) { return test_fleet_gateway(); }
+int test_fleet_gateway_shard_03(void);
+int test_fleet_gateway_shard_03(void) { return test_fleet_gateway(); }
+int test_fleet_gateway_shard_04(void);
+int test_fleet_gateway_shard_04(void) { return test_fleet_gateway(); }
+int test_fleet_gateway_shard_05(void);
+int test_fleet_gateway_shard_05(void) { return test_fleet_gateway(); }
+int test_fleet_gateway_shard_06(void);
+int test_fleet_gateway_shard_06(void) { return test_fleet_gateway(); }
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>

@@ -1419,14 +1419,11 @@ int test_block_index_projection(void)
     return failed;
 }
 
-#define BIP_SHARD_FN(tag, index) \
-    int test_block_index_projection_shard_##tag(void) { return bip_run_shard(index); }
-BIP_SHARD_FN(01, 0)
-BIP_SHARD_FN(02, 1)
-BIP_SHARD_FN(03, 2)
-BIP_SHARD_FN(04, 3)
-BIP_SHARD_FN(05, 4)
-BIP_SHARD_FN(06, 5)
-BIP_SHARD_FN(07, 6)
-BIP_SHARD_FN(08, 7)
-#undef BIP_SHARD_FN
+int test_block_index_projection_shard_01(void) { return bip_run_shard(0); }
+int test_block_index_projection_shard_02(void) { return bip_run_shard(1); }
+int test_block_index_projection_shard_03(void) { return bip_run_shard(2); }
+int test_block_index_projection_shard_04(void) { return bip_run_shard(3); }
+int test_block_index_projection_shard_05(void) { return bip_run_shard(4); }
+int test_block_index_projection_shard_06(void) { return bip_run_shard(5); }
+int test_block_index_projection_shard_07(void) { return bip_run_shard(6); }
+int test_block_index_projection_shard_08(void) { return bip_run_shard(7); }

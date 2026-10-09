@@ -10703,17 +10703,14 @@ static int test_dev_platform_platform_arm(void)
     return failures;
 }
 
-#define DP_SHARD_FN(tag, index) \
-    int test_dev_platform_shard_##tag(void) { return dp_run_shard(index); }
-DP_SHARD_FN(01, 0)
-DP_SHARD_FN(02, 1)
-DP_SHARD_FN(03, 2)
-DP_SHARD_FN(04, 3)
-DP_SHARD_FN(05, 4)
-DP_SHARD_FN(06, 5)
-DP_SHARD_FN(07, 6)
-DP_SHARD_FN(08, 7)
-#undef DP_SHARD_FN
+int test_dev_platform_shard_01(void) { return dp_run_shard(0); }
+int test_dev_platform_shard_02(void) { return dp_run_shard(1); }
+int test_dev_platform_shard_03(void) { return dp_run_shard(2); }
+int test_dev_platform_shard_04(void) { return dp_run_shard(3); }
+int test_dev_platform_shard_05(void) { return dp_run_shard(4); }
+int test_dev_platform_shard_06(void) { return dp_run_shard(5); }
+int test_dev_platform_shard_07(void) { return dp_run_shard(6); }
+int test_dev_platform_shard_08(void) { return dp_run_shard(7); }
 #else  /* _WIN32 */
 /* Windows has no fork()/waitpid process model; this group's forked dev-platform child lane
  * cannot run here. Skipped loudly rather than faked. */
@@ -10725,17 +10722,14 @@ static int test_dev_platform_platform_arm(void)
 #endif
 
 #if defined(_WIN32)
-#define DP_SHARD_FN(tag) \
-    int test_dev_platform_shard_##tag(void) { return test_dev_platform_platform_arm(); }
-DP_SHARD_FN(01)
-DP_SHARD_FN(02)
-DP_SHARD_FN(03)
-DP_SHARD_FN(04)
-DP_SHARD_FN(05)
-DP_SHARD_FN(06)
-DP_SHARD_FN(07)
-DP_SHARD_FN(08)
-#undef DP_SHARD_FN
+int test_dev_platform_shard_01(void) { return test_dev_platform_platform_arm(); }
+int test_dev_platform_shard_02(void) { return test_dev_platform_platform_arm(); }
+int test_dev_platform_shard_03(void) { return test_dev_platform_platform_arm(); }
+int test_dev_platform_shard_04(void) { return test_dev_platform_platform_arm(); }
+int test_dev_platform_shard_05(void) { return test_dev_platform_platform_arm(); }
+int test_dev_platform_shard_06(void) { return test_dev_platform_platform_arm(); }
+int test_dev_platform_shard_07(void) { return test_dev_platform_platform_arm(); }
+int test_dev_platform_shard_08(void) { return test_dev_platform_platform_arm(); }
 #endif
 
 int test_dev_platform(void)
