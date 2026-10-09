@@ -311,7 +311,7 @@ static struct zcl_result npr_exchange(struct package_resident *app,
     ssize_t sent = send(fd, &frame, bytes, MSG_NOSIGNAL);
     if (sent < 0 || (size_t)sent != bytes)
         return ZCL_ERR(-1, "resident input incomplete: candidate cancelled");
-    if (!resident_result_read(&app->launch, &header, output, 4096, 2000, error, sizeof(error)))
+    if (!resident_result_read(&app->launch, &header, output, 4096, RESIDENT_RESULT_DEADLINE_MS, error, sizeof(error)))
         return ZCL_ERR(-1, "resident result refused: %s", error);
     for (uint32_t i = 0; i < header.payload_len; ++i) {
         unsigned char c = (unsigned char)output[i];

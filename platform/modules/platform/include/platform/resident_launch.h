@@ -38,6 +38,8 @@
 #define RESIDENT_STARTUP_PLATFORM_MS 2000u
 #endif
 #define RESIDENT_STARTUP_PROTOCOL_MS 100u
+/* Upper bound on a healthy resident child's answer to one input; a loaded host needs far more than startup. */
+#define RESIDENT_RESULT_DEADLINE_MS 30000u
 
 /* What the caller must already hold from acceptance time: the artifact's
  * SHA3-256 content root and the positioned-file identity triple captured

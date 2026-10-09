@@ -99,6 +99,14 @@
  * it survives a consumer restart. */
 #define RLC_LEAF "app.invoke.package"
 
+/* Compile-time pin: the child's answer deadline cannot quietly drop back
+ * under a loaded host's latency (it was a bare 2000 ms and refused healthy
+ * children), and must stay above the startup bound. */
+static_assert(RESIDENT_RESULT_DEADLINE_MS >= 30000u,
+              "resident result deadline must tolerate a loaded host");
+static_assert(RESIDENT_RESULT_DEADLINE_MS > RESIDENT_STARTUP_PLATFORM_MS,
+              "resident result deadline must exceed the startup bound");
+
 #define RLC_CHECK(name, expr) do {                                        \
     printf("resident_launch_contract: %s... ", (name));                   \
     fflush(stdout);                                                       \
