@@ -425,4 +425,55 @@ ENGINE_PROMPT_TEMPLATE(c23-registry-entry, judging,
     "with an explanatory reason (see test_command_registry_catalog.c). "
     "Record the exact group and source identity; mark unrun stages NOTRUN.")
 
+/* ── c23-context-pack ────────────────────────────────────────────────────
+ * Read-only pack for a writer, run by a cheap model first. Excerpts are
+ * verbatim with path:line; anything not found is a GAP, never a guess. */
+ENGINE_PROMPT_TEMPLATE(c23-context-pack, rules,
+    "Build a context pack for a later writer. You are read-only except one "
+    "pack file, the path the task names. No design, no judgement, no source "
+    "edits. Batch your searches. Never guess a line number: quote it from "
+    "the tool output or list the item under GAPS.")
+ENGINE_PROMPT_TEMPLATE(c23-context-pack, task,
+    "Write the pack with these headed sections; every excerpt verbatim with "
+    "path:line. TARGET: each function the unit names, whole, or signature, "
+    "relevant lines and return paths when over 120 lines. CALLERS: uses "
+    "outside the defining file, at most 12. TEST HOME: the registered test "
+    "file and group that own the target, the nearest complete existing "
+    "fixture with its helpers, how tests are registered in the group entry, "
+    "numbered or named resources already in use. LIBC: file- or "
+    "memory-touching libc calls the target file already uses. GAPS: "
+    "anything named but not found.")
+ENGINE_PROMPT_TEMPLATE(c23-context-pack, protocol,
+    "Reply with the pack path, its size, and the GAPS lines only. Do not "
+    "restate pack contents, advise the writer or propose a change.")
+ENGINE_PROMPT_TEMPLATE(c23-context-pack, judging,
+    "Accepted when every named target is present with real line numbers and "
+    "GAPS is honest. Rejected if any source file changed or an excerpt is "
+    "paraphrased.")
+
+/* ── c23-gate-tail ───────────────────────────────────────────────────────
+ * Mechanical gate tail after a writer's focused test passes. It runs
+ * gates and applies only the repairs a gate's own failure text dictates. */
+ENGINE_PROMPT_TEMPLATE(c23-gate-tail, rules,
+    "Run the gate tail for a finished change. Never edit hand-written "
+    "source or tests. Never commit, rebase or reset. Run every heavy "
+    "command through the host scheduler wrapper the project documents. A "
+    "killed child is rerun once and reported.")
+ENGINE_PROMPT_TEMPLATE(c23-gate-tail, task,
+    "Regenerate the generated capability inventory through its make target. "
+    "Run every routed test group for the changed files: the union of the "
+    "groups the code-tests leaf reports. Run lint-fast, then full lint. "
+    "Repair only when a gate's own failure text dictates it: inventory "
+    "regeneration, lowering (never raising) a complexity pin to the number "
+    "the gate names, the doc-count fix command the gate prints, installing "
+    "git hooks.")
+ENGINE_PROMPT_TEMPLATE(c23-gate-tail, protocol,
+    "Reply with tree state, the literal SUITE VERDICT line, each failing "
+    "group or gate with its first lines, each repair made (file, old -> "
+    "new), and one final verdict line. Quote verdicts verbatim.")
+ENGINE_PROMPT_TEMPLATE(c23-gate-tail, judging,
+    "Accepted when verdict lines are verbatim and groups_ran covers the "
+    "routed set. Rejected on any hand-written source edit, a raised pin, or "
+    "a summarized verdict.")
+
 /* clang-format on */

@@ -17,7 +17,7 @@ The source defines these C23 prompt kinds: `c23-byte-validator`,
 `c23-command-handler`, `c23-model-save`, `c23-regression-fixture`,
 `c23-wire-codec`, `c23-cas-operation`, `c23-service-operation`,
 `c23-telemetry-field`, `c23-controller-route`, `c23-source-generator`,
-`c23-registry-entry`, and
+`c23-registry-entry`, `c23-context-pack`, `c23-gate-tail`, and
 `c23-resource-owner`. Existing kinds `fix-gate`,
 `add-test`, `port-arm`, `doc-claim`, and `review` remain. Rows marked
 `PROPOSED:<family>` still need a procedure; they are not dispatchable kinds.
