@@ -40,6 +40,45 @@ static void wbs_store64_le(uint8_t *p, uint64_t v)
     for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (i * 8));
 }
 
+#ifdef ZCL_TESTING
+static _Atomic size_t g_wbs_plain_retired_len;
+static _Atomic bool g_wbs_plain_retired_zero;
+
+void wallet_backup_test_plain_retirement_reset(void)
+{
+    atomic_store(&g_wbs_plain_retired_len, 0);
+    atomic_store(&g_wbs_plain_retired_zero, false);
+}
+
+bool wallet_backup_test_plain_retirement_snapshot(size_t *retired_len)
+{
+    if (retired_len)
+        *retired_len = atomic_load(&g_wbs_plain_retired_len);
+    return atomic_load(&g_wbs_plain_retired_zero);
+}
+
+static void wbs_test_observe_plain_retirement(const uint8_t *plain,
+                                              size_t plain_len)
+{
+    bool all_zero = true;
+    for (size_t i = 0; i < plain_len; i++)
+        all_zero = all_zero && plain[i] == 0;
+    atomic_store(&g_wbs_plain_retired_len, plain_len);
+    atomic_store(&g_wbs_plain_retired_zero, all_zero);
+}
+#endif
+
+static void wbs_plain_free(uint8_t *plain, size_t plain_len)
+{
+    if (!plain)
+        return;
+    memory_cleanse(plain, plain_len);
+#ifdef ZCL_TESTING
+    wbs_test_observe_plain_retirement(plain, plain_len);
+#endif
+    free(plain);
+}
+
 static bool wbs_aead_encrypt(const uint8_t *plain, size_t plain_len,
                               const uint8_t *aad, size_t aad_len,
                               const uint8_t nonce[12],
@@ -255,7 +294,7 @@ struct zcl_result wallet_backup_encrypt_file(const char *src_path,
     size_t out_len = sizeof(header) + plen + WALLET_BACKUP_ENC_TAG_LEN;
     uint8_t *out = zcl_malloc(out_len, "wallet_backup encrypt_buf");
     if (!out) {
-        free(plain);
+        wbs_plain_free(plain, plen);
         memory_cleanse(key, sizeof(key));
         return ZCL_ERR(-3, "encrypt_file: malloc failed (%zu bytes) for %s", out_len, src_path);
     }
@@ -269,8 +308,7 @@ struct zcl_result wallet_backup_encrypt_file(const char *src_path,
                                 out + sizeof(header) + plen);
     /* Scrub sensitive material promptly. */
     memory_cleanse(key, sizeof(key));
-    memory_cleanse(plain, plen);
-    free(plain);
+    wbs_plain_free(plain, plen);
 
     if (!ok) {
         free(out);
