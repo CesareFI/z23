@@ -6251,12 +6251,19 @@ LINT_LAND_EXTRA_GATES := \
     check-blocker-remedy
 LINT_LAND_GATES := $(LINT_FAST_GATES) $(LINT_LAND_EXTRA_GATES)
 
+# check-network-tool-hardening reads built binaries, so every target that
+# runs it builds them first; a root that never built them (a fresh landing
+# worktree) otherwise fails the gate as "missing" instead of judging the
+# mitigations. Defined here because rule prerequisites expand when read.
+NETWORK_TOOL_HARDENING_BINS = $(BIN_DIR)/agent_sha3 $(BIN_DIR)/zclassic23-acme$(ZCL_HOST_EXEEXT)
+
 ifeq ($(ZCL_LINT_SERIAL),1)
 lint-land: $(LINT_LAND_GATES)
 	@echo "lint-land: OK (serial)"
 else
 lint-land: $(EQUIHASH_FACT_TOOL) $(LINTC_TOOL) $(FILE_SIZE_POLICY_BIN) tor-provenance-ready $(TOR_PROVENANCE_BIN) \
-		$(HOTSWAP_ACTION_PLAN) tools/core_seal $(BIN_DIR)/check_no_hardlink_seeding
+		$(HOTSWAP_ACTION_PLAN) tools/core_seal $(BIN_DIR)/check_no_hardlink_seeding \
+		$(NETWORK_TOOL_HARDENING_BINS)
 	@tools/lint/run_lint.sh --jobs "$(ZCL_LINT_JOBS)" --bin-dir "$(BIN_DIR)" $(LINT_LAND_GATES)
 	@echo "lint-land: OK"
 endif
@@ -13714,11 +13721,12 @@ check-no-bare-tmp-fixture: $(LINTC_TOOL)
 	@echo "══ LINT: no new bare /tmp fixture literal ══"
 	@./tools/lint/check_no_bare_tmp_fixture.sh --selftest && ./tools/lint/check_no_bare_tmp_fixture.sh
 
+
 # Gate — network tool hardening. The Internet-facing standalone tools must
 # carry the ELF mitigations the tree declares through HARDEN_CFLAGS /
 # HARDEN_LDFLAGS (PIE, GNU_RELRO, BIND_NOW, NX stack). Host-bound: UNOBSERVED
 # off Linux, UNPROVEN without readelf.
-check-network-tool-hardening: $(LINTC_TOOL)
+check-network-tool-hardening: $(LINTC_TOOL) $(NETWORK_TOOL_HARDENING_BINS)
 	@echo "══ LINT: network tools carry declared ELF mitigations ══"
 	@./tools/lint/check_network_tool_hardening.sh --selftest && ./tools/lint/check_network_tool_hardening.sh
 
