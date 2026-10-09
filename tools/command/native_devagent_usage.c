@@ -58,16 +58,20 @@
  * truncated, by_model:[{format, model, input_includes_cache_read, events,
  * <counters>, unreported:{...}}], hours_total, by_hour: newest
  * DVU_MAX_HOURS {hour, format, model, events, <counters>, unreported:{...}},
- * runs_total, runs_unkeyed, by_run:[{format, session, agent, agent_type,
- * sidechain, model, events, <counters>, unreported:{...}}]}.
- *   by_run: Claude events only, grouped by (sessionId, agentId, model) so a
- *           delegated run is a countable attempt; agent is "" for the lead
- *           thread and agent_type "" when attributionAgent is absent. Rows
- *           are ordered by session, agent, model; at most DVU_MAX_RUNS are
- *           emitted while runs_total stays the true group count.
- *   runs_total: the number of distinct (session, agent, model) groups.
+ * runs_total, runs_unkeyed, by_run_truncated, by_run:[{format, session,
+ * agent, agent_type, sidechain, model, events, <counters>,
+ * unreported:{...}}]}.
+ *   by_run: Claude events only, grouped by (sessionId, agentId, model,
+ *           attributionAgent, isSidechain) so a delegated run is a countable
+ *           attempt and differing agent_type or sidechain never merge;
+ *           agent is "" for the lead thread and agent_type "" when
+ *           attributionAgent is absent. Rows are ordered by that key; at
+ *           most DVU_MAX_RUNS are emitted while runs_total stays the true group count.
+ *   runs_total: the number of distinct run-key groups.
  *   runs_unkeyed: kept Claude events in no run row, because the line has no
  *           sessionId or a session, agent or agent_type over 128 bytes.
+ *   by_run_truncated: true exactly when runs_total exceeds the by_run rows
+ *           emitted (DVU_MAX_RUNS).
  *
  * FAILURE. usage_log present but not a nonempty UTF-8 string is BAD_INPUT; a path
  * that does not exist is USAGE_LOG_NOT_FOUND; one that is neither a file
@@ -279,7 +283,8 @@ static bool dvu_parse_muse(const struct json_value *row, struct dvu_fields *f)
     return true;
 }
 
-/* An absent or non-string field is "", an overlong one cannot be a run key. */
+/* Absent or non-string is "". Returns whether the field is within the length
+ * bound; the caller decides that an overlong field leaves the event unkeyed. */
 static bool dvu_run_field(const struct json_value *row, const char *key,
                           const char **out)
 {
@@ -884,25 +889,26 @@ static const char *dvu_run_text(const char *s)
     return s ? s : "";
 }
 
-/* The run key: session, agent, model. Unkeyed events (no session) lead. */
+/* The run key: session, agent, model, agent_type, sidechain. Unkeyed events
+ * (no session) lead. */
 static int dvu_cmp_run_key(const struct dvu_event *x, const struct dvu_event *y)
 {
     int c = strcmp(dvu_run_text(x->session), dvu_run_text(y->session));
     if (c)
         return c;
     c = strcmp(dvu_run_text(x->agent), dvu_run_text(y->agent));
-    return c ? c : strcmp(x->model, y->model);
-}
-
-/* Key order, then the non-key fields so the sort is deterministic. */
-static int dvu_cmp_run(const void *a, const void *b)
-{
-    const struct dvu_event *x = a, *y = b;
-    int c = dvu_cmp_run_key(x, y);
+    if (c)
+        return c;
+    c = strcmp(x->model, y->model);
     if (c)
         return c;
     c = strcmp(dvu_run_text(x->agent_type), dvu_run_text(y->agent_type));
     return c ? c : (int)x->sidechain - (int)y->sidechain;
+}
+
+static int dvu_cmp_run(const void *a, const void *b)
+{
+    return dvu_cmp_run_key(a, b);
 }
 
 static bool dvu_push_run_row(struct json_value *arr, const struct dvu_event *e,
@@ -958,6 +964,8 @@ static bool dvu_push_by_run(struct json_value *usage, struct dvu_scan *s)
     }
     ok = ok && json_push_kv_int(usage, "runs_total", groups) &&
          json_push_kv_int(usage, "runs_unkeyed", dvu_runs_unkeyed(s)) &&
+         json_push_kv_bool(usage, "by_run_truncated",
+                           groups > (int64_t)DVU_MAX_RUNS) &&
          dvu_json_kv(usage, "by_run", &arr);
     json_free(&arr);
     return ok;

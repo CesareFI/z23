@@ -1070,6 +1070,12 @@ static void dvx_run_line(char *buf, size_t cap, const char *session,
         ses, ag, ty, side ? "true" : "false", id, model, out, cread);
 }
 
+static bool dvx_bool_is(const struct json_value *o, const char *key, bool want)
+{
+    const struct json_value *v = json_get(o, key);
+    return v && v->type == JSON_BOOL && v->val.b == want;
+}
+
 static const struct json_value *dvx_run_rows(const struct dvx_call *c)
 {
     const struct json_value *u = dvx_usage(c);
@@ -1127,6 +1133,7 @@ static int dvx_runs_grouping(const char *root, const char *ledger, const char *m
         const struct json_value *rows = dvx_run_rows(&c);
         ASSERT(rows != NULL);
         ASSERT_EQ(dvx_entry_int(u, "runs_unkeyed"), 0);
+        ASSERT(dvx_bool_is(u, "by_run_truncated", false));
         if (model) {
             ASSERT_EQ(dvx_entry_int(u, "runs_total"), 1);
             ASSERT_EQ(rows->num_children, 1);
@@ -1255,12 +1262,71 @@ static int dvx_runs_bound(const char *root, const char *ledger)
         ASSERT(rows != NULL);
         ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "events"), RUNS);
         ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "runs_total"), RUNS);
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "runs_unkeyed"), 0);
+        ASSERT(dvx_bool_is(dvx_usage(&c), "by_run_truncated", true));
         ASSERT_EQ(rows->num_children, 256);
         ASSERT(dvx_run_is(rows, 0, "s000", "", "", false, "mA", 1, 1, 1));
         ASSERT(dvx_run_is(rows, 255, "s255", "", "", false, "mA", 1, 1, 1));
         PASS();
     } _test_next:;
     free(text);
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_runs_unreported(const char *root, const char *ledger)
+{
+    int failures = 0;
+    char path[1024];
+    (void)snprintf(path, sizeof(path), "%s/runs-unrep.jsonl", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: a by_run row reports an omitted counter as unreported, not 0") {
+        /* The second event omits cache_read_input_tokens. */
+        char text[2048] = "";
+        dvx_run_line(text, sizeof(text), "s1", NULL, NULL, false, "u1", "mA", 5, 100);
+        size_t at = strlen(text);
+        (void)snprintf(text + at, sizeof(text) - at,
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-09-19T01:02:03Z\","
+            "\"sessionId\":\"s1\",\"isSidechain\":false,\"message\":{\"id\":\"u2\","
+            "\"model\":\"mA\",\"usage\":{\"input_tokens\":1,\"output_tokens\":6}}}\n");
+        ASSERT(dvx_write(root, "runs-unrep.jsonl", text));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        const struct json_value *rows = dvx_run_rows(&c);
+        ASSERT(rows != NULL && rows->num_children == 1);
+        const struct json_value *r = &rows->children[0];
+        ASSERT_EQ(dvx_entry_int(r, "events"), 2);
+        ASSERT_EQ(dvx_entry_int(r, "output_tokens"), 11);
+        ASSERT_EQ(dvx_entry_int(r, "cache_read_tokens"), 100);
+        ASSERT_EQ(dvx_unreported(r, "cache_read_tokens"), 1);
+        ASSERT_EQ(dvx_unreported(r, "output_tokens"), 0);
+        PASS();
+    } _test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+static int dvx_runs_agent_type_split(const char *root, const char *ledger)
+{
+    int failures = 0;
+    char text[4096] = "";
+    char path[1024];
+    (void)snprintf(path, sizeof(path), "%s/runs-split.jsonl", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: by_run splits the same session, agent and model by attributionAgent") {
+        dvx_run_line(text, sizeof(text), "s1", "ag1", "reviewer", true, "t1", "mA", 3, 30);
+        dvx_run_line(text, sizeof(text), "s1", "ag1", "explorer", true, "t2", "mA", 4, 40);
+        ASSERT(dvx_write(root, "runs-split.jsonl", text));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        const struct json_value *rows = dvx_run_rows(&c);
+        ASSERT(rows != NULL);
+        ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "runs_total"), 2);
+        ASSERT_EQ(rows->num_children, 2);
+        ASSERT(dvx_run_is(rows, 0, "s1", "ag1", "explorer", true, "mA", 1, 4, 40));
+        ASSERT(dvx_run_is(rows, 1, "s1", "ag1", "reviewer", true, "mA", 1, 3, 30));
+        PASS();
+    } _test_next:;
     dvx_end(&c);
     return failures;
 }
@@ -1500,6 +1566,8 @@ int test_devagent_outcomes(void)
     failures += dvx_runs_overlong(root, ledger);
     failures += dvx_runs_non_claude(root, ledger);
     failures += dvx_runs_bound(root, ledger);
+    failures += dvx_runs_unreported(root, ledger);
+    failures += dvx_runs_agent_type_split(root, ledger);
     failures += dvx_usage_path_floor();
     failures += dvx_sort_boundaries(root, ledger);
     failures += dvx_byte_boundaries(root, ledger);
