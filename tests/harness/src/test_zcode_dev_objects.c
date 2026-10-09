@@ -9573,6 +9573,149 @@ static int test_zd_work_pull_receipt_cas(const uint8_t secret[32],
     return failures;
 }
 
+/* Reopen fixtures: after the put, nothing is carried in memory except the
+ * directory and the root. The load runs in a helper that sees only those. */
+enum zd_receipt_damage {
+    ZD_RECEIPT_DAMAGE_NONE,
+    ZD_RECEIPT_DAMAGE_TRUNCATE_ONE,
+    ZD_RECEIPT_DAMAGE_FLIP_BYTE,
+    ZD_RECEIPT_DAMAGE_ZERO_LENGTH,
+};
+
+static bool zd_receipt_object_path(const char *workspace,
+                                   const uint8_t root[32], char *path,
+                                   size_t cap)
+{
+    char hex[65];
+    zcl_hex_encode(root, 32, hex);
+    int n = snprintf(path, cap, "%s/.zvcs/objects/%c%c/%s", workspace,
+                     hex[0], hex[1], hex + 2);
+    return n > 0 && (size_t)n < cap;
+}
+
+static bool zd_receipt_damage_object(const char *workspace,
+                                     const uint8_t root[32],
+                                     enum zd_receipt_damage damage)
+{
+    char path[1024];
+    uint8_t bytes[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES];
+    if (!zd_receipt_object_path(workspace, root, path, sizeof(path)))
+        return false;
+    FILE *in = fopen(path, "rb");
+    if (!in) return false;
+    size_t got = fread(bytes, 1, sizeof(bytes), in);
+    bool whole = got == sizeof(bytes) && fclose(in) == 0;
+    if (!whole) return false;
+    size_t keep = sizeof(bytes);
+    if (damage == ZD_RECEIPT_DAMAGE_TRUNCATE_ONE) keep = sizeof(bytes) - 1u;
+    if (damage == ZD_RECEIPT_DAMAGE_ZERO_LENGTH) keep = 0;
+    if (damage == ZD_RECEIPT_DAMAGE_FLIP_BYTE) bytes[100] ^= 1u;
+    if (remove(path) != 0) return false;
+    FILE *out = fopen(path, "wb");
+    if (!out) return false;
+    bool ok = keep == 0 || fwrite(bytes, 1, keep, out) == keep;
+    return fclose(out) == 0 && ok;
+}
+
+/* The reopened side: only the directory and the root cross over. */
+static enum vcs_zcode_work_pull_receipt_result zd_receipt_reopen_load(
+    const char *workspace, const uint8_t root[32],
+    struct vcs_zcode_work_receipt_v1 *loaded)
+{
+    return vcs_zcode_work_pull_receipt_load(workspace, root, loaded);
+}
+
+/* Seal and durably store one receipt; return its root and the exact wire.
+ * Uses seal + put (the cas fixture's route), not observe/mint, which needs a
+ * full held pull package. */
+static bool zd_receipt_store(const char *workspace, const uint8_t secret[32],
+                             const uint8_t observer[32], uint8_t root[32],
+                             uint8_t wire[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES])
+{
+    struct vcs_zcode_work_receipt_v1 r;
+    zd_pull_receipt_shape(&r, 0x70);
+    return vcs_object_store_init(workspace) &&
+           vcs_zcode_work_receipt_seal(&r, secret, observer) ==
+               VCS_ZCODE_DEV_OK &&
+           vcs_zcode_work_receipt_id(&r, root) == VCS_ZCODE_DEV_OK &&
+           vcs_zcode_work_receipt_serialize(&r, wire) == VCS_ZCODE_DEV_OK &&
+           vcs_object_put_addressed(workspace, root, wire,
+                                    VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES);
+}
+
+/* Store, damage, then reopen-load. Returns the load status. */
+static enum vcs_zcode_work_pull_receipt_result zd_receipt_damage_and_load(
+    const uint8_t secret[32], const uint8_t observer[32],
+    enum zd_receipt_damage damage, struct vcs_zcode_work_receipt_v1 *loaded,
+    bool *setup_ok)
+{
+    char workspace[512];
+    uint8_t root[32], wire[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES];
+    test_make_tmpdir(workspace, sizeof(workspace), "zcode_dev",
+                     "pull-receipt-reopen");
+    *setup_ok = zd_receipt_store(workspace, secret, observer, root, wire) &&
+                zd_receipt_damage_object(workspace, root, damage);
+    return zd_receipt_reopen_load(workspace, root, loaded);
+}
+
+static int test_zd_work_pull_receipt_reopen(const uint8_t secret[32],
+                                            const uint8_t observer[32])
+{
+    int failures = 0;
+    TEST("work pull receipt: stored receipt survives a reopen byte for byte") {
+        char workspace[512];
+        uint8_t root[32], wire[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES];
+        uint8_t back[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES];
+        test_make_tmpdir(workspace, sizeof(workspace), "zcode_dev",
+                         "pull-receipt-reopen");
+        ASSERT(zd_receipt_store(workspace, secret, observer, root, wire));
+        struct vcs_zcode_work_receipt_v1 loaded;
+        ASSERT_EQ(zd_receipt_reopen_load(workspace, root, &loaded),
+                  VCS_ZCODE_WORK_PULL_RECEIPT_OK);
+        ASSERT_EQ(vcs_zcode_work_receipt_serialize(&loaded, back),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT(memcmp(back, wire, sizeof(wire)) == 0);
+        ASSERT_EQ(vcs_zcode_work_pull_receipt_check(&loaded),
+                  VCS_ZCODE_WORK_PULL_RECEIPT_OK);
+        ASSERT(memcmp(loaded.signer_pubkey, observer, 32) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zd_work_pull_receipt_reopen_damaged(const uint8_t secret[32],
+                                                    const uint8_t observer[32])
+{
+    int failures = 0;
+    TEST("work pull receipt: damaged receipt found on reopen is refused") {
+        static const enum zd_receipt_damage kinds[] = {
+            ZD_RECEIPT_DAMAGE_TRUNCATE_ONE,
+            ZD_RECEIPT_DAMAGE_FLIP_BYTE,
+            ZD_RECEIPT_DAMAGE_ZERO_LENGTH,
+        };
+        static const enum vcs_zcode_work_pull_receipt_result want[] = {
+            VCS_ZCODE_WORK_PULL_RECEIPT_CODEC,
+            VCS_ZCODE_WORK_PULL_RECEIPT_ROOT_MISMATCH,
+            /* zero bytes read back as a NULL wire, which decode refuses */
+            VCS_ZCODE_WORK_PULL_RECEIPT_NULL,
+        };
+        for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+            struct vcs_zcode_work_receipt_v1 loaded;
+            bool setup_ok = false;
+            memset(&loaded, 0xA5, sizeof(loaded));
+            enum vcs_zcode_work_pull_receipt_result got =
+                zd_receipt_damage_and_load(secret, observer, kinds[i],
+                                           &loaded, &setup_ok);
+            ASSERT(setup_ok);
+            ASSERT(got != VCS_ZCODE_WORK_PULL_RECEIPT_OK);
+            ASSERT_EQ(got, want[i]);
+            ASSERT(!zcl_bytes_any_set(loaded.signer_pubkey, 32));
+            ASSERT(!zcl_bytes_any_set(loaded.task_root, 32));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
 static int test_zd_work_pull_receipt_unverified(const uint8_t secret[32],
                                                 const uint8_t observer[32])
 {
@@ -9606,6 +9749,8 @@ static int test_zd_work_pull_receipt(void)
     failures += test_zd_work_pull_receipt_marks(secret, observer);
     failures += test_zd_work_pull_receipt_unverified(secret, observer);
     failures += test_zd_work_pull_receipt_cas(secret, observer);
+    failures += test_zd_work_pull_receipt_reopen(secret, observer);
+    failures += test_zd_work_pull_receipt_reopen_damaged(secret, observer);
     memset(secret, 0, sizeof(secret));
     return failures;
 }
