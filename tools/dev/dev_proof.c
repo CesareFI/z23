@@ -6779,6 +6779,14 @@ static const char *const proof_prefork_helpers[] = {
     "zcl-nodectl", "zclassic23-acme", "fbsh", "engine-unit",
     "tools/file_size_policy", "fleet-board-bridge", "git-hook",
     "build/bin/z23-lint",
+    /* The reflex-runner candidate images are order-only prerequisites of
+     * every test binary, but the test dimension's runner is materialized
+     * into the generation, not linked there — so nothing in a generation
+     * would otherwise build these. The group opens them by cwd-relative
+     * path; without this row every universal selection (for example after
+     * a large merge) fails test_reflex_runner with "fixture image ...
+     * missing". */
+    "reflex-runner-fixtures",
 };
 
 #define PROOF_PREFORK_HELPER_COUNT \

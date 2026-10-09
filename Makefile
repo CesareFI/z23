@@ -3796,6 +3796,15 @@ $(TEST_PARALLEL_REL_CANDIDATE): | $(REFLEX_RUNNER_FIXTURE_SOS)
 $(TEST_PARALLEL_FAST_CANDIDATE): | $(REFLEX_RUNNER_FIXTURE_SOS)
 endif
 
+# Aggregate every reflex-runner fixture image under one name so
+# non-test-binary make invocations can build them explicitly: a proof
+# generation materializes its runner instead of linking it, so the
+# order-only prerequisites above never fire there, and the test dimension
+# runs no other make. The proof prefork build names this target. The pure
+# images exist only on Linux x86_64; elsewhere the variable is empty.
+.PHONY: reflex-runner-fixtures
+reflex-runner-fixtures: $(REFLEX_RUNNER_FIXTURE_SOS) $(REFLEX_PURE_SOS)
+
 # Same contract for the resident_launch_contract group's fixture children:
 # the group's reference launches exec these images, so a missing fixture is a
 # broken build, never a skip.

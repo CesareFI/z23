@@ -70,9 +70,9 @@ bool zcl_dev_proof_producer_source_qualified(const char *candidate_source,
  * phases file as `step=prefork` so the next reader replaces the number. */
 #define PROOF_PREFORK_DEFAULT_MS 120000
 #define PROOF_PREFORK_LANDING_MS 1800000
-/* make, --no-print-directory, -jN, the 8 helper targets, proof-lint-prebuild
- * and the NULL terminator: 13 slots, exactly. */
-#define PROOF_PREFORK_ARGV_CAP 13u
+/* make, --no-print-directory, -jN, the 9 helper targets, proof-lint-prebuild
+ * and the NULL terminator: 14 slots, exactly. */
+#define PROOF_PREFORK_ARGV_CAP 14u
 /* Every BUILD row is a conservative upper bound on distinct helper targets.
  * Derive it from the same platform-qualified catalog the selector reads;
  * duplicate and already-provided targets still disappear during argv fill. */
