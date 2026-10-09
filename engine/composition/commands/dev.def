@@ -904,6 +904,25 @@ ZCL_COMMAND_READY_READ(
         ZCL_COMMAND_TRAIT_DEV_ONLY,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_change_plan)
 
+ZCL_COMMAND_READY_READ(
+    "dev.vcs.ports", "dev.vcs", "", "Classify a contributor branch commit by commit",
+    "Read-only pull-request intake: for each non-merge commit in "
+    "merge-base(base,tip)..tip, oldest first, classify its patch against "
+    "the running result as APPLIES, ON_BASE (change already present), "
+    "CONFLICT (skipped) or EMPTY (no diff outside the generated docs). The "
+    "running result is a private temporary index; the checkout, index, refs "
+    "and config are never written.", 65536,
+    "port,table,intake,pull-request,apply,conflict", "zcl.dev_port_table_input.v1",
+    "zcl.dev_port_table.v1", "base,tip,limit", "",
+    "z23 dev vcs ports --base=origin/main --tip=contributor/branch --limit=64",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_CHECKOUT_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT |
+        ZCL_COMMAND_TRAIT_DEV_ONLY,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_port_table)
+
 ZCL_COMMAND_DEV_READ(
     "dev.test.run", "dev.test", "dev.test.focused",
     "Run one exact prebuilt focused test group",

@@ -235,6 +235,9 @@ void zcl_native_handle_dev_app_sync(
 void zcl_native_handle_dev_change_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_dev_port_table(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 /* dev.vcs.revert — one-command source+binary revert (see
  * tools/command/native_dev_command.c). A release build's copy of this
  * function is a `#ifndef ZCL_DEV_BUILD` stub that fails BLOCKED without

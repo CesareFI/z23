@@ -74,11 +74,11 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 900 |
+| Registry entries (branches + leaves) | 901 |
 | Top-level roots | 14 |
 | Branches | 199 |
-| Leaves (dispatchable command paths) | 701 |
-| … `ready` (live handler in this build) | 617 |
+| Leaves (dispatchable command paths) | 702 |
+| … `ready` (live handler in this build) | 618 |
 | … `compat` (metadata only, names a fallback) | 54 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `z23-dev`) | 53 |
@@ -96,7 +96,7 @@ Per source file:
 | `engine/composition/commands/app_features.def` | 75 | 20 | 55 |
 | `engine/composition/commands/store.def` | 19 | 0 | 19 |
 | `engine/composition/commands/ops.def` | 59 | 11 | 48 |
-| `engine/composition/commands/dev.def` | 116 | 22 | 94 |
+| `engine/composition/commands/dev.def` | 117 | 22 | 95 |
 | `engine/composition/commands/code.def` | 33 | 4 | 29 |
 | `engine/composition/commands/accounts.def` | 11 | 2 | 9 |
 | `engine/composition/commands/vault.def` | 24 | 4 | 20 |
@@ -775,6 +775,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `dev vcs revert` | compat 🔧 → `z23-dev dev vcs revert <to> [--relink-generation]` | mutate / dev-mutation / **owner** · foreground/high | **`to`**, `relink_generation` | `zcl.dev_vcs_revert.v1` | `z23 dev vcs revert --input='{"to":"<64-hex commit id>","relink_generation":true}'` | Restore the checkout to a prior ZVCS commit; generation relinking is currently contained — *one-command source+binary revert requires a dev build* |
+| `dev vcs ports` | ready | read / read / operator · foreground/low | `base`, `tip`, `limit` | `zcl.dev_port_table.v1` | `z23 dev vcs ports --base=origin/main --tip=contributor/branch --limit=64` | Classify a contributor branch commit by commit |
 
 #### `dev.vcs.seal` — Owner-run ZVCS unseal-token ritual
 
