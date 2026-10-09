@@ -252,6 +252,8 @@ write_verdict() {
         printf '"build_commit":"%s",' "${CANARY_BUILD_COMMIT:-unknown}"
         printf '"tip":%s,"verified_height":%s,"bg_state":"%s",' \
             "${R_TIP:-0}" "${R_VERIFIED:-0}" "${R_BGSTATE:-unknown}"
+        printf '"last_state":"%s","verification_incomplete":"%s",' \
+            "${R_LAST_STATE:-}" "${R_INCOMPLETE:-unknown}"
         printf '"consensus_rejects":%s,"local_sha3":"%s","expected_sha3":"%s",' \
             "${R_REJECTS:-0}" "${R_LOCAL_SHA3:-}" "$EXPECTED_SHA3"
         printf '"legacy_sha3":"%s","exact_tier":"%s",' \
@@ -377,6 +379,25 @@ json_num() {  # $1=json $2=key
     printf '%s' "$1" | grep -o "\"$2\"[[:space:]]*:[[:space:]]*-\?[0-9]\+" \
         | head -1 | grep -o -- '-\?[0-9]\+$' || true
 }
+json_bool() {  # $1=json $2=key; prints true|false|empty
+    printf '%s' "$1" | grep -o "\"$2\"[[:space:]]*:[[:space:]]*\(true\|false\)" \
+        | head -1 | grep -o '\(true\|false\)$' || true
+}
+# timeout_sd <last getsyncdetail>: a timeout SD that keeps the last real
+# observation (verified/chain height, incomplete flag, state) beside
+# state=timeout, so the evidence never reports a node that progressed as
+# verified_height 0.
+timeout_sd() {
+    local last="$1" v c i s
+    v="$(json_num "$last" verified_height)"; : "${v:=0}"
+    c="$(json_num "$last" chain_height)"; : "${c:=0}"
+    i="$(json_bool "$last" verification_incomplete)"; : "${i:=unknown}"
+    s="$(json_str "$last" state)"; : "${s:=unknown}"
+    printf '{"bg_validation":{"state":"timeout","last_state":"%s",' "$s"
+    printf '"verified_height":%s,"chain_height":%s,' "$v" "$c"
+    if [ "$i" = unknown ]; then printf '"verification_incomplete_seen":"unknown"}}'
+    else printf '"verification_incomplete":%s}}' "$i"; fi
+}
 json_str() {  # $1=json $2=key
     printf '%s' "$1" | grep -o "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
         | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)"/\1/' || true
@@ -439,6 +460,7 @@ preflight_host_oracle() {
 # START_TS / STARTED_TS / ELAPSED are fixed earlier (with the sentinel
 # helpers) so reset_verdict and the elapsed band share the same run-start.
 R_TIP=0; R_VERIFIED=0; R_BGSTATE="unknown"; R_REJECTS=0
+R_LAST_STATE=""; R_INCOMPLETE="unknown"
 R_LOCAL_SHA3=""; R_TXOUTS=0; R_ZD_TXOUTS=0; R_SUPPLY=""; R_ZD_SUPPLY=""
 R_LEGACY_SHA3=""; R_EXACT_TIER="not_run"
 
@@ -483,6 +505,8 @@ evaluate_verdict() {
     [ -n "$ZD" ]   || fail "rpc_unreachable_zd_gettxoutsetinfo"
 
     R_BGSTATE="$(json_str "$SD" state)"
+    R_LAST_STATE="$(json_str "$SD" last_state)"; : "${R_LAST_STATE:=$R_BGSTATE}"
+    R_INCOMPLETE="$(json_bool "$SD" verification_incomplete)"; : "${R_INCOMPLETE:=unknown}"
     R_VERIFIED="$(json_num "$SD" verified_height)"; : "${R_VERIFIED:=0}"
     R_TIP="$(json_num "$TX" height)"; : "${R_TIP:=0}"
     local skipped; skipped="$(json_num "$SD" script_verif_skipped_no_undo)"; : "${skipped:=0}"
@@ -517,6 +541,20 @@ evaluate_verdict() {
         failed|FAILED) fail "bg_validation_failed" ;;
         *) fail "bg_state_${R_BGSTATE:-empty}" ;;
     esac
+
+    # (a cont.) COMPLETE alone is not proof: the walk reports COMPLETE at
+    #     boot over a one-block extent. The node must also have verified up
+    #     to the tip it reached (no tip-gap tolerance) and must not flag
+    #     verification_incomplete. Unproven is BLOCKED, like a timeout: no
+    #     parity evidence either way, not a consensus finding. from=anchor
+    #     legitimately skips post-snapshot scripts, which sets the flag, so
+    #     there the flag only blocks when no skips explain it.
+    if [ "${R_VERIFIED:-0}" -lt "${R_TIP:-0}" ]; then
+        blocked "verified_height_below_tip_no_parity_evidence"
+    fi
+    if [ "$R_INCOMPLETE" = true ] && { [ "$FROM" = "genesis" ] || [ "${skipped:-0}" -eq 0 ]; }; then
+        blocked "verification_incomplete_no_parity_evidence"
+    fi
 
     # (a cont.) elapsed-time band — the named-defect guard for THIS track.
     # A COMPLETE that is too FAST (the from-anchor seed never applied, so
@@ -635,6 +673,9 @@ run_self_test() {
     fi
     read_fixture() { [ -f "$dir/$1.json" ] && cat "$dir/$1.json" || printf ''; }
     SD="$(read_fixture getsyncdetail)"
+    # timeout-last-observed: run the live timeout wrap over the fixture's
+    # last real getsyncdetail, as the budget-overrun branches do.
+    if [ "$SELFTEST" = "timeout-last-observed" ]; then SD="$(timeout_sd "$SD")"; fi
     DIAG="$(read_fixture getsyncdiag)"
     UC="$(read_fixture getutxocommitment)"
     TX="$(read_fixture gettxoutsetinfo)"
@@ -964,7 +1005,7 @@ run_live() {
             # reaching fail("budget_exceeded"); see the SD="" ... default
             # block above for the general-case fix).
             R_BGSTATE="timeout"
-            SD="{\"bg_validation\":{\"state\":\"timeout\"}}"
+            SD="$(timeout_sd "$sd")"
             DIAG="$(iso_rpc getsyncdiag)"; UC="$(iso_rpc getutxocommitment)"
             TX="$(iso_rpc gettxoutsetinfo)"
             ZD_DATADIR="$SRC_DATADIR" ZD="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" gettxoutsetinfo 2>/dev/null || true)"
@@ -1014,7 +1055,7 @@ run_live() {
         fi
         if [ "$(date +%s)" -ge "$deadline" ]; then
             R_BGSTATE="timeout"
-            SD="{\"bg_validation\":{\"state\":\"timeout\"}}"
+            SD="$(timeout_sd "$(iso_rpc getsyncdetail)")"
             DIAG="$(iso_rpc getsyncdiag)"; UC="$(iso_rpc getutxocommitment)"
             TX="$(iso_rpc gettxoutsetinfo)"
             ZD_DATADIR="$SRC_DATADIR" ZD="$(ZCL_DATADIR="$SRC_DATADIR" ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" gettxoutsetinfo 2>/dev/null || true)"
@@ -1063,7 +1104,7 @@ run_live() {
             # Same synthetic-timeout shape as the wait loops above:
             # evaluate_verdict pages budget_exceeded, never a silent pass.
             R_BGSTATE="timeout"
-            SD="{\"bg_validation\":{\"state\":\"timeout\"}}"
+            SD="$(timeout_sd "$(iso_rpc getsyncdetail)")"
             DIAG="$(iso_rpc getsyncdiag)"
             evaluate_verdict
         fi

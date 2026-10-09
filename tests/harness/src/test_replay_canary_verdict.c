@@ -158,7 +158,7 @@ static void seed_fixtures(const char *fx, const char *mode)
     write_file(fx, "getsyncdetail.json",
         "{\"bg_validation\":{\"state\":\"complete\","
         "\"verified_height\":3145329,\"chain_height\":3145329,"
-        "\"script_verif_skipped_no_undo\":0}}\n");
+        "\"script_verif_skipped_no_undo\":0,\"verification_incomplete\":false}}\n");
     /* zero header rejects. */
     write_file(fx, "getsyncdiag.json",
         "{\"headers\":{\"total_accepted\":3145329,\"total_rejected\":0}}\n");
@@ -219,6 +219,26 @@ static void seed_fixtures(const char *fx, const char *mode)
             "{\"bg_validation\":{\"state\":\"timeout\","
             "\"verified_height\":100,\"chain_height\":3145329,"
             "\"script_verif_skipped_no_undo\":0}}\n");
+    } else if (strcmp(mode, "fail-verified-below-tip") == 0) {
+        /* COMPLETE at boot over a stub extent: verified 100 << tip. */
+        write_file(fx, "getsyncdetail.json",
+            "{\"bg_validation\":{\"state\":\"complete\","
+            "\"verified_height\":100,\"chain_height\":3145329,"
+            "\"script_verif_skipped_no_undo\":0,"
+            "\"verification_incomplete\":false}}\n");
+    } else if (strcmp(mode, "fail-incomplete-flag") == 0) {
+        write_file(fx, "getsyncdetail.json",
+            "{\"bg_validation\":{\"state\":\"complete\","
+            "\"verified_height\":3145329,\"chain_height\":3145329,"
+            "\"script_verif_skipped_no_undo\":0,"
+            "\"verification_incomplete\":true}}\n");
+    } else if (strcmp(mode, "timeout-last-observed") == 0) {
+        /* last real getsyncdetail before the budget blew. */
+        write_file(fx, "getsyncdetail.json",
+            "{\"bg_validation\":{\"state\":\"running\","
+            "\"verified_height\":3000000,\"chain_height\":3145329,"
+            "\"script_verif_skipped_no_undo\":0,"
+            "\"verification_incomplete\":true}}\n");
     } else if (strcmp(mode, "fail-elapsed-fast") == 0) {
         /* a COMPLETE that arrives implausibly fast — the from-anchor seed
          * never applied, so the node "completed" a stub. Drive the elapsed
@@ -256,6 +276,7 @@ static void seed_fixtures(const char *fx, const char *mode)
  * process exit code via *exit_code, and the sentinel verdict + reason via
  * out_verdict / out_reason (each may be empty if no sentinel was written).
  * `from` selects anchor|genesis (sentinel name differs). */
+static char g_last_sentinel[2048];
 static int run_canary_selftest(const char *mode, const char *from,
                                char *out_verdict, size_t vsz,
                                char *out_reason, size_t rsz)
@@ -291,6 +312,7 @@ static int run_canary_selftest(const char *mode, const char *from,
     char sentinel[PATH_MAX];
     snprintf(sentinel, sizeof(sentinel), "%s/replay_canary_%s.json", vd, from);
     char buf[2048] = {0};
+    g_last_sentinel[0] = '\0';
     out_verdict[0] = '\0';
     out_reason[0] = '\0';
     if (read_file(sentinel, buf, sizeof(buf))) {
@@ -304,6 +326,7 @@ static int run_canary_selftest(const char *mode, const char *from,
                  out_reason[i] = '\0'; }
     }
 
+    snprintf(g_last_sentinel, sizeof(g_last_sentinel), "%s", buf);
     /* clean up fixture + verdict dirs */
     char rm[PATH_MAX + 32];
     snprintf(rm, sizeof(rm), "rm -rf '%s' '%s'", fx, vd);
@@ -486,6 +509,79 @@ static int test_timeout_blocks_rather_than_fails(void)
         ASSERT_EQ(ec, 2);
         ASSERT_STR_EQ(verdict, "BLOCKED");
         ASSERT_STR_EQ(reason, "budget_exceeded_incomplete_no_parity_evidence");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* COMPLETE is not proof: the verdict also needs verified_height at the tip
+ * and no verification_incomplete flag. Unproven is BLOCKED, never PASS. */
+static int test_verified_at_tip_passes(void)
+{
+    int failures = 0;
+    TEST("replay-canary: verified_height == tip, not incomplete => PASS") {
+        char verdict[16], reason[64];
+        int ec = run_canary_selftest("pass", "anchor", verdict,
+                                     sizeof(verdict), reason, sizeof(reason));
+        if (ec == -999) { printf("SKIP (repo root not found)\n"); break; }
+        ASSERT_EQ(ec, 0);
+        ASSERT_STR_EQ(verdict, "PASS");
+        ASSERT(strstr(g_last_sentinel, "\"verified_height\":3145329"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_complete_below_tip_is_not_pass(void)
+{
+    int failures = 0;
+    TEST("replay-canary: state COMPLETE but verified_height < tip => BLOCKED") {
+        char verdict[16], reason[64];
+        int ec = run_canary_selftest("fail-verified-below-tip", "anchor",
+                                     verdict, sizeof(verdict),
+                                     reason, sizeof(reason));
+        if (ec == -999) { printf("SKIP (repo root not found)\n"); break; }
+        ASSERT_EQ(ec, 2);
+        ASSERT_STR_EQ(verdict, "BLOCKED");
+        ASSERT_STR_EQ(reason, "verified_height_below_tip_no_parity_evidence");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_incomplete_flag_is_not_pass(void)
+{
+    int failures = 0;
+    TEST("replay-canary: verification_incomplete=true at tip => BLOCKED") {
+        char verdict[16], reason[64];
+        int ec = run_canary_selftest("fail-incomplete-flag", "genesis",
+                                     verdict, sizeof(verdict),
+                                     reason, sizeof(reason));
+        if (ec == -999) { printf("SKIP (repo root not found)\n"); break; }
+        ASSERT_EQ(ec, 2);
+        ASSERT_STR_EQ(verdict, "BLOCKED");
+        ASSERT_STR_EQ(reason, "verification_incomplete_no_parity_evidence");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_timeout_keeps_last_observed_values(void)
+{
+    int failures = 0;
+    TEST("replay-canary: timeout evidence keeps last real verified/tip") {
+        char verdict[16], reason[64];
+        int ec = run_canary_selftest("timeout-last-observed", "anchor",
+                                     verdict, sizeof(verdict),
+                                     reason, sizeof(reason));
+        if (ec == -999) { printf("SKIP (repo root not found)\n"); break; }
+        ASSERT_EQ(ec, 2);
+        ASSERT_STR_EQ(verdict, "BLOCKED");
+        ASSERT_STR_EQ(reason, "budget_exceeded_incomplete_no_parity_evidence");
+        ASSERT(strstr(g_last_sentinel, "\"bg_state\":\"timeout\""));
+        ASSERT(strstr(g_last_sentinel, "\"last_state\":\"running\""));
+        ASSERT(strstr(g_last_sentinel, "\"verified_height\":3000000"));
+        ASSERT(strstr(g_last_sentinel, "\"tip\":3145329"));
         PASS();
     } _test_next:;
     return failures;
@@ -761,6 +857,23 @@ static int test_pass_replaces_stale_sentinel(void)
     return failures;
 }
 
+/* Open the FIFO's write end once the child reads it. Retries while the
+ * child lives (cap near 30 s; a loaded host may need far more than 5 s);
+ * a child that exited is reaped here and its status kept. */
+static int canary_open_fifo_writer(pid_t pid, const char *fifo,
+                                   int *wstatus, bool *reaped)
+{
+    for (int i = 0; i < 3000; i++) {
+        int writer = open(fifo, O_WRONLY | O_NONBLOCK);
+        if (writer >= 0) return writer;
+        if (errno != ENXIO && errno != ENOENT) return -1;
+        if (waitpid(pid, wstatus, WNOHANG) == pid) { *reaped = true; return -1; }
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000 };
+        nanosleep(&ts, NULL); /* real-clock: pre-existing bounded poll loop, seeded when check_no_real_clock_test_deadline.sh was introduced */
+    }
+    return -1;
+}
+
 /* A replay can run for hours while build/bin is replaced. The harness must
  * bind its verdict to identity captured before the run, not re-query a
  * mutable executable path when it writes PASS. This fixture swaps the fake
@@ -813,18 +926,9 @@ static int test_identity_is_captured_once_before_replay(void)
             _exit(127);
         }
 
-        int writer = -1;
-        if (pid > 0) {
-            for (int i = 0; i < 500 && writer < 0; i++) {
-                writer = open(fifo, O_WRONLY | O_NONBLOCK);
-                if (writer < 0 && errno != ENXIO && errno != ENOENT) break;
-                if (writer < 0) {
-                    struct timespec ts = { .tv_sec = 0,
-                                           .tv_nsec = 10 * 1000 * 1000 };
-                    nanosleep(&ts, NULL); /* real-clock: pre-existing bounded poll loop, seeded when check_no_real_clock_test_deadline.sh was introduced */
-                }
-            }
-        }
+        bool reaped = false;
+        int wstatus = 0;
+        int writer = (pid > 0) ? canary_open_fifo_writer(pid, fifo, &wstatus, &reaped) : -1;
 
         bool swapped = false;
         if (writer >= 0) {
@@ -843,8 +947,7 @@ static int test_identity_is_captured_once_before_replay(void)
             close(writer);
         }
 
-        int wstatus = 0;
-        if (pid > 0) {
+        if (pid > 0 && !reaped) {
             if (writer < 0) {
                 kill(-pid, SIGKILL);
                 kill(pid, SIGKILL);
@@ -1389,6 +1492,10 @@ static int test_replay_canary_verdict_platform_arm(void)
     failures += test_pass_exact_skew_skips_tier();
     failures += test_fail_exact_unreadable_fires();
     failures += test_timeout_blocks_rather_than_fails();
+    failures += test_verified_at_tip_passes();
+    failures += test_complete_below_tip_is_not_pass();
+    failures += test_incomplete_flag_is_not_pass();
+    failures += test_timeout_keeps_last_observed_values();
     failures += test_fail_elapsed_too_fast_fires();
     failures += test_fail_elapsed_too_slow_fires();
     failures += test_sigkill_midrun_clears_stale_no_fresh_pass();
