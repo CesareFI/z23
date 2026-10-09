@@ -42,6 +42,17 @@ static bool refused(const struct engine_vendor *v, const char *body)
     return !ok && !o.known && o.turns == 0 && o.input_tokens == 0;
 }
 
+/* True when some argv element equals (exact) or contains `needle`. */
+static bool argv_has(const char *const *argv, size_t n, const char *needle,
+                     bool exact)
+{
+    for (size_t k = 0; k < n; k++)
+        if (exact ? strcmp(argv[k], needle) == 0
+                  : strstr(argv[k], needle) != NULL)
+            return true;
+    return false;
+}
+
 static int case_row_argv(const struct engine_vendor *v, const char *model)
 {
     int failures = 0;
@@ -51,19 +62,15 @@ static int case_row_argv(const struct engine_vendor *v, const char *model)
     };
     const char *argv[ENGINE_CLI_ARGV_MAX];
     size_t n = engine_cli_argv_build(v, &in, argv, ENGINE_CLI_ARGV_MAX);
-    bool has_prompt = false, has_model = false, has_dir = false;
-    for (size_t k = 0; k < n; k++) {
-        if (strcmp(argv[k], "PROMPT-TEXT") == 0) has_prompt = true;
-        if (strcmp(argv[k], model) == 0) has_model = true;
-        if (strstr(argv[k], "/work/dir")) has_dir = true;
-    }
     EC_CHECK("argv carries prompt and model, never the workdir",
              n > 0 && strcmp(argv[0], "claude") == 0 &&
-             has_prompt && has_model && !has_dir && argv[n] == NULL);
-    bool bash = false;
-    for (size_t k = 0; k < n; k++)
-        if (strstr(argv[k], "Bash")) bash = true;
-    EC_CHECK("no Bash tool is granted", !bash);
+             argv_has(argv, n, "PROMPT-TEXT", true) &&
+             argv_has(argv, n, model, true) &&
+             !argv_has(argv, n, "/work/dir", false) && argv[n] == NULL);
+    EC_CHECK("no Bash tool is granted", !argv_has(argv, n, "Bash", false));
+    EC_CHECK("no worktree CLAUDE.md chain load",
+             argv_has(argv, n, "\"CLAUDE_CODE_DISABLE_CLAUDE_MDS\":\"1\"",
+                      false));
     EC_CHECK("no turn cap slot",
              !engine_cli_accepts_turns(v));
     EC_CHECK("cwd is the workdir",

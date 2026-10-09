@@ -66,8 +66,12 @@ static const char *const k_glm_cli_start_argv[] = {
  * starts it there; {workdir} is deliberately absent. It has no turn cap flag
  * worth mapping, so no {turns} slot. The rest is the cheapest measured shape
  * that still uses subscription login (no --bare, which ignores OAuth): an
- * empty --setting-sources= loads no user/project settings, and the model gets file
- * tools only, with no Bash: builds go through the harness, which judges. */
+ * empty --setting-sources= loads no user/project settings, and the
+ * --settings env stops the worktree's CLAUDE.md chain, auto-memory and git
+ * instructions from loading (the unit prompt carries the rules). The JSON
+ * rides in one --settings= element because a slot starting with '{' is a
+ * placeholder. The model gets file tools only, with no Bash: builds go
+ * through the harness, which judges. */
 static const char *const k_claude_cli_start_argv[] = {
     "-p",             ENGINE_CLI_PROMPT_TOKEN,
     "--model",        ENGINE_CLI_MODEL_TOKEN,
@@ -75,6 +79,9 @@ static const char *const k_claude_cli_start_argv[] = {
     "--no-session-persistence",
     "--permission-mode", "acceptEdits",
     "--setting-sources=",
+    "--settings={\"env\":{\"CLAUDE_CODE_DISABLE_CLAUDE_MDS\":\"1\","
+    "\"CLAUDE_CODE_DISABLE_AUTO_MEMORY\":\"1\","
+    "\"CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS\":\"1\"}}",
     "--tools", "Read,Edit,Write,Grep,Glob",
     "--system-prompt",
     "You edit C23 code in the current git worktree to complete the unit "
