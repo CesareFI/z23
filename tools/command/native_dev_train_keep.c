@@ -387,16 +387,73 @@ static bool dtk_queue_row(char *line, struct dtk_pick *out, char *why,
     return true;
 }
 
+enum dtk_line {
+    DTK_LINE_EOF,
+    DTK_LINE_OK,
+    DTK_LINE_LONG,
+    DTK_LINE_NUL
+};
+
+/* One physical line, whole or refused. A record is at most cap-1 bytes
+ * including its newline; a final line with no newline at EOF is still a
+ * record. A longer line is consumed to its newline and never handed back as
+ * pieces, so no tail can be parsed as a record of its own. A line holding a
+ * NUL byte is refused too: the parsers below stop at the first NUL. `line`
+ * is always terminated, and for a refused line holds only its leading bytes
+ * (for the skipped report, never for parsing). */
+static enum dtk_line dtk_read_line(FILE *f, char *line, size_t cap)
+{
+    size_t n = 0;
+    bool over = false, nul = false;
+    int c;
+    while ((c = getc(f)) != EOF) {
+        if (n + 1 >= cap)
+            over = true;
+        else
+            line[n++] = (char)c;
+        nul = nul || c == 0;
+        if (c == '\n')
+            break;
+    }
+    line[n] = '\0';
+    if (n == 0 && !over && c == EOF)
+        return DTK_LINE_EOF;
+    if (over)
+        return DTK_LINE_LONG;
+    return nul ? DTK_LINE_NUL : DTK_LINE_OK;
+}
+
+static void dtk_skip_push(struct json_value *skipped, const char *row,
+                          const char *why)
+{
+    struct json_value item;
+    json_init(&item);
+    json_set_object(&item);
+    (void)json_push_kv_str(&item, "row", row);
+    (void)json_push_kv_str(&item, "reason", why);
+    (void)json_push_back(skipped, &item);
+    json_free(&item);
+}
+
 static size_t dtk_queue_load(const struct dtk_paths *p, struct dtk_pick *picks,
                              struct json_value *skipped)
 {
     FILE *f = fopen(p->queue, "rb");
     size_t n = 0;
     char line[DTK_LINE];
+    enum dtk_line kind = DTK_LINE_EOF;
     if (!f)
         return 0;
-    while (n < DTK_MAX_PICKS && fgets(line, sizeof(line), f)) {
+    while (n < DTK_MAX_PICKS &&
+           (kind = dtk_read_line(f, line, sizeof(line))) != DTK_LINE_EOF) {
         char why[128], copy[DTK_LINE];
+        if (kind != DTK_LINE_OK) {
+            zcl_dev_train_strip(line);
+            dtk_skip_push(skipped, line,
+                          kind == DTK_LINE_LONG ? "line too long"
+                                                : "embedded NUL byte");
+            continue;
+        }
         zcl_dev_train_strip(line);
         if (!line[0] || line[0] == '#')
             continue;
@@ -405,13 +462,7 @@ static size_t dtk_queue_load(const struct dtk_paths *p, struct dtk_pick *picks,
             n++;
             continue;
         }
-        struct json_value item;
-        json_init(&item);
-        json_set_object(&item);
-        (void)json_push_kv_str(&item, "row", line);
-        (void)json_push_kv_str(&item, "reason", why);
-        (void)json_push_back(skipped, &item);
-        json_free(&item);
+        dtk_skip_push(skipped, line, why);
     }
     (void)fclose(f);
     return n;
@@ -686,7 +737,10 @@ static void dtk_finish_landed(const struct dtk_paths *p, const char *root,
 {
     FILE *f = fopen(p->picks, "rb");
     char line[DTK_LINE];
-    while (f && fgets(line, sizeof(line), f)) {
+    enum dtk_line kind;
+    while (f && (kind = dtk_read_line(f, line, sizeof(line))) != DTK_LINE_EOF) {
+        if (kind != DTK_LINE_OK)
+            continue;
         char *save = NULL;
         zcl_dev_train_strip(line);
         const char *name = strtok_r(line, " \t", &save);

@@ -657,6 +657,164 @@ static int dtkt_ready_failure(const struct dtkt_fix *f)
     return failures;
 }
 
+/* ── physical-line framing ────────────────────────────────────────────── */
+
+/* `<name>`, `pad` spaces, then `<sha> <verdict>`: a well-formed queue row
+ * whose length the case chooses, because the tokenizer splits on any run of
+ * blanks. */
+static size_t dtkt_row(char *out, size_t cap, const char *name,
+                       const char *sha, const char *verdict, size_t total)
+{
+    char tail[1024];
+    int t = snprintf(tail, sizeof(tail), " %s %s", sha, verdict);
+    size_t head = strlen(name);
+    if (t < 0 || cap < total + 1 || head + (size_t)t > total)
+        return 0;
+    memcpy(out, name, head);
+    memset(out + head, ' ', total - head - (size_t)t);
+    memcpy(out + total - (size_t)t, tail, (size_t)t);
+    out[total] = '\0';
+    return total;
+}
+
+static bool dtkt_skipped_has(const struct zcl_command_reply *reply,
+                             const char *reason, size_t want)
+{
+    const struct json_value *arr = json_get(&reply->data, "skipped");
+    size_t seen = 0;
+    for (size_t i = 0; arr && arr->type == JSON_ARR && i < arr->num_children; i++) {
+        const char *got = json_get_str(json_get(&arr->children[i], "reason"));
+        if (got && strcmp(got, reason) == 0)
+            seen++;
+    }
+    return seen == want;
+}
+
+/* Plan a dry pass of a fresh train directory over `queue`; returns the plan
+ * size through *picks and leaves the reply for the caller to check. */
+static bool dtkt_plan_queue(const struct dtkt_fix *f, const char *queue,
+                            struct zcl_command_reply *reply)
+{
+    char dir[900], base[64];
+    struct json_value input = dtkt_input("5", true);
+    (void)snprintf(dir, sizeof(dir), "%s/train5", f->scratch);
+    (void)snprintf(base, sizeof(base), "%s\n", f->origin_main);
+    bool ok = dtkt_mkdir_p(dir) && dtkt_write(dir, "BASE", base) &&
+              dtkt_write(dir, "late_picks.txt", queue);
+    if (ok)
+        dtkt_call(f->root, &input, reply);
+    json_free(&input);
+    return ok;
+}
+
+/* The cap is DTK_LINE-1 = 1023 bytes including the newline. */
+static int dtkt_queue_framing(const struct dtkt_fix *f)
+{
+    int failures = 0;
+    char verdict[900], row[2200], q[4600], tail[400];
+    (void)snprintf(verdict, sizeof(verdict), "%s/v_land.txt", f->dir7);
+    (void)snprintf(tail, sizeof(tail), "laneb %s %s\n", f->sha_b, verdict);
+    ASSERT(dtkt_verdict(f->dir7, "v_land.txt", "LAND", f->sha_a));
+
+    TEST("train keep: a queue line of exactly the cap is accepted") {
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.train_keep.v1");
+        ASSERT(dtkt_row(row, sizeof(row), "lanea", f->sha_a, verdict, 1022));
+        (void)snprintf(q, sizeof(q), "%s\n", row);
+        ASSERT(strlen(q) == 1023);
+        ASSERT(dtkt_plan_queue(f, q, &reply));
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(dtkt_arr_len(json_get(&reply.data, "plan")) == 1);
+        ASSERT(dtkt_arr_len(json_get(&reply.data, "skipped")) == 0);
+        zcl_command_reply_free(&reply);
+        PASS();
+    }
+
+    TEST("train keep: a queue line one byte over is skipped and its tail never picked") {
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.train_keep.v1");
+        /* The first 1023 bytes are a valid row on their own, the remainder
+         * is a second valid row: neither may become a pick. */
+        ASSERT(dtkt_row(row, sizeof(row), "lanea", f->sha_a, verdict, 1022));
+        (void)snprintf(q, sizeof(q), "%s %s", row, tail);
+        ASSERT(dtkt_plan_queue(f, q, &reply));
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_BLOCKED);
+        ASSERT_STR_EQ(reply.error.code, "NO_PICKS");
+        ASSERT(dtkt_skipped_has(&reply, "line too long", 1));
+        zcl_command_reply_free(&reply);
+        PASS();
+    }
+
+    TEST("train keep: a comment line over the cap does not leak a tail row") {
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.train_keep.v1");
+        char pad[1100];
+        memset(pad, 'x', 1023);
+        pad[0] = '#';
+        pad[1023] = '\0';
+        (void)snprintf(q, sizeof(q), "%s%s", pad, tail);
+        ASSERT(dtkt_plan_queue(f, q, &reply));
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_BLOCKED);
+        ASSERT_STR_EQ(reply.error.code, "NO_PICKS");
+        ASSERT(dtkt_skipped_has(&reply, "line too long", 1));
+        zcl_command_reply_free(&reply);
+        PASS();
+    }
+
+    TEST("train keep: a final queue line without a newline is accepted") {
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.train_keep.v1");
+        (void)snprintf(q, sizeof(q), "# header\nlanea %s %s", f->sha_a, verdict);
+        ASSERT(dtkt_plan_queue(f, q, &reply));
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(dtkt_arr_len(json_get(&reply.data, "plan")) == 1);
+        zcl_command_reply_free(&reply);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+/* A landed train whose picks.txt carries an over-long line: the tail names a
+ * real review ref and must not retire it, while an honest row after the long
+ * line still does. */
+static int dtkt_picks_framing(const struct dtkt_fix *f)
+{
+    int failures = 0;
+    TEST("train keep: an over-long picks line never retires the ref named in its tail") {
+        char dir[900], saved[256], rows[1400], pad[1100], ref[41];
+        struct json_value input = dtkt_input("13", false);
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.train_keep.v1");
+        (void)snprintf(dir, sizeof(dir), "%s/train13", f->scratch);
+        memset(pad, 'x', 1023);
+        pad[0] = '#';
+        pad[1023] = '\0';
+        (void)snprintf(rows, sizeof(rows), "%slaneb\nlanec\n", pad);
+        (void)snprintf(saved, sizeof(saved),
+                       "{\"state\":\"landing\",\"tip\":\"%s\"}\n", f->sha_b);
+        ASSERT(dtkt_mkdir_p(dir));
+        ASSERT(dtkt_write(dir, "KEEP.json", saved));
+        ASSERT(dtkt_write(dir, "picks.txt", rows));
+        (void)snprintf(saved, sizeof(saved),
+                       "{\"tip\":\"%s\",\"state\":\"landed\"}\n", f->sha_b);
+        ASSERT(dtkt_write(f->land, "outcomes.jsonl", saved));
+        ASSERT(dtkt_rev(f->root, "refs/review/laneb", ref));
+        ASSERT(dtkt_rev(f->root, "refs/review/lanec", ref));
+        dtkt_call(f->root, &input, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT_STR_EQ(dtkt_str(&reply, "state"), "landed");
+        ASSERT(dtkt_rev(f->root, "refs/review/laneb", ref));
+        ASSERT_STR_EQ(ref, f->sha_b);
+        ASSERT(!dtkt_rev(f->root, "refs/review/lanec", ref));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
 /* ── the group ────────────────────────────────────────────────────────── */
 
 int test_dev_train_keep(void);
@@ -775,6 +933,7 @@ int test_dev_train_keep(void)
 
     failures += dtkt_dry_local_refs(&f);
     failures += dtkt_dry_saved_states(&f);
+    failures += dtkt_queue_framing(&f);
     failures += dtkt_fetch_failure(&f);
     failures += dtkt_save_failure(&f);
 
@@ -905,6 +1064,7 @@ int test_dev_train_keep(void)
         PASS();
     }
 
+    failures += dtkt_picks_framing(&f);
     failures += dtkt_launch_failure(&f);
     failures += dtkt_ready_failure(&f);
 
