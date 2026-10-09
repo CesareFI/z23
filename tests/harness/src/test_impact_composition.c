@@ -8429,11 +8429,14 @@ static int test_ic_proof_prefork_builds_the_shared_targets(void)
     TEST("proof prefork: one step builds every target both dimensions share, "
          "and the lint dimension is left none of them") {
         /* Every executable the test dimension execs out of the generation,
-         * and the one lint-side target that names the rest. */
+         * and the one lint-side target that names the rest. The
+         * reflex-runner candidate images travel here too: the runner is
+         * materialized, not linked, so its order-only fixture prerequisite
+         * never fires in a generation. */
         static const char *const helpers[] = {
             "zcl-nodectl", "zclassic23-acme", "fbsh", "engine-unit",
             "tools/file_size_policy", "fleet-board-bridge", "git-hook",
-            "build/bin/z23-lint",
+            "build/bin/z23-lint", "reflex-runner-fixtures",
         };
         const size_t helper_count = sizeof(helpers) / sizeof(helpers[0]);
         const char *landing[PROOF_PREFORK_ARGV_CAP];
