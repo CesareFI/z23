@@ -406,7 +406,7 @@ static enum dtk_line dtk_read_line(FILE *f, char *line, size_t cap)
     size_t n = 0;
     bool over = false, nul = false;
     int c;
-    while ((c = getc(f)) != EOF) {
+    while ((c = fgetc(f)) != EOF) {
         if (n + 1 >= cap)
             over = true;
         else
