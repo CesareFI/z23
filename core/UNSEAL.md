@@ -184,3 +184,7 @@ later lane flips it HARD.
 - 2026-09-29T16:44:10Z — REASON: tie-break test gaps M7/M8 and comment placement in connman dial
   old ROOT: 57176e528a23b4587fa91c568f633f98a0857ad6aa7d40810f09488f2f88ea3a
   by: owner unseal ritual (make core-unseal)
+
+- 2026-10-09T02:06:34Z — REASON: integrate contributor PR 81 (cmpctblock stash OOM must not build getblocktxn from NULL indices) and PR 90 (version time-offset signed-overflow UB); owner grant 2026-10-08 in reply to explicit request
+  old ROOT: 3d23199cc01202162814d2179fc67c629d93058a2b4b5ec254461e075e16e099
+  by: owner unseal ritual (make core-unseal)
