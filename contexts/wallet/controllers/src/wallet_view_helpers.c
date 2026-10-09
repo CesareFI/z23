@@ -5,6 +5,7 @@
 
 #include "platform/time_compat.h"
 #include "platform/socket_compat.h"
+#include "platform/file_stream.h"
 #include "controllers/wallet_view_internal.h"
 #include "controllers/web_form.h"
 /* CSS is now in contexts/wallet/views/css/wallet.ccss, compiled as CSS_WALLET */
@@ -61,7 +62,7 @@ const char *wv_zclassicd_auth(void) {
     char path[512];
     /* Try zclassic.conf first (stable credentials survive restarts) */
     snprintf(path, sizeof(path), "%s/.zclassic/zclassic.conf", home);
-    FILE *f = fopen(path, "r");
+    FILE *f = platform_file_stream_open_read(path);
     if (f) {
         char user[64] = "", pass[64] = "", line[256];
         while (fgets(line, sizeof(line), f)) {
@@ -84,7 +85,7 @@ const char *wv_zclassicd_auth(void) {
     }
     /* Fall back to cookie file (ephemeral, changes on restart) */
     snprintf(path, sizeof(path), "%s/.zclassic/.cookie", home);
-    f = fopen(path, "r");
+    f = platform_file_stream_open_read(path);
     if (f) {
         size_t n = fread(auth, 1, sizeof(auth) - 1, f);
         fclose(f);
@@ -127,13 +128,13 @@ int wv_rpc_call(const char *method, const char *params_json,
         /* Read auth cookie */
         char cookie_path[1024];
         snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", g_wv_datadir);
-        FILE *f = fopen(cookie_path, "r");
+        FILE *f = platform_file_stream_open_read(cookie_path);
         if (!f) {
             /* Try config file credentials */
             char conf_path[1024];
             snprintf(conf_path, sizeof(conf_path), "%s/zclassic.conf",
                      g_wv_datadir);
-            f = fopen(conf_path, "r");
+            f = platform_file_stream_open_read(conf_path);
             if (!f)
                 LOG_ERR("wallet_view",
                         "rpc_call(%s): no cookie or conf under %s",

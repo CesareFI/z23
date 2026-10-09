@@ -23,6 +23,7 @@
  *      buffer (the boolean used to be hardcoded true) */
 
 #include "platform/time_compat.h"
+#include "platform/file_stream.h"
 #include "test/test_core.h"
 #include "controllers/wallet_view_controller.h"
 #include "views/wallet_view_coins_view.h"
@@ -33,6 +34,9 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <time.h>
+#ifndef _WIN32
+#include <fcntl.h>
+#endif
 #include "test/test_wallet_view_priv.h"
 #include "command/native_command.h"
 #include "controllers/agent_impact_rules.h"
@@ -121,6 +125,28 @@ static bool wv_build_fixture_datadir(char *out, size_t out_sz)
 
     node_db_close(&ndb);
     return ok;
+}
+
+static int wv_check_read_stream_cloexec(void)
+{
+#ifdef _WIN32
+    return 0; /* Native Windows handle-inheritance runtime remains separate. */
+#else
+    printf("wallet_view: read stream descriptor is close-on-exec... ");
+    char path[] = "/tmp/zcl_wv_read_XXXXXX";
+    int seed = mkstemp(path);
+    if (seed >= 0)
+        (void)close(seed);
+    FILE *stream = seed >= 0 ? platform_file_stream_open_read(path) : NULL;
+    int fd = stream ? fileno(stream) : -1;
+    bool ok = fd >= 0 && (fcntl(fd, F_GETFD) & FD_CLOEXEC) != 0;
+    if (stream)
+        (void)fclose(stream);
+    if (seed >= 0)
+        (void)unlink(path);
+    printf("%s\n", ok ? "OK" : "FAIL");
+    return ok ? 0 : 1;
+#endif
 }
 
 /* Recursively remove the fixture datadir (db + wal/shm + dir). */
@@ -526,6 +552,8 @@ int test_wallet_view(void)
     failures += check_wallet_peer_table_bounded_fields();
     failures += check_wallet_token_row_impact_route();
     failures += check_wallet_token_row_bounds();
+
+    failures += wv_check_read_stream_cloexec();
 
     /* Initialize with no datadir — tests DB-unavailable paths.
      * This is intentional: we want to verify graceful degradation. */

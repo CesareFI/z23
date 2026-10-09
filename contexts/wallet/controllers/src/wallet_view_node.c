@@ -3,6 +3,7 @@
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
 #include "views/wallet_view_node_view.h"
+#include "platform/file_stream.h"
 #include "net/version.h"
 #include "sync/sync_state.h"
 #include "util/log_macros.h"
@@ -64,7 +65,7 @@ size_t serve_node(uint8_t *r, size_t max) {
         char onion_path[512];
         const char *datadir = g_wv_datadir ? g_wv_datadir : "";
         snprintf(onion_path, sizeof(onion_path), "%s/onion/hostname", datadir);
-        FILE *f = fopen(onion_path, "r");
+        FILE *f = platform_file_stream_open_read(onion_path);
         if (f) {
             char onion[128] = "";
             if (fgets(onion, sizeof(onion), f)) {
