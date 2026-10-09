@@ -3400,13 +3400,17 @@ static int test_ops_rom_watch_flags(void)
         bool watch = false, once = false;
         int interval_ms = 2000;
         const char *datadir = NULL;
+        char romdir[PATH_MAX];
+        test_fmt_tmpdir(romdir, sizeof(romdir), "rom", "watchflags");
+        char datadir_flag[PATH_MAX + 16];
+        snprintf(datadir_flag, sizeof(datadir_flag), "--datadir=%s", romdir);
         const char *full[] = {"z23", "ops.rom", "fetch", "--watch",
-                              "--interval=45", "--datadir=/tmp/romx"};
+                              "--interval=45", datadir_flag};
         zcl_native_ops_rom_watch_flags_for_test(full, 6, 3, &watch, &once,
                                                 &interval_ms, &datadir);
         ASSERT(watch && !once);
         ASSERT_EQ(interval_ms, 45000);
-        ASSERT(datadir && strcmp(datadir, "/tmp/romx") == 0);
+        ASSERT(datadir && strcmp(datadir, romdir) == 0);
 
         /* The pre-fix atoi path overflowed int here (UBSan signed
          * overflow); the cap keeps the same downstream clamp result
