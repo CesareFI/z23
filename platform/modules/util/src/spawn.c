@@ -764,12 +764,12 @@ static int spawn_capture_impl_prepare(
     return 0;
 }
 
-static int spawn_capture_impl(
+static int spawn_capture_impl_cwd(
     const char *const argv[], char *buf, size_t cap, int timeout_ms,
     zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled,
     bool *timed_out_out, bool merge_stderr,
     struct zcl_spawn_binary_observation *exact, int executable_fd,
-    struct zcl_spawn_measure *measure)
+    struct zcl_spawn_measure *measure, const char *cwd)
 {
 #if !defined(__linux__)
     (void)executable_fd;
@@ -805,6 +805,10 @@ static int spawn_capture_impl(
         close(outpipe[0]);
         spawn_capture_anchor_child(&anchor, outpipe[1]);
         spawn_capture_child_stdio(outpipe[1], merge_stderr);
+        /* A launch directory that cannot be entered must not run the child
+         * somewhere else: exit before exec. */
+        if (cwd && chdir(cwd) != 0)
+            _exit(126);
 
 #if defined(__linux__)
         if (executable_fd >= 0) {
@@ -835,6 +839,19 @@ static int spawn_capture_impl(
     if (measure)
         measure->wall_us = platform_time_monotonic_us() - launched_us;
     return rc;
+}
+
+static int spawn_capture_impl(
+    const char *const argv[], char *buf, size_t cap, int timeout_ms,
+    zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled,
+    bool *timed_out_out, bool merge_stderr,
+    struct zcl_spawn_binary_observation *exact, int executable_fd,
+    struct zcl_spawn_measure *measure)
+{
+    return spawn_capture_impl_cwd(argv, buf, cap, timeout_ms, should_cancel,
+                                  cancel_ctx, cancelled, timed_out_out,
+                                  merge_stderr, exact, executable_fd, measure,
+                                  NULL);
 }
 
 int zcl_spawn_capture_cancelable(
@@ -1054,6 +1071,23 @@ int zcl_spawn_capture_observed(const char *const argv[], char *buf, size_t cap,
 {
     return spawn_capture_observed_platform(
         argv, buf, cap, timeout_ms, timed_out);
+}
+
+int zcl_spawn_capture_in_dir_observed(const char *const argv[], const char *cwd,
+                                     char *buf, size_t cap, int timeout_ms,
+                                     bool *timed_out)
+{
+    if (!cwd)
+        return zcl_spawn_capture_observed(argv, buf, cap, timeout_ms,
+                                          timed_out);
+#ifdef _WIN32
+    if (buf && cap > 0) buf[0] = '\0';
+    if (timed_out) *timed_out = false;
+    return -1; /* no directory-scoped launch here: refuse, never run elsewhere */
+#else
+    return spawn_capture_impl_cwd(argv, buf, cap, timeout_ms, NULL, NULL,
+                                  NULL, timed_out, false, NULL, -1, NULL, cwd);
+#endif
 }
 
 int zcl_spawn_capture_merged_observed(const char *const argv[], char *buf,

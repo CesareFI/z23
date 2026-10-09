@@ -159,6 +159,14 @@ struct zcl_result zcl_spawn_capture_binary_merged(
 int zcl_spawn_capture_observed(const char *const argv[], char *buf, size_t cap,
                                int timeout_ms, bool *timed_out);
 
+/* The same capture with the child started in `cwd`. A NULL `cwd` is exactly
+ * zcl_spawn_capture_observed(). If the directory cannot be entered the child
+ * exits 126 before exec and never runs elsewhere; Windows refuses a non-NULL
+ * `cwd` with -1. */
+int zcl_spawn_capture_in_dir_observed(const char *const argv[], const char *cwd,
+                                     char *buf, size_t cap, int timeout_ms,
+                                     bool *timed_out);
+
 /* The same bounded, no-shell capture, except the child's stderr is
  * interleaved into the SAME pipe as stdout instead of being discarded to
  * /dev/null. Use this — not zcl_spawn_capture()/zcl_spawn_capture_observed()

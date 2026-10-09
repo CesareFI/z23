@@ -425,13 +425,16 @@ static int run(const char *const argv[], char *buf, size_t cap, int timeout_ms)
  * exact argv with no shell and preserve the timeout observation; a vendor id
  * is never consulted here. */
 static int run_cli(const struct engine_vendor *v, const char *const argv[],
-                   char *buf, size_t cap, int timeout_ms, bool *timed_out)
+                   const char *cwd, char *buf, size_t cap, int timeout_ms,
+                   bool *timed_out)
 {
-    if (v->cli_needs_tty)
+    if (v->cli_needs_tty) {
+        if (cwd) return -1; /* the PTY launch has no cwd: refuse */
         return zcl_spawn_pty_capture_observed(
             argv, buf, cap, timeout_ms, timed_out);
-    return zcl_spawn_capture_observed(
-        argv, buf, cap, timeout_ms, timed_out);
+    }
+    return zcl_spawn_capture_in_dir_observed(
+        argv, cwd, buf, cap, timeout_ms, timed_out);
 }
 
 /* ── the isolated worktree ───────────────────────────────────────────── */
@@ -1069,7 +1072,7 @@ static int probe_cli(const struct engine_vendor *v, const char *model_override,
     }
     const int64_t t0 = clock_now_monotonic_ns();
     bool timed_out = false;
-    const int rc = run_cli(v, argv, log, UNIT_PROBE_LOG_BYTES,
+    const int rc = run_cli(v, argv, NULL, log, UNIT_PROBE_LOG_BYTES,
                            UNIT_PROBE_CLI_TIMEOUT_MS, &timed_out);
     const int64_t elapsed = (clock_now_monotonic_ns() - t0) / 1000000;
     if (prompt_file[0]) (void)remove(prompt_file);
@@ -1299,7 +1302,8 @@ static bool dispatch_cli(const struct engine_vendor *v, const char *prompt_path,
     log[0] = '\0';
     bool timed_out = false;
     const int rc = run_cli(
-        v, argv, log, UNIT_GATE_LOG_BYTES, timeout_ms, &timed_out);
+        v, argv, engine_cli_launch_cwd(v, &in), log, UNIT_GATE_LOG_BYTES,
+        timeout_ms, &timed_out);
     if (o->state_dir && o->state_dir[0]) {
         char path[1024], capture_hex[65];
         uint8_t capture_root[32];
@@ -1351,7 +1355,8 @@ static bool dispatch_cli(const struct engine_vendor *v, const char *prompt_path,
         dr->reply.usage.total_tokens_known = true;
         dr->reply.usage.cache_read_input_tokens_known = true;
         dr->reply.usage.cache_creation_input_tokens_known = true;
-        dr->reply.usage.reasoning_tokens_known = true;
+        dr->reply.usage.reasoning_tokens_known =
+            dr->cli_observation.reasoning_tokens >= 0;
         dr->reply.usage.tokens_known = true;
         (void)snprintf(dr->reply.model, sizeof(dr->reply.model), "%s",
                        dr->cli_observation.resolved_model);

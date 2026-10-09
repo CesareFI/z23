@@ -98,6 +98,14 @@ static const char *resolve(const char *slot,
     return NULL;
 }
 
+const char *engine_cli_launch_cwd(const struct engine_vendor *v,
+                                  const struct engine_cli_inputs *in)
+{
+    if (!v || !in || !v->cli_cwd_is_workdir || !in->workdir || !in->workdir[0])
+        return NULL;
+    return in->workdir;
+}
+
 size_t engine_cli_argv_build(const struct engine_vendor *v,
                              const struct engine_cli_inputs *in,
                              const char **out, size_t cap)

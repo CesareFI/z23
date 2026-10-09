@@ -460,6 +460,45 @@ static int test_spawn_pty_capture_observes_terminal(void)
     return failures;
 }
 
+static int test_spawn_capture_in_dir(void)
+{
+    int failures = 0;
+    TEST("spawn: capture in a directory runs the child there") {
+        const char *argv[] = { "/bin/sh", "-c", "pwd -P", NULL };
+        char buf[128] = {0};
+        bool timed_out = true;
+        int rc = zcl_spawn_capture_in_dir_observed(
+            argv, "/usr", buf, sizeof(buf), 3000, &timed_out);
+        ASSERT(rc == 0);
+        ASSERT(!timed_out);
+        ASSERT(strcmp(buf, "/usr\n") == 0);
+        char same[128] = {0};
+        ASSERT(zcl_spawn_capture_in_dir_observed(
+                   argv, NULL, same, sizeof(same), 3000, NULL) == 0);
+        char here[128] = {0};
+        ASSERT(zcl_spawn_capture_observed(
+                   argv, here, sizeof(here), 3000, NULL) == 0);
+        ASSERT(strcmp(same, here) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_spawn_capture_in_dir_fails_closed(void)
+{
+    int failures = 0;
+    TEST("spawn: an unenterable directory never runs the child elsewhere") {
+        const char *argv[] = { "/bin/sh", "-c", "echo child-ran", NULL };
+        char buf[128] = {0};
+        int rc = zcl_spawn_capture_in_dir_observed(
+            argv, "/nonexistent-zcl-spawn-dir", buf, sizeof(buf), 3000, NULL);
+        ASSERT(rc != 0);
+        ASSERT(!spawn_contains(buf, "child-ran"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_spawn_platform_arm(void);
 
 static int test_spawn_binary_exact(void)
@@ -616,6 +655,8 @@ static int test_spawn_platform_arm(void)
     failures += test_spawn_binary_unknown_exit();
     failures += test_spawn_binary_empty();
     failures += test_spawn_binary_closed_stdio();
+    failures += test_spawn_capture_in_dir();
+    failures += test_spawn_capture_in_dir_fails_closed();
 
     printf("Spawn: %d failures\n", failures);
     return failures;

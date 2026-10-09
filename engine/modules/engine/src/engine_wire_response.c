@@ -22,6 +22,7 @@
 #include "base/safe_alloc.h"
 #include "json/json.h"
 
+#include <stdio.h>
 #include <string.h>
 
 void engine_reply_free(struct engine_reply *r)
@@ -214,6 +215,114 @@ static bool cli_observation_from_grok(const char *body, size_t len,
     return true;
 }
 
+/* The resolved model is the modelUsage key that produced the most output. */
+static const char *claude_pick_model(const struct json_value *models)
+{
+    const char *best = NULL;
+    int64_t best_out = -1;
+    for (size_t i = 0; i < json_size(models); i++) {
+        const struct json_value *row = json_at(models, i);
+        int64_t o = 0;
+        if (!row || row->type != JSON_OBJ || !models->keys ||
+            !models->keys[i] ||
+            !read_required_nonnegative(row, "outputTokens", &o))
+            continue;
+        if (o > best_out) { best_out = o; best = models->keys[i]; }
+    }
+    return best;
+}
+
+/* Counters plus the additive total; false on a missing, negative or
+ * overflowing value. */
+static bool claude_read_counters(const struct json_value *root,
+                                 const struct json_value *usage,
+                                 struct engine_cli_observation *t)
+{
+    if (!read_required_nonnegative(root, "num_turns", &t->turns) ||
+        !read_required_nonnegative(usage, "input_tokens", &t->input_tokens) ||
+        !read_required_nonnegative(usage, "output_tokens",
+                                   &t->output_tokens) ||
+        !read_required_nonnegative(usage, "cache_read_input_tokens",
+                                   &t->cache_read_input_tokens) ||
+        !read_required_nonnegative(usage, "cache_creation_input_tokens",
+                                   &t->cache_creation_input_tokens))
+        return false;
+    const int64_t parts[] = { t->output_tokens, t->cache_read_input_tokens,
+                              t->cache_creation_input_tokens };
+    int64_t sum = t->input_tokens;
+    for (size_t i = 0; i < 3; i++) {
+        if (parts[i] > INT64_MAX - sum)
+            return false;
+        sum += parts[i];
+    }
+    if (t->turns < 1)
+        return false;
+    t->total_tokens = sum;
+    return true;
+}
+
+/* A result that is not a clean success: typed refusal, not usage to count. */
+static bool claude_result_is_success(const struct json_value *root)
+{
+    const struct json_value *type = json_get(root, "type");
+    const struct json_value *sub = json_get(root, "subtype");
+    const struct json_value *err = json_get(root, "is_error");
+    const struct json_value *text = json_get(root, "result");
+    if (root->type != JSON_OBJ || !type || type->type != JSON_STR ||
+        strcmp(json_get_str(type), "result") != 0 ||
+        !sub || sub->type != JSON_STR || !err || err->type != JSON_BOOL)
+        LOG_FAIL("engine", "refusing Claude JSON that is not a result");
+    if (json_get_bool(err) || strcmp(json_get_str(sub), "success") != 0)
+        LOG_FAIL("engine", "Claude CLI reported a failed invocation");
+    if (!text || text->type != JSON_STR)
+        LOG_FAIL("engine", "refusing Claude JSON without result text");
+    return true;
+}
+
+/* The Claude CLI prints ONE result object. Claude reports no reasoning
+ * counter, so that field stays -1 (unreported), never 0. total_tokens is the
+ * additive sum (input + output + cache read + cache creation), a shape the
+ * dispatcher already accepts for cache-additive accounting. */
+static bool cli_observation_from_claude(const char *body, size_t len,
+                                        struct engine_cli_observation *out)
+{
+    if (!body_is_admissible(body, len))
+        return false;
+    struct json_value root;
+    json_init(&root);
+    if (!json_read(&root, body, len)) {
+        json_free(&root);
+        LOG_FAIL("engine", "refusing malformed Claude CLI JSON");
+    }
+    struct engine_cli_observation tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    bool ok = false;
+    const struct json_value *usage = json_get(&root, "usage");
+    const struct json_value *models = json_get(&root, "modelUsage");
+    if (claude_result_is_success(&root)) {
+        const char *best = NULL;
+        if (!usage || usage->type != JSON_OBJ || !models ||
+            models->type != JSON_OBJ || json_size(models) < 1u)
+            LOG_WARN("engine", "refusing incomplete Claude usage/model metadata");
+        else if ((best = claude_pick_model(models)) &&
+                 copy_required_observable(json_get(&root, "session_id"),
+                     tmp.session_id, sizeof(tmp.session_id), "session_id") &&
+                 copy_required_observable_text(best, tmp.resolved_model,
+                     sizeof(tmp.resolved_model), "resolved model") &&
+                 claude_read_counters(&root, usage, &tmp)) {
+            tmp.reasoning_tokens = -1;
+            snprintf(tmp.stop_reason, sizeof(tmp.stop_reason), "%s", "success");
+            tmp.known = true;
+            ok = true;
+        }
+    }
+    json_free(&root);
+    if (!ok)
+        return false;
+    *out = tmp;
+    return true;
+}
+
 bool engine_cli_observation_parse(const struct engine_vendor *vendor,
                                   const char *body, size_t len,
                                   struct engine_cli_observation *out)
@@ -225,6 +334,8 @@ bool engine_cli_observation_parse(const struct engine_vendor *vendor,
         LOG_FAIL("engine", "refusing CLI metadata without a vendor");
     if (vendor->report_format == ENGINE_CLI_OUTPUT_PLAIN)
         return true;
+    if (vendor->report_format == ENGINE_CLI_OUTPUT_CLAUDE_JSON)
+        return cli_observation_from_claude(body, len, out);
     if (vendor->report_format != ENGINE_CLI_OUTPUT_GROK_JSON)
         LOG_FAIL("engine", "refusing unknown CLI output shape");
     return cli_observation_from_grok(body, len, out);

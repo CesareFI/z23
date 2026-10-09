@@ -125,6 +125,7 @@ enum engine_cli_prompt {
 enum engine_cli_output {
     ENGINE_CLI_OUTPUT_PLAIN = 0,
     ENGINE_CLI_OUTPUT_GROK_JSON,
+    ENGINE_CLI_OUTPUT_CLAUDE_JSON,
 };
 
 /* An argv slot the caller fills. Anything else in a row is a literal.
@@ -197,6 +198,10 @@ struct engine_vendor {
      * standalone dispatcher selects the existing PTY capture transport when
      * true. It changes no authority and is never used by the node. */
     bool             cli_needs_tty;
+    /* The CLI has no directory flag and works in its current directory, so
+     * the launcher must start it with cwd = the unit workdir. A row that
+     * names its directory in argv (a {workdir} slot) leaves this false. */
+    bool             cli_cwd_is_workdir;
     enum engine_cli_output report_format;
     bool             supports_reasoning_effort;
     enum engine_wire wire;
@@ -289,6 +294,11 @@ bool engine_cli_turns_parse(const char *text, int *out);
 
 /* True only when a local CLI row explicitly maps the turn-cap placeholder. */
 bool engine_cli_accepts_turns(const struct engine_vendor *v);
+
+/* The directory a launcher must make the child's cwd: in->workdir for a row
+ * with cli_cwd_is_workdir, else NULL (inherit). */
+const char *engine_cli_launch_cwd(const struct engine_vendor *v,
+                                  const struct engine_cli_inputs *in);
 
 /* Build the full argv for a CLI vendor into `out`, NULL-terminated.
  *

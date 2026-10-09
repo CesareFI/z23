@@ -61,6 +61,26 @@ static const char *const k_glm_cli_start_argv[] = {
     "--prompt",    ENGINE_CLI_PROMPT_TOKEN,
     NULL
 };
+/* Takes the prompt TEXT as an argument and has NO directory flag: it works in
+ * its current directory, so the row sets cli_cwd_is_workdir and the launcher
+ * starts it there; {workdir} is deliberately absent. It has no turn cap flag
+ * worth mapping, so no {turns} slot. The rest is the cheapest measured shape
+ * that still uses subscription login (no --bare, which ignores OAuth): an
+ * empty --setting-sources= loads no user/project settings, and the model gets file
+ * tools only, with no Bash: builds go through the harness, which judges. */
+static const char *const k_claude_cli_start_argv[] = {
+    "-p",             ENGINE_CLI_PROMPT_TOKEN,
+    "--model",        ENGINE_CLI_MODEL_TOKEN,
+    "--output-format", "json",
+    "--no-session-persistence",
+    "--permission-mode", "acceptEdits",
+    "--setting-sources=",
+    "--tools", "Read,Edit,Write,Grep,Glob",
+    "--system-prompt",
+    "You edit C23 code in the current git worktree to complete the unit "
+    "below; do not run builds.",
+    NULL
+};
 static const char *const k_grok_cli_resume_argv[] = {
     "--resume", ENGINE_CLI_RESUME_TOKEN, NULL
 };
@@ -169,6 +189,40 @@ static const struct engine_vendor k_engine_vendors[] = {
         .is_default    = true,
         .start_argv    = k_glm_cli_start_argv,
         .cli_prompt    = ENGINE_CLI_PROMPT_ARG,
+        .wire          = ENGINE_WIRE_LOCAL_CLI,
+        .delivery      = ENGINE_DELIVERS_EDITS,
+        .costs_money   = true,
+        .max_retries   = 1,
+    },
+    {
+        /* Anthropic's agent CLI, subscription-authenticated. Two rows, one
+         * per model tier, because a caller picks an ENGINE and the model is
+         * what differs. Prompt is an argument (96 KiB cap applies). The
+         * usage object is decoded from its single JSON result. */
+        .id            = "claude-haiku",
+        .display       = "Anthropic Claude Haiku (installed agent CLI, subscription auth)",
+        .url           = NULL,
+        .default_model = "claude-haiku-5-5",
+        .program       = "claude",
+        .start_argv    = k_claude_cli_start_argv,
+        .cli_prompt    = ENGINE_CLI_PROMPT_ARG,
+        .cli_cwd_is_workdir = true,
+        .report_format = ENGINE_CLI_OUTPUT_CLAUDE_JSON,
+        .wire          = ENGINE_WIRE_LOCAL_CLI,
+        .delivery      = ENGINE_DELIVERS_EDITS,
+        .costs_money   = true,
+        .max_retries   = 1,
+    },
+    {
+        .id            = "claude-sonnet",
+        .display       = "Anthropic Claude Sonnet (installed agent CLI, subscription auth)",
+        .url           = NULL,
+        .default_model = "claude-sonnet-5-5",
+        .program       = "claude",
+        .start_argv    = k_claude_cli_start_argv,
+        .cli_prompt    = ENGINE_CLI_PROMPT_ARG,
+        .cli_cwd_is_workdir = true,
+        .report_format = ENGINE_CLI_OUTPUT_CLAUDE_JSON,
         .wire          = ENGINE_WIRE_LOCAL_CLI,
         .delivery      = ENGINE_DELIVERS_EDITS,
         .costs_money   = true,
