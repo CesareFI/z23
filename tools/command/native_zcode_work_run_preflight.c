@@ -431,6 +431,26 @@ void zcl_native_handle_zcode_work_preflight(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     if (!request || !reply) return;
+    static const char *const keys[] = { "workspace", "datadir", "work" };
+    static const char *const codes[] = {
+        "BAD_WORKSPACE", "BAD_DATADIR", "BAD_WORK"
+    };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        const struct json_value *value = json_get(request->input, keys[i]);
+        if (value && value->type != JSON_STR) {
+            char detail[96];
+            (void)snprintf(detail, sizeof(detail), "%s must be a string", keys[i]);
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                ZCL_COMMAND_EXIT_INVALID, codes[i], "input", false, false,
+                detail, "zcode.work.preflight");
+            if (!json_push_kv_bool(&reply->data, "model_request_attempted", false))
+                zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                    ZCL_COMMAND_EXIT_INVALID, "PREFLIGHT_OUTPUT_FAILED", "render",
+                    false, false, "preflight refusal could not be rendered",
+                    "zcode.work.preflight");
+            return;
+        }
+    }
     struct run_adapter_preflight state = {0};
     run_preflight_probe(request, &state);
     const char *current = NULL, *next = NULL;
