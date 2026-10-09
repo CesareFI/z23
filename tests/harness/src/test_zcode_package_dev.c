@@ -69,9 +69,147 @@
 #include <windows.h>
 #endif
 
+struct zpd_preflight_case { const char *key, *raw, *code; };
+struct zpd_preflight_reference { char wire[1024]; size_t bytes; };
+
+static bool zpd_preflight_select_work(const char *root, struct json_value *input)
+{
+    /* Empty/missing work selects greatest expiry, then greatest root, not
+     * necessarily the saved ready task: map fixtures also store task wires
+     * with altered goals. Compare its packet with that exact root's packet. */
+    struct vcs_zcode_task_index *index = vcs_zcode_task_index_build(
+        root, platform_time_wall_unix());
+    size_t count = index ? vcs_zcode_task_index_task_count(index) : 0;
+    const struct vcs_zcode_task_index_entry *best = count
+        ? vcs_zcode_task_index_task_at(index, 0) : NULL;
+    for (size_t i = 1; i < count; i++) {
+        const struct vcs_zcode_task_index_entry *at =
+            vcs_zcode_task_index_task_at(index, i);
+        if (at->expires_unix > best->expires_unix ||
+            (at->expires_unix == best->expires_unix &&
+             strcmp(at->task_root_hex, best->task_root_hex) > 0)) best = at;
+    }
+    bool selected = best && json_push_kv_str(input, "workspace", root) &&
+        json_push_kv_str(input, "work", best->task_root_hex);
+    vcs_zcode_task_index_free(index);
+    return selected;
+}
+
+static bool zpd_preflight_no_model(const struct zcl_command_reply *reply)
+{
+    const struct json_value *attempted = json_get(
+        &reply->data, "model_request_attempted");
+    return attempted && attempted->type == JSON_BOOL && !json_get_bool(attempted);
+}
+
+static bool zpd_preflight_reference_packet(const char *root,
+    struct zpd_preflight_reference *reference)
+{
+    struct json_value selected_input;
+    json_init(&selected_input); json_set_object(&selected_input);
+    bool selected = zpd_preflight_select_work(root, &selected_input);
+    struct zcl_command_request selected_request = { .input = &selected_input };
+    struct zcl_command_reply selected_reply;
+    zcl_command_reply_init(&selected_reply, "zcl.zcode_work_preflight.v1");
+    if (selected) zcl_native_handle_zcode_work_preflight(
+        &selected_request, &selected_reply);
+    const struct json_value *packet = json_get(
+        json_get(&selected_reply.data, "checks"), "packet");
+    reference->bytes = packet
+        ? json_write(packet, reference->wire, sizeof(reference->wire)) : 0;
+    selected = selected && selected_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+        selected_reply.exit_code == ZCL_COMMAND_EXIT_OK &&
+        zpd_preflight_no_model(&selected_reply) &&
+        reference->bytes > 0 && reference->bytes < sizeof(reference->wire);
+    zcl_command_reply_free(&selected_reply); json_free(&selected_input);
+    if (!selected)
+        fprintf(stderr, "preflight default work reference packet unavailable\n");
+    return selected;
+}
+
+static bool zpd_preflight_case_cwd(const struct zpd_preflight_case *row,
+    const char *root, char *saved, size_t cap, bool *changed)
+{
+    if (row->code || strcmp(row->key, "workspace") != 0) return true;
+    if (!getcwd(saved, cap)) return false;
+    *changed = chdir(root) == 0;
+    return *changed;
+}
+
+static bool zpd_preflight_case_input(const struct zpd_preflight_case *row,
+    const char *root, const char *work, struct json_value *input,
+    struct json_value *value)
+{
+    bool built = (strcmp(row->key, "workspace") == 0 ||
+                  json_push_kv_str(input, "workspace", root)) &&
+                 (strcmp(row->key, "work") == 0 ||
+                  json_push_kv_str(input, "work", work));
+    if (row->raw)
+        built = built && json_read(value, row->raw, strlen(row->raw)) &&
+                json_push_kv(input, row->key, value);
+    return built;
+}
+
+static bool zpd_preflight_refusal(const struct zpd_preflight_case *row,
+    const struct zcl_command_reply *reply)
+{
+    return reply->status == ZCL_COMMAND_STATUS_FAILED &&
+        reply->exit_code == ZCL_COMMAND_EXIT_INVALID &&
+        strcmp(reply->error.code, row->code) == 0 &&
+        strstr(reply->error.message, row->key) != NULL &&
+        !reply->error.mutated && json_get(&reply->data, "checks") == NULL &&
+        zpd_preflight_no_model(reply);
+}
+
+static bool zpd_preflight_default_packet(const struct zpd_preflight_case *row,
+    const struct zcl_command_reply *reply,
+    const struct zpd_preflight_reference *reference)
+{
+    const struct json_value *packet = json_get(
+        json_get(&reply->data, "checks"), "packet");
+    if (strcmp(row->key, "work") == 0) {
+        char wire[1024];
+        size_t bytes = packet ? json_write(packet, wire, sizeof(wire)) : 0;
+        return bytes == reference->bytes && bytes < sizeof(wire) &&
+            memcmp(wire, reference->wire, reference->bytes) == 0;
+    }
+    const struct json_value *ready = json_get(packet, "ready");
+    return ready && ready->type == JSON_BOOL && json_get_bool(ready);
+}
+
+static bool zpd_preflight_case_reply(const struct zpd_preflight_case *row,
+    const struct zcl_command_reply *reply,
+    const struct zpd_preflight_reference *reference)
+{
+    if (row->code) return zpd_preflight_refusal(row, reply);
+    return reply->status == ZCL_COMMAND_STATUS_PASSED &&
+        reply->exit_code == ZCL_COMMAND_EXIT_OK && zpd_preflight_no_model(reply) &&
+        zpd_preflight_default_packet(row, reply, reference);
+}
+
+static bool zpd_preflight_case_run(const struct zpd_preflight_case *row,
+    const char *root, const char *work,
+    const struct zpd_preflight_reference *reference, size_t i, bool cwd_ready)
+{
+    struct json_value input, value;
+    json_init(&input); json_set_object(&input); json_init(&value);
+    bool built = cwd_ready && zpd_preflight_case_input(
+        row, root, work, &input, &value);
+    struct zcl_command_request request = { .input = &input };
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, "zcl.zcode_work_preflight.v1");
+    if (built) zcl_native_handle_zcode_work_preflight(&request, &reply);
+    bool matched = built && zpd_preflight_case_reply(row, &reply, reference);
+    if (!matched)
+        fprintf(stderr, "preflight type case=%zu key=%s raw=%s error=%s\n",
+                i, row->key, row->raw ? row->raw : "omitted", reply.error.code);
+    zcl_command_reply_free(&reply); json_free(&value); json_free(&input);
+    return matched;
+}
+
 static bool zpd_preflight_input_types(const char *root, const char *work)
 {
-    static const struct { const char *key, *raw, *code; } cases[] = {
+    static const struct zpd_preflight_case cases[] = {
         { "workspace", "null", "BAD_WORKSPACE" },
         { "workspace", "true", "BAD_WORKSPACE" },
         { "workspace", "42", "BAD_WORKSPACE" },
@@ -97,110 +235,17 @@ static bool zpd_preflight_input_types(const char *root, const char *work)
         { "work", NULL, NULL },
         { "work", "\"\"", NULL },
     };
-    /* Empty/missing work selects greatest expiry, then greatest root, not
-     * necessarily the saved ready task: map fixtures also store task wires
-     * with altered goals. Compare its packet with that exact root's packet. */
-    struct vcs_zcode_task_index *index = vcs_zcode_task_index_build(
-        root, platform_time_wall_unix());
-    size_t count = index ? vcs_zcode_task_index_task_count(index) : 0;
-    const struct vcs_zcode_task_index_entry *best = count
-        ? vcs_zcode_task_index_task_at(index, 0) : NULL;
-    for (size_t i = 1; i < count; i++) {
-        const struct vcs_zcode_task_index_entry *at =
-            vcs_zcode_task_index_task_at(index, i);
-        if (at->expires_unix > best->expires_unix ||
-            (at->expires_unix == best->expires_unix &&
-             strcmp(at->task_root_hex, best->task_root_hex) > 0)) best = at;
-    }
-    struct json_value selected_input;
-    json_init(&selected_input); json_set_object(&selected_input);
-    bool selected = best && json_push_kv_str(&selected_input, "workspace", root) &&
-        json_push_kv_str(&selected_input, "work", best->task_root_hex);
-    vcs_zcode_task_index_free(index);
-    struct zcl_command_request selected_request = { .input = &selected_input };
-    struct zcl_command_reply selected_reply;
-    zcl_command_reply_init(&selected_reply, "zcl.zcode_work_preflight.v1");
-    if (selected) zcl_native_handle_zcode_work_preflight(
-        &selected_request, &selected_reply);
-    const struct json_value *selected_attempted = json_get(
-        &selected_reply.data, "model_request_attempted");
-    char selected_packet[1024];
-    const struct json_value *packet = json_get(
-        json_get(&selected_reply.data, "checks"), "packet");
-    size_t selected_bytes = packet
-        ? json_write(packet, selected_packet, sizeof(selected_packet)) : 0;
-    selected = selected && selected_reply.status == ZCL_COMMAND_STATUS_PASSED &&
-        selected_reply.exit_code == ZCL_COMMAND_EXIT_OK && selected_attempted &&
-        selected_attempted->type == JSON_BOOL && !json_get_bool(selected_attempted) &&
-        selected_bytes > 0 && selected_bytes < sizeof(selected_packet);
-    zcl_command_reply_free(&selected_reply); json_free(&selected_input);
-    if (!selected) {
-        fprintf(stderr, "preflight default work reference packet unavailable\n");
-        return false;
-    }
+    struct zpd_preflight_reference reference;
+    if (!zpd_preflight_reference_packet(root, &reference)) return false;
     bool all = true;
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        bool default_workspace = !cases[i].code &&
-            strcmp(cases[i].key, "workspace") == 0;
         char saved_cwd[4400];
         bool changed_cwd = false;
-        bool cwd_ready = true;
-        if (default_workspace) {
-            cwd_ready = getcwd(saved_cwd, sizeof(saved_cwd)) != NULL;
-            if (cwd_ready) {
-                changed_cwd = chdir(root) == 0;
-                cwd_ready = changed_cwd;
-            }
-        }
-        struct json_value input, value;
-        json_init(&input); json_set_object(&input); json_init(&value);
-        bool built = cwd_ready && (strcmp(cases[i].key, "workspace") == 0 ||
-                      json_push_kv_str(&input, "workspace", root)) &&
-                     (strcmp(cases[i].key, "work") == 0 ||
-                      json_push_kv_str(&input, "work", work));
-        if (cases[i].raw)
-            built = built && json_read(&value, cases[i].raw, strlen(cases[i].raw)) &&
-                    json_push_kv(&input, cases[i].key, &value);
-        struct zcl_command_request request = { .input = &input };
-        struct zcl_command_reply reply;
-        zcl_command_reply_init(&reply, "zcl.zcode_work_preflight.v1");
-        if (built) zcl_native_handle_zcode_work_preflight(&request, &reply);
-        const struct json_value *attempted = json_get(
-            &reply.data, "model_request_attempted");
-        bool matched = built;
-        if (cases[i].code)
-            matched = matched && reply.status == ZCL_COMMAND_STATUS_FAILED &&
-                reply.exit_code == ZCL_COMMAND_EXIT_INVALID &&
-                strcmp(reply.error.code, cases[i].code) == 0 &&
-                strstr(reply.error.message, cases[i].key) != NULL &&
-                !reply.error.mutated && json_get(&reply.data, "checks") == NULL &&
-                attempted && attempted->type == JSON_BOOL &&
-                !json_get_bool(attempted);
-        else {
-            matched = matched && reply.status == ZCL_COMMAND_STATUS_PASSED &&
-                reply.exit_code == ZCL_COMMAND_EXIT_OK &&
-                attempted && attempted->type == JSON_BOOL && !json_get_bool(attempted);
-            const struct json_value *actual_packet = json_get(
-                json_get(&reply.data, "checks"), "packet");
-            if (strcmp(cases[i].key, "work") == 0) {
-                char actual_wire[1024];
-                size_t bytes = actual_packet
-                    ? json_write(actual_packet, actual_wire, sizeof(actual_wire)) : 0;
-                matched = matched && bytes == selected_bytes &&
-                    bytes < sizeof(actual_wire) &&
-                    memcmp(actual_wire, selected_packet, selected_bytes) == 0;
-            } else {
-                const struct json_value *ready = json_get(actual_packet, "ready");
-                matched = matched && ready && ready->type == JSON_BOOL &&
-                    json_get_bool(ready);
-            }
-        }
-        if (!matched)
-            fprintf(stderr, "preflight type case=%zu key=%s raw=%s error=%s\n",
-                    i, cases[i].key, cases[i].raw ? cases[i].raw : "omitted",
-                    reply.error.code);
+        bool cwd_ready = zpd_preflight_case_cwd(&cases[i], root, saved_cwd,
+                                              sizeof(saved_cwd), &changed_cwd);
+        bool matched = zpd_preflight_case_run(&cases[i], root, work,
+                                             &reference, i, cwd_ready);
         all = all && matched;
-        zcl_command_reply_free(&reply); json_free(&value); json_free(&input);
         /* No early return after chdir: restore even on construction/refusal
          * failure, before reporting failure to the caller's fixture cleanup. */
         if (changed_cwd && chdir(saved_cwd) != 0) {
