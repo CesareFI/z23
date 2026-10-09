@@ -701,6 +701,30 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
     return true;
 }
 
+static void msg_version_push_eager_addrs(struct msg_processor *mp,
+                                         struct p2p_node *node)
+{
+    struct net_address addrs[MAX_ADDR_TO_SEND];
+    size_t num = addrman_get_addr(&mp->net_mgr->addrman, addrs,
+                                  MAX_ADDR_TO_SEND);
+    if (num == 0)
+        return;
+
+    struct byte_stream addr_msg;
+    stream_init(&addr_msg, num * 30 + 8);
+    bool serialized = stream_write_compact_size(&addr_msg, num);
+    for (size_t i = 0; i < num && serialized; i++)
+        serialized = net_address_serialize(&addrs[i], &addr_msg, true);
+    if (serialized && p2p_node_begin_message(
+                          node, "addr", mp->params->pchMessageStart)) {
+        p2p_node_write_message_data(node, addr_msg.data, addr_msg.size);
+        if (p2p_node_end_message(node))
+            printf("Peer %s: pushed %zu addresses (ZCL23 peer exchange)\n",
+                   node->addr_name, num);
+    }
+    stream_free(&addr_msg);
+}
+
 bool process_verack(struct msg_processor *mp, struct p2p_node *node)
 {
     node->recv_version = PROTOCOL_VERSION;
@@ -740,25 +764,8 @@ bool process_verack(struct msg_processor *mp, struct p2p_node *node)
     /* Eager peer exchange with ZCL23 nodes — don't wait for getaddr.
      * The receiver rejects any single addr message above MAX_ADDR_TO_SEND,
      * so this unsolicited path must use that same wire bound. */
-    if (peer_supports_fast_sync(node->services) && mp->net_mgr) {
-        struct net_address addrs[MAX_ADDR_TO_SEND];
-        size_t num = addrman_get_addr(&mp->net_mgr->addrman, addrs,
-                                      MAX_ADDR_TO_SEND);
-        if (num > 0) {
-            struct byte_stream addr_msg;
-            stream_init(&addr_msg, num * 30 + 8);
-            stream_write_compact_size(&addr_msg, num);
-            for (size_t i = 0; i < num; i++)
-                net_address_serialize(&addrs[i], &addr_msg, true);
-            p2p_node_begin_message(node, "addr",
-                                    mp->params->pchMessageStart);
-            p2p_node_write_message_data(node, addr_msg.data, addr_msg.size);
-            p2p_node_end_message(node);
-            stream_free(&addr_msg);
-            printf("Peer %s: pushed %zu addresses (ZCL23 peer exchange)\n",
-                   node->addr_name, num);
-        }
-    }
+    if (peer_supports_fast_sync(node->services) && mp->net_mgr)
+        msg_version_push_eager_addrs(mp, node);
 
     /* Mempool sync-on-connect: pull this peer's mempool inventory once
      * now that the handshake round-trip is confirmed complete (we sent

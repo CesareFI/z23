@@ -712,6 +712,56 @@ static int test_eager_zcl23_addr_exchange_bounded(void)
     return failures;
 }
 
+/* A failed eager-exchange stream allocation must suppress the optional addr
+ * message entirely.  In particular, it must not frame a zero-byte addr body:
+ * every valid addr payload starts with its CompactSize entry count. */
+static int test_eager_zcl23_addr_exchange_allocation_failure(void)
+{
+    int failures = 0;
+    TEST("verack: eager ZCL23 addr allocation failure sends no addr frame") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+        f.node.version = PROTOCOL_VERSION;
+        f.node.services = NODE_ZCL23;
+        f.node.state = PEER_HANDSHAKE_COMPLETE;
+
+        enum { ENTRY_COUNT = 5 };
+        struct addr_man *am = &f.nm.addrman;
+        am->random_order = zcl_malloc(ENTRY_COUNT * sizeof(*am->random_order),
+                                      "hs_eager_addr_order");
+        ASSERT(am->random_order != NULL);
+        am->random_cap = ENTRY_COUNT;
+        am->random_size = ENTRY_COUNT;
+        am->id_count = ENTRY_COUNT;
+        uint32_t recent = (uint32_t)platform_time_wall_time_t() - 60;
+        for (int i = 0; i < ENTRY_COUNT; i++) {
+            am->entries[i].addr = hs_make_pub_addr(
+                11, 1, 1, (uint8_t)(i + 1), 8033, recent);
+            am->entries[i].used = true;
+            am->entries[i].random_pos = i;
+            am->random_order[i] = i;
+        }
+
+        zcl_alloc_fault_fail_next("stream_data");
+        bool verack_ok = process_verack(&f.mp, &f.node);
+        bool allocation_failure_injected =
+            zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+
+        ASSERT(verack_ok);
+        ASSERT(allocation_failure_injected);
+        ASSERT(!f.node.disconnect);
+
+        struct hs_capture cap;
+        hs_capture_sent(f.peer_fd, &cap);
+        ASSERT(!hs_captured_has_command(&cap, "addr"));
+
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 6b. a real addr message drives the topology graph, not just addrman:
  * process_addr() (msgprocessor_inv.c) records one storage/topology_store.h
  * edge per deserialized entry, keyed on the handshaked peer as observer. The
@@ -1363,6 +1413,7 @@ int test_net_handshake_adversarial(void)
     failures += test_legacy_zcl23_addr_batch_bounded_compatible();
     failures += test_getaddr_bounded_and_answered_once();
     failures += test_eager_zcl23_addr_exchange_bounded();
+    failures += test_eager_zcl23_addr_exchange_allocation_failure();
     failures += test_addr_message_records_topology_edge();
     failures += test_addr_timestamp_sanitization_rule();
     failures += test_oversized_user_agent_rejected();
