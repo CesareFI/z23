@@ -93,6 +93,8 @@ STOPWATCH_SKIP_CLASS("config_error", 1, "invalid --sample")
 /* ── fixture_absent: the infrastructure the proof needs was not there. This
  * CAN self-heal (a peer restarts), so one sample is not evidence; two
  * consecutive are. */
+STOPWATCH_SKIP_CLASS("fixture_absent", 2, "ENVIRONMENT_BLOCKED peer_unreachable")
+STOPWATCH_SKIP_CLASS("fixture_incompatible", 1, "ENVIRONMENT_BLOCKED peer_")
 STOPWATCH_SKIP_CLASS("fixture_absent", 2, "serving peer not reachable")
 STOPWATCH_SKIP_CLASS("fixture_absent", 2, "file-service peer not reachable")
 STOPWATCH_SKIP_CLASS("fixture_absent", 2, "is not a live process")

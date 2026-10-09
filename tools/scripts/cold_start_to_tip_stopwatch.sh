@@ -72,6 +72,12 @@
 #                        X25519/HKDF file-service handshake — an ENVIRONMENT
 #                        failure, never a product stall, so never exit 4).
 #                        Not a verdict on C3 either way.
+#                        ENVIRONMENT_BLOCKED (peer_unreachable |
+#                        peer_no_handshake | peer_tip_stale) is the SKIP reason
+#                        when the pre-flight P2P version-handshake gate finds no
+#                        stated peer able to serve (see "PRE-FLIGHT peer gate");
+#                        it ends the run in seconds and is never FAIL or
+#                        STALLED-NAMED. ZCL_CS_PEER_PRECHECK=0 disables it.
 #                        A peer that accepts the TCP connection and closes it
 #                        immediately is NOT a SKIP — it is labelled
 #                        peer_prechecks[].classification=accept_close, warned
@@ -139,6 +145,18 @@ FILE_PEER="${ZCL_CS_FILE_PEER:-}"
 FS_HANDSHAKE_PROBE="${ZCL_CS_FS_HANDSHAKE_PROBE:-$REPO_ROOT/build/bin/fs_handshake_probe}"
 HEADER_SOURCE="${ZCL_CS_HEADER_SOURCE:-}"
 BUNDLE_PATH="${ZCL_CS_BUNDLE_PATH:-}"
+# Pre-flight peer gate knobs (see "PRE-FLIGHT peer gate" below). Default ON.
+#   ZCL_CS_PEER_PRECHECK=0         skip the version-handshake gate
+#   ZCL_CS_EXPECTED_TIP=N          tip the peer's start_height must approach
+#                                  (unset: height recorded, staleness unchecked)
+#   ZCL_CS_PEER_TIP_TOLERANCE=N    blocks below EXPECTED_TIP still accepted (1000)
+#   ZCL_CS_PEER_HANDSHAKE_SECS=N   per-peer bound, clamped to 15 (12)
+PEER_PRECHECK_ENABLED="${ZCL_CS_PEER_PRECHECK:-1}"
+EXPECTED_TIP="${ZCL_CS_EXPECTED_TIP:-}"
+PEER_TIP_TOLERANCE="${ZCL_CS_PEER_TIP_TOLERANCE:-1000}"
+PEER_HANDSHAKE_SECS="${ZCL_CS_PEER_HANDSHAKE_SECS:-12}"
+PEER_MAGIC="${ZCL_CS_PEER_MAGIC:-24e92764}"
+P2P_VERSION_PROBE="${ZCL_CS_P2P_VERSION_PROBE:-$REPO_ROOT/tools/scripts/p2p_version_probe.sh}"
 BUDGET="${ZCL_CS_BUDGET_SECS:-600}"     # 10-minute MVP C3 target
 SAMPLE_SECS="${ZCL_CS_SAMPLE_SECS:-10}"
 ARTIFACT_ROOT="${ZCL_CS_ARTIFACT_ROOT:-$REPO_ROOT/build/c3-stopwatch}"
@@ -2636,6 +2654,71 @@ echo "cold-start-wipe-stopwatch: node_bin_source_id=${NODE_BIN_SOURCE_ID:-<unava
 # into a clean no-op), and it records an honest artifact naming what is missing.
 if [ "${#PEERS[@]}" -eq 0 ]; then
     skip "no_peer_configured — set ZCL_CS_PEER=HOST:PORT (or pass --peer=HOST:PORT / ZCL_PEER= via make). This harness has NO default peer on purpose: it used to default to 127.0.0.1:8033, the operator's canonical node, so a bare run silently synced off it. Point it at a stopwatch fixture peer (e.g. 127.0.0.1:39070), or name the canonical node explicitly if that is genuinely what you mean."
+fi
+
+# ── PRE-FLIGHT peer gate: a real P2P version handshake ──────────────────────
+# Dials each stated peer with p2p_version_probe.sh (bounded <= 15 s) and
+# records its advertised start_height. When no peer can serve, the run ends as
+# a SKIP with ENVIRONMENT_BLOCKED (peer_unreachable | peer_no_handshake |
+# peer_tip_stale): the node under test never ran, so it is never FAIL or
+# stalled-named. ZCL_CS_PEER_PRECHECK=0 skips the gate;
+# ZCL_CS_PEER_PRECHECK_ONLY=1 stops after a passing gate without a node.
+PEER_GATE="skipped"
+PEER_GATE_HEIGHTS=""
+peer_gate_rank() {
+    case "$1" in
+        ok) echo 3 ;; peer_tip_stale) echo 2 ;; peer_no_handshake) echo 1 ;; *) echo 0 ;;
+    esac
+}
+peer_gate_one() {  # host port -> "token height"
+    local out rc h
+    out="$(timeout "$PEER_HANDSHAKE_SECS" env ZCL_CS_PEER_MAGIC="$PEER_MAGIC" \
+        bash "$P2P_VERSION_PROBE" "$1" "$2" "$PEER_HANDSHAKE_SECS" 2>/dev/null)"
+    rc=$?
+    case "$rc:$out" in
+        0:ok\ [0-9]*)
+            h="${out#ok }"
+            if [ -n "$EXPECTED_TIP" ] && [ "$h" -lt $((EXPECTED_TIP - PEER_TIP_TOLERANCE)) ]; then
+                echo "peer_tip_stale $h"
+            else
+                echo "ok $h"
+            fi ;;
+        3:*) echo "peer_unreachable -" ;;
+        *)   echo "peer_no_handshake -" ;;
+    esac
+}
+if [ "$PEER_PRECHECK_ENABLED" = "1" ]; then
+    case "$PEER_HANDSHAKE_SECS" in ''|*[!0-9]*|0) PEER_HANDSHAKE_SECS=12 ;; esac
+    [ "$PEER_HANDSHAKE_SECS" -le 15 ] || PEER_HANDSHAKE_SECS=15
+    case "$EXPECTED_TIP$PEER_TIP_TOLERANCE" in *[!0-9]*)
+        skip "invalid ZCL_CS_EXPECTED_TIP / ZCL_CS_PEER_TIP_TOLERANCE (must be non-negative integers)" ;;
+    esac
+    [ -r "$P2P_VERSION_PROBE" ] || skip "p2p version probe absent: $P2P_VERSION_PROBE"
+    PEER_GATE="peer_unreachable"; gate_best_rank=-1; gate_best_detail=""
+    for gate_peer in "${PEERS[@]}"; do
+        gate_host="${gate_peer%:*}"; gate_port="${gate_peer##*:}"
+        [ -n "$gate_host" ] && [ -n "$gate_port" ] && [ "$gate_host" != "$gate_port" ] \
+            || skip "invalid peer address: $gate_peer"
+        read -r gate_cls gate_height < <(peer_gate_one "$gate_host" "$gate_port")
+        echo "cold-start-wipe-stopwatch: peer=$gate_peer peer_gate=$gate_cls start_height=$gate_height expected_tip=${EXPECTED_TIP:-unset}"
+        PEER_GATE_HEIGHTS="$PEER_GATE_HEIGHTS $gate_peer=$gate_height"
+        gate_rank="$(peer_gate_rank "$gate_cls")"
+        if [ "$gate_rank" -gt "$gate_best_rank" ]; then
+            gate_best_rank="$gate_rank"; PEER_GATE="$gate_cls"
+            gate_best_detail="$gate_peer start_height=$gate_height"
+        fi
+    done
+    if [ "$PEER_GATE" != "ok" ]; then
+        echo "cold-start-wipe-stopwatch: ENVIRONMENT_BLOCKED=$PEER_GATE"
+        skip "ENVIRONMENT_BLOCKED $PEER_GATE: no stated peer completed a version handshake at the expected tip ($gate_best_detail, expected_tip=${EXPECTED_TIP:-unset}, tolerance=$PEER_TIP_TOLERANCE). The node under test never ran: this is an environment verdict, not a sync result."
+    fi
+    echo "cold-start-wipe-stopwatch: peer_gate=ok"
+    if [ "${ZCL_CS_PEER_PRECHECK_ONLY:-0}" = "1" ]; then
+        echo "cold-start-wipe-stopwatch: PEER_PRECHECK_ONLY heights:$PEER_GATE_HEIGHTS"
+        exit 0
+    fi
+else
+    echo "cold-start-wipe-stopwatch: peer_gate=skipped (ZCL_CS_PEER_PRECHECK=0)"
 fi
 
 reachable_peers=0

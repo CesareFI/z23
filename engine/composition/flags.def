@@ -449,6 +449,8 @@ Z23_FLAG("ZCL_CS_BUDGET_SECS", "env_build", "600", "-",
           "undocumented; first use tools/scripts/c3_stopwatch_run_and_record.sh:auto")
 Z23_FLAG("ZCL_CS_BUNDLE_PATH", "env_build", "-", "-",
           "undocumented; first use tools/scripts/c3_stopwatch_run_and_record.sh:auto")
+Z23_FLAG("ZCL_CS_EXPECTED_TIP", "env_build", "-", "-",
+          "first use tools/scripts/cold_start_to_tip_stopwatch.sh:auto; documented at tools/scripts/cold_start_to_tip_stopwatch.sh: tip the peer start_height must approach")
 Z23_FLAG("ZCL_CS_FILE_PEER", "env_build", "-", "-",
           "first use tools/scripts/c3_stopwatch_run_and_record.sh:auto; documented at docs/work/stopwatch-gates.md:278: | run | ZCL_PEER | ZCL_CS_FILE_PEER | verdict | wall | final H/* | network tip |")
 Z23_FLAG("ZCL_CS_FRONTIER_BUSY_TIMEOUT_SECS", "env_build", "120", "-",
@@ -461,14 +463,26 @@ Z23_FLAG("ZCL_CS_MAX_BOOTS", "env_build", "12", "-",
           "undocumented; first use tools/scripts/cold_start_to_tip_stopwatch.sh:auto")
 Z23_FLAG("ZCL_CS_NODE_BIN", "env_build", "-", "-",
           "undocumented; first use tools/scripts/c3_stopwatch_triple_run.sh:auto")
+Z23_FLAG("ZCL_CS_P2P_VERSION_PROBE", "env_build", "-", "-",
+          "first use tools/scripts/cold_start_to_tip_stopwatch.sh:auto; documented at tools/scripts/cold_start_to_tip_stopwatch.sh: path of the version-handshake probe script")
 Z23_FLAG("ZCL_CS_PARAMS_DIR", "env_build", "-", "-",
           "undocumented; first use tools/scripts/cold_start_to_tip_stopwatch.sh:auto")
 Z23_FLAG("ZCL_CS_PEER", "env_build", "-", "-",
           "undocumented; first use tools/scripts/cold_start_to_tip_stopwatch.sh:auto")
 Z23_FLAG("ZCL_CS_PEER_DATADIR", "env_build", "-", "-",
           "undocumented; first use tools/scripts/c3_stopwatch_run_and_record.sh:auto")
+Z23_FLAG("ZCL_CS_PEER_HANDSHAKE_SECS", "env_build", "12", "-",
+          "first use tools/scripts/cold_start_to_tip_stopwatch.sh:auto; documented at tools/scripts/cold_start_to_tip_stopwatch.sh: per-peer handshake bound, clamped to 15")
+Z23_FLAG("ZCL_CS_PEER_MAGIC", "env_build", "24e92764", "-",
+          "first use tools/scripts/cold_start_to_tip_stopwatch.sh:auto; documented at tools/scripts/cold_start_to_tip_stopwatch.sh: network magic for the peer gate version probe")
+Z23_FLAG("ZCL_CS_PEER_PRECHECK", "env_build", "1", "-",
+          "first use tools/scripts/cold_start_to_tip_stopwatch.sh:auto; documented at tools/scripts/cold_start_to_tip_stopwatch.sh: 0 skips the P2P version-handshake peer gate")
+Z23_FLAG("ZCL_CS_PEER_PRECHECK_ONLY", "env_build", "-", "-",
+          "first use tools/scripts/cold_start_to_tip_stopwatch.sh:auto; documented at tools/scripts/cold_start_to_tip_stopwatch.sh: stop after a passing peer gate, no node launched")
 Z23_FLAG("ZCL_CS_PEER_RPCPORT", "env_build", "39071", "-",
           "undocumented; first use tools/scripts/c3_stopwatch_run_and_record.sh:auto")
+Z23_FLAG("ZCL_CS_PEER_TIP_TOLERANCE", "env_build", "1000", "-",
+          "first use tools/scripts/cold_start_to_tip_stopwatch.sh:auto; documented at tools/scripts/cold_start_to_tip_stopwatch.sh: blocks below ZCL_CS_EXPECTED_TIP a peer start_height may sit")
 Z23_FLAG("ZCL_CS_ROOT", "env_build", "-", "-",
           "undocumented; first use tools/scripts/cold_start_to_tip_stopwatch.sh:auto")
 Z23_FLAG("ZCL_CS_RUN_ID", "env_build", "-", "-",
