@@ -149,15 +149,33 @@ static int64_t wbs_unique_backup_timestamp_us(void)
 /* SHA-style filename: wallet_backup_<unix_ts>_<usec>.sqlite. The usec
  * component is monotonicized to disambiguate rapid successive runs (tests call
  * run_once several times back-to-back). */
-static void wbs_build_backup_path(const char *dir, char *out, size_t cap)
+static struct zcl_result wbs_build_backup_path(const char *dir,
+                                                char *out, size_t cap,
+                                                const char *result_out,
+                                                size_t result_cap)
 {
     int64_t now_us = wbs_unique_backup_timestamp_us();
-    snprintf(out, cap, "%s/%s%lld_%06ld%s",
-             dir,
-             WALLET_BACKUP_FILENAME_PREFIX,
-             (long long)(now_us / 1000000LL),
-             (long)(now_us % 1000000LL),
-             WALLET_BACKUP_FILENAME_SUFFIX);
+    int n = snprintf(out, cap, "%s/%s%lld_%06ld%s", dir,
+                     WALLET_BACKUP_FILENAME_PREFIX,
+                     (long long)(now_us / 1000000LL),
+                     (long)(now_us % 1000000LL),
+                     WALLET_BACKUP_FILENAME_SUFFIX);
+    if (n < 0 || (size_t)n >= cap)
+        return ZCL_ERR(-1, "backup path is too long");
+    if (result_out && ((size_t)n >= result_cap))
+        return ZCL_ERR(-1, "backup output path buffer is too small");
+    return ZCL_OK;
+}
+
+static struct zcl_result wbs_admit_backup_run(
+    const char *backup_dir, const struct node_db *db,
+    char *dst_path, size_t dst_path_cap,
+    const char *result_out, size_t result_cap)
+{
+    if (!backup_dir || !db || !db->open || !db->db)
+        return ZCL_ERR(-1, "null arg or db not open");
+    return wbs_build_backup_path(backup_dir, dst_path, dst_path_cap,
+                                 result_out, result_cap);
 }
 
 /* ── Core primitive ─────────────────────────────────────────── */
@@ -188,8 +206,11 @@ struct zcl_result wbs_run_once_impl(const char *backup_dir,
     if (out_path && out_path_cap) out_path[0] = '\0';
     if (out_key_count) *out_key_count = -1;
 
-    if (!backup_dir || !db || !db->open || !db->db)
-        WBS_FAIL(err_out, err_cap, -1, "null arg or db not open");
+    char dst_path[640];
+    struct zcl_result admission = wbs_admit_backup_run(
+        backup_dir, db, dst_path, sizeof(dst_path), out_path, out_path_cap);
+    if (!admission.ok)
+        WBS_FAIL(err_out, err_cap, admission.code, "%s", admission.message);
 
     struct zcl_result dir_r = wbs_ensure_backup_dir(backup_dir);
     if (!dir_r.ok)
@@ -210,9 +231,6 @@ struct zcl_result wbs_run_once_impl(const char *backup_dir,
      * "file::memory:?cache=shared" form only if the caller opened
      * it with a real filename. Here we simply require a disk file
      * — tests that want to exercise the primitive use a tmpdir. */
-
-    char dst_path[640];
-    wbs_build_backup_path(backup_dir, dst_path, sizeof(dst_path));
 
     /* Open dst, ATTACH source, CREATE TABLE AS SELECT per wallet table,
      * write the per-table manifest, DETACH, close — all inside the adapter.
@@ -308,7 +326,8 @@ struct zcl_result wbs_run_once_impl(const char *backup_dir,
                 dst_path, (long long)bytes, (long long)dst_key_count,
                 verified, missing[0] ? missing : "none");
 
-    if (out_path) snprintf(out_path, out_path_cap, "%s", dst_path);
+    if (out_path)
+        memcpy(out_path, dst_path, strlen(dst_path) + 1);
     if (out_key_count) *out_key_count = dst_key_count;
 
     return ZCL_OK;
