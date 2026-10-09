@@ -319,4 +319,110 @@ ENGINE_PROMPT_TEMPLATE(c23-resource-owner, judging,
     "release. Observe release counts and leaks separately; existing assertions "
     "are not proof. Record exact source/group or NOTRUN.")
 
+
+/* ── c23-telemetry-field ─────────────────────────────────────────────────
+ * One field in its owning fill function; an absent source is unavailable,
+ * never zero. Catalog C376 C377 C380 C386 C394 C400. */
+ENGINE_PROMPT_TEMPLATE(c23-telemetry-field, rules,
+    "Implement a C23 telemetry field. Inputs required in the task: owning "
+    "domain, source of truth, field name and unit, absent-source reasons, "
+    "registered group. If one is absent, report the missing input before "
+    "proposing code. A field reports state; it grants no authority.")
+ENGINE_PROMPT_TEMPLATE(c23-telemetry-field, task,
+    "Reuse first: inspect contexts/commons/services/src/zcode_telemetry_fill.c "
+    "(zcode_dump_state_fill). Procedure: read the source once without "
+    "blocking; switch over every source result; set the leaf with its "
+    "source class when present; mark closed sources not-applicable and "
+    "unreadable ones unavailable with a static reason token; register the "
+    "field in the domain table.")
+ENGINE_PROMPT_TEMPLATE(c23-telemetry-field, protocol,
+    "Never publish zero, false or an empty string for an unknown source. "
+    "Use trylock, never a blocking acquire, in a dump path. Do not change "
+    "the source's owner, locking, existing field names or completeness "
+    "semantics, and do not export secrets or request text as values.")
+ENGINE_PROMPT_TEMPLATE(c23-telemetry-field, judging,
+    "Through the real fill caller, assert the exact emitted value for a "
+    "fixture state, the unavailable leaf and reason for every absent-source "
+    "result, and that completeness reflects it. Record the exact focused "
+    "group and source identity, or NOTRUN honestly.")
+
+/* ── c23-controller-route ────────────────────────────────────────────────
+ * Validate, delegate to one service, escape and bound. Catalog C176 C177
+ * C178 C185 C194 C196. */
+ENGINE_PROMPT_TEMPLATE(c23-controller-route, rules,
+    "Implement a thin C23 controller route. Inputs required in the task: "
+    "owned route, parameter grammar, delegate service, response contract, "
+    "registered group. If one is absent, report the missing input before "
+    "proposing code. A route renders a decision; it never makes one.")
+ENGINE_PROMPT_TEMPLATE(c23-controller-route, task,
+    "Reuse first: inspect contexts/messaging/controllers/src/"
+    "board_site_controller.c (board_site_handle_request, bs_handle_room). "
+    "Procedure: bound and copy the path segment; validate it before any "
+    "store or filesystem access; call one existing service; escape every "
+    "dynamic field with html_escape; bound the body; emit the refusal "
+    "status and text the service returned, never a generic success.")
+ENGINE_PROMPT_TEMPLATE(c23-controller-route, protocol,
+    "Keep policy branches, SQL and mutation in the service owner; the "
+    "controller only maps result to response. Do not widen the mounted "
+    "prefix, method set or public fields. Never render host paths, keys "
+    "or credentials, and never read an absent value as zero or success.")
+ENGINE_PROMPT_TEMPLATE(c23-controller-route, judging,
+    "Call the real request handler with valid, empty, over-long, malformed "
+    "and script-or-quote inputs. Assert status, escaped bytes, bounded "
+    "size, refusal text and unchanged state on rejection. Policy belongs "
+    "in a service fixture. Record exact group and source identity, or NOTRUN.")
+
+/* ── c23-source-generator ────────────────────────────────────────────────
+ * Preview and write from one slice builder; refuse collisions. Catalog
+ * C401-C406. */
+ENGINE_PROMPT_TEMPLATE(c23-source-generator, rules,
+    "Implement a native C23 source generator. Inputs required in the task: "
+    "owned source owner, declared slice, destination paths, registered "
+    "group, verifier route. If one is absent, report the missing input "
+    "before proposing code. Output must be ordinary reviewable C23.")
+ENGINE_PROMPT_TEMPLATE(c23-source-generator, task,
+    "Reuse first: inspect tools/dev/devloop_app_scaffold.c "
+    "(zcl_devloop_app_scaffold_json) and the slice it consumes, "
+    "tools/dev/devloop_app_slice.c (zcl_devloop_app_slice_build). "
+    "Procedure: build the slice once; classify every destination read-only; "
+    "refuse on any differing existing file before writing; write each file "
+    "by temp file and rename; leave identical files untouched; report "
+    "written and unchanged counts.")
+ENGINE_PROMPT_TEMPLATE(c23-source-generator, protocol,
+    "The preview and the writer must share one slice builder; never keep a "
+    "second description of the bytes. Never overwrite existing files, "
+    "emit into protected consensus paths, spawn a shell, or add a runtime "
+    "template dependency to the output. Register through existing catalogs.")
+ENGINE_PROMPT_TEMPLATE(c23-source-generator, judging,
+    "In a scratch checkout, call the real scaffold entry. Assert collision "
+    "refusal leaves existing bytes unchanged, written files equal the planned "
+    "bytes, and a second run changes nothing. Assert the catalog row and "
+    "compile. Record the exact group and source identity, or NOTRUN.")
+
+/* ── c23-registry-entry ──────────────────────────────────────────────────
+ * One entry in its owning .def, with a rejection fixture. Catalog C451
+ * C452 C474 C475. */
+ENGINE_PROMPT_TEMPLATE(c23-registry-entry, rules,
+    "Implement one C23 registry entry. Inputs required in the task: owned "
+    "registry .def, entry fields, validator or loader, rejection fixture, "
+    "registered group. If one is absent, report the missing input before "
+    "proposing code. An entry names behavior; it grants no authority.")
+ENGINE_PROMPT_TEMPLATE(c23-registry-entry, task,
+    "Reuse first: inspect engine/modules/kernel/src/command_registry_validate.c "
+    "(zcl_command_registry_validate) and the owned engine/composition/"
+    "commands/*.def. Procedure: add or change exactly one entry in its owning "
+    ".def; keep its path, aliases and parent unique and resolvable; extend the "
+    "validator only for a rule it lacks; regenerate references through "
+    "canonical targets; never hand-edit generated output.")
+ENGINE_PROMPT_TEMPLATE(c23-registry-entry, protocol,
+    "Keep one owner per entry; do not copy it into a second table. Do not "
+    "widen risk, authority, lane or transport to make validation pass. "
+    "Preserve every currently accepted name and alias unless the task names "
+    "its removal. Fix a dangling reference at its source, not by a skip.")
+ENGINE_PROMPT_TEMPLATE(c23-registry-entry, judging,
+    "Assert the real catalog validates, then a fixture registry with a "
+    "duplicate, a dangling alias or parent, and a missing field is refused "
+    "with an explanatory reason (see test_command_registry_catalog.c). "
+    "Record the exact group and source identity; mark unrun stages NOTRUN.")
+
 /* clang-format on */

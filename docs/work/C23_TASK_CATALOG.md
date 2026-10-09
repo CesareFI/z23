@@ -15,7 +15,9 @@ claims follow from this catalog.
 
 The source defines these C23 prompt kinds: `c23-byte-validator`,
 `c23-command-handler`, `c23-model-save`, `c23-regression-fixture`,
-`c23-wire-codec`, `c23-cas-operation`, `c23-service-operation`, and
+`c23-wire-codec`, `c23-cas-operation`, `c23-service-operation`,
+`c23-telemetry-field`, `c23-controller-route`, `c23-source-generator`,
+`c23-registry-entry`, and
 `c23-resource-owner`. Existing kinds `fix-gate`,
 `add-test`, `port-arm`, `doc-claim`, and `review` remain. Rows marked
 `PROPOSED:<family>` still need a procedure; they are not dispatchable kinds.
@@ -337,16 +339,16 @@ Exemplars: `contexts/commons/controllers/src/zcode_site_controller.c`; `contexts
 
 | ID | Task type / inclusion | Kind | Verifier |
 |---|---|---|---|
-| C176 | Add a controller route that delegates policy to one service | PROPOSED:mvc | controller contains no policy branch; service fixture covers decision |
-| C177 | Validate route parameters before opening workspace state | PROPOSED:mvc | malformed route has no filesystem effect |
-| C178 | Escape task-provided text in an HTML result page | PROPOSED:mvc | script and quote fixture render as inert text |
+| C176 | Add a controller route that delegates policy to one service | c23-controller-route | controller contains no policy branch; service fixture covers decision |
+| C177 | Validate route parameters before opening workspace state | c23-controller-route | malformed route has no filesystem effect |
+| C178 | Escape task-provided text in an HTML result page | c23-controller-route | script and quote fixture render as inert text |
 | C179 | Render missing evidence as unknown rather than zero | PROPOSED:mvc | absent-cost fixture shows `UNKNOWN` for each missing measure |
 | C180 | Keep task preview identities visible before run action | PROPOSED:mvc | rendered preview includes task/catalog/action roots |
 | C181 | Add a view for selected template and exact template hash | PROPOSED:mvc | response hash matches service-resolved template bytes |
 | C182 | Render proof status separately from accepted-work status | PROPOSED:mvc | proven-but-unaccepted fixture has distinct labels |
 | C183 | Preserve actionable next step for a blocked work item | PROPOSED:mvc | blocked fixture exposes precise missing precondition |
 | C184 | Add accessible labels for task status and cost measures | PROPOSED:mvc | HTML has associated labels and keyboard-visible controls |
-| C185 | Bound output when a task contains a very long title or description | PROPOSED:mvc | maximum-size fixture is escaped and response remains bounded |
+| C185 | Bound output when a task contains a very long title or description | c23-controller-route | maximum-size fixture is escaped and response remains bounded |
 | C186 | Add pagination to task history using stable exact-root cursor | PROPOSED:mvc | cursor cannot skip/duplicate rows across stable fixture |
 | C187 | Prevent cached view from showing a different candidate's result | PROPOSED:mvc | cache key includes candidate root and policy version |
 | C188 | Distinguish local projection freshness from source-object availability | PROPOSED:mvc | stale projection visibly triggers rebuild/read-through |
@@ -355,9 +357,9 @@ Exemplars: `contexts/commons/controllers/src/zcode_site_controller.c`; `contexts
 | C191 | Add a confirmation view naming exact root before protected commit | PROPOSED:mvc | confirmation root mismatch refuses submission |
 | C192 | Render unavailable platform proof without a success badge | PROPOSED:mvc | unsupported-host fixture labels unavailable explicitly |
 | C193 | Add a responsive narrow-screen layout for work preview | PROPOSED:mvc | static viewport checks keep controls and roots readable |
-| C194 | Keep public page data free of private host and credential fields | PROPOSED:mvc | secret sentinel is absent from rendered response |
+| C194 | Keep public page data free of private host and credential fields | c23-controller-route | secret sentinel is absent from rendered response |
 | C195 | Provide a copyable exact-root control without changing root text | PROPOSED:mvc | copied bytes equal canonical lowercase root |
-| C196 | Preserve typed service error message in controller response | PROPOSED:mvc | injected refusal is not rewritten as generic success |
+| C196 | Preserve typed service error message in controller response | c23-controller-route | injected refusal is not rewritten as generic success |
 | C197 | Add view pagination empty-state that does not imply global absence | PROPOSED:mvc | empty local board explicitly states local scope |
 | C198 | Make a view refresh rebuild only derived projection data | PROPOSED:mvc | immutable receipts remain byte-identical after refresh |
 | C199 | Add a task compare view keyed by same task and different candidates | PROPOSED:mvc | cross-task candidates cannot be compared as matched pair |
@@ -593,17 +595,17 @@ Exemplars: `engine/modules/metrics/src/metrics.c`; `contexts/commons/services/sr
 
 | ID | Task type / inclusion | Kind | Verifier |
 |---|---|---|---|
-| C376 | Add a diagnostic field derived from verified runtime state | PROPOSED:telemetry | fixture state and emitted field agree exactly |
-| C377 | Mark missing telemetry as unknown rather than numeric zero | PROPOSED:telemetry | absent source produces explicit unknown state |
+| C376 | Add a diagnostic field derived from verified runtime state | c23-telemetry-field | fixture state and emitted field agree exactly |
+| C377 | Mark missing telemetry as unknown rather than numeric zero | c23-telemetry-field | absent source produces explicit unknown state |
 | C378 | Bind telemetry sample to host, time window, and source root | PROPOSED:telemetry | sample without any identity field is rejected |
 | C379 | Prevent counters from wrapping silently at integer maximum | PROPOSED:telemetry | near-limit increment saturates or errors per contract |
-| C380 | Add bounded cardinality labels to a runtime metric | PROPOSED:telemetry | arbitrary task text cannot create unbounded label values |
+| C380 | Add bounded cardinality labels to a runtime metric | c23-telemetry-field | arbitrary task text cannot create unbounded label values |
 | C381 | Keep model token usage separate from currency cost | PROPOSED:telemetry | report fields never label tokens as spend |
 | C382 | Attribute review and repair effort to the original task root | PROPOSED:telemetry | linked attempt graph includes review and repair rows |
 | C383 | Avoid double counting shared-root attempts in rollup | PROPOSED:telemetry | duplicate event fixture contributes once under rule |
 | C384 | Report partial-day metrics with explicit observation interval | PROPOSED:telemetry | truncated window is not labeled a full-day total |
 | C385 | Add schema version and migration for telemetry event | PROPOSED:telemetry | old/new records decode with explicit version handling |
-| C386 | Exclude secret-bearing request fields from telemetry payload | PROPOSED:telemetry | sentinel is absent after full serialization |
+| C386 | Exclude secret-bearing request fields from telemetry payload | c23-telemetry-field | sentinel is absent after full serialization |
 | C387 | Preserve event signer identity alongside immutable result root | PROPOSED:telemetry | unsigned or mismatched signer row is not accepted as evidence |
 | C388 | Distinguish attempted, failed, reviewed, accepted, and landed outcomes | PROPOSED:telemetry | one fixture produces distinct stage counts |
 | C389 | Make latency measure identify start/stop event definitions | PROPOSED:telemetry | synthetic event pair calculates declared interval only |
@@ -611,13 +613,13 @@ Exemplars: `engine/modules/metrics/src/metrics.c`; `contexts/commons/services/sr
 | C391 | Add deterministic export of telemetry rows by exact root | PROPOSED:telemetry | repeated export has stable ordering and bytes |
 | C392 | Refuse to combine records from incompatible accounting schemas | PROPOSED:telemetry | mixed-version input requires explicit conversion |
 | C393 | Keep local observations distinct from replicated signed receipts | PROPOSED:telemetry | local-only event never appears as peer-verified result |
-| C394 | Add anomaly flag for impossible negative duration or token count | PROPOSED:telemetry | malformed measurement is quarantined from rollup |
+| C394 | Add anomaly flag for impossible negative duration or token count | c23-telemetry-field | malformed measurement is quarantined from rollup |
 | C395 | Recompute rollup from immutable input records after crash | PROPOSED:telemetry | rebuild is deterministic and matches saved projection |
 | C396 | Add audit trail for metric correction without rewriting old event | PROPOSED:telemetry | correction links prior root and preserves original bytes |
 | C397 | Report exact sample size and excluded-record count per metric | PROPOSED:telemetry | denominator fixture matches hand-calculated inclusion set |
 | C398 | Bound metrics response size under large fleet membership | PROPOSED:telemetry | maximum-node fixture stays within response cap |
 | C399 | Verify dashboard values against canonical read-only command output | PROPOSED:telemetry | view fields match same-window command evidence |
-| C400 | Add a forecast refusal reason when duration history is absent | PROPOSED:telemetry | no linked duration yields unknown forecast with reason |
+| C400 | Add a forecast refusal reason when duration history is absent | c23-telemetry-field | no linked duration yields unknown forecast with reason |
 
 ### C401–C425: build system, test registration, and native generator
 
@@ -625,12 +627,12 @@ Exemplars: `tools/dev/devloop_app_slice.c`; `tools/dev/devloop_app_scaffold.c`.
 
 | ID | Task type / inclusion | Kind | Verifier |
 |---|---|---|---|
-| C401 | Add a typed source-slice preview for a recurring native C23 change | PROPOSED:generator | preview names exact files and registered verifier route |
-| C402 | Make generator refuse a destination file collision | PROPOSED:generator | existing bytes survive collision unchanged |
-| C403 | Ensure preview bytes equal materialized bytes | PROPOSED:generator | hash of preview equals resulting file bytes |
-| C404 | Add idempotency for repeated scaffold materialization | PROPOSED:generator | second run changes no bytes or timestamps unnecessarily |
-| C405 | Generate test-group registration with matching source fixture | PROPOSED:generator | catalog lists group and runner executes generated test |
-| C406 | Keep generated output ordinary reviewable C23 source | PROPOSED:generator | no runtime template dependency appears in output |
+| C401 | Add a typed source-slice preview for a recurring native C23 change | c23-source-generator | preview names exact files and registered verifier route |
+| C402 | Make generator refuse a destination file collision | c23-source-generator | existing bytes survive collision unchanged |
+| C403 | Ensure preview bytes equal materialized bytes | c23-source-generator | hash of preview equals resulting file bytes |
+| C404 | Add idempotency for repeated scaffold materialization | c23-source-generator | second run changes no bytes or timestamps unnecessarily |
+| C405 | Generate test-group registration with matching source fixture | c23-source-generator | catalog lists group and runner executes generated test |
+| C406 | Keep generated output ordinary reviewable C23 source | c23-source-generator | no runtime template dependency appears in output |
 | C407 | Add model/service/test scaffold under existing MVC owners | PROPOSED:generator | generated save lifecycle, result handling, and test compile |
 | C408 | Add native command scaffold with schema and failure response | PROPOSED:generator | navigator lists leaf and malformed request refuses clearly |
 | C409 | Add parser boundary scaffold with cap and overflow checks | PROPOSED:generator | generated cases cover zero, max, and over-limit |
@@ -689,8 +691,8 @@ Exemplars: `engine/composition/commands/zcode.def`; `engine/composition/roles.de
 
 | ID | Task type / inclusion | Kind | Verifier |
 |---|---|---|---|
-| C451 | Add a command registry leaf without duplicate canonical name | PROPOSED:registry | catalog parser accepts one unique leaf |
-| C452 | Validate alias target exists and resolves to same behavior | PROPOSED:registry | dangling alias fails lint; valid alias schema matches |
+| C451 | Add a command registry leaf without duplicate canonical name | c23-registry-entry | catalog parser accepts one unique leaf |
+| C452 | Validate alias target exists and resolves to same behavior | c23-registry-entry | dangling alias fails lint; valid alias schema matches |
 | C453 | Add a configuration key with explicit default and validation | PROPOSED:registry | absent/default/invalid inputs produce documented values |
 | C454 | Reject unknown configuration enum instead of silently defaulting | PROPOSED:registry | typo fixture returns explanatory refusal |
 | C455 | Make configuration reload atomic across dependent settings | PROPOSED:registry | invalid second setting leaves prior config intact |
@@ -712,8 +714,8 @@ Exemplars: `engine/composition/commands/zcode.def`; `engine/composition/roles.de
 | C471 | Add compile-time assertion for wire and struct size contract | PROPOSED:registry | strict C23 build catches deliberate size mutation |
 | C472 | Replace unchecked narrowing cast at configuration boundary | PROPOSED:registry | signed and width boundary fixtures are exact |
 | C473 | Keep API response version explicit during schema evolution | PROPOSED:registry | old client fixture sees supported version behavior |
-| C474 | Add a deprecation path that preserves current accepted behavior | PROPOSED:registry | old alias warns and still maps to documented target |
-| C475 | Remove an obsolete registry entry after caller and test audit | PROPOSED:registry | navigator references are absent and replacement route passes |
+| C474 | Add a deprecation path that preserves current accepted behavior | c23-registry-entry | old alias warns and still maps to documented target |
+| C475 | Remove an obsolete registry entry after caller and test audit | c23-registry-entry | navigator references are absent and replacement route passes |
 
 ### C476–C500: distributed work identity, replication and recovery
 
