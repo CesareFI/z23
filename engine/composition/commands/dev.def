@@ -2224,6 +2224,30 @@ ZCL_COMMAND_DEV_COMMAND(
     "agent mail is a development-lane coordination surface",
     "z23-dev dev agent mail")
 
+/* ── dev.agent.mail.wait ───────────────────────────────────────────────────
+ * Bounded blocking companion of dev.agent.mail pull
+ * (tools/command/native_devagent_mail_wait.c). */
+ZCL_COMMAND_DEV_READ(
+    "dev.agent.mail.wait", "dev.agent", "",
+    "Wait for the next matching agent mail row after a cursor",
+    "Blocks up to timeout_ms for a mail row newer than since that matches "
+    "the to, ref, from and kind filters of dev.agent.mail pull, then "
+    "returns the same page and next_since token pull would; following "
+    "next_since never repeats a row. On timeout it returns a typed "
+    "WAIT_TIMEOUT failure carrying the unchanged since. It wakes on mail "
+    "directory changes, re-checks at least every 2 seconds, never posts and "
+    "never acks.", 32768,
+    "agent,mail,wait,cursor,fleet", "zcl.agent_mail_wait_input.v1",
+    "zcl.agent_mail.v1", "since,to,ref,from,kind,timeout_ms", "since",
+    "z23 dev agent mail wait --since=0 --to=me --timeout_ms=30000",
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_PERSISTENT, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_agent_mail_wait,
+    "agent mail waiting is a development-lane coordination surface",
+    "z23-dev dev agent mail wait")
+
 /* ── dev.beta6 ─────────────────────────────────────────────────────────────
  * Preflight for the optional beta6 bootstrap-snapshot server
  * (engine/services/src/beta6_bootstrap_serve.c, docs/BOOTSTRAPPING.md). */

@@ -74,14 +74,14 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 899 |
+| Registry entries (branches + leaves) | 900 |
 | Top-level roots | 14 |
 | Branches | 199 |
-| Leaves (dispatchable command paths) | 700 |
+| Leaves (dispatchable command paths) | 701 |
 | … `ready` (live handler in this build) | 617 |
-| … `compat` (metadata only, names a fallback) | 53 |
+| … `compat` (metadata only, names a fallback) | 54 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
-| … dev-gated 🔧 (`ready` only in `z23-dev`) | 52 |
+| … dev-gated 🔧 (`ready` only in `z23-dev`) | 53 |
 | Leaves with `effect=mutate` | 257 |
 | Leaves with `effect=destructive` | 6 |
 | Leaves requiring **owner** authority | 131 |
@@ -96,7 +96,7 @@ Per source file:
 | `engine/composition/commands/app_features.def` | 75 | 20 | 55 |
 | `engine/composition/commands/store.def` | 19 | 0 | 19 |
 | `engine/composition/commands/ops.def` | 59 | 11 | 48 |
-| `engine/composition/commands/dev.def` | 115 | 22 | 93 |
+| `engine/composition/commands/dev.def` | 116 | 22 | 94 |
 | `engine/composition/commands/code.def` | 33 | 4 | 29 |
 | `engine/composition/commands/accounts.def` | 11 | 2 | 9 |
 | `engine/composition/commands/vault.def` | 24 | 4 | 20 |
@@ -855,6 +855,7 @@ represented by its children's sections.
 | `dev agent worker` | compat 🔧 → `z23-dev dev agent worker` | mutate / dev-mutation / operator · foreground/moderate | **`action`**, `worker`, `session`, `model`, `deadline_s`, `idle_start_s`, `idle_limit_s`, `max_jobs`, `time_cap_s`, `cpu_s`, `mem_mb`, `token_cap` | `zcl.agent_worker.v1` | `z23 dev agent worker status --worker=resident-a` | Consume the unit queue continuously with a bounded resident worker — *the resident worker is a development-lane coordination surface* |
 | `dev agent receive` | compat 🔧 → `z23-dev dev agent receive` | mutate / dev-mutation / operator · foreground/low | **`action`**, `receiver`, `workspace`, `deadline_s`, `wait_ms`, `max_beats`, `ref`, `from`, `sender_binding`, `body`, `to` | `zcl.agent_receive.v1` | `z23 dev agent receive status --receiver=box-a` | Turn directives arriving in this box's agent mail into queued work — *the resident receiver is a development-lane coordination surface* |
 | `dev agent mail` | compat 🔧 → `z23-dev dev agent mail` | mutate / dev-mutation / operator · fast/low | **`action`**, `to`, `kind`, `body`, `since`, `from`, **`cursor`**, `agent`, `ref`, `sender_binding`, `cwd` | `zcl.agent_mail.v1` | `z23 dev agent mail post --to=* --kind=note --body=hello` | Post, pull, and ack async agent mail without blocking — *agent mail is a development-lane coordination surface* |
+| `dev agent mail wait` | compat 🔧 → `z23-dev dev agent mail wait` | read / read / operator · persistent/low | **`since`**, `to`, `ref`, `from`, `kind`, `timeout_ms` | `zcl.agent_mail.v1` | `z23 dev agent mail wait --since=0 --to=me --timeout_ms=30000` | Wait for the next matching agent mail row after a cursor — *agent mail waiting is a development-lane coordination surface* |
 
 #### `dev.lane` — Agent worktree with independent inodes
 
@@ -1962,6 +1963,7 @@ promise the same document shape.
 | `zcl.dev_hotswap.v1` | `dev.hotswap.apply`, `dev.hotswap.probe` |
 | `zcl.dev_loop_status.v1` | `dev.loop.ensure`, `dev.loop.status`, `dev.loop.stop` |
 | `zcl.dev_proof_status.v1` | `dev.proof.ensure`, `dev.proof.step`, `dev.proof.retry`, `dev.proof.status`, `dev.proof.wait` |
+| `zcl.agent_mail.v1` | `dev.agent.mail`, `dev.agent.mail.wait` |
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
 | `zcl.zcode_workspace_verify.v1` | `zcode.workspace.verify`, `zcode.workspace.show` |

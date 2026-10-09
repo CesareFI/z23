@@ -2607,6 +2607,11 @@ void zcl_native_handle_dev_agent_queue(
 void zcl_native_handle_dev_agent_mail(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* dev.agent.mail.wait — bounded blocking pull
+ * (tools/command/native_devagent_mail_wait.c). */
+void zcl_native_handle_dev_agent_mail_wait(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 /* dev.agent.worker — resident dev-only queue consumer
  * (tools/command/native_devagent_worker.c). Same one-handler-per-file
  * shape as the lane-discipline leaves above. */
