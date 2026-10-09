@@ -53,25 +53,34 @@
  *
  * OUTPUT. reply data gains "usage": {usage_log, files, lines, usage_lines,
  * malformed (a physical line containing NUL or invalid UTF-8, or a line
- * mentioning usage that is not one JSON object),
+ * mentioning usage that is not one JSON object), skipped_lines (= malformed),
+ * oversized_lines (a line over DVU_MAX_LINE bytes: counted, never parsed),
  * unreadable, unkeyed, events (distinct ids kept), duplicate_lines,
- * truncated, by_model:[{format, model, input_includes_cache_read, events,
+ * truncated, by_model:[{format, model, input_includes_cache_read, events, requests,
  * <counters>, unreported:{...}}], hours_total, by_hour: newest
- * DVU_MAX_HOURS {hour, format, model, events, <counters>, unreported:{...}},
+ * DVU_MAX_HOURS within DVU_HOUR_BYTES {hour, format, model, events, <counters>,
+ * unreported:{...}}, by_hour_truncated (true exactly when hours_total exceeds
+ * the rows emitted),
  * runs_total, runs_unkeyed, by_run_truncated, by_run:[{format, session,
  * agent, agent_type, sidechain, model, events, <counters>,
  * unreported:{...}}]}.
+ *   by_model is the aggregate and is always complete; requests is its count of
+ *           distinct message or record ids (Muse and Claude; absent for Codex,
+ *           whose events are generations). by_hour and by_run are detail,
+ *           cut at their byte budgets with an explicit *_truncated flag.
+
  *   by_run: Claude events only, grouped by (sessionId, agentId, model,
  *           attributionAgent, isSidechain) so a delegated run is a countable
  *           attempt and differing agent_type or sidechain never merge;
  *           agent is "" for the lead thread and agent_type "" when
  *           attributionAgent is absent. Rows are ordered by that key; at
- *           most DVU_MAX_RUNS are emitted while runs_total stays the true group count.
+ *           most DVU_MAX_RUNS rows within DVU_RUN_BYTES are emitted while
+ *           runs_total stays the true group count.
  *   runs_total: the number of distinct run-key groups.
  *   runs_unkeyed: kept Claude events in no run row, because the line has no
  *           sessionId or a session, agent or agent_type over 128 bytes.
  *   by_run_truncated: true exactly when runs_total exceeds the by_run rows
- *           emitted (DVU_MAX_RUNS).
+ *           emitted (DVU_MAX_RUNS or DVU_RUN_BYTES).
  *
  * FAILURE. usage_log present but not a nonempty UTF-8 string is BAD_INPUT; a path
  * that does not exist is USAGE_LOG_NOT_FOUND; one that is neither a file
@@ -127,6 +136,11 @@ void dvu_test_set_ops(const struct dvu_test_ops *ops)
 #define DVU_MAX_EVENTS 1000000u
 #define DVU_MAX_HOURS 48u
 #define DVU_MAX_RUNS 256u
+#define DVU_MAX_LINE (16u << 20)
+/* Detail rows are serialized against these byte budgets after the per-model
+ * totals, so a large log never pushes the reply past the leaf budget. */
+#define DVU_HOUR_BYTES 6144u
+#define DVU_RUN_BYTES 8192u
 #define DVU_RUN_STR_MAX 128u
 #define DVU_HOUR_LEN 13u /* YYYY-MM-DDTHH */
 #define DVU_PATH_MAX 4096u
@@ -187,6 +201,7 @@ struct dvu_scan {
     int64_t lines;
     int64_t usage_lines;
     int64_t malformed;
+    int64_t oversized;
     int64_t unreadable;
     int64_t unkeyed;
     bool truncated;
@@ -479,20 +494,26 @@ static void dvu_codex_meta(struct dvu_scan *s, char codex_id[300],
     memcpy(codex_id, id, sizeof(id));
 }
 
-static void dvu_malformed(struct dvu_scan *s, char codex_id[300])
+/* A line that cannot be read as one record; it also breaks an active Codex
+ * namespace. */
+static void dvu_skipped(struct dvu_scan *s, char codex_id[300], int64_t *count)
 {
-    s->malformed++;
+    (*count)++;
     if (codex_id[0])
         s->conflict = true;
     codex_id[0] = 0;
 }
 
 static void dvu_line(struct dvu_scan *s, char codex_id[300], const char *line,
-                      size_t len)
+                     size_t len, bool oversized)
 {
     s->lines++;
+    if (oversized) {
+        dvu_skipped(s, codex_id, &s->oversized);
+        return;
+    }
     if (memchr(line, 0, len) || !zutf8_validate_n(line, len)) {
-        dvu_malformed(s, codex_id);
+        dvu_skipped(s, codex_id, &s->malformed);
         return;
     }
     if (!codex_id[0] && !strstr(line, "\"usage\"") && !strstr(line, "\"token_count\"") &&
@@ -501,7 +522,7 @@ static void dvu_line(struct dvu_scan *s, char codex_id[300], const char *line,
     struct json_value row;
     json_init(&row);
     if (!json_read(&row, line, len) || row.type != JSON_OBJ) {
-        dvu_malformed(s, codex_id);
+        dvu_skipped(s, codex_id, &s->malformed);
         json_free(&row);
         return;
     }
@@ -522,13 +543,15 @@ struct dvu_linebuf {
     char *buf;
     size_t len;
     size_t cap;
+    bool over; /* the line passed DVU_MAX_LINE; the excess is dropped */
 };
 
 static bool dvu_next_line(FILE *fp, struct dvu_linebuf *lb, bool *oom)
 {
     lb->len = 0;
+    lb->over = false;
     for (;;) {
-        if (lb->cap - lb->len < 4096u) {
+        if (lb->len < DVU_MAX_LINE && lb->cap - lb->len < 4096u) {
             if (lb->cap > SIZE_MAX / 2u) {
                 *oom = true;
                 return false;
@@ -544,7 +567,13 @@ static bool dvu_next_line(FILE *fp, struct dvu_linebuf *lb, bool *oom)
         }
         int c = fgetc(fp);
         if (c == EOF)
-            return lb->len > 0;
+            return lb->len > 0 || lb->over;
+        if (c == '\n' && lb->over)
+            return true;
+        if (lb->len >= DVU_MAX_LINE) {
+            lb->over = true;
+            continue;
+        }
         lb->buf[lb->len++] = (char)c;
         lb->buf[lb->len] = 0;
         if (c == '\n')
@@ -567,7 +596,7 @@ static void dvu_read_file(struct dvu_scan *s, const char *path)
     struct dvu_linebuf lb = {0};
     char codex_id[300] = {0};
     while (!s->alloc_failed && dvu_next_line(fp, &lb, &s->alloc_failed))
-        dvu_line(s, codex_id, lb.buf, lb.len);
+        dvu_line(s, codex_id, lb.buf, lb.len, lb.over);
     if (ferror(fp))
         s->unreadable++;
     free(lb.buf);
@@ -815,6 +844,16 @@ static bool dvu_push_group_head(struct json_value *row, const struct dvu_event *
                            ? "session_cumulative_latest" : "event_latest");
 }
 
+/* Whether one more row fits the byte budget; counts the array comma. */
+static bool dvu_fits(const struct json_value *row, size_t *used, size_t cap)
+{
+    size_t n = json_write(row, NULL, 0) + 1u;
+    if (n > cap - *used)
+        return false;
+    *used += n;
+    return true;
+}
+
 static bool dvu_push_by_model(struct json_value *usage, struct dvu_scan *s)
 {
     struct json_value arr;
@@ -839,12 +878,30 @@ static bool dvu_push_by_model(struct json_value *usage, struct dvu_scan *s)
         ok = dvu_push_group_head(&row, &s->ev[i]) &&
              json_push_kv_bool(&row, "input_includes_cache_read",
                                s->ev[i].format != DVU_CLAUDE) &&
-             dvu_push_sum(&row, &t, true) && dvu_json_back(&arr, &row);
+             dvu_push_sum(&row, &t, true) &&
+             (s->ev[i].format == DVU_CODEX ||
+              json_push_kv_int(&row, "requests", t.events)) &&
+             dvu_json_back(&arr, &row);
         json_free(&row);
         i = j;
     }
     ok = ok && dvu_json_kv(usage, "by_model", &arr);
     json_free(&arr);
+    return ok;
+}
+
+/* Appends the row when it fits the budget; *fit says whether it did. */
+static bool dvu_push_hour_row(struct json_value *arr, const struct dvu_event *e,
+                              const struct dvu_sum *t, size_t *used, bool *fit)
+{
+    struct json_value row;
+    json_init(&row);
+    json_set_object(&row);
+    bool ok = dvu_json_str(&row, "hour", e->hour) &&
+              dvu_push_group_head(&row, e) && dvu_push_sum(&row, t, true);
+    *fit = ok && dvu_fits(&row, used, DVU_HOUR_BYTES);
+    ok = ok && (!*fit || dvu_json_back(arr, &row));
+    json_free(&row);
     return ok;
 }
 
@@ -856,7 +913,8 @@ static bool dvu_push_by_hour(struct json_value *usage, struct dvu_scan *s)
     if (s->n > 1)
         qsort(s->ev, s->n, sizeof(*s->ev), dvu_cmp_hour);
     int64_t groups = 0;
-    bool ok = true;
+    size_t emitted = 0, used = 0;
+    bool full = false, ok = true;
     for (size_t i = 0; ok && i < s->n;) {
         struct dvu_sum t;
         memset(&t, 0, sizeof(t));
@@ -867,18 +925,17 @@ static bool dvu_push_by_hour(struct json_value *usage, struct dvu_scan *s)
             s->sum_overflow = true;
             break;
         }
-        if ((size_t)groups++ < DVU_MAX_HOURS) {
-            struct json_value row;
-            json_init(&row);
-            json_set_object(&row);
-            ok = dvu_json_str(&row, "hour", s->ev[i].hour) &&
-                 dvu_push_group_head(&row, &s->ev[i]) &&
-                 dvu_push_sum(&row, &t, true) && dvu_json_back(&arr, &row);
-            json_free(&row);
+        groups++;
+        if (!full && emitted < DVU_MAX_HOURS) {
+            bool fit = false;
+            ok = dvu_push_hour_row(&arr, &s->ev[i], &t, &used, &fit);
+            full = !fit;
+            emitted += fit;
         }
         i = j;
     }
     ok = ok && json_push_kv_int(usage, "hours_total", groups) &&
+         json_push_kv_bool(usage, "by_hour_truncated", (size_t)groups > emitted) &&
          dvu_json_kv(usage, "by_hour", &arr);
     json_free(&arr);
     return ok;
@@ -911,8 +968,9 @@ static int dvu_cmp_run(const void *a, const void *b)
     return dvu_cmp_run_key(a, b);
 }
 
+/* Appends the row when it fits the budget; *fit says whether it did. */
 static bool dvu_push_run_row(struct json_value *arr, const struct dvu_event *e,
-                             const struct dvu_sum *t)
+                             const struct dvu_sum *t, size_t *used, bool *fit)
 {
     struct json_value row;
     json_init(&row);
@@ -923,7 +981,9 @@ static bool dvu_push_run_row(struct json_value *arr, const struct dvu_event *e,
               dvu_json_str(&row, "agent_type", e->agent_type) &&
               json_push_kv_bool(&row, "sidechain", e->sidechain) &&
               dvu_json_str(&row, "model", e->model) &&
-              dvu_push_sum(&row, t, true) && dvu_json_back(arr, &row);
+              dvu_push_sum(&row, t, true);
+    *fit = ok && dvu_fits(&row, used, DVU_RUN_BYTES);
+    ok = ok && (!*fit || dvu_json_back(arr, &row));
     json_free(&row);
     return ok;
 }
@@ -946,7 +1006,8 @@ static bool dvu_push_by_run(struct json_value *usage, struct dvu_scan *s)
     if (s->n > 1)
         qsort(s->ev, s->n, sizeof(*s->ev), dvu_cmp_run);
     int64_t groups = 0;
-    bool ok = true;
+    size_t emitted = 0, used = 0;
+    bool full = false, ok = true;
     for (size_t i = 0; ok && i < s->n;) {
         size_t j = i;
         struct dvu_sum t;
@@ -957,15 +1018,21 @@ static bool dvu_push_by_run(struct json_value *usage, struct dvu_scan *s)
             s->sum_overflow = true;
             break;
         }
-        /* Groups past the bound still count in runs_total. */
-        if (s->ev[i].session && (size_t)groups++ < DVU_MAX_RUNS)
-            ok = dvu_push_run_row(&arr, &s->ev[i], &t);
+        if (s->ev[i].session) {
+            groups++;
+            if (!full && emitted < DVU_MAX_RUNS) {
+                bool fit = false;
+                ok = dvu_push_run_row(&arr, &s->ev[i], &t, &used, &fit);
+                full = !fit;
+                emitted += fit;
+            }
+        }
         i = j;
     }
     ok = ok && json_push_kv_int(usage, "runs_total", groups) &&
          json_push_kv_int(usage, "runs_unkeyed", dvu_runs_unkeyed(s)) &&
          json_push_kv_bool(usage, "by_run_truncated",
-                           groups > (int64_t)DVU_MAX_RUNS) &&
+                           groups > (int64_t)emitted) &&
          dvu_json_kv(usage, "by_run", &arr);
     json_free(&arr);
     return ok;
@@ -985,6 +1052,8 @@ static bool dvu_push_counts(struct json_value *usage, const struct dvu_scan *s,
            json_push_kv_int(usage, "lines", s->lines) &&
            json_push_kv_int(usage, "usage_lines", s->usage_lines) &&
            json_push_kv_int(usage, "malformed", s->malformed) &&
+           json_push_kv_int(usage, "skipped_lines", s->malformed) &&
+           json_push_kv_int(usage, "oversized_lines", s->oversized) &&
            json_push_kv_int(usage, "unreadable", s->unreadable) &&
            json_push_kv_int(usage, "unkeyed", s->unkeyed) &&
            json_push_kv_int(usage, "events", (int64_t)s->n) &&

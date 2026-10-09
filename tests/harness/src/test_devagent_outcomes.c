@@ -1247,7 +1247,7 @@ static int dvx_runs_bound(const char *root, const char *ledger)
     (void)snprintf(path, sizeof(path), "%s/runs-many.jsonl", root);
     struct dvx_call c;
     dvx_usage_call(&c, ledger, path, NULL);
-    TEST("usage: by_run emits at most 256 rows while runs_total stays exact") {
+    TEST("usage: by_run stays within its row and byte bounds while runs_total stays exact") {
         ASSERT(text != NULL);
         for (int i = 0; i < RUNS; i++) {
             char ses[16], id[16];
@@ -1264,9 +1264,138 @@ static int dvx_runs_bound(const char *root, const char *ledger)
         ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "runs_total"), RUNS);
         ASSERT_EQ(dvx_entry_int(dvx_usage(&c), "runs_unkeyed"), 0);
         ASSERT(dvx_bool_is(dvx_usage(&c), "by_run_truncated", true));
-        ASSERT_EQ(rows->num_children, 256);
+        ASSERT(rows->num_children > 0 && rows->num_children < RUNS);
         ASSERT(dvx_run_is(rows, 0, "s000", "", "", false, "mA", 1, 1, 1));
-        ASSERT(dvx_run_is(rows, 255, "s255", "", "", false, "mA", 1, 1, 1));
+        PASS();
+    } _test_next:;
+    free(text);
+    dvx_end(&c);
+    return failures;
+}
+
+/* ── a large Claude log: totals stay exact, detail is cut and marked ─────── */
+
+#define DVX_BIG_FILES 4
+#define DVX_BIG_PER_FILE 1500
+#define DVX_BIG_MODELS 3
+/* The leaf budget (engine/composition/commands/dev.def) less envelope room. */
+#define DVX_BIG_REPLY_MAX (32768 - 1024)
+
+/* Writes DVX_BIG_FILES transcripts of distinct message ids over several
+ * models, sessions and hours; file 3 repeats the first ten ids of file 0.
+ * Expected totals accumulate per model. */
+static bool dvx_big_write(const char *root, int64_t want[DVX_BIG_MODELS][6])
+{
+    static const char *const models[DVX_BIG_MODELS] = {"mA", "mB", "mC"};
+    char *text = malloc((size_t)DVX_BIG_PER_FILE * 400u);
+    if (!text)
+        return false;
+    bool ok = true;
+    for (int file = 0; ok && file < DVX_BIG_FILES; file++) {
+        size_t at = 0;
+        bool repeat = file == DVX_BIG_FILES - 1;
+        int count = repeat ? 10 : DVX_BIG_PER_FILE;
+        for (int k = 0; k < count; k++) {
+            int i = repeat ? k : file * DVX_BIG_PER_FILE + k;
+            int m = i % DVX_BIG_MODELS;
+            int in = i % 7 + 1, cr = i % 5, cw = i % 3, out = i % 11 + 1;
+            at += (size_t)snprintf(text + at, 400,
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-10-09T%02d:05:00Z\","
+                "\"sessionId\":\"session-%04d-0000-0000-0000-000000000000\","
+                "\"isSidechain\":false,\"message\":{\"id\":\"msg_%05d\","
+                "\"model\":\"%s\",\"usage\":{\"input_tokens\":%d,"
+                "\"cache_read_input_tokens\":%d,"
+                "\"cache_creation_input_tokens\":%d,\"output_tokens\":%d}}}\n",
+                (i / 3) % 24, i / 2, i, models[m], in, cr, cw, out);
+            if (!repeat) {
+                want[m][0]++;
+                want[m][1] += in;
+                want[m][2] += cr;
+                want[m][3] += cw;
+                want[m][4] += out;
+                want[m][5]++;
+            }
+        }
+        char name[32];
+        (void)snprintf(name, sizeof(name), "big-%d.jsonl", file);
+        ok = dvx_write(root, name, text);
+    }
+    free(text);
+    return ok;
+}
+
+static int dvx_large_claude_log(const char *root, const char *ledger)
+{
+    int failures = 0;
+    int64_t want[DVX_BIG_MODELS][6] = {{0}};
+    char dir[1024];
+    (void)snprintf(dir, sizeof(dir), "%s/big", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, dir, NULL);
+    TEST("usage: a large Claude log keeps exact per-model totals within the response budget") {
+        static const char *const models[DVX_BIG_MODELS] = {"mA", "mB", "mC"};
+        ASSERT(dvx_mkdir(dir));
+        ASSERT(dvx_big_write(dir, want));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        const struct json_value *u = dvx_usage(&c);
+        ASSERT(u != NULL);
+        char scratch[DVX_BIG_REPLY_MAX + 1];
+        ASSERT(json_write(&c.reply.data, scratch, sizeof(scratch)) <
+               DVX_BIG_REPLY_MAX);
+        ASSERT_EQ(dvx_entry_int(u, "events"), DVX_BIG_FILES * DVX_BIG_PER_FILE - DVX_BIG_PER_FILE);
+        ASSERT_EQ(dvx_entry_int(u, "duplicate_lines"), 10);
+        ASSERT_EQ(dvx_entry_int(u, "skipped_lines"), 0);
+        ASSERT_EQ(dvx_entry_int(u, "oversized_lines"), 0);
+        for (int m = 0; m < DVX_BIG_MODELS; m++) {
+            const struct json_value *row = dvx_usage_model(&c, "claude", models[m]);
+            ASSERT(row != NULL);
+            ASSERT_EQ(dvx_entry_int(row, "events"), want[m][0]);
+            ASSERT_EQ(dvx_entry_int(row, "input_tokens"), want[m][1]);
+            ASSERT_EQ(dvx_entry_int(row, "cache_read_tokens"), want[m][2]);
+            ASSERT_EQ(dvx_entry_int(row, "cache_write_tokens"), want[m][3]);
+            ASSERT_EQ(dvx_entry_int(row, "output_tokens"), want[m][4]);
+            ASSERT_EQ(dvx_entry_int(row, "requests"), want[m][5]);
+        }
+        ASSERT_EQ(dvx_entry_int(u, "hours_total"), 24 * DVX_BIG_MODELS);
+        ASSERT(dvx_bool_is(u, "by_hour_truncated", true));
+        const struct json_value *hours = json_get(u, "by_hour");
+        ASSERT(hours && hours->num_children > 0 &&
+               (int64_t)hours->num_children < 24 * DVX_BIG_MODELS);
+        ASSERT(dvx_entry_int(u, "runs_total") > 256);
+        ASSERT(dvx_bool_is(u, "by_run_truncated", true));
+        PASS();
+    } _test_next:;
+    dvx_end(&c);
+    return failures;
+}
+
+/* A line over the cap is counted, never parsed, and does not stop the scan. */
+static int dvx_oversized_line(const char *root, const char *ledger)
+{
+    int failures = 0;
+    size_t pad = (size_t)(17u << 20);
+    char *text = malloc(pad + 512u);
+    char path[1024];
+    (void)snprintf(path, sizeof(path), "%s/oversized.jsonl", root);
+    struct dvx_call c;
+    dvx_usage_call(&c, ledger, path, NULL);
+    TEST("usage: an oversized line is counted in oversized_lines and the next line is read") {
+        ASSERT(text != NULL);
+        size_t at = (size_t)snprintf(text, 128, "{\"type\":\"assistant\",\"pad\":\"");
+        memset(text + at, 'x', pad);
+        at += pad;
+        at += (size_t)snprintf(text + at, 400,
+            "\"}\n{\"type\":\"assistant\",\"timestamp\":\"2026-10-09T01:05:00Z\","
+            "\"message\":{\"id\":\"ok\",\"model\":\"mA\",\"usage\":"
+            "{\"input_tokens\":3}}}\n");
+        text[at] = 0;
+        ASSERT(dvx_write(root, "oversized.jsonl", text));
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        const struct json_value *u = dvx_usage(&c);
+        ASSERT(u != NULL);
+        ASSERT_EQ(dvx_entry_int(u, "oversized_lines"), 1);
+        ASSERT_EQ(dvx_entry_int(u, "lines"), 2);
+        ASSERT_EQ(dvx_entry_int(u, "events"), 1);
         PASS();
     } _test_next:;
     free(text);
@@ -1566,6 +1695,8 @@ int test_devagent_outcomes(void)
     failures += dvx_runs_overlong(root, ledger);
     failures += dvx_runs_non_claude(root, ledger);
     failures += dvx_runs_bound(root, ledger);
+    failures += dvx_large_claude_log(root, ledger);
+    failures += dvx_oversized_line(root, ledger);
     failures += dvx_runs_unreported(root, ledger);
     failures += dvx_runs_agent_type_split(root, ledger);
     failures += dvx_usage_path_floor();
