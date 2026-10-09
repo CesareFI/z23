@@ -34,6 +34,14 @@ bool zcl_native_dev_events_step_for_test(const char *root, int64_t *after,
  * it even for NULL/empty input; caller releases it with json_free(). */
 bool zcl_native_next_input_read_for_test(const char *next_input,
                                         struct json_value *parsed);
+
+/* Exercise the ops.rom watch-flag scanner without starting a watch: reports
+ * --watch/--once, parses --interval=<secs> strictly (whole field, positive,
+ * multiply capped at INT_MAX), and surfaces --datadir=<dir>. */
+void zcl_native_ops_rom_watch_flags_for_test(
+    const char *const *words, size_t count, size_t consumed,
+    bool *want_watch, bool *want_once, int *interval_ms,
+    const char **offline_datadir);
 #endif
 
 /* Resolve argv under a canonical root through the registry and print exactly

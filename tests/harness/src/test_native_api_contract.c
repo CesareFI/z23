@@ -3391,6 +3391,64 @@ static int test_logs_local_serialization_failure(void)
     return failures;
 }
 
+/* ── ops.rom watch-flag scanner: strict interval, bounded multiply ─── */
+
+static int test_ops_rom_watch_flags(void)
+{
+    int failures = 0;
+    TEST("ops.rom watch flags: interval parses strictly, multiply is bounded") {
+        bool watch = false, once = false;
+        int interval_ms = 2000;
+        const char *datadir = NULL;
+        const char *full[] = {"z23", "ops.rom", "fetch", "--watch",
+                              "--interval=45", "--datadir=/tmp/romx"};
+        zcl_native_ops_rom_watch_flags_for_test(full, 6, 3, &watch, &once,
+                                                &interval_ms, &datadir);
+        ASSERT(watch && !once);
+        ASSERT_EQ(interval_ms, 45000);
+        ASSERT(datadir && strcmp(datadir, "/tmp/romx") == 0);
+
+        /* The pre-fix atoi path overflowed int here (UBSan signed
+         * overflow); the cap keeps the same downstream clamp result
+         * without the UB. */
+        interval_ms = 2000;
+        const char *huge[] = {"--interval=2147484000"};
+        zcl_native_ops_rom_watch_flags_for_test(huge, 1, 0, &watch, &once,
+                                                &interval_ms, &datadir);
+        ASSERT_EQ(interval_ms, (INT_MAX / 1000) * 1000);
+
+        /* Whole-field strictness: trailing garbage and non-positive
+         * values leave the interval untouched. */
+        interval_ms = 2000;
+        const char *garbage[] = {"--interval=12abc"};
+        zcl_native_ops_rom_watch_flags_for_test(garbage, 1, 0, &watch,
+                                                &once, &interval_ms, &datadir);
+        ASSERT_EQ(interval_ms, 2000);
+        const char *negative[] = {"--interval=-5"};
+        zcl_native_ops_rom_watch_flags_for_test(negative, 1, 0, &watch,
+                                                &once, &interval_ms, &datadir);
+        ASSERT_EQ(interval_ms, 2000);
+        const char *zero[] = {"--interval=0"};
+        zcl_native_ops_rom_watch_flags_for_test(zero, 1, 0, &watch, &once,
+                                                &interval_ms, &datadir);
+        ASSERT_EQ(interval_ms, 2000);
+        const char *empty[] = {"--interval="};
+        zcl_native_ops_rom_watch_flags_for_test(empty, 1, 0, &watch, &once,
+                                                &interval_ms, &datadir);
+        ASSERT_EQ(interval_ms, 2000);
+
+        /* Beyond long range: strtol saturates with ERANGE and the cap
+         * bounds the multiply to the same clamp result, without UB. */
+        interval_ms = 2000;
+        const char *erange[] = {"--interval=99999999999999999999999999"};
+        zcl_native_ops_rom_watch_flags_for_test(erange, 1, 0, &watch, &once,
+                                                &interval_ms, &datadir);
+        ASSERT_EQ(interval_ms, (INT_MAX / 1000) * 1000);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_native_api_contract(void)
 {
     int failures = 0;
@@ -3403,6 +3461,7 @@ int test_native_api_contract(void)
     failures += test_every_leaf_dot_path_resolves_from_cli_words();
     failures += test_root_and_discover_aliases_resolve();
     failures += test_missing_required_input_fails_closed_structured();
+    failures += test_ops_rom_watch_flags();
     failures += test_dev_failure_native_api();
     failures += test_native_app_catalog_uses_strict_builtin_source();
     failures += test_wallet_send_amount_admission();

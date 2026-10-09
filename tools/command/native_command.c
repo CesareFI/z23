@@ -69,6 +69,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -1902,11 +1903,10 @@ static bool nc_rom_fetch_offline(void *ctx, struct json_value *out, char *err,
     return rom_compile_offline_compose(datadir, out, err, errlen);
 }
 
-/* Scan the unconsumed argv words for the ops.rom watch flags. If neither
- * --watch, --once, nor --datadir=<dir> is present, returns false (the caller
- * falls through to the normal single-shot dispatch). Otherwise builds the fetch
- * closure + opts, runs rom_watch_run, stores its exit code in *rc, and returns
- * true. Recognizes: --watch, --once, --interval=<secs>, --datadir=<dir>. */
+/* Scan the unconsumed argv words for the ops.rom watch flags, reporting
+ * --watch/--once, the bounded --interval=<secs> in milliseconds, and
+ * --datadir=<dir>. The caller decides whether any recognized flag warrants
+ * the watch dispatch path. */
 static void nc_ops_rom_parse_watch_flags(
     const char *const *words, size_t count, size_t consumed,
     bool *want_watch, bool *want_once, int *interval_ms,
@@ -1921,9 +1921,15 @@ static void nc_ops_rom_parse_watch_flags(
         } else if (strcmp(w, "--once") == 0) {
             *want_once = true;
         } else if (strncmp(w, "--interval=", 11) == 0) {
-            int secs = atoi(w + 11);
-            if (secs > 0)
-                *interval_ms = secs * 1000;
+            /* Parse the complete field and bound before multiplying. */
+            const char *value = w + 11;
+            char *end = NULL;
+            long secs = strtol(value, &end, 10);
+            if (end != value && *end == '\0' && secs > 0) {
+                if (secs > INT_MAX / 1000)
+                    secs = INT_MAX / 1000;
+                *interval_ms = (int)(secs * 1000);
+            }
         } else if (strncmp(w, "--datadir=", 10) == 0) {
             *offline_datadir = w + 10;
         }
@@ -1972,6 +1978,17 @@ static bool nc_ops_rom_try_watch(const char *const *words, size_t count,
     *rc = nc_ops_rom_dispatch_fetch(offline_datadir, cli_datadir, &opts);
     return true;
 }
+
+#if defined(ZCL_TESTING)
+void zcl_native_ops_rom_watch_flags_for_test(
+    const char *const *words, size_t count, size_t consumed,
+    bool *want_watch, bool *want_once, int *interval_ms,
+    const char **offline_datadir)
+{
+    nc_ops_rom_parse_watch_flags(words, count, consumed, want_watch,
+                                 want_once, interval_ms, offline_datadir);
+}
+#endif
 
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 static void nc_print_error(const char *command, const char *code,
