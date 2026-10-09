@@ -13,6 +13,7 @@
  */
 
 #include "test/test_core.h"
+#include "json/json.h"
 
 #include "engine/engine.h"
 #include "engine/engine_err.h"
@@ -80,6 +81,17 @@ static int pin_sync(int fd)
     if (expr) { printf("OK\n"); }                    \
     else { printf("FAIL\n"); failures++; }           \
 } while (0)
+
+static const char attempt_a[] =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+static const char attempt_b[] =
+    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+static const char *const malformed_attempts[] = {
+    "", "0123",
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0",
+    "0123456789Abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "0123456789gbcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+};
 
 /* A key-shaped string that is NOT a real credential. It matches the two-part
  * <32 hex>.<16 alnum> shape the scrubber knows, which is exactly the point:
@@ -2461,6 +2473,14 @@ static int case_template_cas_dispatch(const char *cmd, const char *workspace,
     return failures;
 }
 
+static int case_receipt_absent_attempt(const char *chain, bool have_chain)
+{
+    int failures = 0;
+    EN_CHECK("legacy owner without attempt id serializes null",
+             have_chain && strstr(chain, "\"attempt_id\":null"));
+    return failures;
+}
+
 static int case_engine_unit_state_e2e(void)
 {
     int failures = 0;
@@ -2592,6 +2612,8 @@ static int case_engine_unit_state_e2e(void)
              strstr(chain, "\"cumulative_proof_ms\":0") &&
              strstr(chain, "\"unit_elapsed_ms\":"));
 
+    failures += case_receipt_absent_attempt(chain, have_chain);
+
     failures += case_template_cas_dispatch(cmd, worktree, chain_path,
                                            run_log_path);
 
@@ -2627,6 +2649,65 @@ static bool engine_test_shell_quote(const char *in, char *out, size_t cap)
     out[n++] = '\'';
     out[n] = '\0';
     return true;
+}
+
+struct attempt_cli_fixture {
+    const char *counter, *log_path;
+    const char *bin, *count, *first, *second, *task, *worktree, *state, *log;
+};
+
+static int case_attempt_cli_refusal(const struct attempt_cli_fixture *f,
+                                   const char *id, bool probe)
+{
+    int failures = 0;
+    char command[8192], refused[4096] = {0};
+    (void)unlink(f->counter);
+    (void)snprintf(command, sizeof(command),
+        "PATH=%s:$PATH ZCL_FAKE_COUNT=%s ZCL_FAKE_FIRST=%s "
+        "ZCL_FAKE_SECOND=%s %s --engine grok-cli --task %s "
+        "--no-group --yes-dispatch --turns 2 --worktree %s "
+        "--state-dir %s --attempt-id %s %s >%s 2>&1",
+        f->bin, f->count, f->first, f->second, ENGINE_UNIT_BIN,
+        f->task, f->worktree, f->state, id, probe ? "--probe" : "", f->log);
+    const int rc = system(command);
+    EN_CHECK("malformed owner id refuses before fake executor",
+        rc != -1 && WIFEXITED(rc) && WEXITSTATUS(rc) == 2 &&
+        access(f->counter, F_OK) != 0 && errno == ENOENT &&
+        read_whole_file(f->log_path, refused, sizeof(refused)) &&
+        strstr(refused, "--attempt-id needs exactly 64"));
+    return failures;
+}
+
+static int case_attempt_cli_refusals(const struct attempt_cli_fixture *f)
+{
+    int failures = 0;
+    /* Probe bypasses receipt-plan validation, exposing a missing owner guard. */
+    for (size_t i = 0; i < sizeof(malformed_attempts) /
+                            sizeof(malformed_attempts[0]); i++) {
+        char id[1404];
+        const bool quoted = engine_test_shell_quote(malformed_attempts[i],
+                                                    id, sizeof(id));
+        if (quoted) {
+            failures += case_attempt_cli_refusal(f, id, false);
+            failures += case_attempt_cli_refusal(f, id, true);
+        }
+        EN_CHECK("malformed id is shell quoted", quoted);
+    }
+    (void)unlink(f->counter);
+    return failures;
+}
+
+static int case_receipt_exact_attempt(const char *chain, const char *path,
+                                      bool have_chain)
+{
+    int failures = 0;
+    char binding[100];
+    (void)snprintf(binding, sizeof(binding), "\"attempt_id\":\"%s\"", attempt_a);
+    struct engine_receipt_chain_report report;
+    EN_CHECK("owner attempt propagates exactly through production receipt",
+             have_chain && strstr(chain, binding) &&
+             engine_receipt_verify_chain(path, &report) && report.records == 1);
+    return failures;
 }
 
 static int case_engine_unit_grok_projection_e2e(void)
@@ -2732,12 +2813,20 @@ static int case_engine_unit_grok_projection_e2e(void)
     EN_CHECK("the fixture owns a detached worktree", detached);
     EN_CHECK("the fake Grok CLI fixture compiles as C23", compiled);
     if (compiled && detached) {
+        const struct attempt_cli_fixture attempt_fixture = {
+            .counter = counter, .log_path = log_path, .bin = q_bin,
+            .count = q_counter, .first = q_first, .second = q_second,
+            .task = q_task, .worktree = q_worktree, .state = q_state,
+            .log = q_log,
+        };
+        failures += case_attempt_cli_refusals(&attempt_fixture);
+
         (void)snprintf(command, sizeof(command),
             "PATH=%s:$PATH ZCL_FAKE_COUNT=%s ZCL_FAKE_FIRST=%s "
             "ZCL_FAKE_SECOND=%s %s --engine grok-cli --task %s --no-group "
-            "--yes-dispatch --turns 2 --worktree %s --state-dir %s "
+            "--yes-dispatch --turns 2 --worktree %s --state-dir %s --attempt-id %s "
             ">%s 2>&1", q_bin, q_counter, q_first, q_second, ENGINE_UNIT_BIN,
-            q_task, q_worktree, q_state, q_log);
+            q_task, q_worktree, q_state, attempt_a, q_log);
         (void)system(command); /* durable receipts are the evidence */
     }
 
@@ -2749,6 +2838,7 @@ static int case_engine_unit_grok_projection_e2e(void)
         && read_whole_file(chain_path, chain, sizeof(chain));
     EN_CHECK("the Grok dispatch wrote its one-run receipt", have_receipt);
     EN_CHECK("the Grok dispatch wrote its receipt chain", have_chain);
+    failures += case_receipt_exact_attempt(chain, chain_path, have_chain);
     EN_CHECK("additive Grok projection preserves raw and normalized counters",
              have_receipt
              && strstr(receipt, "\"prompt_tokens\":496667")
@@ -3043,6 +3133,86 @@ static void receipt_unicode_path(char *out, size_t n)
     const char *base = getcwd(cwd, sizeof(cwd)) ? cwd : ".";
     (void)snprintf(out, n, "%s/test-tmp/zcl engine \xC5\xBE receipt %d.chainlog",
                    base, (int)getpid());
+}
+
+static int case_receipt_attempt_refusals(const char *path,
+                                         struct engine_receipt *r)
+{
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(malformed_attempts) /
+                            sizeof(malformed_attempts[0]); i++) {
+        r->attempt_id = malformed_attempts[i];
+        char digest[65] = "not cleared";
+        EN_CHECK("receipt API refuses malformed supplied attempt",
+                 !engine_receipt_fits(r) &&
+                 !engine_receipt_append(path, r, digest) && digest[0] == '\0' &&
+                 access(path, F_OK) != 0 && errno == ENOENT);
+    }
+    return failures;
+}
+
+static bool receipt_attempt_pair_matches(
+    const struct json_value *const ids[2],
+    const struct json_value *const attempts[2])
+{
+    return ids[0] && ids[1] && attempts[0] && attempts[1] &&
+           ids[0]->type == JSON_STR && ids[1]->type == JSON_STR &&
+           attempts[0]->type == JSON_STR && attempts[1]->type == JSON_STR &&
+           strcmp(json_get_str(ids[0]), json_get_str(ids[1])) == 0 &&
+           strcmp(json_get_str(attempts[0]), attempt_a) == 0 &&
+           strcmp(json_get_str(attempts[1]), attempt_b) == 0;
+}
+
+static int case_receipt_attempt_pair(const char *path)
+{
+    int failures = 0;
+    char whole[ENGINE_RECEIPT_LINE_MAX * 2u + 4u];
+    size_t n = 0;
+    const char *line = NULL;
+    size_t len = 0;
+    struct json_value docs[2];
+    json_init(&docs[0]);
+    json_init(&docs[1]);
+    bool parsed = receipt_read_whole(path, whole, sizeof(whole), &n);
+    for (size_t i = 0; i < 2 && parsed; i++)
+        parsed = receipt_nth_line(whole, n, i + 1u, &line, &len) &&
+                 json_read(&docs[i], line, len);
+    const struct json_value *ids[2] = {
+        json_get(&docs[0], "unit_id"), json_get(&docs[1], "unit_id")
+    };
+    const struct json_value *attempts[2] = {
+        json_get(&docs[0], "attempt_id"), json_get(&docs[1], "attempt_id")
+    };
+    EN_CHECK("historical unit collision retains distinct exact bindings",
+             parsed && receipt_attempt_pair_matches(ids, attempts));
+    json_free(&docs[0]);
+    json_free(&docs[1]);
+    return failures;
+}
+
+static int case_receipt_attempt_binding(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    test_fmt_tmpdir(path, sizeof(path), "engine_attempt_binding", "chainlog");
+    (void)test_ensure_tmproot();
+    receipt_unlink(path);
+    struct engine_receipt r = receipt_fixture("fixture", 1000);
+    r.task_sha3 = attempt_a; /* same exact task bytes for both attempts */
+    EN_CHECK("absent attempt remains valid", engine_receipt_fits(&r));
+    failures += case_receipt_attempt_refusals(path, &r);
+    r.attempt_id = attempt_a;
+    EN_CHECK("valid attempt fits and appends", engine_receipt_fits(&r) &&
+             engine_receipt_append(path, &r, NULL));
+    r.attempt_id = attempt_b;
+    EN_CHECK("same-second second attempt appends",
+             engine_receipt_append(path, &r, NULL));
+    failures += case_receipt_attempt_pair(path);
+    struct engine_receipt_chain_report report;
+    EN_CHECK("bound attempts verify with ordinary chain semantics",
+             engine_receipt_verify_chain(path, &report) && report.records == 2);
+    receipt_unlink(path);
+    return failures;
 }
 
 static int case_receipt_chain(void)
@@ -3556,6 +3726,7 @@ int test_engine(void)
     failures += case_cli_argv();
     failures += case_cli_observation();
     failures += case_default_engine();
+    failures += case_receipt_attempt_binding();
     failures += case_receipt_chain();
     failures += case_receipt_text();
 #if !defined(_WIN32)

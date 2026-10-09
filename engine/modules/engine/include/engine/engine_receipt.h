@@ -32,7 +32,12 @@
  *                      task_sha3 || "\0" || engine || "\0" || decimal ts).
  *                      Two runs of the same task on the same engine in the
  *                      same second collide, deliberately: at that resolution
- *                      they are the same dispatch to anyone reading later.
+ *                      the historical v1 identity is preserved unchanged.
+ *   attempt_id         optional owner-supplied 64 lowercase hex, else null.
+ *                      Additive v1 correlation evidence only: no lease,
+ *                      authority, or complete task-cost claim. Excluded from
+ *                      unit_id derivation; serialized bytes remain covered
+ *                      by ordinary receipt-chain hashing.
  *   ts                 unix seconds, integer
  *   engine             registry id ("glm", "grok-cli", "fixture")
  *   model              requested_model compatibility key for v1 readers
@@ -156,10 +161,11 @@ struct engine_receipt_invocation {
 };
 
 /* Everything one record says. Every pointer borrows from the caller and is
- * read only during the call. A NULL string field is written as "". */
+ * read only during the call. NULL strings become "", except nullable fields. */
 struct engine_receipt {
     int64_t     ts;                 /* unix seconds */
     const char *engine;             /* required */
+    const char *attempt_id;         /* optional owner binding; NULL is absent */
     const char *requested_model;
     const char *resolved_model;     /* NULL means provider did not report */
     const char *reasoning_effort;
@@ -190,6 +196,20 @@ struct engine_receipt {
     const char *worktree_head;      /* 40 hex or NULL */
     struct engine_receipt_outcome outcome;
 };
+
+/* NULL is absent; supplied empty, uppercase, nonhex, or wrong length refuses.
+ * This validates an existing owner identifier and never allocates one. */
+static inline bool engine_receipt_attempt_id_valid(const char *id)
+{
+    if (!id)
+        return true;
+    for (size_t i = 0; i < 64u; i++) {
+        const char c = id[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+    }
+    return id[64] == '\0';
+}
 
 /* Append one record to `path`, creating the file when absent.
  *

@@ -479,6 +479,7 @@ static bool build_doc_identity_fields(struct json_value *doc,
     return json_push_kv_str(doc, "schema", ENGINE_RECEIPT_SCHEMA)
         && json_push_kv_str(doc, "prev_sha3", prev_sha3)
         && json_push_kv_str(doc, "unit_id", unit_id)
+        && push_nullable_string(doc, "attempt_id", r->attempt_id)
         && json_push_kv_int(doc, "ts", r->ts)
         && json_push_kv_str(doc, "engine", or_empty(r->engine))
         /* Retain the v1 reader's grouping key while making requested and
@@ -633,6 +634,8 @@ bool engine_receipt_fits(const struct engine_receipt *r)
         !r->reasoning_effort || !r->reasoning_effort[0] ||
         !engine_reasoning_effort_valid(r->reasoning_effort))
         return false;
+    if (!engine_receipt_attempt_id_valid(r->attempt_id))
+        LOG_FAIL("engine_receipt", "invalid owner attempt id");
     static const char zero[65] =
         "0000000000000000000000000000000000000000000000000000000000000000";
     char line[ENGINE_RECEIPT_LINE_MAX + 1u];
@@ -719,6 +722,9 @@ bool engine_receipt_append(const char *path, const struct engine_receipt *r,
         LOG_FAIL("engine_receipt", "refusing a non-empty NULL invocation list");
     if (!receipt_effort_ok(r->reasoning_effort))
         LOG_FAIL("engine_receipt", "refusing an invalid reasoning effort");
+
+    if (!engine_receipt_attempt_id_valid(r->attempt_id))
+        LOG_FAIL("engine_receipt", "invalid owner attempt id");
 
     /* O_RDWR because this same fd must read the tail; O_APPEND so the one
      * write(2) cannot overwrite earlier records even if the lock is lost.

@@ -172,6 +172,7 @@ struct unit_opts {
     const char *kind;
     const char *model;
     const char *reasoning_effort;
+    const char *attempt_id;
     const char *resume_session_id;
     const char *worktree;
     const char *fixture_reply;
@@ -230,6 +231,8 @@ static void usage(void)
 "  --worktree DIR    isolated worktree to work in (created if absent)\n"
 "  --model ID        override the engine's default model\n"
 "  --reasoning-effort E  provider_default, low, medium, high, or xhigh\n"
+"  --attempt-id ID   optional owner-supplied 64 lowercase hex correlation\n"
+"                    additive v1 field; no authority; unit_id unchanged\n"
 "  --resume UUID     continue a grok-cli session (canonical lowercase UUID)\n"
 "  --max-turns N     installed-CLI turn cap (1..256); omitted uses --rounds\n"
 "  --rounds N        judge/repair rounds (1..10, default %d)\n"
@@ -286,6 +289,20 @@ static bool need_value(int argc, int i, const char *flag)
     LOG_FAIL("engine_unit", "%s needs a value", flag);
 }
 
+static int fail_setup(const char *why)
+{
+    engine_emit(stderr, "engine_unit: %s\n", why);
+    return 2;
+}
+
+static bool attempt_option_valid(const char *id)
+{
+    if (engine_receipt_attempt_id_valid(id))
+        return true;
+    (void)fail_setup("--attempt-id needs exactly 64 lowercase hex characters");
+    return false;
+}
+
 static bool parse_args(int argc, char **argv, struct unit_opts *o)
 {
     memset(o, 0, sizeof(*o));
@@ -321,6 +338,7 @@ static bool parse_args(int argc, char **argv, struct unit_opts *o)
         TAKE("--kind", kind)
         TAKE("--model", model)
         TAKE("--reasoning-effort", reasoning_effort)
+        TAKE("--attempt-id", attempt_id)
         TAKE("--resume", resume_session_id)
         TAKE("--worktree", worktree)
         TAKE("--fixture-reply", fixture_reply)
@@ -361,7 +379,7 @@ static bool parse_args(int argc, char **argv, struct unit_opts *o)
         }
         LOG_FAIL("engine_unit", "unknown argument '%s'", a);
     }
-    return true;
+    return attempt_option_valid(o->attempt_id);
 }
 
 /* ── small file helpers ──────────────────────────────────────────────── */
@@ -1961,6 +1979,7 @@ static bool append_unit_receipt(const struct unit_opts *o,
     struct engine_receipt r = {
         .ts = clock_now_wall_ms() / 1000,
         .engine = v->id,
+        .attempt_id = o->attempt_id,
         .requested_model = o->model ? o->model
                                     : (v->default_model ? v->default_model : ""),
         .resolved_model = observation && observation->known
@@ -2047,6 +2066,7 @@ static bool receipt_plan_fits(const struct unit_opts *o,
     const struct engine_receipt plan = {
         .ts = INT64_MAX,
         .engine = v->id,
+        .attempt_id = o->attempt_id,
         .requested_model = o->model ? o->model
                                     : (v->default_model ? v->default_model : ""),
         .resolved_model = resolved_model,
@@ -2393,12 +2413,6 @@ static bool dispatch_workspace_prepare(const struct unit_opts *o, char *out,
     if (!template_object_store(out, o->kind))
         LOG_FAIL("engine_unit", "cannot bind selected template in workspace");
     return true;
-}
-
-static int fail_setup(const char *why)
-{
-    engine_emit(stderr, "engine_unit: %s\n", why);
-    return 2;
 }
 
 int main(int argc, char **argv)
