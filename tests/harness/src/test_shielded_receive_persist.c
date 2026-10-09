@@ -192,7 +192,7 @@ int test_shielded_receive_persist(void)
     {
         char cmd[512];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", datadir);
-        (void)system(cmd);
+         TEST_DISCARD(system(cmd));
     }
 
     if (failures == 0)

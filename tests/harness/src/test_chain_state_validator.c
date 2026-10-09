@@ -231,10 +231,10 @@ int test_chain_state_validator(void)
         snprintf(pdir, sizeof(pdir), "/tmp/zcl_csv_fin_%d", (int)getpid());
         char rmcmd[160];
         snprintf(rmcmd, sizeof(rmcmd), "rm -rf '%s'", pdir);
-        (void)system(rmcmd);
+         TEST_DISCARD(system(rmcmd));
         char mkcmd[160];
         snprintf(mkcmd, sizeof(mkcmd), "mkdir -p '%s'", pdir);
-        (void)system(mkcmd);
+         TEST_DISCARD(system(mkcmd));
 
         struct main_state ms;
         memset(&ms, 0, sizeof(ms));
@@ -281,7 +281,7 @@ int test_chain_state_validator(void)
         coins_view_cache_free(&cache);
         block_map_free(&ms.map_block_index);
         progress_store_close();
-        (void)system(rmcmd);
+         TEST_DISCARD(system(rmcmd));
     }
 
     /* ── 6. Coins not in index, chain > 1000 → reset coins cursor ── */

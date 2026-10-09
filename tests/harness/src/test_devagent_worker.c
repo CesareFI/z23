@@ -852,7 +852,7 @@ static pid_t wtx_post_later(const char *name, int delay_ms, int post_fd)
         platform_sleep_ms(delay_ms);
         wtx_queue_post(name);
         posted_ms = (long long)platform_time_monotonic_ms();
-        (void)write(post_fd, &posted_ms, sizeof(posted_ms));
+         TEST_DISCARD(write(post_fd, &posted_ms, sizeof(posted_ms)));
         (void)close(post_fd);
         _exit(0);
     }

@@ -99,7 +99,7 @@ static void zproj_teardown(const char *dir)
     char cmd[ZPROJ_DIR_CAP + 16];
     int n = snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);
     if (n > 0 && (size_t)n < sizeof(cmd))
-        (void)system(cmd);
+         TEST_DISCARD(system(cmd));
 }
 
 static int zproj_cas_object_count(const char *workspace)

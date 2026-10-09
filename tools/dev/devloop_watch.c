@@ -4370,7 +4370,7 @@ static bool watch_sealer_test_child_started(void *opaque)
     int *fd = opaque;
     if (*fd >= 0) {
         pid_t pids[2] = {getpid(), 0};
-        (void)write(*fd, pids, sizeof(pids));
+        { long ign_ = (long)write(*fd, pids, sizeof(pids)); (void)ign_; }
         (void)close(*fd);
         *fd = -1;
     }
@@ -4396,7 +4396,7 @@ static void watch_sealer_test_orphan_worker(const char *root, int started_fd,
     }
     bool ran = zcl_devloop_process_run(root, argv, 5000, &result);
     char verdict = result.cancelled && (ran != preexec) ? 'c' : 't';
-    (void)write(report_fd, &verdict, 1);
+    { long ign_ = (long)write(report_fd, &verdict, 1); (void)ign_; }
     _exit(0);
 }
 

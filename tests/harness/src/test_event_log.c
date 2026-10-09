@@ -313,7 +313,7 @@ done:
 static void child_appender(const char *path)
 {
     /* Direct stderr away so the kill doesn't leave dangling messages. */
-    freopen("/dev/null", "w", stderr);
+ TEST_DISCARD(freopen("/dev/null", "w", stderr));
     event_log_t *log = event_log_open(path);
     if (!log) _exit(2);
     uint32_t i = 0;
@@ -340,7 +340,7 @@ static void child_appender(const char *path)
 #define DEFERRED_FLUSH_EVERY 8
 static void child_appender_deferred(const char *path)
 {
-    freopen("/dev/null", "w", stderr);
+ TEST_DISCARD(freopen("/dev/null", "w", stderr));
     event_log_t *log = event_log_open(path);
     if (!log) _exit(2);
     event_log_set_deferred_sync(log, true);
@@ -541,7 +541,7 @@ static int run_targeted_recovery(int *failures_out)
         for (int j = 0; j < 3; j++) {
             int fd = open(path, O_WRONLY);
             if (fd < 0) { failures++; continue; }
-            (void)ftruncate(fd, (off_t)tries[j]);
+             TEST_DISCARD(ftruncate(fd, (off_t)tries[j]));
             fsync(fd);
             close(fd);
 

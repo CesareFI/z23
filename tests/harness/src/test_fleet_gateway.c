@@ -1732,7 +1732,7 @@ static int gw_t_conn_bounds(void)
             if (fds[i] < 0)
                 break;
             /* Headers that never end. */
-            (void)write(fds[i], partial, sizeof(partial) - 1);
+             TEST_DISCARD(write(fds[i], partial, sizeof(partial) - 1));
         }
         ASSERT_EQ(i, GW_HALF_OPEN);
         /* Eight children are held; the cap refuses the rest at once, so

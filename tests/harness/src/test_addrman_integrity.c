@@ -188,7 +188,7 @@ int test_addrman_integrity(void)
         /* Truncate to half its size. */
         char body_path[1024];
         snprintf(body_path, sizeof(body_path), "%s/peers.dat", dir);
-        truncate(body_path, 1024);
+ TEST_DISCARD(truncate(body_path, 1024));
 
         char err[256] = {0};
         enum aii_verdict v = aii_verify(dir, err, sizeof(err));

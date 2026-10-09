@@ -2045,7 +2045,7 @@ static int t_object_store(const char *repo)
              stat(opath, &repaired) == 0 && repaired.st_nlink == 1);
 #endif
     int fd = open(opath, O_WRONLY);
-    if (fd >= 0) { uint8_t bad = 0xff; pwrite(fd, &bad, 1, 0); close(fd); }
+    if (fd >= 0) { uint8_t bad = 0xff; TEST_DISCARD(pwrite(fd, &bad, 1, 0)); close(fd); }
     uint8_t *g3 = NULL; size_t g3len = 0;
     VC_CHECK("verify-on-read catches corruption",
              vcs_object_get(repo, h1, VCS_TAG_BLOB, &g3, &g3len) != 0);

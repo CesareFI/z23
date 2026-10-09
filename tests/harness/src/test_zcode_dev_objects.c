@@ -10537,7 +10537,7 @@ static pid_t zd_route_hold_datadir(const char *datadir, int *release_fd)
         if (!node_db_open(&ndb, db_path)) _exit(2);
         char b = 1;
         if (write(ready[1], &b, 1) != 1) _exit(3);
-        (void)read(done[0], &b, 1);
+         TEST_DISCARD(read(done[0], &b, 1));
         node_db_close(&ndb);
         _exit(0);
     }

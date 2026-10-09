@@ -33,7 +33,7 @@ static void cleanup_robustness_datadir(void)
 {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", test_datadir);
-    system(cmd);
+ TEST_DISCARD(system(cmd));
 }
 
 static uint16_t reserve_test_port(void)
@@ -815,7 +815,7 @@ int test_robustness(void)
         f = fopen(pidfile, "r");
         if (f) {
             char buf[32] = {0};
-            fread(buf, 1, sizeof(buf) - 1, f);
+ TEST_DISCARD(fread(buf, 1, sizeof(buf) - 1, f));
             fclose(f);
             long pid = strtol(buf, NULL, 10);
             ok = ok && (pid == (long)getpid());

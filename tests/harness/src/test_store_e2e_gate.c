@@ -108,7 +108,7 @@ static void p11_5_cleanup_datadir(const char *datadir)
 {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", datadir ? datadir : "");
-    (void)system(cmd);
+     TEST_DISCARD(system(cmd));
 }
 
 static bool p11_5_fetch_csrf_token(const char *datadir,

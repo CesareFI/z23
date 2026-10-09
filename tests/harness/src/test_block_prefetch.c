@@ -52,7 +52,7 @@ static void bpt_cleanup(const char *dir)
 {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
-    (void)system(cmd);
+     TEST_DISCARD(system(cmd));
 }
 
 /* Write one small block; record its payload position. */

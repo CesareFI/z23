@@ -362,7 +362,7 @@ static void process_output_wait(int fd, int budget_ms)
         long target = strtol(report, &end, 10);
         int observation[2] = {fd, budget_ms};
         if (*report && !*end && target >= 0 && target <= INT_MAX)
-            (void)write((int)target, observation, sizeof(observation));
+            { long ign_ = (long)write((int)target, observation, sizeof(observation)); (void)ign_; }
     }
 #endif
     struct pollfd pending = {.fd = fd, .events = POLLIN};

@@ -98,7 +98,7 @@ int api_resource_reads_focused_tests(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -161,7 +161,7 @@ int api_resource_reads_focused_tests(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -219,7 +219,7 @@ int api_resource_reads_focused_tests(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -289,7 +289,7 @@ int api_resource_reads_focused_tests(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -402,7 +402,7 @@ int api_resource_reads_focused_tests(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

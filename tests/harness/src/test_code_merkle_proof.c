@@ -115,7 +115,7 @@ static bool cmp_fixture(const char *dir)
 
 static void cmp_reset(void)
 {
-    system("rm -rf " CMP_FIX);
+ TEST_DISCARD(system("rm -rf " CMP_FIX));
 }
 
 /* Prove `path` and check the proof against the tree's own root through the

@@ -414,7 +414,7 @@ static int test_fh_recent_missing_inputs(void)
 int test_code_firsthour(void)
 {
     int failures = 0;
-    (void)system("rm -rf " FH_FIX);
+     TEST_DISCARD(system("rm -rf " FH_FIX));
     if (!write_fh_fixture()) {
         printf("  code_firsthour: fixture write... FAIL\n");
         return 1;

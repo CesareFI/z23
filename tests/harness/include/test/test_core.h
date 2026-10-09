@@ -1047,6 +1047,11 @@ static inline void zcl_test_print_opaque(const void *v)
     } \
     if (0) { _test_next: ; }
 
+/* Run a fixture call whose result the test deliberately ignores (cleanup,
+ * forked children). A (void) cast does not silence warn_unused_result. */
+#define TEST_DISCARD(call) \
+    do { long test_discard_ = (long)(call); (void)test_discard_; } while (0)
+
 /* SQLite fixture helpers for tests.
  * Keep setup code focused on the data being created rather than
  * repeating prepare/step/finalize boilerplate. */

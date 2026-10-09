@@ -877,7 +877,7 @@ static int test_status_brief_body_front_door_deadline(void)
     if (dir) {
         char rmcmd[512];
         (void)snprintf(rmcmd, sizeof(rmcmd), "rm -rf %s", dir);
-        (void)system(rmcmd);
+         TEST_DISCARD(system(rmcmd));
         free(dir);
     }
     node_rpc_client_set_test_hook(NULL);
@@ -3092,7 +3092,7 @@ static int test_partial_rpc_reply_names_the_timeout(void)
     if (dir) {
         char rmcmd[512];
         (void)snprintf(rmcmd, sizeof(rmcmd), "rm -rf %s", dir);
-        (void)system(rmcmd);
+         TEST_DISCARD(system(rmcmd));
         free(dir);
     }
     free(out);

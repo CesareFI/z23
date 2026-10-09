@@ -1990,7 +1990,7 @@ static int test_net_net_manager_ban_unban_clear(void)
             net_manager_free(&nm);
             char cmd[256];
             snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
-            (void)system(cmd);
+             TEST_DISCARD(system(cmd));
         }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

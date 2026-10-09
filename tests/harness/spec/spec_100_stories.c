@@ -237,7 +237,7 @@ static bool make_wallet(enum wallet_state ws) {
 static void destroy_wallet(void) {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", _d);
-    (void)system(cmd);
+     TEST_DISCARD(system(cmd));
     wallet_view_init(NULL);
 }
 

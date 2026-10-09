@@ -170,7 +170,7 @@ static bool ic_host_need_bare_root(const char *dir)
 {
     char rm[4096];
     (void)snprintf(rm, sizeof(rm), "rm -rf %s", dir);
-    system(rm);
+ TEST_DISCARD(system(rm));
     return ic_write(dir, "Makefile", "# bare execution tree\n");
 }
 
@@ -183,7 +183,7 @@ static bool ic_host_need_full_root(const char *dir)
 {
     char rm[4096];
     (void)snprintf(rm, sizeof(rm), "rm -rf %s", dir);
-    system(rm);
+ TEST_DISCARD(system(rm));
     return ic_write(dir, "Makefile", "# dev execution tree\n") &&
            ic_write(dir, "build/bin/z23", "#!/bin/sh\n") &&
            ic_write(dir,
@@ -445,7 +445,7 @@ static int test_ic_truncated_closure_preserves_groups(void)
 {
     int failures = 0;
     TEST("impact composition: a truncated closure KEEPS the groups it found") {
-        system("rm -rf " IC_FIX_TRUNC);
+ TEST_DISCARD(system("rm -rf " IC_FIX_TRUNC));
         ASSERT(ic_write_call_pair(IC_FIX_TRUNC));
         ASSERT(ic_write_depfiles(IC_FIX_TRUNC));
         ASSERT(ic_write_fanout_caller(IC_FIX_TRUNC));
@@ -480,7 +480,7 @@ static int test_ic_truncated_closure_preserves_groups(void)
         ASSERT(ic_group_in(plan.path_groups, plan.path_groups_len,
                            "test_tor"));
 
-        system("rm -rf " IC_FIX_TRUNC);
+ TEST_DISCARD(system("rm -rf " IC_FIX_TRUNC));
         PASS();
     } _test_next:;
     return failures;
@@ -599,7 +599,7 @@ static int test_ic_large_plan_preserves_groups(void)
 {
     int failures = 0;
     TEST("impact composition: a large graph plan keeps complete groups") {
-        system("rm -rf " IC_FIX_GROUP);
+ TEST_DISCARD(system("rm -rf " IC_FIX_GROUP));
         ASSERT(ic_write_call_pair(IC_FIX_GROUP));
         ASSERT(ic_write_depfiles(IC_FIX_GROUP));
 
@@ -653,7 +653,7 @@ static int test_ic_large_plan_preserves_groups(void)
         ASSERT(rendered_len == body_len);
         ASSERT(memcmp(rendered, body, body_len) == 0);
 
-        system("rm -rf " IC_FIX_GROUP);
+ TEST_DISCARD(system("rm -rf " IC_FIX_GROUP));
         PASS();
     } _test_next:;
     return failures;
@@ -715,7 +715,7 @@ static int test_ic_registry_def_has_dependents(void)
 {
     int failures = 0;
     TEST("impact composition: a .def registry reaches its dependents") {
-        system("rm -rf " IC_FIX_DEF);
+ TEST_DISCARD(system("rm -rf " IC_FIX_DEF));
         ASSERT(ic_write_call_pair(IC_FIX_DEF));
         /* A registry with the shape the tree actually uses: X-macro rows, no
          * C declarations, `#include`d by exactly one translation unit. */
@@ -776,7 +776,7 @@ static int test_ic_registry_def_has_dependents(void)
         ASSERT(sel->dim == ZCL_DEVLOOP_DIM_INCLUDE);
         ASSERT(strcmp(sel->via, "core/modules/net/src/download.c") == 0);
 
-        system("rm -rf " IC_FIX_DEF);
+ TEST_DISCARD(system("rm -rf " IC_FIX_DEF));
         PASS();
     } _test_next:;
     return failures;
@@ -788,7 +788,7 @@ static int test_ic_macro_only_header_has_dependents(void)
 {
     int failures = 0;
     TEST("impact composition: a macro-only header reaches its dependents") {
-        system("rm -rf " IC_FIX_MACRO);
+ TEST_DISCARD(system("rm -rf " IC_FIX_MACRO));
         ASSERT(ic_write_call_pair(IC_FIX_MACRO));
         /* No prototypes, no typedefs, no callable symbol of any kind: the call
          * graph cannot see this file, by construction. */
@@ -838,7 +838,7 @@ static int test_ic_macro_only_header_has_dependents(void)
         ASSERT(sel != NULL);
         ASSERT(sel->dim == ZCL_DEVLOOP_DIM_INCLUDE);
 
-        system("rm -rf " IC_FIX_MACRO);
+ TEST_DISCARD(system("rm -rf " IC_FIX_MACRO));
         PASS();
     } _test_next:;
     return failures;
@@ -852,7 +852,7 @@ static int test_ic_incomplete_dimension_refuses_proof(void)
     TEST("impact composition: an incomplete dimension refuses to be proof") {
         /* (a) a complete fixture is admissible — the positive control, so a
          * blanket "always refuse" cannot pass this case. */
-        system("rm -rf " IC_FIX_MACRO);
+ TEST_DISCARD(system("rm -rf " IC_FIX_MACRO));
         ASSERT(ic_write_call_pair(IC_FIX_MACRO));
         ASSERT(ic_write_depfiles(IC_FIX_MACRO));
         const char *files[] = { "core/modules/net/src/tor_integration.c" };
@@ -867,7 +867,7 @@ static int test_ic_incomplete_dimension_refuses_proof(void)
          * one: the index answered, and its answer was "more than this plan can
          * list". The universal closure is the sound reading of that, so the
          * plan stays admissible — and covers everything. */
-        system("rm -rf " IC_FIX_TRUNC);
+ TEST_DISCARD(system("rm -rf " IC_FIX_TRUNC));
         ASSERT(ic_write_call_pair(IC_FIX_TRUNC));
         ASSERT(ic_write_depfiles(IC_FIX_TRUNC));
         ASSERT(ic_write_fanout_caller(IC_FIX_TRUNC));
@@ -890,7 +890,7 @@ static int test_ic_incomplete_dimension_refuses_proof(void)
         /* (d) no depfiles at all: the include dimension was never answerable,
          * which is a different fact from "nothing depends on this". Same
          * refusal, and again the same word the result cache uses. */
-        system("rm -rf " IC_FIX_NODEPS);
+ TEST_DISCARD(system("rm -rf " IC_FIX_NODEPS));
         ASSERT(ic_write_call_pair(IC_FIX_NODEPS));
         const char *header_files[] = { "core/modules/net/include/net/net.h" };
         ASSERT(ic_write(IC_FIX_NODEPS, header_files[0],
@@ -945,9 +945,9 @@ static int test_ic_incomplete_dimension_refuses_proof(void)
                       "\"agent_next_action\":\"z23-dev dev begin\"")
                != NULL);
 
-        system("rm -rf " IC_FIX_TRUNC);
-        system("rm -rf " IC_FIX_MACRO);
-        system("rm -rf " IC_FIX_NODEPS);
+ TEST_DISCARD(system("rm -rf " IC_FIX_TRUNC));
+ TEST_DISCARD(system("rm -rf " IC_FIX_MACRO));
+ TEST_DISCARD(system("rm -rf " IC_FIX_NODEPS));
         PASS();
     } _test_next:;
     return failures;
@@ -976,7 +976,7 @@ static int test_ic_capacity_bound_runs_everything(void)
         /* (a) the group array fills. The fixture names a few dozen real
          * proof-owning test files; the seam lowers the ceiling so the cap is
          * reachable without a fixture that has to out-name the catalog. */
-        system("rm -rf " IC_FIX_GROUP);
+ TEST_DISCARD(system("rm -rf " IC_FIX_GROUP));
         ASSERT(ic_write_call_pair(IC_FIX_GROUP));
         ASSERT(ic_write_depfiles(IC_FIX_GROUP));
         size_t n = sizeof(ic_many_group_files) /
@@ -1115,9 +1115,9 @@ static int test_ic_capacity_bound_runs_everything(void)
         ASSERT(!zcl_devloop_plan_proof_admissible(&blind, &why));
         ASSERT(strcmp(why, "no-code-index") == 0);
 
-        system("rm -rf " IC_FIX_GROUP);
-        system("rm -rf " IC_FIX_HOST_BARE);
-        system("rm -rf " IC_FIX_HOST_FULL);
+ TEST_DISCARD(system("rm -rf " IC_FIX_GROUP));
+ TEST_DISCARD(system("rm -rf " IC_FIX_HOST_BARE));
+ TEST_DISCARD(system("rm -rf " IC_FIX_HOST_FULL));
         PASS();
     } _test_next:;
     ic_host_fixture_restore(ic_fixture_saved, ic_fixture_was_set);
@@ -1240,8 +1240,8 @@ static int test_ic_host_need_table_is_closed(void)
         ASSERT(zcl_test_group_host_need_kind_name(bogus.kind) == NULL);
         ASSERT(!zcl_test_group_host_need_met(IC_FIX_HOST_FULL, NULL));
 
-        system("rm -rf " IC_FIX_HOST_BARE);
-        system("rm -rf " IC_FIX_HOST_FULL);
+ TEST_DISCARD(system("rm -rf " IC_FIX_HOST_BARE));
+ TEST_DISCARD(system("rm -rf " IC_FIX_HOST_FULL));
         PASS();
     } _test_next:;
     return failures;
@@ -1253,7 +1253,7 @@ static int test_ic_every_selection_has_a_reason(void)
 {
     int failures = 0;
     TEST("impact composition: every selected group names its dimension") {
-        system("rm -rf " IC_FIX_DEF);
+ TEST_DISCARD(system("rm -rf " IC_FIX_DEF));
         ASSERT(ic_write_call_pair(IC_FIX_DEF));
         ASSERT(ic_write(IC_FIX_DEF,
                         "engine/controllers/include/controllers/ic_rows.def",
@@ -1364,7 +1364,7 @@ static int test_ic_every_selection_has_a_reason(void)
         ASSERT(n <= ZCL_DEVLOOP_PLAN_WIRE_MAX);
         ASSERT(dn <= ZCL_DEVLOOP_PLAN_WIRE_MAX);
 
-        system("rm -rf " IC_FIX_DEF);
+ TEST_DISCARD(system("rm -rf " IC_FIX_DEF));
         PASS();
     } _test_next:;
     return failures;
@@ -1397,7 +1397,7 @@ static int test_ic_union_never_loses_a_rule_group(void)
 {
     int failures = 0;
     TEST("impact composition: the union never loses a group system A named") {
-        system("rm -rf " IC_FIX_MACRO);
+ TEST_DISCARD(system("rm -rf " IC_FIX_MACRO));
         ASSERT(ic_write_call_pair(IC_FIX_MACRO));
         ASSERT(ic_write_depfiles(IC_FIX_MACRO));
 
@@ -1440,7 +1440,7 @@ static int test_ic_union_never_loses_a_rule_group(void)
         ASSERT(s != NULL);
         ASSERT(s->dim == ZCL_DEVLOOP_DIM_SEMANTIC);
 
-        system("rm -rf " IC_FIX_MACRO);
+ TEST_DISCARD(system("rm -rf " IC_FIX_MACRO));
         PASS();
     } _test_next:;
     return failures;
@@ -1663,7 +1663,7 @@ static int test_ic_snapshot_overlays_current_symbols(void)
 {
     int failures = 0;
     TEST("impact composition: resident snapshot overlays current changed symbols") {
-        system("rm -rf " IC_FIX_SNAPSHOT);
+ TEST_DISCARD(system("rm -rf " IC_FIX_SNAPSHOT));
         ASSERT(ic_write(IC_FIX_SNAPSHOT, "core/modules/net/src/tor_integration.c",
                         "int old_unreferenced(void) { return 1; }\n"));
         ASSERT(ic_write(IC_FIX_SNAPSHOT, "core/modules/net/src/download.c",
@@ -1688,7 +1688,7 @@ static int test_ic_snapshot_overlays_current_symbols(void)
         ASSERT(ic_planned(&snapshot, "download"));
         ASSERT(zcl_devloop_plan_proof_admissible(&snapshot, NULL));
 
-        system("rm -rf " IC_FIX_SNAPSHOT);
+ TEST_DISCARD(system("rm -rf " IC_FIX_SNAPSHOT));
         PASS();
     } _test_next:;
     return failures;
@@ -4861,7 +4861,7 @@ static int test_ic_changed_set_reads_a_private_generation_worktree(void)
                                 "git -C " IC_CHANGED_REPO
                                 " worktree remove --force %s >/dev/null 2>&1",
                                 generation) < sizeof(rmcmd));
-        (void)system(rmcmd);
+         TEST_DISCARD(system(rmcmd));
         PASS();
     } _test_next:;
     return failures;
@@ -4909,7 +4909,7 @@ static int test_ic_changed_set_refuses_above_its_ceiling(void)
             oversize, (size_t)ZCL_DEVLOOP_MAX_FILES + 1, &plan);
         free((void *)oversize);
         ASSERT(!planned);
-        system("rm -rf " IC_FIX_CHANGED);
+ TEST_DISCARD(system("rm -rf " IC_FIX_CHANGED));
         PASS();
     } _test_next:;
     return failures;
@@ -7194,7 +7194,7 @@ static pid_t ic_step_lock_holder(const char *path, int hold_ms)
         int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
         (void)close(ready[0]);
         if (fd < 0 || flock(fd, LOCK_EX) != 0) _exit(3);
-        (void)write(ready[1], "1", 1);
+         TEST_DISCARD(write(ready[1], "1", 1));
         (void)close(ready[1]);
         platform_sleep_ms(hold_ms);
         _exit(0);
@@ -9104,7 +9104,7 @@ static int test_ic_generation_hooks_configure_points_at_its_own_copy(void)
             cmd, sizeof(cmd),
             "git -C %s worktree remove --force %s >/dev/null 2>&1", donor,
             generation) < sizeof(cmd));
-        (void)system(cmd);
+         TEST_DISCARD(system(cmd));
         ASSERT(test_rm_rf_recursive(donor) == 0);
 #endif
         PASS();
@@ -10481,7 +10481,7 @@ static void ic_worker_death_kill(struct ic_worker_death_ctx *c,
         kill((pid_t)o->worker_pid, 0) == 0;
     if (o->ready && o->lease_pid_alive)
         o->kill_sent = kill((pid_t)o->worker_pid, SIGKILL) == 0;
-    (void)write(c->channels[1], "done\n", 5);
+     TEST_DISCARD(write(c->channels[1], "done\n", 5));
     int status = 0;
     o->requester_reaped = ic_foreground_reap(c->requester, &status);
     o->requester_exit = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
@@ -10905,7 +10905,7 @@ static bool ic_write_include_fanout(const char *root, bool unsafe)
 {
     char rm[4096];
     (void)snprintf(rm, sizeof(rm), "rm -rf %s", root);
-    system(rm);
+ TEST_DISCARD(system(rm));
     return ic_write_call_pair(root) &&
            ic_write(root, IC_INCCAP_DEF, "/* registry fixture */\n"
                                          "IC_ROW(alpha, 1)\n") &&
@@ -11054,7 +11054,7 @@ static int test_ic_include_capacity_runs_everything(void)
         ASSERT(strcmp(why, "closure-truncated") == 0);
 
         /* (b3) no include graph at all still refuses with its own word. */
-        system("rm -rf " IC_FIX_INCCAP);
+ TEST_DISCARD(system("rm -rf " IC_FIX_INCCAP));
         ASSERT(ic_write_call_pair(IC_FIX_INCCAP));
         ASSERT(ic_write(IC_FIX_INCCAP, IC_INCCAP_DEF, "IC_ROW(alpha, 1)\n"));
         ASSERT(ic_include_plan(1, &plan));
@@ -11063,8 +11063,8 @@ static int test_ic_include_capacity_runs_everything(void)
         ASSERT(!zcl_devloop_plan_proof_admissible(&plan, &why));
         ASSERT(strcmp(why, "no-include-graph") == 0);
 
-        system("rm -rf " IC_FIX_INCCAP);
-        system("rm -rf " IC_FIX_HOST_FULL);
+ TEST_DISCARD(system("rm -rf " IC_FIX_INCCAP));
+ TEST_DISCARD(system("rm -rf " IC_FIX_HOST_FULL));
         PASS();
     } _test_next:;
     zcl_devloop_test_closure_file_ceiling = 0;
@@ -11114,7 +11114,7 @@ static int test_ic_path_group_cap_runs_everything(void)
 
         /* Closing the plan keeps the widening and asks no graph for groups
          * the catalog already holds. */
-        system("rm -rf " IC_FIX_PATHCAP);
+ TEST_DISCARD(system("rm -rf " IC_FIX_PATHCAP));
         ASSERT(ic_write_call_pair(IC_FIX_PATHCAP));
         ASSERT(ic_write_depfiles(IC_FIX_PATHCAP));
         ASSERT(zcl_devloop_plan_add_closure(IC_FIX_PATHCAP, files, n, &plan));
@@ -11170,8 +11170,8 @@ static int test_ic_path_group_cap_runs_everything(void)
         ASSERT(!small.closure_universal);
         ASSERT(!small.path_universal);
 
-        system("rm -rf " IC_FIX_PATHCAP);
-        system("rm -rf " IC_FIX_HOST_FULL);
+ TEST_DISCARD(system("rm -rf " IC_FIX_PATHCAP));
+ TEST_DISCARD(system("rm -rf " IC_FIX_HOST_FULL));
         PASS();
     } _test_next:;
     ic_host_fixture_restore(ic_fixture_saved, ic_fixture_was_set);

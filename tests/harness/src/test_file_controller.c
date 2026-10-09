@@ -67,7 +67,7 @@ static void cleanup_manifest_test_dir(const char *dir)
 {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
-    system(cmd);
+ TEST_DISCARD(system(cmd));
 }
 
 static void cleanup_file_controller_test_dir(const char *dir)

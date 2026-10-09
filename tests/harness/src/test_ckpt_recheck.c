@@ -90,8 +90,8 @@ static int ckr_run_verify_rom_child(const char *dir,
     if (pid < 0)
         return -1;
     if (pid == 0) {
-        (void)freopen("/dev/null", "w", stdout);
-        (void)freopen("/dev/null", "w", stderr);
+         TEST_DISCARD(freopen("/dev/null", "w", stdout));
+         TEST_DISCARD(freopen("/dev/null", "w", stderr));
         checkpoints_set_sha3_override_for_test(override_cp);
         if (!progress_store_open(dir))
             _exit(2);

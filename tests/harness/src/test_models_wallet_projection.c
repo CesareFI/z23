@@ -109,7 +109,7 @@ int test_model_wallet_projection(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -167,7 +167,7 @@ int test_model_wallet_projection(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -238,7 +238,7 @@ int test_model_wallet_projection(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -332,7 +332,7 @@ int test_model_wallet_projection(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -474,7 +474,7 @@ int test_model_wallet_projection(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

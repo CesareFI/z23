@@ -341,7 +341,7 @@ int test_utxo_snapshot_loader(void)
     if (!f2) { printf("FAIL (reopen)\n"); failures++; goto cleanup; }
     fseek(f2, 200, SEEK_SET); /* somewhere in the body */
     uint8_t orig;
-    fread(&orig, 1, 1, f2);
+ TEST_DISCARD(fread(&orig, 1, 1, f2));
     fseek(f2, 200, SEEK_SET);
     uint8_t flipped = orig ^ 0xff;
     fwrite(&flipped, 1, 1, f2);

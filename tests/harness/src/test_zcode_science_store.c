@@ -79,7 +79,7 @@ static void zstore_teardown(struct node_db *ndb, const char *dir)
     char cmd[ZSTORE_DIR_CAP + 16];
     int n = snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);
     if (n > 0 && (size_t)n < sizeof(cmd))
-        (void)system(cmd);
+         TEST_DISCARD(system(cmd));
 }
 
 /* Count files under <dir>/.zvcs/objects/<shard>/. */
@@ -1219,7 +1219,7 @@ static int test_zstore_publish(void)
             char cmd[ZSTORE_DIR_CAP + 16];
             n = snprintf(cmd, sizeof(cmd), "rm -rf '%s'", sdir);
             if (n > 0 && (size_t)n < sizeof(cmd))
-                (void)system(cmd);
+                 TEST_DISCARD(system(cmd));
         }
         PASS();
     } _test_next:;
@@ -1341,7 +1341,7 @@ static int test_zstore_admit(void)
             char cmd[ZSTORE_DIR_CAP + 16];
             n = snprintf(cmd, sizeof(cmd), "rm -rf '%s'", sdir);
             if (n > 0 && (size_t)n < sizeof(cmd))
-                (void)system(cmd);
+                 TEST_DISCARD(system(cmd));
         }
         PASS();
     } _test_next:;

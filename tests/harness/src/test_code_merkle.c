@@ -109,7 +109,7 @@ static bool cm_fixture(const char *dir)
 
 static void cm_reset(void)
 {
-    system("rm -rf " CM_FIX " " CM_COPY);
+ TEST_DISCARD(system("rm -rf " CM_FIX " " CM_COPY));
 }
 
 static bool cm_subtree_hex(struct ci_merkle *m, const char *dir, char out[65])
@@ -346,7 +346,7 @@ static int test_cm_cache_is_derived(void)
 
         /* touch: mtime moves, content does not. The leaf is re-read (the cache
          * key moved) but nothing is dirty, so no node is rehashed. */
-        system("touch " CM_FIX "/core/cm_core.c");
+ TEST_DISCARD(system("touch " CM_FIX "/core/cm_core.c"));
         struct ci_merkle_cost touched;
         struct ci_merkle *t = ci_merkle_refresh(CM_FIX, &touched);
         ASSERT(t);
@@ -418,7 +418,7 @@ static int test_cm_cache_is_derived(void)
 
         /* corrupt the snapshot: it is discarded, not repaired, and the answer
          * is unchanged. */
-        system("printf 'junk' > " CM_FIX "/.codeindex/source_tree.merkle");
+ TEST_DISCARD(system("printf 'junk' > " CM_FIX "/.codeindex/source_tree.merkle"));
         struct ci_merkle_cost bad;
         struct ci_merkle *after_bad = ci_merkle_refresh(CM_FIX, &bad);
         ASSERT(after_bad);

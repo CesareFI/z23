@@ -58,7 +58,7 @@ static void cleanup_test_dir(const char *dir)
 {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
-    (void)system(cmd);
+     TEST_DISCARD(system(cmd));
 }
 
 /* Build a distinguishable synthetic block: `nout` outputs, output i carries

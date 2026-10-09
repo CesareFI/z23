@@ -113,7 +113,7 @@ static void hwb_plant_hdd_wholedisk(const char *root, unsigned maj,
     hwb_write_file(path, "1\n");
     snprintf(link, sizeof(link), "%s/dev/block/%u:%u", root, maj, min);
     unlink(link);
-    symlink("../../devices/fakehdd/block/sdfake", link);
+ TEST_DISCARD(symlink("../../devices/fakehdd/block/sdfake", link));
 }
 
 int test_hw_bench(void)

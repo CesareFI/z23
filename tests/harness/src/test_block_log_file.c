@@ -319,7 +319,7 @@ int test_block_log_file(void)
         char idxpath[512];
         snprintf(idxpath, sizeof idxpath, "%s/blocks.idx", dir);
         int fd = open(idxpath, O_RDWR);
-        ftruncate(fd, 0); close(fd);
+ TEST_DISCARD(ftruncate(fd, 0)); close(fd);
 
         h = NULL; memset(&p, 0, sizeof p);
         struct zcl_result r = block_log_file_open(dir, &h, &p);

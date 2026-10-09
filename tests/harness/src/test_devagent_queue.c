@@ -615,7 +615,7 @@ static int dvx_pool_cases(void)
             v = dvx_ok(&k) && strcmp(dvx_str(&k, "state"), "running") == 0
                     ? 'r'
                     : 'n';
-            (void)write(fds[1], &v, 1);
+             TEST_DISCARD(write(fds[1], &v, 1));
             _exit(dvx_ok(&k) ? 0 : 1);
         }
         b = fork();
@@ -629,7 +629,7 @@ static int dvx_pool_cases(void)
             v = dvx_ok(&k) && strcmp(dvx_str(&k, "state"), "running") == 0
                     ? 'r'
                     : 'n';
-            (void)write(fds[1], &v, 1);
+             TEST_DISCARD(write(fds[1], &v, 1));
             _exit(dvx_ok(&k) ? 0 : 1);
         }
         unsetenv("DVX_HOLD");

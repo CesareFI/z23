@@ -143,7 +143,7 @@ static void hwp_plant_ssd_partition(const char *root, unsigned maj,
     snprintf(path, sizeof(path), "%s/rotational", dir);
     hwp_write_file(path, "0\n");
     snprintf(link, sizeof(link), "%s/dev/block/%u:%u", root, maj, min);
-    symlink("../../devices/fakessd/block/nvmefake/nvmefakep1", link);
+ TEST_DISCARD(symlink("../../devices/fakessd/block/nvmefake/nvmefakep1", link));
 }
 
 /* Plants root/devices/fakehdd/block/sdfake/queue/rotational=1 (HDD-shaped:
@@ -160,7 +160,7 @@ static void hwp_plant_hdd_wholedisk(const char *root, unsigned maj,
     hwp_write_file(path, "1\n");
     snprintf(link, sizeof(link), "%s/dev/block/%u:%u", root, maj, min);
     unlink(link); /* drop a prior entry at this maj:min, if any */
-    symlink("../../devices/fakehdd/block/sdfake", link);
+ TEST_DISCARD(symlink("../../devices/fakehdd/block/sdfake", link));
 }
 
 static int hwp_drain_batch_int_bounds(void)

@@ -46,7 +46,7 @@ static void cleanup_datadir(void)
 {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", test_datadir);
-    system(cmd);
+ TEST_DISCARD(system(cmd));
 }
 
 /* Fetch the CSRF token embedded in the purchase form for product_id.

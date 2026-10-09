@@ -27,6 +27,7 @@ static int wf_main(int argc, char **argv);
 #define printf(...) fprintf(wf_out, __VA_ARGS__)
 #define qsort wf_sort
 #define main wf_main
+#undef MAX_INPUT /* <limits.h> defines it; zmap main.c uses a private size */
 #include "../../../contexts/commons/packages/zmap/app/main.c"
 #undef main
 #undef qsort

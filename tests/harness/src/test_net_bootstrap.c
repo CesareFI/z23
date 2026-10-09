@@ -126,7 +126,7 @@ int test_net_bootstrap(void)
         NBOOT_CHECK("load: missing file is a clean no-op (rc=0)", ok);
         char cmd[700];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
-        (void)system(cmd);
+         TEST_DISCARD(system(cmd));
     }
 
     /* ── addnode_file_load: pedantic parse — bad lines skipped, ────
@@ -175,7 +175,7 @@ int test_net_bootstrap(void)
 
         char cmd[700];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
-        (void)system(cmd);
+         TEST_DISCARD(system(cmd));
     }
 
     /* ── addrman save/load round-trip across independent connman
@@ -258,7 +258,7 @@ int test_net_bootstrap(void)
         connman_free(&cm2);
         char cmd[700];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
-        (void)system(cmd);
+         TEST_DISCARD(system(cmd));
     }
 
     return failures;

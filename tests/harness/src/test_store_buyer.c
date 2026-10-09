@@ -1223,7 +1223,7 @@ int test_store_buyer(void)
     if (failures == 0) {
         char cmd[640];
         (void)snprintf(cmd, sizeof(cmd), "rm -rf %s", datadir);
-        (void)system(cmd);
+         TEST_DISCARD(system(cmd));
     } else {
         printf("store_buyer: debug datadir kept: %s\n", datadir);
     }

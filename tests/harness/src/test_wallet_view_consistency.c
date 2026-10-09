@@ -615,7 +615,7 @@ int check_wallet_view_send_review_with_valid_address_shows_checksum(void)
     }
 
     /* Dump pages to disk for manual inspection */
-    system("mkdir -p .zcl_test_render");
+ TEST_DISCARD(system("mkdir -p .zcl_test_render"));
     {
         const char *routes[][3] = {
             {"GET", "/wallet", "dashboard.html"},

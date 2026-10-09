@@ -17,6 +17,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include "test/test_core.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -463,7 +464,7 @@ static void test_leaf_preimage(void)
     FILE *f = fopen("leaf.c", "wb");
     CS_CHECK("scratch file", f != NULL);
     if (!f) {
-        (void)chdir(oldcwd);
+         TEST_DISCARD(chdir(oldcwd));
         (void)rmdir(dir);
         return;
     }
@@ -538,7 +539,7 @@ static void test_leaf_preimage(void)
     (void)unlink("link.c");
     (void)unlink("target.c");
     (void)unlink("leaf.c");
-    (void)chdir(oldcwd);
+     TEST_DISCARD(chdir(oldcwd));
     (void)rmdir(dir);
 }
 

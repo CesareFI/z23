@@ -2,6 +2,7 @@
  * purpose: Prove the capability census derives uses, tests, duplicates, gaps,
  * packages, and source identity from a bounded source fixture. */
 
+#include "test/test_core.h"
 #include "codeindex/codeindex_inventory.h"
 #include "codeindex/codeindex_semantic_candidate.h"
 #include "codeindex/codeindex_vector_hint.h"
@@ -863,7 +864,7 @@ int test_code_inventory(void)
                                 changed->source_root_sha3, 32) != 0);
     codeindex_inventory_free(changed);
     codeindex_inventory_free(first);
-    if (!ci_failures) (void)system("rm -rf " CI_FIX);
+    if (!ci_failures)  TEST_DISCARD(system("rm -rf " CI_FIX));
     printf("  code_inventory: %s\n", ci_failures ? "FAIL" : "PASS");
     return ci_failures ? 1 : 0;
 }

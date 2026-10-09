@@ -72,7 +72,7 @@ static bool cc_fixture(const char *dir)
     return ok;
 }
 
-static void cc_reset(void) { system("rm -rf " CC_FIX); }
+static void cc_reset(void) { TEST_DISCARD(system("rm -rf " CC_FIX)); }
 
 static bool cc_seal_dir(struct ci_merkle *m, const char *domain,
                         const char *dir, struct zcl_sha3_digest *out,

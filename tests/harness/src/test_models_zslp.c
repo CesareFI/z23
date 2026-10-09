@@ -159,7 +159,7 @@ static int tzslp_test_display_order(void)
         node_db_close(&ndb);
     }
     snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-    system(cmd);
+ TEST_DISCARD(system(cmd));
     if (!why) {
         printf("OK\n");
         return 0;
@@ -230,7 +230,7 @@ int test_model_zslp(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -290,7 +290,7 @@ int test_model_zslp(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -346,7 +346,7 @@ int test_model_zslp(void)
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+ TEST_DISCARD(system(cmd));
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

@@ -350,7 +350,7 @@ static int test_code_capsule_budget_shrink(void)
     int failures = 0;
     TEST("code_capsule: high-fan-in fixture symbol still fits the budget "
          "and reports dropped_sections in the fixed order") {
-        system("rm -rf " CAP_BUDGET_FIX);
+ TEST_DISCARD(system("rm -rf " CAP_BUDGET_FIX));
         ASSERT(write_cap_budget_fixture());
 
         struct zcl_command_context ctx = { .source_root = CAP_BUDGET_FIX };
@@ -392,7 +392,7 @@ static int test_code_capsule_budget_shrink(void)
 
         zcl_command_reply_free(&reply);
         json_free(&input);
-        system("rm -rf " CAP_BUDGET_FIX);
+ TEST_DISCARD(system("rm -rf " CAP_BUDGET_FIX));
         PASS();
     } _test_next:;
     return failures;

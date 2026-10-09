@@ -733,7 +733,7 @@ static void e2e_fixture_free(struct e2e_fixture *f)
     node_db_close(&f->ndb);
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", f->datadir);
-    (void)system(cmd);
+     TEST_DISCARD(system(cmd));
 }
 
 static int test_backfill_e2e(void)

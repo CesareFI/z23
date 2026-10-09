@@ -161,7 +161,7 @@ static bool make_db(int64_t t_sat, int64_t z_sat, int n_txs, int n_peers)
 static void cleanup(void) {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", g_tmp);
-    (void)system(cmd);
+     TEST_DISCARD(system(cmd));
     wallet_view_init(NULL);
 }
 

@@ -2066,7 +2066,9 @@ static bool exact_selection_valid(bool exact, const char *only)
     return false;
 }
 
-#define BUILD_NEEDS_MAX 18u
+/* Upper bound: one slot per BUILD row in test_group_host_needs.def (30 rows,
+ * fewer distinct targets). */
+#define BUILD_NEEDS_MAX 32u
 
 /* A matched group may declare no BUILD needs; an unmatched selector is
  * instead invalid, even when the collector returns an empty list. */

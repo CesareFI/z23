@@ -372,7 +372,7 @@ int test_codeindex_static_callers(void)
     int failures = test_sc_cause_labels() + test_sc_cause_value();
     struct codeindex *ci = NULL;
     TEST("codeindex_static_callers: fixture tree indexes") {
-        (void)system("rm -rf " SC_FIX);
+         TEST_DISCARD(system("rm -rf " SC_FIX));
         ASSERT(sc_write_fixture());
         ci = codeindex_open(SC_FIX);
         ASSERT(ci != NULL);
@@ -386,6 +386,6 @@ int test_codeindex_static_callers(void)
         failures += test_sc_overlay_keys_seeds_the_same_way(ci);
         codeindex_close(ci);
     }
-    (void)system("rm -rf " SC_FIX);
+     TEST_DISCARD(system("rm -rf " SC_FIX));
     return failures;
 }

@@ -180,7 +180,7 @@ static void sa_opret_fixture_free(struct sa_opret_fixture *f)
     node_db_close(&f->ndb);
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", f->datadir);
-    (void)system(cmd);
+     TEST_DISCARD(system(cmd));
 }
 
 static int test_state_auditor_opret_leg(void)

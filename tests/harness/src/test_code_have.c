@@ -360,7 +360,7 @@ int test_code_have(void)
     }
 
     /* ── 2, 3, 6, 7: the hermetic fixture ─────────────────────────────── */
-    system("rm -rf " HAVE_FIX);
+ TEST_DISCARD(system("rm -rf " HAVE_FIX));
     if (!ch_write_fixture(false)) {
         printf("  code_have: write_fixture... FAIL\n");
         return failures + 1;
@@ -453,6 +453,6 @@ int test_code_have(void)
         if (after) codeindex_close(after);
     }
 
-    system("rm -rf " HAVE_FIX);
+ TEST_DISCARD(system("rm -rf " HAVE_FIX));
     return failures;
 }

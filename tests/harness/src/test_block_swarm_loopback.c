@@ -330,7 +330,7 @@ static void bs_seeder_free(struct bs_seeder *s)
 
     char cmd[600];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", s->datadir);
-    (void)system(cmd);
+     TEST_DISCARD(system(cmd));
 }
 
 /* ── Loopback transport (sentinel-guarded pump, per test_snapshot_serve_loopback) ── */

@@ -420,7 +420,7 @@ static bool msc_make_killed_wal(const char *dir, bool producer)
                  sqlite3_exec(db, insert, NULL, NULL, NULL) == SQLITE_OK &&
                  sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
         const char token = ok ? 'R' : 'E';
-        (void)write(ready[1], &token, 1);
+         TEST_DISCARD(write(ready[1], &token, 1));
         if (!ok)
             _exit(2);
         for (;;)
