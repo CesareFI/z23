@@ -29,6 +29,7 @@
 
 #include "chain/chainparams.h"
 #include "core/hash.h"
+#include "net/file_service.h"
 #include "net/msg_internal.h"
 #include "net/version.h"
 #include "platform/time_compat.h"
@@ -712,6 +713,42 @@ static int test_eager_zcl23_addr_exchange_bounded(void)
     return failures;
 }
 
+static int test_zfileaddr_allocation_failure(void)
+{
+    int failures = 0;
+    TEST("version: zfileaddr allocation failure sends no frame") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+        fs_server_stop();
+        fs_server_start(NULL, 0);
+        for (int w = 0; w < 40 && !fs_server_is_running(); w++)
+            platform_sleep_ms(50);
+
+        bool running = fs_server_is_running();
+        bool version_ok = false;
+        struct hs_capture cap;
+        memset(&cap, 0, sizeof(cap));
+        if (running) {
+            struct byte_stream payload;
+            hs_build_version_payload(&payload, PROTOCOL_VERSION,
+                                     0x7A46494C45414444ULL,
+                                     "/ZClassic23:test/");
+            msg_version_fail_zfileaddr_stream_for_test();
+            version_ok = process_version(&f.mp, &f.node, &payload);
+            hs_capture_sent(f.peer_fd, &cap);
+            stream_free(&payload);
+        }
+        fs_server_stop();
+
+        ASSERT(running);
+        ASSERT(version_ok);
+        ASSERT(!hs_captured_has_command(&cap, "zfileaddr"));
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 6b. a real addr message drives the topology graph, not just addrman:
  * process_addr() (msgprocessor_inv.c) records one storage/topology_store.h
  * edge per deserialized entry, keyed on the handshaked peer as observer. The
@@ -1363,6 +1400,7 @@ int test_net_handshake_adversarial(void)
     failures += test_legacy_zcl23_addr_batch_bounded_compatible();
     failures += test_getaddr_bounded_and_answered_once();
     failures += test_eager_zcl23_addr_exchange_bounded();
+    failures += test_zfileaddr_allocation_failure();
     failures += test_addr_message_records_topology_edge();
     failures += test_addr_timestamp_sanitization_rule();
     failures += test_oversized_user_agent_rejected();

@@ -45,6 +45,9 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
                      struct byte_stream *s);
 bool process_verack(struct msg_processor *mp, struct p2p_node *node);
 bool process_sendheaders(struct msg_processor *mp, struct p2p_node *node);
+#ifdef ZCL_TESTING
+void msg_version_fail_zfileaddr_stream_for_test(void);
+#endif
 
 /* msg_headers.c — header sync messages */
 struct block_header;

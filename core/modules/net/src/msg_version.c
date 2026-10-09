@@ -26,6 +26,7 @@
 #include "event/event.h"
 #include "util/clientversion.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include "jobs/reducer_frontier.h"  // lib-layer-ok:provable-tip-served-to-peers
 #include <errno.h>
 #include <pthread.h>
@@ -149,11 +150,18 @@ bool msg_version_should_save_peer(const struct p2p_node *node)
 }
 
 #ifdef ZCL_TESTING
+static bool g_fail_zfileaddr_stream_for_test;
+
 void msg_version_clear_external_ip_for_test(void)
 {
     memset(g_external_ip, 0, sizeof(g_external_ip));
     g_external_port = 0;
     g_has_external_ip = false;
+}
+
+void msg_version_fail_zfileaddr_stream_for_test(void)
+{
+    g_fail_zfileaddr_stream_for_test = true;
 }
 #endif
 
@@ -467,6 +475,34 @@ static int64_t peer_time_offset(int64_t peer_ts, int64_t now)
     return peer_ts - now;
 }
 
+static void msg_version_push_file_service_addr(struct msg_processor *mp,
+                                               struct p2p_node *node)
+{
+    uint8_t faddr[2];
+    uint16_t fport = fs_server_get_port();
+    memcpy(faddr, &fport, sizeof(faddr));
+
+    struct byte_stream fs_msg;
+#ifdef ZCL_TESTING
+    if (g_fail_zfileaddr_stream_for_test) {
+        g_fail_zfileaddr_stream_for_test = false;
+        zcl_alloc_fault_fail_next("stream_data");
+    }
+#endif
+    stream_init(&fs_msg, 4);
+    bool serialized = stream_write_bytes(&fs_msg, faddr, sizeof(faddr));
+    uint8_t offers[STATE_OFFER_BATCH_V1_MAX_WIRE_BYTES];
+    size_t offers_len = state_offer_collect_wire(offers, sizeof(offers));
+    if (serialized && offers_len > 0)
+        serialized = stream_write_bytes(&fs_msg, offers, offers_len);
+    if (serialized && p2p_node_begin_message(node, "zfileaddr",
+                                               mp->params->pchMessageStart)) {
+        p2p_node_write_message_data(node, fs_msg.data, fs_msg.size);
+        (void)p2p_node_end_message(node);
+    }
+    stream_free(&fs_msg);
+}
+
 bool process_version(struct msg_processor *mp, struct p2p_node *node,
                      struct byte_stream *s)
 {
@@ -671,31 +707,8 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
          * do not make it. Saying nothing is the correct, fail-closed answer;
          * a node that starts its file service later advertises on its next
          * handshake. */
-        if (fs_server_is_running()) {
-            uint8_t faddr[2];
-            uint16_t fport = fs_server_get_port();
-            memcpy(faddr, &fport, 2);
-
-            struct byte_stream fs_msg;
-            stream_init(&fs_msg, 4);
-            stream_write_bytes(&fs_msg, faddr, 2);
-            /* ZRC-0011 phase 1a: say WHICH state we hold, not just that we
-             * serve files. The offer batch is APPENDED after the two-byte
-             * port, so an older peer reads its two bytes and ignores the rest
-             * and we stay readable to every node already deployed. Nothing is
-             * appended when this node has no eligible bundle or registered no
-             * provider — that is the pre-offer message, byte for byte. */
-            uint8_t offers[STATE_OFFER_BATCH_V1_MAX_WIRE_BYTES];
-            size_t offers_len = state_offer_collect_wire(offers,
-                                                         sizeof(offers));
-            if (offers_len > 0)
-                stream_write_bytes(&fs_msg, offers, offers_len);
-            p2p_node_begin_message(node, "zfileaddr",
-                                    mp->params->pchMessageStart);
-            p2p_node_write_message_data(node, fs_msg.data, fs_msg.size);
-            p2p_node_end_message(node);
-            stream_free(&fs_msg);
-        }
+        if (fs_server_is_running())
+            msg_version_push_file_service_addr(mp, node);
     }
 
     return true;
