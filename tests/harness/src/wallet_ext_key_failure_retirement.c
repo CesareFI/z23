@@ -11,7 +11,7 @@
 /* Compile the actual key owner with a deterministic scalar-add refusal. The
  * observer reads only the live output span passed to the production cleanse. */
 static unsigned output_wipes;
-static bool output_erased, refuse_master, refuse_child;
+static bool output_erased, refuse_scalar, refuse_child;
 
 static void observe_ext_key_cleanse(void *bytes, size_t length)
 {
@@ -43,7 +43,7 @@ static int refuse_tweak(const secp256k1_context *context,
 static int fixture_scalar(const secp256k1_context *context,
                           const unsigned char *scalar)
 {
-    if (refuse_master) return 0;
+    if (refuse_scalar) return 0;
     return secp256k1_ec_seckey_verify(context, scalar);
 }
 
@@ -70,6 +70,49 @@ static int fixture_scalar(const secp256k1_context *context,
 #include "../../../contexts/wallet/modules/keys/src/key.c"
 #undef memory_cleanse
 
+static bool ext_key_is_zero(const struct ext_key *key)
+{
+    for (size_t i = 0; i < sizeof(*key); ++i)
+        if (((const unsigned char *)key)[i] != 0) return false;
+    return true;
+}
+
+static bool failed_master_is_retired(struct ext_key *invalid,
+                                     const unsigned char *seed,
+                                     size_t seed_len)
+{
+    output_wipes = 0;
+    output_erased = true;
+    refuse_scalar = true;
+    memset(invalid, 0xa5, sizeof(*invalid));
+    ext_retirement_ext_key_set_master(invalid, seed, (unsigned int)seed_len);
+    return output_wipes == 1 && output_erased && ext_key_is_zero(invalid);
+}
+
+static bool invalid_decode_is_retired(struct ext_key *invalid,
+                                      const unsigned char *encoded)
+{
+    output_wipes = 0;
+    output_erased = true;
+    refuse_scalar = true;
+    memset(invalid, 0xa5, sizeof(*invalid));
+    ext_retirement_ext_key_decode(invalid, encoded);
+    return output_wipes == 1 && output_erased && ext_key_is_zero(invalid);
+}
+
+static bool failed_child_is_retired(const struct ext_key *parent,
+                                    struct ext_key *child)
+{
+    output_wipes = 0;
+    output_erased = true;
+    refuse_scalar = false;
+    refuse_child = true;
+    memset(child, 0xa5, sizeof(*child));
+    const bool derived = ext_retirement_ext_key_derive(parent, child, 1);
+    return !derived && output_wipes == 1 && output_erased &&
+           ext_key_is_zero(child);
+}
+
 int wallet_ext_key_failure_retirement_cases(void)
 {
     const unsigned char seed[16] = {
@@ -77,27 +120,16 @@ int wallet_ext_key_failure_retirement_cases(void)
         0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
     };
     struct ext_key parent, child, invalid;
-    refuse_master = refuse_child = false;
+    refuse_scalar = refuse_child = false;
     output_erased = true;
     ext_retirement_ecc_start();
     ext_retirement_ext_key_set_master(&parent, seed, sizeof(seed));
 
-    output_wipes = 0;
-    refuse_master = true;
-    memset(&invalid, 0xa5, sizeof(invalid));
-    ext_retirement_ext_key_set_master(&invalid, seed, sizeof(seed));
-    bool okay = output_wipes == 1 && output_erased;
-    for (size_t i = 0; i < sizeof(invalid); ++i)
-        if (((const unsigned char *)&invalid)[i] != 0) okay = false;
-
-    refuse_master = false;
-    output_wipes = 0;
-    refuse_child = true;
-    memset(&child, 0xa5, sizeof(child));
-    const bool derived = ext_retirement_ext_key_derive(&parent, &child, 1);
-    okay = !derived && output_wipes == 1 && output_erased && okay;
-    for (size_t i = 0; i < sizeof(child); ++i)
-        if (((const unsigned char *)&child)[i] != 0) okay = false;
+    unsigned char encoded[BIP32_EXTKEY_SIZE];
+    memset(encoded, 0x5a, sizeof(encoded));
+    bool okay = failed_master_is_retired(&invalid, seed, sizeof(seed));
+    okay = invalid_decode_is_retired(&invalid, encoded) && okay;
+    okay = failed_child_is_retired(&parent, &child) && okay;
 
     refuse_child = false;
     output_wipes = 0;
@@ -106,6 +138,7 @@ int wallet_ext_key_failure_retirement_cases(void)
     memory_cleanse(&parent, sizeof(parent));
     memory_cleanse(&child, sizeof(child));
     memory_cleanse(&invalid, sizeof(invalid));
+    memory_cleanse(encoded, sizeof(encoded));
     ext_retirement_ecc_stop();
     printf("domain_wallet_key_derivation: failed ext key outputs retire... %s\n",
            okay ? "OK" : "FAIL");

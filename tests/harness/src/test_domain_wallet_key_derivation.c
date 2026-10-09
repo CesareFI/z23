@@ -501,9 +501,14 @@ static int wallet_derivation_cases_5(void)
     return failures;
 }
 
+int wallet_key_retirement_cases(void);
+int wallet_pubkey_verify_failure_cases(void);
+
 int test_domain_wallet_key_derivation(void)
 {
-    int failures = wallet_ext_key_failure_retirement_cases();
+    int failures = wallet_key_retirement_cases();
+    failures += wallet_ext_key_failure_retirement_cases();
+    failures += wallet_pubkey_verify_failure_cases();
     failures += wallet_derivation_cases_1();
     failures += wallet_derivation_cases_2();
     failures += wallet_derivation_cases_3();

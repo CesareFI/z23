@@ -98,8 +98,10 @@ bool privkey_verify_pubkey(const struct privkey *k, const struct pubkey *pk)
     if (pubkey_is_compressed(pk) != k->fCompressed)
         return false;
     unsigned char rnd[8];
-    if (!zcl_random_secret_bytes(rnd, sizeof(rnd), "privkey_verify_nonce"))
+    if (!zcl_random_secret_bytes(rnd, sizeof(rnd), "privkey_verify_nonce")) {
+        memory_cleanse(rnd, sizeof(rnd));
         return false;
+    }
     const char *str = "Zclassic key verification\n";
     size_t str_len = 26;
     struct sha256_ctx hasher;
@@ -113,11 +115,22 @@ bool privkey_verify_pubkey(const struct privkey *k, const struct pubkey *pk)
     sha256_write(&hasher2, tmp, 32);
     struct uint256 hash;
     sha256_finalize(&hasher2, hash.data);
+    memory_cleanse(rnd, sizeof(rnd));
+    memory_cleanse(&hasher, sizeof(hasher));
+    memory_cleanse(tmp, sizeof(tmp));
+    memory_cleanse(&hasher2, sizeof(hasher2));
 
     unsigned char sig[SIGNATURE_SIZE];
     size_t siglen = SIGNATURE_SIZE;
-    privkey_sign(k, &hash, sig, &siglen);
-    return pubkey_verify(pk, &hash, sig, siglen);
+    if (!privkey_sign(k, &hash, sig, &siglen)) {
+        memory_cleanse(&hash, sizeof(hash));
+        memory_cleanse(sig, sizeof(sig));
+        return false;
+    }
+    bool verified = pubkey_verify(pk, &hash, sig, siglen);
+    memory_cleanse(&hash, sizeof(hash));
+    memory_cleanse(sig, sizeof(sig));
+    return verified;
 }
 
 bool privkey_derive(const struct privkey *k, struct privkey *child,
@@ -168,6 +181,8 @@ void ext_key_decode(struct ext_key *ek,
     memcpy(ek->key.vch, code + 42, 32);
     ek->key.fValid = secp256k1_ec_seckey_verify(secp256k1_ctx_sign, ek->key.vch);
     ek->key.fCompressed = true;
+    if (!ek->key.fValid)
+        memory_cleanse(ek, sizeof(*ek));
 }
 
 bool ext_key_derive(const struct ext_key *ek, struct ext_key *out,
@@ -197,6 +212,7 @@ void ext_key_set_master(struct ext_key *ek, const unsigned char *seed,
     hmac_sha512_init(&hmac, hashkey, sizeof(hashkey));
     hmac_sha512_write(&hmac, seed, nSeedLen);
     hmac_sha512_finalize(&hmac, out);
+    memory_cleanse(&hmac, sizeof(hmac));
     memcpy(ek->key.vch, out, 32);
     ek->key.fValid = secp256k1_ec_seckey_verify(secp256k1_ctx_sign, ek->key.vch);
     ek->key.fCompressed = true;
@@ -224,7 +240,9 @@ bool ecc_init_sanity_check(void)
     privkey_make_new(&k, true);
     struct pubkey pk;
     privkey_get_pubkey(&k, &pk);
-    return privkey_verify_pubkey(&k, &pk);
+    bool verified = privkey_verify_pubkey(&k, &pk);
+    memory_cleanse(&k, sizeof(k));
+    return verified;
 }
 
 /* The assertions in ecc_start guard the process-wide SIGNING context's
@@ -243,7 +261,7 @@ void ecc_start(void)
         abort(); // abort-ok: no entropy; wrapper logged, void return blocks propagation, and an unblinded context leaks key material via side channels
     bool ret = secp256k1_context_randomize(ctx, seed);
     assert(ret); // abort-ok: unrandomized signing context, side-channel blinding is not in force
-    memset(seed, 0, sizeof(seed));
+    memory_cleanse(seed, sizeof(seed));
     secp256k1_ctx_sign = ctx;
 }
 
