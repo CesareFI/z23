@@ -8266,6 +8266,8 @@ static int test_ic_local_selection_build_needs(void)
 
         static const char *const verifier_groups[] = {
             "test_zcode_verify", "test_zcode_package_registry", "test_zcode_add",
+            "test_zcode_package_dev", "test_zcode_package_dev_shard_01",
+            "test_zcode_package_dev_shard_02", "test_zcode_package_dev_shard_03",
             "test_resident_launch_contract", "test_build_fabric",
             "test_build_fabric_attach", "test_zcode_dev_objects",
             "test_fastobj_carrier", "test_zcode_swarm_net",
