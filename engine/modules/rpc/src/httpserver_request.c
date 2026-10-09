@@ -441,7 +441,6 @@ static void http_dispatch_json_rpc(
         /* Body sized and written by the same value: send exactly the
          * bytes we wrote — never an unclamped length past the buffer. */
         rpc_conn_send_response(conn, 200, "OK", resp_buf, resp_len);
-        free(resp_buf);
     } else {
         char errbuf[256];
         size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
@@ -451,6 +450,9 @@ static void http_dispatch_json_rpc(
                       errbuf, elen);
     }
 
+    rpc_http_retire_response_copies(req.method, &result, &response,
+                                    resp_buf, resp_buf ? resp_len + 1 : 0);
+    free(resp_buf);
     json_free(&result);
     json_free(&response);
     json_request_free(&req);

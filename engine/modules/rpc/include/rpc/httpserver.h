@@ -45,6 +45,14 @@ bool rpc_http_test_build_response_envelope(bool rpc_ok,
 bool rpc_http_test_serialize_response(const struct json_value *response,
                                       char **out_buf, size_t *out_len);
 
+/* Retire response copies after the synchronous send completes. Sensitive RPC
+ * methods cleanse their result tree, envelope copy and serialized buffer;
+ * ordinary methods leave the caller-owned values untouched. */
+void rpc_http_retire_response_copies(const char *method,
+                                     struct json_value *rpc_result,
+                                     struct json_value *response,
+                                     char *serialized, size_t serialized_size);
+
 /* Accept-queue admission accounting. The HTTP front door refuses new
  * clients when the admission queue is full, so these are the numbers
  * that say WHY a node is answering "RPC server busy" — how deep the
