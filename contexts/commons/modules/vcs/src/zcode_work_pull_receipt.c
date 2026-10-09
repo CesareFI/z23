@@ -156,8 +156,11 @@ enum vcs_zcode_work_pull_receipt_result vcs_zcode_work_pull_receipt_load(
                                     VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES, &wire,
                                     &len) != 0)
         return VCS_ZCODE_WORK_PULL_RECEIPT_CODEC;
+    /* The object is present; an emptied one is not a canonical receipt. */
     enum vcs_zcode_work_pull_receipt_result result =
-        vcs_zcode_work_pull_receipt_decode(wire, len, root, out, checked);
+        (!wire || len == 0)
+            ? VCS_ZCODE_WORK_PULL_RECEIPT_CODEC
+            : vcs_zcode_work_pull_receipt_decode(wire, len, root, out, checked);
     free(wire);
     return result;
 }

@@ -9696,8 +9696,8 @@ static int test_zd_work_pull_receipt_reopen_damaged(const uint8_t secret[32],
         static const enum vcs_zcode_work_pull_receipt_result want[] = {
             VCS_ZCODE_WORK_PULL_RECEIPT_CODEC,
             VCS_ZCODE_WORK_PULL_RECEIPT_ROOT_MISMATCH,
-            /* zero bytes read back as a NULL wire, which decode refuses */
-            VCS_ZCODE_WORK_PULL_RECEIPT_NULL,
+            /* An emptied stored receipt is present but not canonical, not NOT_FOUND. */
+            VCS_ZCODE_WORK_PULL_RECEIPT_CODEC,
         };
         for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
             struct vcs_zcode_work_receipt_v1 loaded;
@@ -9709,6 +9709,9 @@ static int test_zd_work_pull_receipt_reopen_damaged(const uint8_t secret[32],
             ASSERT(setup_ok);
             ASSERT(got != VCS_ZCODE_WORK_PULL_RECEIPT_OK);
             ASSERT_EQ(got, want[i]);
+            if (kinds[i] == ZD_RECEIPT_DAMAGE_ZERO_LENGTH)
+                ASSERT(strcmp(vcs_zcode_work_pull_receipt_result_string(got),
+                              "not-canonical") == 0);
             ASSERT(!zcl_bytes_any_set(loaded.signer_pubkey, 32));
             ASSERT(!zcl_bytes_any_set(loaded.task_root, 32));
         }
