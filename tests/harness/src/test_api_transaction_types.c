@@ -261,7 +261,7 @@ static bool tx_type_micro_lab_slot101_fail_closed(
         !json_get_bool(json_get(&root, "ok"));
     const struct json_value *error = json_get(&root, "error");
     ok = ok && error &&
-        strcmp(json_get_str(json_get(error, "code")), "BAD_SLOT") == 0;
+        strcmp(json_get_str(json_get(error, "code")), "INVALID_INPUT") == 0;
     json_free(&root);
     return ok;
 }

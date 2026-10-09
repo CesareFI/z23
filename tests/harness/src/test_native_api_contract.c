@@ -328,8 +328,8 @@ static int test_missing_required_input_fails_closed_structured(void)
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
     TEST("required-input leaves fail closed with a structured error, not a silent pass") {
         struct { const char *path; const char *expected_code; } cases[] = {
-            { "discover.describe", "UNKNOWN_PATH" },
-            { "discover.schema", "UNKNOWN_PATH" },
+            { "discover.describe", "INVALID_INPUT" },
+            { "discover.schema", "INVALID_INPUT" },
             { "dev.app.describe", "MISSING_APP_ID" },
             { "dev.app.plan", "MISSING_ARGS" },
         };

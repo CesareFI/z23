@@ -113,6 +113,31 @@ static bool refuse_capability(const struct zcl_command_spec *spec,
     return true;
 }
 
+/* Typed-input gate shared by every transport, so refuse_policy and every
+ * handler can trust the schema bounds. Controls (view, max_items, cursor)
+ * are declared keys, so the object the CLI validates passes unchanged. */
+static bool refuse_invalid_input(const struct zcl_command_spec *spec,
+                                 const struct json_value *input,
+                                 struct zcl_command_reply *reply)
+{
+    /* A spec with no declared schema (hand-built fixture) has no typed
+     * input to check; catalog specs always carry one. */
+    if (!spec->input_schema)
+        return false;
+    char why[128];
+    if (zcl_command_registry_input_validate(spec, input, why, sizeof(why)))
+        return false;
+    char detail[ZCL_COMMAND_MAX_PATH + 512];
+    (void)zcl_command_registry_input_reject_detail(spec, why, detail,
+                                                   sizeof(detail));
+    zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                           ZCL_COMMAND_EXIT_INVALID, "INVALID_INPUT",
+                           "normalize", false, false, detail, spec->path);
+    (void)command_registry_reply_add_describe_next(
+        reply, spec, "inspect the input schema");
+    return true;
+}
+
 static bool refuse_policy(const struct zcl_command_spec *spec,
                           const struct zcl_command_context *context,
                           const struct json_value *input,
@@ -184,6 +209,7 @@ void command_registry_execute_run(
         refuse_lane(spec, context, reply) ||
         refuse_authority(spec, context, reply) ||
         refuse_capability(spec, context, reply) ||
+        refuse_invalid_input(spec, input, reply) ||
         refuse_policy(spec, context, input, reply, policy))
         return;
     execute_handler(spec, context, input, handler, invoked_by_alias,

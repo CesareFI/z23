@@ -1108,6 +1108,109 @@ static int t_policy_fact_types(void)
     return failures;
 }
 
+static int g_cib_handler_calls;
+
+static void cib_counting_handler(const struct zcl_command_request *request,
+                                 struct zcl_command_reply *reply)
+{
+    (void)request;
+    (void)reply;
+    g_cib_handler_calls++;
+}
+
+static bool cib_execute_int(const struct zcl_command_spec *spec,
+                            const char *key, int64_t value, char *out,
+                            size_t out_size, enum zcl_command_exit *code)
+{
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    struct zcl_command_context ctx = {
+        .registry = reg,
+        .granted_capabilities = ~(uint64_t)0,
+        .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+    };
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    bool built = json_push_kv_int(&input, key, value);
+    *code = ZCL_COMMAND_EXIT_OK;
+    size_t n = built ? zcl_command_registry_execute_json(
+                           reg, spec, &ctx, &input, false, spec->path,
+                           "normal", 0, 0, NULL, out, out_size, code)
+                     : 0;
+    json_free(&input);
+    return n > 0;
+}
+
+static int t_execute_json_valid_call(void)
+{
+    int failures = 0;
+    static char out[65536];
+    enum zcl_command_exit code;
+    const struct zcl_command_spec *ok_spec = zcl_command_registry_find(
+        zcl_command_catalog(), "ops.statecatalog", NULL);
+    struct json_value empty;
+    json_init(&empty);
+    json_set_object(&empty);
+    struct zcl_command_context ctx = {
+        .registry = zcl_command_catalog(),
+        .granted_capabilities = ~(uint64_t)0,
+        .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+    };
+    code = ZCL_COMMAND_EXIT_INTERNAL;
+    size_t n = ok_spec ? zcl_command_registry_execute_json(
+                             zcl_command_catalog(), ok_spec, &ctx, &empty,
+                             false, ok_spec->path, "normal", 0, 0, NULL, out,
+                             sizeof(out), &code)
+                       : 0;
+    json_free(&empty);
+    CIB_CHECK("a valid existing call still succeeds",
+              n > 0 && code == ZCL_COMMAND_EXIT_OK);
+    return failures;
+}
+
+static int t_execute_json_validates_input(void)
+{
+    int failures = 0;
+    static char out[65536];
+    enum zcl_command_exit code;
+    const struct zcl_command_spec *real = zcl_command_registry_find(
+        zcl_command_catalog(), "core.node.bootwait", NULL);
+    CIB_CHECK("execute_json fixture leaf exists", real != NULL);
+    if (!real)
+        return failures + 1;
+    /* Counting stub over the real bootwait contract: same keys and ranges. */
+    struct zcl_command_spec stub = *real;
+    stub.handler = cib_counting_handler;
+
+    g_cib_handler_calls = 0;
+    bool got = cib_execute_int(real, "timeout_ms", 999999999, out,
+                               sizeof(out), &code);
+    struct json_value env;
+    bool parsed = got && json_read(&env, out, strlen(out));
+    const struct json_value *err = parsed ? json_get(&env, "error") : NULL;
+    CIB_CHECK("execute_json refuses out-of-range bootwait input",
+              parsed && !json_get_bool(json_get(&env, "ok")) && err &&
+                  code == ZCL_COMMAND_EXIT_INVALID &&
+                  strcmp(json_get_str(json_get(err, "code")),
+                         "INVALID_INPUT") == 0 &&
+                  strcmp(json_get_str(json_get(err, "phase")),
+                         "normalize") == 0 &&
+                  !json_get_bool(json_get(err, "mutated")));
+    if (parsed)
+        json_free(&env);
+
+    got = cib_execute_int(&stub, "timeout_ms", 999999999, out, sizeof(out),
+                          &code);
+    CIB_CHECK("invalid input never reaches the handler",
+              got && code == ZCL_COMMAND_EXIT_INVALID &&
+                  g_cib_handler_calls == 0);
+    got = cib_execute_int(&stub, "timeout_ms", 1000, out, sizeof(out), &code);
+    CIB_CHECK("valid input reaches the handler once",
+              got && code == ZCL_COMMAND_EXIT_OK && g_cib_handler_calls == 1);
+
+    return failures + t_execute_json_valid_call();
+}
+
 int test_command_input_bounds(void)
 {
     printf("\n=== command_input_bounds: per-key input length rules ===\n");
@@ -1133,6 +1236,7 @@ int test_command_input_bounds(void)
     failures += t_local_acceptance_boolean();
     failures += t_resident_binding_types();
     failures += t_policy_fact_types();
+    failures += t_execute_json_validates_input();
     printf("=== command_input_bounds complete: %d failure(s) ===\n", failures);
     return failures;
 }
