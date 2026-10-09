@@ -74,6 +74,94 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+static bool ib_shielded_encode_ok;
+static unsigned ib_shielded_secret_finishes;
+static bool ib_shielded_secret_erased;
+static struct sapling_key_entry ib_shielded_key;
+
+static bool ib_fixture_decode_payment_address(
+    const char *str, uint8_t diversifier_out[ZC_DIVERSIFIER_SIZE],
+    uint8_t pk_d_out[32])
+{
+    (void)str;
+    memset(diversifier_out, 0, ZC_DIVERSIFIER_SIZE);
+    memset(pk_d_out, 0, 32);
+    return true;
+}
+
+static const struct sapling_key_entry *ib_fixture_find_shielded_key(
+    const struct sapling_keystore *sks,
+    const uint8_t diversifier[ZC_DIVERSIFIER_SIZE], const uint8_t pk_d[32])
+{
+    (void)sks;
+    (void)diversifier;
+    (void)pk_d;
+    return &ib_shielded_key;
+}
+
+static bool ib_fixture_encode_viewing_key(const struct zip32_xfvk *xfvk,
+                                          const char *hrp, char *out,
+                                          size_t out_size)
+{
+    (void)xfvk;
+    (void)hrp;
+    if (out_size < sizeof("synthetic-viewing-key")) return false;
+    memset(out, 0x5a, out_size);
+    memcpy(out, "synthetic-viewing-key", sizeof("synthetic-viewing-key"));
+    return ib_shielded_encode_ok;
+}
+
+static bool ib_fixture_encode_spending_key(const struct zip32_xsk *xsk,
+                                           const char *hrp, char *out,
+                                           size_t out_size)
+{
+    (void)xsk;
+    (void)hrp;
+    if (out_size < sizeof("synthetic-spending-key")) return false;
+    memset(out, 0x5a, out_size);
+    memcpy(out, "synthetic-spending-key", sizeof("synthetic-spending-key"));
+    return ib_shielded_encode_ok;
+}
+
+static bool ib_fixture_finish_secret(struct json_value *result, char *secret,
+                                     size_t secret_size, bool encoded)
+{
+    if (encoded) json_set_str(result, secret);
+    bool populated = false;
+    for (size_t i = 0; i < secret_size; i++)
+        if (secret[i] != 0) populated = true;
+    memory_cleanse(secret, secret_size);
+    ib_shielded_secret_finishes++;
+    ib_shielded_secret_erased = populated;
+    for (size_t i = 0; i < secret_size; i++)
+        if (secret[i] != 0) ib_shielded_secret_erased = false;
+    return encoded;
+}
+
+/* Compile the actual shielded export owner under deterministic boundary
+ * observers. Renaming keeps the ordinary production object linked too. */
+#define wallet_ctx ib_shielded_wallet_ctx
+#define rpc_z_exportkey ib_rpc_z_exportkey
+#define rpc_z_importkey ib_rpc_z_importkey
+#define rpc_z_exportviewingkey ib_rpc_z_exportviewingkey
+#define rpc_z_getmemo ib_rpc_z_getmemo
+#define sapling_decode_payment_address ib_fixture_decode_payment_address
+#define sapling_keystore_find_by_address ib_fixture_find_shielded_key
+#define sapling_encode_extended_spending_key ib_fixture_encode_spending_key
+#define sapling_encode_extended_full_viewing_key ib_fixture_encode_viewing_key
+#define wallet_rpc_set_secret_string ib_fixture_finish_secret
+#include "../../../contexts/wallet/controllers/src/wallet_shielded_keys.c"
+#undef wallet_rpc_set_secret_string
+#undef sapling_encode_extended_full_viewing_key
+#undef sapling_encode_extended_spending_key
+#undef sapling_keystore_find_by_address
+#undef sapling_decode_payment_address
+#undef rpc_z_getmemo
+#undef rpc_z_exportviewingkey
+#undef rpc_z_importkey
+#undef rpc_z_exportkey
+#undef wallet_ctx
+
 #define IB_CHECK(name, expr) do {              \
     printf("  %s... ", (name));                \
     if (expr) printf("OK\n");                  \
@@ -247,7 +335,8 @@ static bool ib_secret_result_retires_copy(void)
     memcpy(secret_copy, "synthetic-wif", sizeof("synthetic-wif"));
     struct json_value result;
     json_init(&result);
-    wallet_rpc_set_secret_string(&result, secret_copy, sizeof(secret_copy));
+    wallet_rpc_set_secret_string(&result, secret_copy, sizeof(secret_copy),
+                                 true);
     bool retired = true;
     for (size_t i = 0; i < sizeof(secret_copy); i++)
         if (secret_copy[i] != 0) retired = false;
@@ -255,6 +344,54 @@ static bool ib_secret_result_retires_copy(void)
         strcmp(json_get_str(&result), "synthetic-wif") == 0;
     json_free(&result);
     return copied && retired;
+}
+
+static bool ib_shielded_export_retires_scratch(bool encode_ok)
+{
+    struct wallet *wallet = zcl_calloc(1, sizeof(*wallet),
+                                       "ib-shielded-export-wallet");
+    if (!wallet) return false;
+    wallet_rpc_context_set_base(wallet, NULL, NULL, NULL, NULL, NULL);
+    struct json_value params, result;
+    ib_params_1str(&params, "synthetic-z-address");
+    json_init(&result);
+    ib_shielded_encode_ok = encode_ok;
+    ib_shielded_secret_finishes = 0;
+    ib_shielded_secret_erased = false;
+    bool handled = ib_rpc_z_exportviewingkey(&params, false, &result);
+    bool copied = !encode_ok ||
+        (result.type == JSON_STR &&
+         strcmp(json_get_str(&result), "synthetic-viewing-key") == 0);
+    bool ok = handled == encode_ok && copied &&
+              ib_shielded_secret_finishes == 1 &&
+              ib_shielded_secret_erased;
+    json_free(&result);
+    json_free(&params);
+    wallet_rpc_context_set_base(NULL, NULL, NULL, NULL, NULL, NULL);
+    free(wallet);
+    return ok;
+}
+
+static bool ib_shielded_spending_refusal_retires_scratch(void)
+{
+    struct wallet *wallet = zcl_calloc(1, sizeof(*wallet),
+                                       "ib-shielded-spending-export-wallet");
+    if (!wallet) return false;
+    wallet_rpc_context_set_base(wallet, NULL, NULL, NULL, NULL, NULL);
+    struct json_value params, result;
+    ib_params_1str(&params, "synthetic-z-address");
+    json_init(&result);
+    ib_shielded_encode_ok = false;
+    ib_shielded_secret_finishes = 0;
+    ib_shielded_secret_erased = false;
+    bool handled = ib_rpc_z_exportkey(&params, false, &result);
+    bool ok = !handled && ib_shielded_secret_finishes == 1 &&
+              ib_shielded_secret_erased;
+    json_free(&result);
+    json_free(&params);
+    wallet_rpc_context_set_base(NULL, NULL, NULL, NULL, NULL, NULL);
+    free(wallet);
+    return ok;
 }
 
 static __attribute__((noinline)) int part1_import_rescan_spend(void)
@@ -265,6 +402,12 @@ static __attribute__((noinline)) int part1_import_rescan_spend(void)
 
     IB_CHECK("dumpprivkey: response copy retires mutable WIF span",
              ib_secret_result_retires_copy());
+    IB_CHECK("z_exportviewingkey: success retires encoded stack span",
+             ib_shielded_export_retires_scratch(true));
+    IB_CHECK("z_exportviewingkey: encoder refusal retires partial stack span",
+             ib_shielded_export_retires_scratch(false));
+    IB_CHECK("z_exportkey: encoder refusal retires partial stack span",
+             ib_shielded_spending_refusal_retires_scratch());
 
     const int64_t FAUCET_AMOUNT = COIN_VALUE + 10000;
     const int64_t FUND_VALUE    = COIN_VALUE;
