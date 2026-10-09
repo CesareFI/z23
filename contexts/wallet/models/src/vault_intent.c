@@ -3,6 +3,7 @@
 
 #include "models/vault_intent.h"
 
+#include "core/amount.h"
 #include "models/database.h"
 #include "models/agent_session.h"
 #include "models/model_text.h"
@@ -109,9 +110,9 @@ bool vault_intent_validate(const struct vault_intent_row *r,
         zcl_is_hex_string(r->wallet_instance_id,
                           WALLET_INSTANCE_ID_HEX_LEN) &&
         zcl_is_hex_string(r->wallet_genesis, WALLET_GENESIS_HEX_LEN) &&
-        r->has_snapshot_root && r->recipient_value_zat >= 0 &&
-        r->max_fee_zat >= 0 &&
-        r->recipient_value_zat <= INT64_MAX - r->max_fee_zat &&
+        r->has_snapshot_root && MoneyRange(r->recipient_value_zat) &&
+        MoneyRange(r->max_fee_zat) &&
+        r->recipient_value_zat <= MAX_MONEY - r->max_fee_zat &&
         r->recipient_value_zat + r->max_fee_zat > 0 &&
         r->reserved_zat == r->recipient_value_zat + r->max_fee_zat;
     validates_custom(errors, legacy || bound, "custody_binding",
