@@ -4,6 +4,7 @@
 
 #include "test/test_core.h"
 #include "codeindex/codeindex_inventory.h"
+#include "codeindex/codeindex_inventory_render.h"
 #include "codeindex/codeindex_semantic_candidate.h"
 #include "codeindex/codeindex_vector_hint.h"
 #include "fingerprint/fingerprint.h"
@@ -728,6 +729,149 @@ static void ci_semantic_known_answers(
     fp_index_free(fingerprint_index);
 }
 
+/* Render the artifact for `report` into a heap string; NULL on failure. */
+static char *ci_render(const struct ci_inventory_report *report)
+{
+    FILE *tmp = tmpfile();
+    if (!tmp) return NULL;
+    char *buf = NULL;
+    bool ok = codeindex_inventory_render(tmp, report) && fflush(tmp) == 0 &&
+              fseek(tmp, 0, SEEK_END) == 0;
+    long size = ok ? ftell(tmp) : -1;
+    if (size >= 0 && fseek(tmp, 0, SEEK_SET) == 0) {
+        buf = malloc((size_t)size + 1);
+        if (buf && fread(buf, 1, (size_t)size, tmp) == (size_t)size)
+            buf[size] = '\0';
+        else {
+            free(buf);
+            buf = NULL;
+        }
+    }
+    fclose(tmp);
+    return buf;
+}
+
+/* Re-analyze CI_FIX and render it; NULL on failure. */
+static char *ci_render_fixture(void)
+{
+    struct ci_inventory_report *report = codeindex_inventory_analyze(CI_FIX);
+    if (!report) return NULL;
+    char *text = ci_render(report);
+    codeindex_inventory_free(report);
+    return text;
+}
+
+#define CI_EDIT_CAP 16384
+
+/* Read all of `path` into buf (NUL-terminated); false when the file does not
+ * fit or a read errors, so an edit can never act on a truncated file. */
+static bool ci_slurp(const char *path, char buf[CI_EDIT_CAP])
+{
+    FILE *in = fopen(path, "rb");
+    if (!in) return false;
+    size_t n = fread(buf, 1, CI_EDIT_CAP - 1, in);
+    bool whole = !ferror(in) && fgetc(in) == EOF && !ferror(in);
+    fclose(in);
+    buf[n] = '\0';
+    return whole;
+}
+
+/* Insert `text` after the first line of `path`, or append it at EOF when
+ * `append` is set. */
+static bool ci_edit(const char *path, const char *text, bool append)
+{
+    static char buf[CI_EDIT_CAP];
+    if (!ci_slurp(path, buf)) return false;
+    char *at = append ? buf + strlen(buf) : strchr(buf, '\n');
+    if (!at) return false;
+    if (!append) at++;
+    FILE *out = fopen(path, "wb");
+    if (!out) return false;
+    size_t head = (size_t)(at - buf);
+    bool ok = fwrite(buf, 1, head, out) == head &&
+              fputs(text, out) >= 0 && fputs(at, out) >= 0;
+    return fclose(out) == 0 && ok;
+}
+
+/* True when two lines of `text` are byte-identical. */
+static bool ci_has_duplicate_line(const char *text)
+{
+    for (const char *a = text; *a; a = strchr(a, '\n') + 1) {
+        size_t alen = (size_t)(strchr(a, '\n') - a) + 1;
+        for (const char *b = a + alen; *b; ) {
+            size_t blen = (size_t)(strchr(b, '\n') - b) + 1;
+            if (alen == blen && memcmp(a, b, alen) == 0) return true;
+            b += blen;
+        }
+    }
+    return false;
+}
+
+/* Copy of the `nth` line holding both needles, or NULL. */
+static char *ci_row(const char *text, const char *n1, const char *n2, int nth)
+{
+    for (const char *p = text; *p; p = strchr(p, '\n') + 1) {
+        size_t len = (size_t)(strchr(p, '\n') - p);
+        char *row = malloc(len + 1);
+        if (!row) return NULL;
+        memcpy(row, p, len);
+        row[len] = '\0';
+        if (strstr(row, n1) && strstr(row, n2) && nth-- == 0) return row;
+        free(row);
+    }
+    return NULL;
+}
+
+/* demo_platform is defined twice in demo.c under #if/#else: its two arm rows
+ * must differ, carry arm 1 and arm 2, and no two rendered lines may match. */
+static void ci_arm_rows(const char *text)
+{
+    const char *rec = "\"record\":\"definition_arm\"";
+    const char *sym = "\"symbol\":\"demo_platform\"";
+    char *one = ci_row(text, rec, sym, 0);
+    char *two = ci_row(text, rec, sym, 1);
+    CI_ASSERT(one && two && strcmp(one, two) != 0);
+    CI_ASSERT(one && strstr(one, "\"arm\":1") != NULL);
+    CI_ASSERT(two && strstr(two, "\"arm\":2") != NULL);
+    CI_ASSERT(strstr(text, "\"line\":") == NULL);
+    CI_ASSERT(!ci_has_duplicate_line(text));
+    free(one);
+    free(two);
+}
+
+/* The rendered artifact must not move when a pure line shift happens above a
+ * definition and its declaration, and must change when a symbol is added.
+ * Every file edited here is restored so later assertions see the original. */
+static void ci_render_shift_invariance(void)
+{
+    const char *src = CI_FIX "/platform/modules/demo/src/demo.c";
+    const char *hdr = CI_FIX "/platform/modules/demo/include/demo/demo.h";
+    static char src_orig[CI_EDIT_CAP], hdr_orig[CI_EDIT_CAP];
+    CI_ASSERT(ci_slurp(src, src_orig) && ci_slurp(hdr, hdr_orig));
+    char *before = ci_render_fixture();
+    CI_ASSERT(before != NULL);
+    if (before) ci_arm_rows(before);
+    CI_ASSERT(ci_edit(src, "/* shifted: above the first definition */\n",
+                      false));
+    CI_ASSERT(ci_edit(hdr, "/* shifted: above the declarations */\n", false));
+    char *shifted = ci_render_fixture();
+    CI_ASSERT(shifted != NULL);
+    CI_ASSERT(before && shifted && strcmp(before, shifted) == 0);
+    CI_ASSERT(ci_edit(hdr, "int demo_extra(int value);\n", true));
+    CI_ASSERT(ci_edit(src, "int demo_extra(int value) { return value * 3; }\n",
+                      true));
+    char *grown = ci_render_fixture();
+    CI_ASSERT(grown != NULL);
+    CI_ASSERT(shifted && grown && strcmp(shifted, grown) != 0);
+    CI_ASSERT(ci_write(src, src_orig) && ci_write(hdr, hdr_orig));
+    char *restored = ci_render_fixture();
+    CI_ASSERT(restored && before && strcmp(restored, before) == 0);
+    free(before);
+    free(shifted);
+    free(grown);
+    free(restored);
+}
+
 int test_code_inventory(void)
 {
     ci_failures = 0;
@@ -855,6 +999,7 @@ int test_code_inventory(void)
     CI_ASSERT(same && memcmp(first->source_root_sha3,
                              same->source_root_sha3, 32) == 0);
     codeindex_inventory_free(same);
+    ci_render_shift_invariance();
     CI_ASSERT(ci_write(CI_FIX "/contexts/commons/packages/zmini/src/zmini.c",
         "#include \"zmini/zmini.h\"\n"
         "int zmini_add(int a, int b) { return a + b + 0; }\n"));

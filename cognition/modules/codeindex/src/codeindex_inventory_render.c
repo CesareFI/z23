@@ -33,13 +33,34 @@ static void json_string(FILE *out, const char *text)
     fputc('"', out);
 }
 
+/* A symbol defined more than once in one path (preprocessor arms) needs a
+ * line-free distinguisher: emit its 1-based ordinal among those definitions
+ * in ascending line order. Single definitions emit nothing. The ordinal moves
+ * only when an arm is added, removed or reordered, never on a pure shift. */
+static void render_arm_ordinal(FILE *out,
+                               const struct ci_inventory_report *report,
+                               const char *path, const char *symbol, int line)
+{
+    bool others = false;
+    int before = 0;
+    for (int i = 0; i < report->definition_arm_count; i++) {
+        const struct ci_inventory_definition_arm *arm =
+            &report->definition_arms[i];
+        if (strcmp(arm->definition_path, path) != 0 ||
+            strcmp(arm->symbol, symbol) != 0 || arm->definition_line == line)
+            continue;
+        others = true;
+        if (arm->definition_line < line) before++;
+    }
+    if (others) fprintf(out, ",\"arm\":%d", before + 1);
+}
+
 static void render_symbol(FILE *out, const struct ci_inventory_symbol *symbol)
 {
     fputs("{\"name\":", out); json_string(out, symbol->name);
     fprintf(out, ",\"kind\":\"%c\",\"definition\":{\"path\":", symbol->kind);
     json_string(out, symbol->definition_path);
-    fprintf(out, ",\"line\":%d},\"definition_evidence\":",
-            symbol->definition_line);
+    fputs("},\"definition_evidence\":", out);
     json_string(out, symbol->definition_evidence);
     fputs(",\"definition_proof_needed\":", out);
     if (strcmp(symbol->definition_evidence,
@@ -50,7 +71,7 @@ static void render_symbol(FILE *out, const struct ci_inventory_symbol *symbol)
     else fputs("null", out);
     fputs(",\"declaration\":{\"path\":", out);
     json_string(out, symbol->declaration_path);
-    fprintf(out, ",\"line\":%d},\"signature\":", symbol->declaration_line);
+    fputs("},\"signature\":", out);
     json_string(out, symbol->signature);
     fputs(",\"header_contract\":", out); json_string(out, symbol->contract);
     fprintf(out, ",\"production_use_files\":%d,\"test_use_files\":%d,"
@@ -99,18 +120,22 @@ static void render_capability(FILE *out, const struct ci_inventory_report *repor
     fputs("]}\n", out);
 }
 
-static void render_duplicate(FILE *out, const struct ci_inventory_duplicate *d)
+static void render_duplicate(FILE *out,
+                             const struct ci_inventory_report *report,
+                             const struct ci_inventory_duplicate *d)
 {
     fputs("{\"record\":\"duplicate\",\"kind\":", out);
     json_string(out, codeindex_inventory_duplicate_kind_name(d->kind));
     fputs(",\"a\":{\"symbol\":", out); json_string(out, d->symbol_a);
     fputs(",\"path\":", out); json_string(out, d->path_a);
-    fprintf(out, ",\"line\":%d},\"b\":{\"symbol\":", d->line_a);
+    render_arm_ordinal(out, report, d->path_a, d->symbol_a, d->line_a);
+    fputs("},\"b\":{\"symbol\":", out);
     json_string(out, d->symbol_b);
     fputs(",\"path\":", out); json_string(out, d->path_b);
-    fprintf(out, ",\"line\":%d},\"body_tokens\":%d,\"body_lines\":%d,"
+    render_arm_ordinal(out, report, d->path_b, d->symbol_b, d->line_b);
+    fprintf(out, "},\"body_tokens\":%d,\"body_lines\":%d,"
                  "\"different_symbol_names\":%s,\"evidence\":",
-            d->line_b, d->body_tokens, d->body_lines,
+            d->body_tokens, d->body_lines,
             strcmp(d->symbol_a, d->symbol_b) != 0 ? "true" : "false");
     json_string(out, d->evidence);
     fputs(",\"proof_needed\":", out);
@@ -119,14 +144,18 @@ static void render_duplicate(FILE *out, const struct ci_inventory_duplicate *d)
     fputs("}\n", out);
 }
 
-static void render_invariant(FILE *out, const struct ci_inventory_invariant *gap)
+static void render_invariant(FILE *out,
+                             const struct ci_inventory_report *report,
+                             const struct ci_inventory_invariant *gap)
 {
     fputs("{\"record\":\"untested_invariant\",\"header\":", out);
     json_string(out, gap->header);
     fputs(",\"symbol\":", out); json_string(out, gap->symbol);
     fputs(",\"definition\":{\"path\":", out);
     json_string(out, gap->definition_path);
-    fprintf(out, ",\"line\":%d},\"header_contract\":", gap->definition_line);
+    render_arm_ordinal(out, report, gap->definition_path, gap->symbol,
+                       gap->definition_line);
+    fputs("},\"header_contract\":", out);
     if (gap->contract[0]) json_string(out, gap->contract); else fputs("null", out);
     fprintf(out, ",\"production_use_files\":%d,\"test_use_files\":%d",
             gap->production_use_files, gap->test_use_files);
@@ -185,15 +214,17 @@ static void render_multi_arm_symbol(
 }
 
 static void render_definition_arm(
-    FILE *out, const struct ci_inventory_definition_arm *arm)
+    FILE *out, const struct ci_inventory_report *report,
+    const struct ci_inventory_definition_arm *arm)
 {
     fputs("{\"record\":\"definition_arm\",\"header\":", out);
     json_string(out, arm->header);
     fputs(",\"symbol\":", out); json_string(out, arm->symbol);
     fputs(",\"definition\":{\"path\":", out);
     json_string(out, arm->definition_path);
-    fprintf(out, ",\"line\":%d},\"preprocessor_guard\":",
-            arm->definition_line);
+    render_arm_ordinal(out, report, arm->definition_path, arm->symbol,
+                       arm->definition_line);
+    fputs("},\"preprocessor_guard\":", out);
     if (arm->preprocessor_guard[0]) json_string(out, arm->preprocessor_guard);
     else fputs("null", out);
     fputs(",\"constant_return_evidence\":", out);
@@ -279,11 +310,11 @@ bool codeindex_inventory_render(FILE *out,
                                         &report->symbols[i]);
     }
     for (int i = 0; i < report->definition_arm_count; i++)
-        render_definition_arm(out, &report->definition_arms[i]);
+        render_definition_arm(out, report, &report->definition_arms[i]);
     for (int i = 0; i < report->duplicate_count; i++)
-        render_duplicate(out, &report->duplicates[i]);
+        render_duplicate(out, report, &report->duplicates[i]);
     for (int i = 0; i < report->invariant_count; i++)
-        render_invariant(out, &report->invariants[i]);
+        render_invariant(out, report, &report->invariants[i]);
     for (int i = 0; i < report->test_root_gap_count; i++)
         render_test_root_gap(out, &report->test_root_gaps[i]);
     return !ferror(out);
