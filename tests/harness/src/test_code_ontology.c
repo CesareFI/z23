@@ -4,7 +4,7 @@
 
 #include "test/test_core.h"
 
-#include "base/hex.h"
+#include "codeindex/codeindex_inventory_render.h"
 #include "codeindex/codeindex_inventory.h"
 #include "codeindex/codeindex_source_universe.h"
 #include "platform/directory_compat.h"
@@ -72,20 +72,60 @@ static bool co_write_current_inventory_root(const char *root)
 {
     struct ci_inventory_report *report = codeindex_inventory_analyze(root);
     if (!report) return false;
-    char root_hex[65];
-    zcl_hex_encode(report->source_root_sha3,
-                   sizeof(report->source_root_sha3), root_hex);
-    char record[512];
-    int length = snprintf(
-        record, sizeof(record),
-        "{\"record\":\"inventory\",\"source_root_sha3\":\"%s\","
-        "\"files_scanned\":%d,\"production_files\":%d,"
-        "\"test_files\":%d}\n",
-        root_hex, report->files_scanned, report->production_files,
-        report->test_files);
+    FILE *out = fopen(CO_INVENTORY, "wb");
+    bool ok = out && codeindex_inventory_render(out, report);
+    if (out && fclose(out) != 0) ok = false;
     codeindex_inventory_free(report);
-    return length > 0 && (size_t)length < sizeof(record) &&
-           co_write(CO_INVENTORY, record);
+    return ok;
+}
+
+static char *co_slurp(const char *path, size_t *len)
+{
+    FILE *in = fopen(path, "rb");
+    if (!in) return NULL;
+    size_t cap = 1u << 20, n = 0;
+    char *buf = malloc(cap);
+    while (buf && !feof(in)) {
+        if (n == cap) {
+            char *bigger = realloc(buf, cap *= 2);
+            if (!bigger) { free(buf); buf = NULL; break; }
+            buf = bigger;
+        }
+        n += fread(buf + n, 1, cap - n, in);
+        if (ferror(in)) { free(buf); buf = NULL; break; }
+    }
+    fclose(in);
+    *len = n;
+    return buf;
+}
+
+/* Replace the first occurrence of `from` in the file with `to`. */
+static bool co_replace_first(const char *path, const char *from, const char *to)
+{
+    size_t len = 0;
+    char *buf = co_slurp(path, &len);
+    if (!buf) return false;
+    const size_t fl = strlen(from), tl = strlen(to);
+    char *hit = NULL;
+    for (size_t i = 0; i + fl <= len && !hit; i++)
+        if (memcmp(buf + i, from, fl) == 0) hit = buf + i;
+    FILE *out = hit ? fopen(path, "wb") : NULL;
+    bool ok = out && fwrite(buf, 1, (size_t)(hit - buf), out) == (size_t)(hit - buf) &&
+              fwrite(to, 1, tl, out) == tl &&
+              fwrite(hit + fl, 1, len - (size_t)(hit - buf) - fl, out) ==
+                  len - (size_t)(hit - buf) - fl;
+    if (out && fclose(out) != 0) ok = false;
+    free(buf);
+    return ok;
+}
+
+static bool co_artifact_equals_saved(const char *saved, size_t saved_len)
+{
+    size_t len = 0;
+    char *now = co_slurp(CO_INVENTORY, &len);
+    const bool same = now && len == saved_len && memcmp(now, saved, len) == 0;
+    free(now);
+    return same;
 }
 
 static void co_fill_root(uint8_t root[32], uint8_t seed)
@@ -128,8 +168,8 @@ static bool co_observation_equal(
                right->inventory_artifact_present &&
            left->inventory_artifact_count_agrees ==
                right->inventory_artifact_count_agrees &&
-           left->inventory_artifact_root_agrees ==
-               right->inventory_artifact_root_agrees &&
+           left->inventory_artifact_bytes_agree ==
+               right->inventory_artifact_bytes_agree &&
            left->inventory_fresh == right->inventory_fresh &&
            left->projection_observed_mask == right->projection_observed_mask &&
            left->projection_proven_mask == right->projection_proven_mask &&
@@ -158,11 +198,7 @@ static void co_exact_input(struct ci_source_universe_reconcile_input *input)
     }
     input->inventory_artifact_present = true;
     input->inventory_artifact_files = 7;
-    input->inventory_artifact_root_available = true;
-    input->inventory_artifact_root_domain = CI_SOURCE_ROOT_VCS_MANIFEST_V1;
-    memcpy(input->inventory_artifact_root,
-           input->components[CI_SOURCE_COMPONENT_CAPABILITY_INVENTORY].root,
-           32);
+    input->inventory_artifact_bytes_agree = true;
     input->projection_observed_mask = ZCL_SOURCE_COVER_ALL;
 }
 
@@ -194,11 +230,11 @@ static int co_stale_inventory(void)
         struct ci_source_universe_reconcile_input input;
         struct ci_source_universe_observation out;
         co_exact_input(&input);
-        co_fill_root(input.inventory_artifact_root, 99);
+        input.inventory_artifact_bytes_agree = false;
         ASSERT(ci_source_universe_reconcile(&input, &out));
         ASSERT(out.projection_masks_consistent);
         ASSERT(out.inventory_artifact_count_agrees);
-        ASSERT(!out.inventory_artifact_root_agrees);
+        ASSERT(!out.inventory_artifact_bytes_agree);
         ASSERT(!out.inventory_fresh);
         ASSERT(!out.complete && !out.verified);
         ASSERT(out.refusal == CI_SOURCE_UNIVERSE_REFUSAL_INVENTORY_STALE);
@@ -295,11 +331,73 @@ static int co_live_deterministic_read_only(void)
         struct ci_source_universe_observation rooted;
         ASSERT(ci_source_universe_observe(CO_FIX, CO_INVENTORY, &rooted));
         ASSERT(rooted.inventory_artifact_count_agrees);
-        ASSERT(rooted.inventory_artifact_root_agrees);
+        ASSERT(rooted.inventory_artifact_bytes_agree);
         ASSERT(rooted.inventory_fresh);
         ASSERT(!rooted.complete && !rooted.verified);
         ASSERT(rooted.refusal ==
                CI_SOURCE_UNIVERSE_REFUSAL_EVIDENCE_DISAGREES);
+        ASSERT(test_rm_rf_recursive(CO_FIX) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Freshness is computed at check time: the committed artifact is fresh iff its
+ * bytes equal what the generator renders now. Nothing is stored in line 1. */
+static int co_inventory_freshness(void)
+{
+    int failures = 0;
+    TEST("code_ontology: inventory freshness is byte identity with the live render") {
+        struct ci_source_universe_observation obs;
+        size_t saved_len = 0;
+        ASSERT(co_fixture());
+        ASSERT(co_write_current_inventory_root(CO_FIX));
+        char *saved = co_slurp(CO_INVENTORY, &saved_len);
+        ASSERT(saved && saved_len > 0);
+        ASSERT(strstr(saved, "source_root_sha3") == NULL);
+        ASSERT(ci_source_universe_observe(CO_FIX, CO_INVENTORY, &obs));
+        ASSERT(obs.inventory_fresh);
+
+        /* (a) a comment-only edit changes no capability row: still fresh and
+         * the regenerated bytes are identical. */
+        ASSERT(co_write(CO_FIX "/lib/demo/src/demo.c",
+            "#include \"demo/demo.h\"\nint co_demo(void) { return 23; }\n"
+            "/* a comment-only edit */\n"));
+        ASSERT(ci_source_universe_observe(CO_FIX, CO_INVENTORY, &obs));
+        ASSERT(obs.inventory_fresh);
+        ASSERT(co_write_current_inventory_root(CO_FIX));
+        ASSERT(co_artifact_equals_saved(saved, saved_len));
+
+        /* (c) one hand-edited row, every count unchanged: only byte identity
+         * can see it. */
+        ASSERT(co_replace_first(CO_INVENTORY, "co_demo", "co_demx"));
+        ASSERT(ci_source_universe_observe(CO_FIX, CO_INVENTORY, &obs));
+        ASSERT(obs.inventory_artifact_count_agrees);
+        ASSERT(!obs.inventory_artifact_bytes_agree);
+        ASSERT(!obs.inventory_fresh);
+
+        /* (d) the old format, with the retired digest field: parses, stale. */
+        ASSERT(co_write_current_inventory_root(CO_FIX));
+        ASSERT(co_replace_first(CO_INVENTORY, "\"scope\":",
+            "\"source_root_sha3\":\"0000000000000000000000000000000000000000"
+            "000000000000000000000000\",\"scope\":"));
+        ASSERT(ci_source_universe_observe(CO_FIX, CO_INVENTORY, &obs));
+        ASSERT(obs.inventory_artifact_present);
+        ASSERT(obs.inventory_artifact_count_agrees);
+        ASSERT(!obs.inventory_fresh);
+
+        /* (b) a capability added: the committed artifact is stale. */
+        ASSERT(co_write_current_inventory_root(CO_FIX));
+        ASSERT(co_write(CO_FIX "/lib/demo/include/demo/extra.h",
+            "/* purpose: second fixture capability. */\n"
+            "#ifndef CO_EXTRA_H\n#define CO_EXTRA_H\n"
+            "int co_extra(void);\n#endif\n"));
+        ASSERT(ci_source_universe_observe(CO_FIX, CO_INVENTORY, &obs));
+        ASSERT(!obs.inventory_fresh);
+        ASSERT(co_write_current_inventory_root(CO_FIX));
+        ASSERT(ci_source_universe_observe(CO_FIX, CO_INVENTORY, &obs));
+        ASSERT(obs.inventory_fresh);
+        free(saved);
         ASSERT(test_rm_rf_recursive(CO_FIX) == 0);
         PASS();
     } _test_next:;
@@ -313,5 +411,6 @@ int test_code_ontology(void)
     failures += co_stale_inventory();
     failures += co_missing_projections();
     failures += co_live_deterministic_read_only();
+    failures += co_inventory_freshness();
     return failures;
 }

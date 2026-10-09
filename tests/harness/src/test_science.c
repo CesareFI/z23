@@ -1120,7 +1120,7 @@ static int case_corpus_honesty_no_inventory(const char *dir, const char *inv)
              r.lines == 3 + 2 + 2);
     SC_CHECK("vendored code is outside the corpus", r.bytes == 6 + 4 + 7);
     SC_CHECK("the inventory is reported absent, not empty",
-             !r.inventory_present && !r.inventory_source_root_available &&
+             !r.inventory_present &&
                  !r.scope_agrees);
     SC_CHECK("the proven fraction is -1 (not measured), never 0 (nothing "
              "proven)",
@@ -1142,9 +1142,7 @@ static int case_corpus_honesty_fresh_inventory(const char *dir,
     struct science_corpus_report r;
     char head[1024];
     static const char *const k_inv =
-        "{\"record\":\"inventory\",\"source_root_sha3\":"
-        "\"000102030405060708090a0b0c0d0e0f"
-        "101112131415161718191a1b1c1d1e1f\",\"files_scanned\":3,"
+        "{\"record\":\"inventory\",\"files_scanned\":3,"
         "\"production_files\":2,\"test_files\":1}\n"
         "{\"record\":\"capability\",\"symbols\":["
         "{\"test_evidence\":\"registered_test_reachable\"},"
@@ -1164,10 +1162,6 @@ static int case_corpus_honesty_fresh_inventory(const char *dir,
                  r.capabilities == 1);
     SC_CHECK("the two halves agree on the tree",
              r.scope_agrees && r.inventory_files_scanned == 3);
-    SC_CHECK("the inventory source root is decoded as exact evidence",
-             r.inventory_source_root_available &&
-                 r.inventory_source_root_sha3[0] == 0x00 &&
-                 r.inventory_source_root_sha3[31] == 0x1f);
     SC_CHECK("the proven fraction is over PUBLIC SYMBOLS: 1 of 3",
              science_corpus_proven_symbols_milli(&r) == 333);
     SC_CHECK("the headline leads with what is NOT proven",
@@ -1191,7 +1185,7 @@ static int case_corpus_honesty_stale_inventory(const char *dir,
     struct science_corpus_report r;
     char head[1024];
     static const char *const k_stale =
-        "{\"record\":\"inventory\",\"source_root_sha3\":\"invalid\","
+        "{\"record\":\"inventory\",\"source_root_sha3\":\"old-format-field-ignored\","
         "\"files_scanned\":9001,"
         "\"production_files\":9000,\"test_files\":1}\n"
         "{\"record\":\"capability\",\"symbols\":["
@@ -1201,8 +1195,7 @@ static int case_corpus_honesty_stale_inventory(const char *dir,
              science_corpus_measure(dir, inv, &r) && r.inventory_present);
     SC_CHECK("the scope check catches it",
              !r.scope_agrees && r.inventory_files_scanned == 9001 &&
-                 r.files_walked == 3 &&
-                 !r.inventory_source_root_available);
+                 r.files_walked == 3);
     SC_CHECK("and the headline announces the staleness rather than hiding it",
              science_corpus_headline(&r, head, sizeof head) > 0 &&
                  strstr(head, "STALE") != NULL &&

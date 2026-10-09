@@ -690,6 +690,7 @@ ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_incremental.c",
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_inventory.c", CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_inventory_body.c", CAP_FS_READ|CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_inventory_evidence.c", CAP_FS_WRITE, "")
+ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_inventory_render.c", CAP_FS_READ|CAP_FS_WRITE, "opens the committed artifact read-only and renders the live report into an unnamed temporary file to compare bytes; writes nothing else")
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_inventory_scan.c", CAP_FS_READ|CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_merkle.c", CAP_FS_WRITE|CAP_FS_READ, "")
 ZCL_MODULE_CAPABILITY("cognition/modules/codeindex/src/codeindex_merkle_inventory.c", CAP_NONE, "")

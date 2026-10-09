@@ -14205,6 +14205,7 @@ CAPABILITY_INVENTORY_PLATFORM_LIBS = $(if $(ZCL_HOST_WINDOWS),-ladvapi32,)
 CAPABILITY_INVENTORY_SRCS = tools/gen_capability_inventory.c \
 	cognition/modules/codeindex/src/codeindex_inventory.c \
 	cognition/modules/codeindex/src/codeindex_inventory_scan.c \
+	cognition/modules/codeindex/src/codeindex_inventory_render.c \
 	cognition/modules/codeindex/src/codeindex_inventory_body.c \
 	cognition/modules/codeindex/src/codeindex_inventory_evidence.c \
 	cognition/modules/codeindex/src/codeindex_scan.c \
@@ -14214,6 +14215,7 @@ CAPABILITY_INVENTORY_SRCS = tools/gen_capability_inventory.c \
 
 $(CAPABILITY_INVENTORY_TOOL): $(CAPABILITY_INVENTORY_SRCS) \
 	cognition/modules/codeindex/include/codeindex/codeindex_inventory.h \
+	cognition/modules/codeindex/include/codeindex/codeindex_inventory_render.h \
 	cognition/modules/codeindex/src/codeindex_inventory_internal.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \

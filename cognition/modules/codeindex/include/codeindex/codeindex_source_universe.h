@@ -49,9 +49,9 @@ struct ci_source_universe_reconcile_input {
     struct ci_source_universe_component components[CI_SOURCE_COMPONENT_COUNT];
     bool inventory_artifact_present;
     uint64_t inventory_artifact_files;
-    bool inventory_artifact_root_available;
-    enum ci_source_universe_root_domain inventory_artifact_root_domain;
-    uint8_t inventory_artifact_root[32];
+    /* True iff the committed artifact is byte-identical to the render of the
+     * live inventory report (computed at check time, stored nowhere). */
+    bool inventory_artifact_bytes_agree;
     uint32_t projection_observed_mask;
     uint32_t projection_unavailable_mask;
 };
@@ -67,7 +67,7 @@ struct ci_source_universe_observation {
     bool same_domain_roots_agree;
     bool inventory_artifact_present;
     bool inventory_artifact_count_agrees;
-    bool inventory_artifact_root_agrees;
+    bool inventory_artifact_bytes_agree;
     bool inventory_fresh;
     uint32_t projection_observed_mask;
     uint32_t projection_proven_mask;

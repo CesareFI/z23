@@ -5,6 +5,7 @@
 
 #include "base/log_macros.h"
 #include "codeindex/codeindex_inventory.h"
+#include "codeindex/codeindex_inventory_render.h"
 #include "codeindex/codeindex_merkle.h"
 #include "science/science_corpus.h"
 #include "vcs/vcs_manifest.h"
@@ -164,14 +165,11 @@ bool ci_source_universe_reconcile(
     out->inventory_artifact_count_agrees =
         input->inventory_artifact_present && inventory->observed &&
         input->inventory_artifact_files == inventory->path_count;
-    out->inventory_artifact_root_agrees =
-        input->inventory_artifact_root_available && inventory->root_available &&
-        input->inventory_artifact_root_domain == inventory->root_domain &&
-        universe_root_nonzero(input->inventory_artifact_root) &&
-        universe_root_nonzero(inventory->root) &&
-        memcmp(input->inventory_artifact_root, inventory->root, 32) == 0;
+    out->inventory_artifact_bytes_agree =
+        input->inventory_artifact_present && inventory->observed &&
+        input->inventory_artifact_bytes_agree;
     out->inventory_fresh = out->inventory_artifact_count_agrees &&
-                           out->inventory_artifact_root_agrees;
+                           out->inventory_artifact_bytes_agree;
 
     out->projection_observed_mask =
         input->projection_observed_mask & ZCL_SOURCE_COVER_ALL;
@@ -246,7 +244,8 @@ static bool universe_capture_merkle(
 }
 
 static bool universe_capture_inventory(
-    const char *root, struct ci_source_universe_component *component)
+    const char *root, const char *inventory_path,
+    struct ci_source_universe_component *component, bool *artifact_identical)
 {
     struct ci_inventory_report *inventory =
         codeindex_inventory_analyze(root);
@@ -255,6 +254,13 @@ static bool universe_capture_inventory(
     if (inventory->files_scanned < 0) {
         codeindex_inventory_free(inventory);
         LOG_FAIL("codeindex.source_universe", "negative inventory file count");
+    }
+    *artifact_identical = false;
+    if (inventory_path && inventory_path[0] &&
+        !codeindex_inventory_artifact_identical(
+            inventory, inventory_path, artifact_identical)) {
+        codeindex_inventory_free(inventory);
+        LOG_FAIL("codeindex.source_universe", "inventory artifact comparison failed");
     }
     component->observed = true;
     component->root_available = true;
@@ -291,13 +297,15 @@ bool ci_source_universe_observe(
 
     struct ci_source_universe_reconcile_input input;
     memset(&input, 0, sizeof(input));
+    bool artifact_identical = false;
     if (!universe_capture_vcs(
             root, &input.components[CI_SOURCE_COMPONENT_VCS_MANIFEST]) ||
         !universe_capture_merkle(
             root, &input.components[CI_SOURCE_COMPONENT_CODE_MERKLE]) ||
         !universe_capture_inventory(
-            root,
-            &input.components[CI_SOURCE_COMPONENT_CAPABILITY_INVENTORY]))
+            root, inventory_path,
+            &input.components[CI_SOURCE_COMPONENT_CAPABILITY_INVENTORY],
+            &artifact_identical))
         LOG_FAIL("codeindex.source_universe", "source evidence capture failed");
 
     struct science_corpus_report census;
@@ -308,16 +316,7 @@ bool ci_source_universe_observe(
 
     input.inventory_artifact_present = census.inventory_present;
     input.inventory_artifact_files = census.inventory_files_scanned;
-    input.inventory_artifact_root_available =
-        census.inventory_source_root_available;
-    input.inventory_artifact_root_domain =
-        census.inventory_source_root_available
-            ? CI_SOURCE_ROOT_CAPABILITY_INVENTORY_V1
-            : CI_SOURCE_ROOT_NONE;
-    if (census.inventory_source_root_available)
-        memcpy(input.inventory_artifact_root,
-               census.inventory_source_root_sha3,
-               sizeof(input.inventory_artifact_root));
+    input.inventory_artifact_bytes_agree = artifact_identical;
     /* Each scan is useful candidate evidence, but none implements a canonical
      * source-universe projection or a whole-scan atomicity contract. */
     input.projection_observed_mask = 0;

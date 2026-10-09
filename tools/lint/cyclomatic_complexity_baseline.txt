@@ -123,7 +123,7 @@ cognition/modules/codeindex/src/codeindex_scan_file.c:ci_scan_file:26
 cognition/modules/codeindex/src/codeindex_search.c:ci_store_search_text:17
 cognition/modules/codeindex/src/codeindex_search.c:codeindex_search_story:28
 cognition/modules/codeindex/src/codeindex_semantic_candidate.c:zcl_code_semantic_candidate_v1_validate:24
-cognition/modules/codeindex/src/codeindex_source_universe.c:ci_source_universe_reconcile:17
+cognition/modules/codeindex/src/codeindex_source_universe.c:ci_source_universe_reconcile:14
 cognition/modules/codeindex/src/codeindex_store.c:ci_copy_image_fd:31
 cognition/modules/codeindex/src/codeindex_store.c:ci_store_open:34
 cognition/modules/codeindex/src/codeindex_store.c:ci_store_write_image_fd:19

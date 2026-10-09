@@ -17,6 +17,7 @@ SOURCES=(
     tools/gen_capability_inventory.c
     cognition/modules/codeindex/src/codeindex_inventory.c
     cognition/modules/codeindex/src/codeindex_inventory_scan.c
+    cognition/modules/codeindex/src/codeindex_inventory_render.c
     cognition/modules/codeindex/src/codeindex_inventory_body.c
     cognition/modules/codeindex/src/codeindex_inventory_evidence.c
     cognition/modules/codeindex/src/codeindex_scan.c
