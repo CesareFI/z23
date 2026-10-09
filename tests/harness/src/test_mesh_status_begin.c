@@ -35,11 +35,11 @@ static int test_msb_argument_boundary(void)
                    request_id) == MESH_STATUS_BEGIN_BAD_ARGUMENT);
         /* non-hex */
         ASSERT(boot_mesh_status_begin(
-                   "0123456789abcdef0123456789abcdef0123456789abcdef0123456g",
+                   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg",
                    request_id) == MESH_STATUS_BEGIN_BAD_ARGUMENT);
         /* uppercase is not lowercase-hex */
         ASSERT(boot_mesh_status_begin(
-                   "0123456789ABCDEF0123456789abcdef0123456789abcdef01234567",
+                   "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef",
                    request_id) == MESH_STATUS_BEGIN_BAD_ARGUMENT);
         /* null out-param */
         ASSERT(boot_mesh_status_begin(MSB_HEX_64, NULL) ==

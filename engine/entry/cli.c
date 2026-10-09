@@ -57,8 +57,8 @@ static char g_host[64] = "127.0.0.1";
 static bool read_cookie(const char *datadir)
 {
     char path[512];
-    int n = snprintf(path, sizeof(path), "%s/.cookie", datadir);
-    if (n < 0 || (size_t)n >= sizeof(path)) {
+    int path_len = snprintf(path, sizeof(path), "%s/.cookie", datadir);
+    if (path_len < 0 || (size_t)path_len >= sizeof(path)) {
         fprintf(stderr, "error=DATADIR_TOO_LONG the cookie path exceeds "
                 "the %zu-byte path buffer — refusing (no silent "
                 "truncation)\n", sizeof(path));
