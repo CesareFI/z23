@@ -694,12 +694,30 @@ static void wtx_fixture_wide_cand(const struct wkr_job *job)
     _exit(0);
 }
 
-static bool wtx_fixture(const struct wkr_job *job, struct wkr_result *res)
+/* Raw executor records exercise the worker's production parse and gate. */
+static const char *g_fx_usage_field;
+static void wtx_fixture_usage(const struct wkr_job *job)
 {
-    wtx_count_bump();
-    wtx_task_record(job);
-    if (g_fx_mode == 4)
-        wtx_fixture_wide_cand(job);
+    char path[4096 + 64], line[2048];
+    int w;
+    if (snprintf(path, sizeof(path), "%s/cand.diff", job->rundir) >=
+        (int)sizeof(path) ||
+        !zcl_devagent_worker_write_atomic(path, "diff\n", 5))
+        _exit(126);
+    w = snprintf(line, sizeof(line),
+                 "{\"terminal\":\"pass\",\"rc\":0,\"candidate\":\"cand.diff\","
+                 "\"evidence\":\"usage fixture\"%s,\"wall_ms\":7}\n",
+                 g_fx_usage_field);
+    if (w <= 0 || (size_t)w >= sizeof(line) ||
+        snprintf(path, sizeof(path), "%s/executor_result.json", job->rundir) >=
+        (int)sizeof(path) ||
+        !zcl_devagent_worker_write_atomic(path, line, (size_t)w))
+        _exit(126);
+    _exit(0);
+}
+
+static void wtx_fixture_receipt_block(const struct wkr_job *job)
+{
     if (g_fx_block_receipt) {
         /* The receipt's temp name is taken by a directory: the worker's
          * atomic receipt write cannot open it. */
@@ -708,6 +726,17 @@ static bool wtx_fixture(const struct wkr_job *job, struct wkr_result *res)
                      job->rundir) < (int)sizeof(path))
             (void)mkdir(path, 0700);
     }
+}
+
+static bool wtx_fixture(const struct wkr_job *job, struct wkr_result *res)
+{
+    wtx_count_bump();
+    wtx_task_record(job);
+    if (g_fx_mode == 5)
+        wtx_fixture_usage(job);
+    if (g_fx_mode == 4)
+        wtx_fixture_wide_cand(job);
+    wtx_fixture_receipt_block(job);
     if (g_fx_mode == 1) {
         struct rlimit core;
         /* A real crash: die by signal like a segfaulting adapter would.
@@ -1484,6 +1513,66 @@ _test_next:;
     return failures;
 }
 
+static int wtx_usage_cases(void)
+{
+    int failures = 0;
+
+    TEST("worker usage: absent zero positive negative and malformed")
+    {
+        static const struct {
+            const char *name, *field, *verdict;
+        } cases[] = {
+            {"wtx-usage-absent", "", "gate-refused"},
+            {"wtx-usage-zero", ",\"tokens_used\":0", "pass"},
+            {"wtx-usage-positive", ",\"tokens_used\":42", "pass"},
+            {"wtx-usage-negative", ",\"tokens_used\":-1", "gate-refused"},
+            {"wtx-usage-malformed", ",\"tokens_used\":\"oops\"", "gate-refused"},
+            {"wtx-usage-fraction", ",\"tokens_used\":0.5", "gate-refused"},
+            {"wtx-usage-overflow", ",\"tokens_used\":9223372036854775808", "gate-refused"},
+            {"wtx-usage-duplicate", ",\"tokens_used\":0,\"tokens_used\":42", "gate-refused"},
+            {"wtx-usage-null", ",\"tokens_used\":null", "gate-refused"},
+            {"wtx-usage-empty", ",\"tokens_used\":", "gate-refused"},
+            {"wtx-usage-suffix", ",\"tokens_used\":0oops", "gate-refused"},
+            {"wtx-usage-exponent", ",\"tokens_used\":0e0", "gate-refused"},
+            {"wtx-usage-nested", ",\"nested\":{\"tokens_used\":0}", "gate-refused"},
+            {"wtx-usage-string", ",\"note\":\"\\\"tokens_used\\\":0\"", "gate-refused"},
+            {"wtx-usage-keyalias", ",\"tokens_used\":0,\"tokens\\u005fused\":42", "gate-refused"},
+            {"wtx-usage-spaces", ",\"tokens_used\": 0 ", "pass"},
+        };
+        bool ok = true;
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            struct wkr_drive_opts o;
+            char verdict[64] = "";
+            long long rc = -1;
+            wtx_isolate(cases[i].name);
+            wtx_queue_post(cases[i].name);
+            g_fx_mode = 5;
+            g_fx_usage_field = cases[i].field;
+            wtx_opts(&o, "wtx", "s-usage");
+            bool observed = zcl_devagent_worker_drive(&o, wtx_fixture) == 1 &&
+                            wtx_queue_verb("reap", NULL, NULL) &&
+                            wtx_outcome(cases[i].name, verdict,
+                                        sizeof(verdict), &rc);
+            bool pass = strcmp(cases[i].verdict, "pass") == 0;
+            bool matched = observed && strcmp(verdict, cases[i].verdict) == 0 &&
+                           zcl_devagent_closed_pass(verdict, rc) == pass;
+            if (!matched)
+                fprintf(stderr, "worker usage case=%s expected=%s observed=%s rc=%lld; "
+                        "usage admission mismatch\n",
+                        cases[i].name, cases[i].verdict, verdict, rc);
+            ok = ok && matched;
+            g_fx_mode = 0;
+            g_fx_usage_field = NULL;
+            wtx_restore();
+        }
+        ASSERT(ok);
+        PASS();
+    }
+
+_test_next:;
+    return failures;
+}
+
 static int wtx_status_cases(void)
 {
     int failures = wtx_status_unreadable_lock() + wtx_status_invalid_claims() +
@@ -1675,6 +1764,8 @@ int test_devagent_worker(void)
 
 #if !defined(_WIN32)
     failures += wtx_status_cases();
+
+    failures += wtx_usage_cases();
 
     TEST("lifecycle: post claim fixture gate receipt reap completed")
     {

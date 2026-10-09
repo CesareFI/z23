@@ -367,6 +367,112 @@ static long long wkr_result_int(const char *text, const char *key,
     return strtoll(p + strlen(pat), NULL, 10);
 }
 
+/* Legacy strings may contain raw control bytes; preserve their boundaries. */
+static const char *wkr_raw_string_end(const char *p)
+{
+    if (*p++ != '"') return NULL;
+    while (*p) {
+        if (*p == '"') return p + 1;
+        if (*p++ == '\\') {
+            if (!*p) return NULL;
+            p++;
+        }
+    }
+    return NULL;
+}
+
+static const char *wkr_raw_root_end(const char *p, const char *start)
+{
+    return *p == '}' && p != start ? p : NULL;
+}
+
+static bool wkr_raw_pair(char open, char close)
+{
+    return (open == '{' && close == '}') || (open == '[' && close == ']');
+}
+
+/* Skip one opaque legacy value without mistaking nested keys for root keys. */
+static const char *wkr_raw_value_end(const char *p)
+{
+    char stack[64];
+    size_t depth = 0;
+    const char *start = p;
+    while (*p) {
+        if (*p == '"') {
+            p = wkr_raw_string_end(p);
+            if (!p) return NULL;
+            continue;
+        }
+        if (*p == '{' || *p == '[') {
+            if (depth == sizeof(stack)) return NULL;
+            stack[depth++] = *p++;
+            continue;
+        }
+        if (*p == '}' || *p == ']') {
+            if (!depth) return wkr_raw_root_end(p, start);
+            if (!wkr_raw_pair(stack[depth - 1], *p)) return NULL;
+            depth--;
+        } else if (*p == ',' && !depth) {
+            return p != start ? p : NULL;
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static const char *wkr_raw_ws(const char *p)
+{
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    return p;
+}
+
+/* Decode only the key and usage token; other values retain legacy semantics. */
+static bool wkr_usage_member(const char *key, const char *key_end,
+                              const char *value, const char *value_end,
+                              size_t *matches, long long *tokens)
+{
+    struct json_value k, v;
+    bool ok;
+    json_init(&k);
+    json_init(&v);
+    ok = json_read(&k, key, (size_t)(key_end - key)) && k.type == JSON_STR;
+    if (ok && strcmp(json_get_str(&k), "tokens_used") == 0) {
+        (*matches)++;
+        ok = *matches == 1 &&
+             json_read(&v, value, (size_t)(value_end - value)) &&
+             v.type == JSON_INT;
+        if (ok) *tokens = (long long)json_get_int(&v);
+    }
+    json_free(&v);
+    json_free(&k);
+    return ok;
+}
+
+/* Missing, ambiguous or noninteger usage cannot qualify a budgeted result. */
+static long long wkr_result_tokens(const char *text)
+{
+    long long tokens = -1;
+    size_t matches = 0;
+    const char *p = wkr_raw_ws(text);
+    if (*p++ != '{') return -1;
+    p = wkr_raw_ws(p);
+    if (*p == '}') return -1;
+    for (;;) {
+        const char *key = p, *key_end = wkr_raw_string_end(p);
+        if (!key_end) return -1;
+        p = wkr_raw_ws(key_end);
+        if (*p++ != ':') return -1;
+        const char *value = wkr_raw_ws(p);
+        const char *value_end = wkr_raw_value_end(value);
+        if (!value_end || !wkr_usage_member(key, key_end, value, value_end,
+                                           &matches, &tokens)) return -1;
+        p = wkr_raw_ws(value_end);
+        if (*p == '}') return *wkr_raw_ws(p + 1) ? -1 : tokens;
+        if (*p++ != ',') return -1;
+        p = wkr_raw_ws(p);
+    }
+}
+
 bool zcl_devagent_worker_parse_result(const char *rundir,
                                       struct wkr_result *res)
 {
@@ -391,7 +497,7 @@ bool zcl_devagent_worker_parse_result(const char *rundir,
                      sizeof(res->candidate));
     wkr_result_field(text, "evidence", res->evidence, sizeof(res->evidence));
     res->rc = wkr_result_int(text, "rc", -1);
-    res->tokens_used = wkr_result_int(text, "tokens_used", 0);
+    res->tokens_used = wkr_result_tokens(text);
     res->wall_ms = wkr_result_int(text, "wall_ms", 0);
     wkr_result_field(text, "provider", res->provider, sizeof(res->provider));
     res->turns = wkr_result_int(text, "turns", 0);
