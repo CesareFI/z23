@@ -374,6 +374,11 @@ void syncsvc_note_headers_received(struct p2p_node *node,
                                    size_t newly_added)
 {
     if (!node) return;
+    /* Any batch, new or replayed, means a request chain is alive here, so
+     * the periodic re-kick only restarts quiet peers. */
+    atomic_store_explicit(&node->last_getheaders_time,
+                          (int64_t)platform_time_wall_time_t(),
+                          memory_order_relaxed);
     if (newly_added > 0) {
         atomic_store_explicit(&node->getheaders_stale_count, 0,
                               memory_order_relaxed);

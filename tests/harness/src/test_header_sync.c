@@ -5,6 +5,7 @@
 #include "test/test_core.h"
 #include "chain/pow.h"
 #include "net/net.h"
+#include "platform/time_compat.h"
 #include "sync/sync_planner.h"
 
 /* Helper: build a minimal p2p_node for testing sync decisions. */
@@ -19,6 +20,44 @@ static struct p2p_node make_test_node(int starting_height, int64_t last_gh_time)
     n.inbound = false;
     n.getheaders_stale_count = 0;
     return n;
+}
+
+/* Replayed full batches suppress the periodic re-kick: a loopback peer
+ * answering every getheaders with known headers must not also be re-kicked
+ * every 5 s, which would start a new request chain per interval. */
+static int header_sync_replay_suppresses_rekick(void)
+{
+    int failures = 0;
+    printf("header_sync: replayed batches suppress periodic re-kick... ");
+    {
+        int64_t W = (int64_t)platform_time_wall_time_t();
+        struct p2p_node n = make_test_node(10000, W - 100);
+        net_addr_set_ipv4(&n.addr.svc.addr,
+                          (const unsigned char[4]){127, 0, 0, 1});
+        int rekicks = 0;
+        for (int round = 0; round < 40; round++)
+            syncsvc_note_headers_received(&n, 0); /* known-header replay */
+        for (int64_t t = W; t <= W + 4; t++) {
+            if (syncsvc_should_request_headers(&n, 100, t)) {
+                rekicks++;
+                syncsvc_note_headers_requested(&n, t);
+            }
+        }
+        bool busy_bounded = (rekicks == 0);
+        /* Quiet peer: re-kicked once after the 5 s loopback interval. */
+        bool quiet_kick = syncsvc_should_request_headers(&n, 100, W + 6);
+        syncsvc_note_headers_requested(&n, W + 6);
+        bool no_double = !syncsvc_should_request_headers(&n, 100, W + 8);
+        /* Forcing via last_getheaders_time = 0 still re-kicks. */
+        atomic_store(&n.last_getheaders_time, 0);
+        bool forced = syncsvc_should_request_headers(&n, 100, W + 8);
+        /* Usefulness clock is untouched by replays. */
+        bool useful_untouched = (n.last_useful_headers_time == 0);
+        bool ok = busy_bounded && quiet_kick && no_double && forced &&
+                  useful_untouched;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+    return failures;
 }
 
 int test_header_sync(void)
@@ -218,6 +257,8 @@ int test_header_sync(void)
         bool ok = !too_early && at_finality;
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
+
+    failures += header_sync_replay_suppresses_rekick();
 
     return failures;
 }
