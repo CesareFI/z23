@@ -4269,45 +4269,93 @@ static inline bool dl_counts_span(char *text, char **begin, char **end)
     *end += strlen(e);
     return true;
 }
+/* Largest codebase-map stage the merge reads; a bigger one is refused, never
+ * truncated. */
+#define DL_COUNTS_MAX_BYTES ((size_t)8 << 20)
+
+/* Read one index stage of docs/CODEBASE_MAP.md into an exact-size heap
+ * buffer (NUL-terminated). The size comes first so the capture cap is the
+ * real length rather than a guess. */
+static bool dl_counts_stage(const struct dl_dirs *d, int stage, char **text,
+                            size_t *len)
+{
+    char spec[64], size_text[32], *endp = NULL;
+    struct zcl_spawn_binary_observation capture;
+    unsigned long long size;
+    (void)snprintf(spec, sizeof(spec), ":%d:docs/CODEBASE_MAP.md", stage);
+    const char *cat[] = { "git", "-C", d->wt, "cat-file", "-s", spec, NULL };
+    if (!zcl_spawn_capture_binary(cat, size_text, sizeof(size_text) - 1,
+                                  DL_GIT_TIMEOUT_MS, &capture).ok) return false;
+    size_text[capture.output_len] = '\0';
+    size = strtoull(size_text, &endp, 10);
+    if (endp == size_text || size == 0) return false;
+    if (size > DL_COUNTS_MAX_BYTES) {
+        (void)fprintf(stderr, "dl_counts_merge: %s is %llu bytes, over the "
+                      "%zu byte ceiling\n", spec, size, DL_COUNTS_MAX_BYTES);
+        return false;
+    }
+    *text = zcl_malloc((size_t)size + 1, "dev.land.counts.stage");
+    if (!*text) return false;
+    const char *show[] = { "git", "-C", d->wt, "show", spec, NULL };
+    if (!zcl_spawn_capture_binary(show, *text, (size_t)size, DL_GIT_TIMEOUT_MS,
+                                  &capture).ok || capture.output_len != size)
+        return false;
+    (*text)[size] = '\0';
+    *len = (size_t)size;
+    return strlen(*text) == *len;
+}
+
+/* Rebuild each stage with stage 2's count block and write the three-way
+ * merge of the results to the working tree. */
+static bool dl_counts_combine(const struct dl_dirs *d, const char *scratch,
+                              char *const text[3], const size_t len[3],
+                              char *const begin[3], char *const end[3])
+{
+    char file[3][4220], path[4220], *merged;
+    struct zcl_spawn_binary_observation capture;
+    size_t cap = len[0] + len[1] + len[2] + 16384;
+    bool ok = false;
+    for (int i = 0; i < 3; i++) {
+        (void)snprintf(file[i], sizeof(file[i]), "%s/%d", scratch, i);
+        if ((begin[i] != text[i] &&
+             !dl_append_row(file[i], text[i], (size_t)(begin[i] - text[i]))) ||
+            !dl_append_row(file[i], begin[1], (size_t)(end[1] - begin[1])) ||
+            !dl_append_text(file[i], end[i])) return false;
+    }
+    merged = zcl_malloc(cap, "dev.land.counts.merged");
+    if (!merged) return false;
+    const char *merge[] = { "git", "-C", d->wt, "merge-file", "-p", "--",
+                            file[1], file[0], file[2], NULL };
+    if (zcl_spawn_capture_binary(merge, merged, cap - 1, DL_GIT_TIMEOUT_MS,
+                                 &capture).ok) {
+        merged[capture.output_len] = '\0';
+        (void)snprintf(path, sizeof(path), "%s/merged", scratch);
+        (void)snprintf(file[1], sizeof(file[1]), "%s/docs/CODEBASE_MAP.md",
+                       d->wt);
+        ok = dl_append_text(path, merged) && rename(path, file[1]) == 0;
+    }
+    free(merged);
+    return ok;
+}
+
 static bool dl_counts_merge(const struct dl_dirs *d)
 {
 #if defined(_WIN32)
     (void)d;
     return false;
 #else
-    char text[3][65536], merged[65536], scratch[4200], file[3][4220];
+    char scratch[4200], *text[3] = { NULL, NULL, NULL };
     char *begin[3], *end[3];
-    struct zcl_spawn_binary_observation capture;
+    size_t len[3] = { 0, 0, 0 };
     bool ok = false;
     if (snprintf(scratch, sizeof(scratch), "%s/counts.XXXXXX", d->land) >=
         (int)sizeof(scratch) || !mkdtemp(scratch)) return false;
-    for (int i = 0; i < 3; i++) {
-        char spec[64];
-        (void)snprintf(spec, sizeof(spec), ":%d:docs/CODEBASE_MAP.md", i + 1);
-        const char *show[] = { "git", "-C", d->wt, "show", spec, NULL };
-        if (!zcl_spawn_capture_binary(show, text[i], sizeof(text[i]) - 1,
-                                      DL_GIT_TIMEOUT_MS, &capture).ok) goto done;
-        text[i][capture.output_len] = '\0';
-        if (strlen(text[i]) != capture.output_len ||
+    for (int i = 0; i < 3; i++)
+        if (!dl_counts_stage(d, i + 1, &text[i], &len[i]) ||
             !dl_counts_span(text[i], &begin[i], &end[i])) goto done;
-        (void)snprintf(file[i], sizeof(file[i]), "%s/%d", scratch, i);
-    }
-    for (int i = 0; i < 3; i++) {
-        memcpy(merged, text[i], (size_t)(begin[i] - text[i]));
-        merged[begin[i] - text[i]] = '\0';
-        if (!dl_append_text(file[i], merged) ||
-            !dl_append_row(file[i], begin[1], (size_t)(end[1] - begin[1])) ||
-            !dl_append_text(file[i], end[i])) goto done;
-    }
-    const char *merge[] = { "git", "-C", d->wt, "merge-file", "-p", "--",
-                            file[1], file[0], file[2], NULL };
-    if (!zcl_spawn_capture_binary(merge, merged, sizeof(merged) - 1,
-                                  DL_GIT_TIMEOUT_MS, &capture).ok) goto done;
-    merged[capture.output_len] = '\0';
-    (void)snprintf(file[0], sizeof(file[0]), "%s/merged", scratch);
-    (void)snprintf(file[1], sizeof(file[1]), "%s/docs/CODEBASE_MAP.md", d->wt);
-    ok = dl_append_text(file[0], merged) && rename(file[0], file[1]) == 0;
+    ok = dl_counts_combine(d, scratch, text, len, begin, end);
 done:
+    for (int i = 0; i < 3; i++) free(text[i]);
     if (!zcl_tree_remove(scratch).ok) ok = false;
     return ok;
 #endif

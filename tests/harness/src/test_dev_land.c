@@ -12625,12 +12625,13 @@ static int test_dev_land_rebase_regen_cases(void)
 {
     int failures = 0;
     const char *block = "<!-- DOC-COUNTS-BEGIN -->\ntest_groups: 1253\nport_interfaces: 13\npersistence_adapters: 14\ncondition_registrations: 56\ncommand_bundles: 31\ncommand_roots: 13\ndumpstate_subsystems: 167\napp_shape_folders: 7\n<!-- DOC-COUNTS-END -->\n";
-    for (int ordinal = 0; ordinal < 5; ordinal++) {
-        int mode = ordinal == 0 ? 4 : ordinal - 1;
+    for (int ordinal = 0; ordinal < 6; ordinal++) {
+        int mode = ordinal == 0 ? 4 : ordinal == 5 ? 5 : ordinal - 1; /* mode 5: map above 64 KiB */
         TEST("land: count recovery preserves proposals and refuses invalid blocks") {
             struct dlx_rig rig;
             struct dlx_call c;
-            char base[64], tip[64], upstream[64], a[512], b[512], p[512], wt[1300], out[1024];
+            char base[64], tip[64], upstream[64], wt[1300];
+            static char a[90000], b[90000], p[90000], out[90000], pad[70001];
             const char *push[] = { "push", "--quiet", "origin", "HEAD:main", NULL };
             const char *keep[] = { "branch", "keep-tip", NULL };
             const char *reset[] = { "reset", "--hard", base, NULL };
@@ -12638,13 +12639,14 @@ static int test_dev_land_rebase_regen_cases(void)
             const char *head[] = { "show", "HEAD:docs/CODEBASE_MAP.md", NULL };
             dlx_isolate("countsprose");
             ASSERT(dlx_rig_make(&rig, "countsprose_rig"));
-            snprintf(a, sizeof(a), "Action A.\n%s", block);
-            snprintf(b, sizeof(b), "Action B.\n%s", block);
-            snprintf(p, sizeof(p), "Action C.\n%s", block);
+            memset(pad, 'x', sizeof(pad) - 1); pad[sizeof(pad) - 2] = '\n'; pad[sizeof(pad) - 1] = '\0';
+            snprintf(a, sizeof(a), "Action A.\n%s%s", mode == 5 ? pad : "", block);
+            snprintf(b, sizeof(b), "Action B.\n%s%s", mode == 5 ? pad : "", block);
+            snprintf(p, sizeof(p), "Action C.\n%s%s", mode == 5 ? pad : "", block);
             if (mode == 2) { strcpy(a, "Action A.\n"); strcpy(b, "Action B.\n"); strcpy(p, "Action C.\n"); }
             if (mode == 3) { strcat(a, block); strcat(b, block); strcat(p, block); }
-            if (mode == 4) {
-                snprintf(b, sizeof(b), "Action A.\n%s", block);
+            if (mode >= 4) {
+                snprintf(b, sizeof(b), "Action A.\n%s%s", mode == 5 ? pad : "", block);
                 strstr(b, "1253")[3] = '4';
                 strstr(p, "1253")[3] = '5';
             }
@@ -12664,15 +12666,15 @@ static int test_dev_land_rebase_regen_cases(void)
             ASSERT(dlx_run(&c)); ASSERT(dlx_ok(&c)); dlx_end(&c);
             dlx_begin(&c, "step");
             ASSERT(dlx_run(&c)); ASSERT(dlx_ok(&c));
-            ASSERT_STR_EQ(dlx_str(&c, "state"), mode == 4 ? "started" : "conflict");
-            if (mode == 4)
+            ASSERT_STR_EQ(dlx_str(&c, "state"), mode >= 4 ? "started" : "conflict");
+            if (mode >= 4)
                 ASSERT(strstr(dlx_str(&c, "detail"),
                               "rebase: regenerated docs/CODEBASE_MAP.md") != NULL);
             dlx_end(&c);
             ASSERT(dlx_git_out(rig.clone, show, out, sizeof(out)) == 0);
             p[strlen(p) - 1] = '\0';
             ASSERT_STR_EQ(out, p);
-            if (mode == 4) { dlx_land_wt(wt, sizeof(wt)); ASSERT(dlx_git_out(wt, head, out, sizeof(out)) == 0); ASSERT(strstr(out, "Action C.\n") == out); }
+            if (mode >= 4) { dlx_land_wt(wt, sizeof(wt)); ASSERT(dlx_git_out(wt, head, out, sizeof(out)) == 0); ASSERT(strstr(out, "Action C.\n") == out); }
             dlx_restore(); PASS();
         }
     }
