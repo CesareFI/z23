@@ -1173,7 +1173,7 @@ static int dvx_encoding_rows(void)
             ASSERT(dvx_run(&c));
             ASSERT_EQ(dvx_ok(&c), cases[i].valid);
             if (!cases[i].valid)
-                ASSERT_STR_EQ(c.reply.error.code, "QUEUE_WRITE_FAILED");
+                ASSERT_STR_EQ(c.reply.error.code, "QUEUE_READ_FAILED");
             dvx_end(&c);
             if (cases[i].valid)
                 ASSERT(dvx_encoding_matches(file, "brief", "a\xc3\xa9\"\\"));
@@ -1254,7 +1254,7 @@ static int dvx_encoding_retry(void)
         dvx_verb(&c, "reap", false);
         ASSERT(dvx_run(&c));
         ASSERT(!dvx_ok(&c));
-        ASSERT_STR_EQ(c.reply.error.code, "QUEUE_WRITE_FAILED");
+        ASSERT_STR_EQ(c.reply.error.code, "QUEUE_READ_FAILED");
         dvx_end(&c);
         (void)snprintf(file, sizeof(file), "%s/queue.jsonl", qd);
         ASSERT(dvx_encoding_unchanged(file, seed));
@@ -1272,11 +1272,164 @@ _test_next:;
     return failures;
 }
 
+static bool dvx_snapshot_ready(char *out, size_t cap)
+{
+    const char *prefix = "{\"seq\":1,\"kind\":\"leaf\",\"name\":\"ready\","
+                         "\"attempt\":1,\"state\":\"queued\",\"unknown\":\"";
+    const char *suffix = "\",\"tail\":true}\n";
+    size_t n = strlen(prefix);
+    if (cap <= n + 40000u + strlen(suffix)) return false;
+    memcpy(out, prefix, n);
+    memset(out + n, 'A', 40000u);
+    memcpy(out + n + 40000u, suffix, strlen(suffix) + 1);
+    return true;
+}
+
+static int dvx_snapshot_long(void)
+{
+    int failures = 0;
+    TEST("queue: long unknown scalar fields preserve native behavior") {
+        char ready[40200];
+        ASSERT(dvx_snapshot_ready(ready, sizeof(ready)));
+        for (size_t v = 0; v < 3; v++) {
+            struct dvx_call c;
+            char qd[1100], file[1300];
+            dvx_isolate("snapshot-long");
+            ASSERT(dvx_encoding_setup(qd));
+            (void)snprintf(file, sizeof(file), "%s/queue.jsonl", qd);
+            ASSERT(dvx_write(file, ready));
+            if (v == 1) dvx_post(&c, "leaf", "new", NULL, NULL, NULL, NULL, -1);
+            else dvx_verb(&c, v == 0 ? "claim" : "reap", false);
+            if (v == 0) {
+                ASSERT(json_push_kv_str(&c.input, "worker", "fixture"));
+                ASSERT(json_push_kv_str(&c.input, "session", "fixture"));
+            }
+            ASSERT(dvx_run(&c));
+            ASSERT(dvx_ok(&c));
+            ASSERT_STR_EQ(dvx_str(&c, "state"), v == 0 ? "running" : v == 1 ? "queued" : "reaped");
+            dvx_end(&c);
+            dvx_restore();
+        }
+        PASS();
+    }
+_test_next:;
+    dvx_restore();
+    return failures;
+}
+
+/* Exercise the registered native handler, never just the loader. */
+static int dvx_snapshot_cases(void)
+{
+    int failures = 0;
+    TEST("queue: incomplete snapshots refuse every mutation without effects") {
+        const char *bad[] = {
+            "{bad}\n", "{\"seq\":2}\n",
+            "{\"seq\":2,\"seq\":3}\n", "{\"seq\":2",
+            "{\"seq\":2,\"kind\":\"leaf\",\"name\":\"bad\","
+            "\"attempt\":1,\"state\":\"queued\",\"brief\":7}\n",
+            "{\"seq\":2,\"kind\":\"leaf\",\"name\":\"bad\","
+            "\"attempt\":1,\"state\":\"queued\",\"brief\":\"\\u0000\"}\n",
+            "{\"seq\":2,\"\\u0073eq\":3}\n", "nul", "over-limit"
+        };
+        const char *verbs[] = {"claim", "post", "reap"};
+        char ready[40200];
+        ASSERT(dvx_snapshot_ready(ready, sizeof(ready)));
+        for (size_t b = 0; b < sizeof(bad) / sizeof(bad[0]); b++) {
+            for (size_t v = 0; v < 3; v++) {
+                struct dvx_call c;
+                char qd[1100], file[1300], effect[1300], block[4096];
+                size_t len = strlen(ready) + strlen(bad[b]);
+                if (b == 8) len = 1024u * 1024u;
+                char *seed = malloc(len);
+                ASSERT(seed != NULL);
+                memset(seed, ' ', len);
+                memcpy(seed, ready, strlen(ready));
+                memcpy(seed + strlen(ready), bad[b], strlen(bad[b]));
+                if (b == 7) seed[strlen(ready)] = '\0';
+                dvx_isolate("snapshot-refusal");
+                ASSERT(dvx_encoding_setup(qd));
+                (void)snprintf(file, sizeof(file), "%s/queue.jsonl", qd);
+                FILE *f = fopen(file, "wb");
+                ASSERT(f != NULL);
+                ASSERT_EQ(fwrite(seed, 1, len, f), len);
+                ASSERT_EQ(fclose(f), 0);
+                if (v == 1) dvx_post(&c, "leaf", "new", NULL, NULL, NULL, NULL, -1);
+                else dvx_verb(&c, verbs[v], false);
+                if (v == 0) {
+                    ASSERT(json_push_kv_str(&c.input, "worker", "fixture"));
+                    ASSERT(json_push_kv_str(&c.input, "session", "fixture"));
+                }
+                ASSERT(dvx_run(&c));
+                ASSERT(!dvx_ok(&c));
+                ASSERT_STR_EQ(c.reply.error.code, "QUEUE_READ_FAILED");
+                dvx_end(&c);
+                f = fopen(file, "rb");
+                ASSERT(f != NULL);
+                for (size_t offset = 0; offset < len;) {
+                    size_t want = len - offset;
+                    if (want > sizeof(block)) want = sizeof(block);
+                    ASSERT_EQ(fread(block, 1, want, f), want);
+                    ASSERT_EQ(memcmp(block, seed + offset, want), 0);
+                    offset += want;
+                }
+                ASSERT_EQ(fgetc(f), EOF);
+                ASSERT(!ferror(f));
+                ASSERT_EQ(fclose(f), 0);
+                free(seed);
+                const char *effects[] = {"outcomes.jsonl", ".reap_stamp", "queue.jsonl.tmp"};
+                for (size_t i = 0; i < 3; i++) {
+                    (void)snprintf(effect, sizeof(effect), "%s/%s", qd, effects[i]);
+                    ASSERT(access(effect, F_OK) != 0);
+                }
+                (void)snprintf(effect, sizeof(effect), "%s/z23/dev/engine/ready", g_dvx_state);
+                ASSERT(access(effect, F_OK) != 0);
+                dvx_restore();
+            }
+        }
+        PASS();
+    }
+_test_next:;
+    dvx_restore();
+    return failures;
+}
+
+static int dvx_snapshot_legacy(void)
+{
+    int failures = 0;
+    TEST("queue: valid legacy snapshots retain native claim post reap behavior") {
+        for (size_t v = 0; v < 3; v++) {
+            struct dvx_call c;
+            char qd[1100], file[1300];
+            dvx_isolate("snapshot-legacy");
+            ASSERT(dvx_encoding_setup(qd));
+            (void)snprintf(file, sizeof(file), "%s/queue.jsonl", qd);
+            ASSERT(dvx_write(file, "{\"seq\":1,\"kind\":\"leaf\",\"name\":\"ready\","
+                                  "\"attempt\":1,\"state\":\"queued\"}\n"));
+            if (v == 1) dvx_post(&c, "leaf", "new", NULL, NULL, NULL, NULL, -1);
+            else dvx_verb(&c, v == 0 ? "claim" : "reap", false);
+            if (v == 0) {
+                ASSERT(json_push_kv_str(&c.input, "worker", "fixture"));
+                ASSERT(json_push_kv_str(&c.input, "session", "fixture"));
+            }
+            ASSERT(dvx_run(&c));
+            ASSERT(dvx_ok(&c));
+            ASSERT_STR_EQ(dvx_str(&c, "state"), v == 0 ? "running" : v == 1 ? "queued" : "reaped");
+            dvx_end(&c);
+            dvx_restore();
+        }
+        PASS();
+    }
+_test_next:;
+    dvx_restore();
+    return failures;
+}
+
 static int dvx_encoding_cases(void)
 {
     int rows = dvx_encoding_rows();
     int receipts = dvx_encoding_receipts();
-    return rows + receipts + dvx_encoding_retry();
+    return rows + receipts + dvx_encoding_retry() + dvx_snapshot_cases() +
+           dvx_snapshot_legacy() + dvx_snapshot_long();
 }
 #endif /* !defined(_WIN32) */
 

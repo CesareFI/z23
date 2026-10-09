@@ -384,7 +384,7 @@ static bool dvq_escape(const char *in, char *out, size_t cap)
     return true;
 }
 
-/* ── minimal per-line field extraction (reap/status skip malformed rows) ─ */
+/* ── legacy per-line field extraction ─ */
 
 static bool dvq_line_int(const char *line, const char *key, long long *out)
 {
@@ -582,25 +582,6 @@ struct dvq_row {
     long long owner_start; /* its kernel start token, 0 unknown */
 };
 
-/* The READY-order fields. Rows written before they existed carry neither:
- * they read as P3 with no dependency, exactly the order they had. */
-static void dvq_parse_order(const char *line, struct dvq_row *r)
-{
-    if (!dvq_line_int(line, "priority", &r->priority) || r->priority < 0 ||
-        r->priority > 3)
-        r->priority = DVQ_PRIORITY_DEFAULT;
-    (void)dvq_line_str(line, "depends_on", r->depends_on,
-                       sizeof(r->depends_on));
-}
-
-/* The running row's claimant. Rows written before it existed carry
- * neither field and read as unknown, which reap never reclaims. */
-static void dvq_parse_owner(const char *line, struct dvq_row *r)
-{
-    (void)dvq_line_int(line, "owner_pid", &r->owner_pid);
-    (void)dvq_line_int(line, "owner_start", &r->owner_start);
-}
-
 /* Stamp the process marking the row running, so reap can tell a live
  * claimant from one that died before the run's first artifact. */
 static void dvq_stamp_owner(struct dvq_row *r)
@@ -635,37 +616,6 @@ static const char *dvq_owner_liveness(const struct dvq_row *r)
         !os_proc_pid_start_token((uint64_t)r->owner_pid, &token))
         return "unknown";
     return token == (uint64_t)r->owner_start ? "running" : "dead";
-}
-
-static bool dvq_parse_row(const char *line, struct dvq_row *r)
-{
-    if (!line || !line[0] || !r)
-        return false;
-    memset(r, 0, sizeof(*r));
-    if (!dvq_line_int(line, "seq", &r->seq) || r->seq < 1)
-        return false;
-    (void)dvq_line_str(line, "ts", r->ts, sizeof(r->ts));
-    if (!dvq_line_str(line, "kind", r->kind, sizeof(r->kind)) ||
-        !dvq_kind_ok(r->kind))
-        return false;
-    if (!dvq_line_str(line, "name", r->name, sizeof(r->name)) ||
-        !dvq_name_ok(r->name))
-        return false;
-    (void)dvq_line_str(line, "group", r->group, sizeof(r->group));
-    (void)dvq_line_str(line, "path", r->path, sizeof(r->path));
-    (void)dvq_line_str(line, "brief", r->brief, sizeof(r->brief));
-    (void)dvq_line_str(line, "model", r->model, sizeof(r->model));
-    if (!dvq_line_int(line, "attempt", &r->attempt) || r->attempt < 1)
-        return false;
-    if (!dvq_line_str(line, "state", r->state, sizeof(r->state)))
-        return false;
-    (void)dvq_line_str(line, "worktree", r->worktree, sizeof(r->worktree));
-    (void)dvq_line_str(line, "pid_or_unit", r->pid_or_unit,
-                       sizeof(r->pid_or_unit));
-    (void)dvq_line_int(line, "started", &r->started);
-    dvq_parse_order(line, r);
-    dvq_parse_owner(line, r);
-    return true;
 }
 
 static bool dvq_encode_row(const struct dvq_row *r, char *out, size_t cap,
@@ -717,16 +667,77 @@ static bool dvq_encode_row(const struct dvq_row *r, char *out, size_t cap,
     return true;
 }
 
-/* Load every parseable row. Malformed lines are skipped, never fatal: the
- * queue survives a foreign write the way pull survives one. A missing file
- * is an empty queue (true, no rows); an unreadable one is false. */
+static bool dvq_snapshot_flat(const struct json_value *doc)
+{
+    for (size_t i = 0; i < doc->num_children; i++) {
+        const struct json_value *v = &doc->children[i];
+        if (v->type == JSON_OBJ || v->type == JSON_ARR) return false;
+        for (size_t j = 0; j < i; j++)
+            if (strcmp(doc->keys[i], doc->keys[j]) == 0) return false;
+    }
+    return true;
+}
+
+static bool dvq_snapshot_strings(const struct json_value *doc, struct dvq_row *r)
+{
+    const struct { const char *key; size_t offset, cap; } strings[] = {
+#define DVQ_STRING(field) {#field, offsetof(struct dvq_row, field), sizeof(r->field)}
+        DVQ_STRING(ts), DVQ_STRING(kind), DVQ_STRING(name), DVQ_STRING(group),
+        DVQ_STRING(path), DVQ_STRING(brief), DVQ_STRING(model), DVQ_STRING(state),
+        DVQ_STRING(worktree), DVQ_STRING(pid_or_unit), DVQ_STRING(depends_on)
+#undef DVQ_STRING
+    };
+    for (size_t i = 0; i < sizeof(strings) / sizeof(strings[0]); i++) {
+        const struct json_value *v = json_get(doc, strings[i].key);
+        if (!v) continue;
+        const char *s = json_get_str(v);
+        if (v->type != JSON_STR || !s || strlen(s) >= strings[i].cap) return false;
+        memcpy((char *)r + strings[i].offset, s, strlen(s) + 1);
+    }
+    return dvq_kind_ok(r->kind) && dvq_name_ok(r->name) &&
+           json_get(doc, "state") != NULL;
+}
+
+static bool dvq_snapshot_integers(const struct json_value *doc, struct dvq_row *r)
+{
+    const struct { const char *key; size_t offset; } integers[] = {
+#define DVQ_INTEGER(field) {#field, offsetof(struct dvq_row, field)}
+        DVQ_INTEGER(seq), DVQ_INTEGER(attempt), DVQ_INTEGER(started),
+        DVQ_INTEGER(priority), DVQ_INTEGER(owner_pid), DVQ_INTEGER(owner_start)
+#undef DVQ_INTEGER
+    };
+    r->priority = DVQ_PRIORITY_DEFAULT;
+    for (size_t i = 0; i < sizeof(integers) / sizeof(integers[0]); i++) {
+        const struct json_value *v = json_get(doc, integers[i].key);
+        if (!v) continue;
+        if (v->type != JSON_INT) return false;
+        long long n = (long long)v->val.i;
+        memcpy((char *)r + integers[i].offset, &n, sizeof(n));
+    }
+    return r->seq >= 1 && r->attempt >= 1 && r->priority >= 0 && r->priority <= 3;
+}
+
+/* Admit the complete object, then project only bounded known fields. */
+static bool dvq_snapshot_row(const char *line, struct dvq_row *r)
+{
+    struct json_value doc = {0};
+    memset(r, 0, sizeof(*r));
+    bool ok = zutf8_validate_n(line, strlen(line)) &&
+              json_read(&doc, line, strlen(line)) && doc.type == JSON_OBJ &&
+              dvq_snapshot_flat(&doc) && dvq_snapshot_strings(&doc, r) &&
+              dvq_snapshot_integers(&doc, r);
+    json_free(&doc);
+    return ok;
+}
+
+/* Missing files are empty; all other snapshots must be admitted in full. */
 static bool dvq_load_rows(const char *qpath, struct dvq_row **rows_out,
                           size_t *n_out)
 {
     char *text;
     struct dvq_row *rows = NULL;
-    size_t n = 0, cap = 0;
-    char *save = NULL, *line;
+    size_t n = 0, cap = 0, length = 0;
+    char *line;
     int read_errno = 0;
     if (!qpath || !rows_out || !n_out)
         return false;
@@ -735,34 +746,43 @@ static bool dvq_load_rows(const char *qpath, struct dvq_row **rows_out,
     text = (char *)zcl_malloc(DVQ_FILE_CAP, "devagent.queue.file");
     if (!text)
         return false;
-    if (!dvq_read_file(qpath, text, DVQ_FILE_CAP, NULL)) {
+    errno = 0;
+    if (!dvq_read_file(qpath, text, DVQ_FILE_CAP, &length)) {
         read_errno = errno;
         free(text);
         return read_errno == ENOENT;
     }
-    for (line = strtok_r(text, "\n", &save); line;
-         line = strtok_r(NULL, "\n", &save)) {
+    if (memchr(text, 0, length) != NULL) goto refused;
+    for (line = text; line < text + length;) {
+        char *end = memchr(line, '\n', (size_t)(text + length - line));
+        char *next = end ? end + 1 : text + length;
+        if (end) *end = '\0';
         struct dvq_row r;
         struct dvq_row *grow;
-        if (!dvq_parse_row(line, &r))
-            continue;
+        if (!dvq_snapshot_row(line, &r))
+            goto refused;
         if (n == cap) {
             size_t ncap = cap == 0 ? 16 : cap * 2;
             if (ncap > 65536)
-                break;
+                goto refused;
             grow = (struct dvq_row *)zcl_realloc(
                 rows, ncap * sizeof(*rows), "devagent.queue.rows");
             if (!grow)
-                break;
+                goto refused;
             rows = grow;
             cap = ncap;
         }
         rows[n++] = r;
+        line = next;
     }
     free(text);
     *rows_out = rows;
     *n_out = n;
     return true;
+refused:
+    free(rows);
+    free(text);
+    return false;
 }
 
 /* ── the short scheduler flock ─────────────────────────────────────────── */
@@ -1092,7 +1112,13 @@ static void dvq_post(const struct zcl_command_request *req,
                  "cannot take the queue lock", qpath);
         return;
     }
-    if (dvq_load_rows(qpath, &rows, &nrows)) {
+    if (!dvq_load_rows(qpath, &rows, &nrows)) {
+        dvq_unlock(lock);
+        dvq_fail(reply, "QUEUE_READ_FAILED", "post",
+                 "cannot admit the complete queue snapshot", qpath);
+        return;
+    }
+    {
         for (size_t i = 0; i < nrows; i++) {
             if (rows[i].seq >= seq)
                 seq = rows[i].seq + 1;
