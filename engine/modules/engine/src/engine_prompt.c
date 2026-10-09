@@ -247,6 +247,105 @@ static const struct engine_prompt_template_row k_templates[] = {
 #undef ENGINE_PROMPT_TEMPLATE
 };
 
+struct engine_prompt_tier_row {
+    const char *kind;
+    enum engine_prompt_tier tier;
+};
+
+static const struct engine_prompt_tier_row k_tiers[] = {
+#define ENGINE_PROMPT_TIER_light ENGINE_PROMPT_TIER_LIGHT
+#define ENGINE_PROMPT_TIER_standard ENGINE_PROMPT_TIER_STANDARD
+#define ENGINE_PROMPT_TEMPLATE(kind_, section_, body_)
+#define ENGINE_PROMPT_KIND_TIER(kind_, tier_) \
+    { #kind_, ENGINE_PROMPT_TIER_##tier_ },
+#include "../../../composition/prompt_templates.def"
+#undef ENGINE_PROMPT_KIND_TIER
+#undef ENGINE_PROMPT_TIER_light
+#undef ENGINE_PROMPT_TIER_standard
+#undef ENGINE_PROMPT_TEMPLATE
+};
+
+static size_t template_row_count(void);
+
+static size_t tier_row_count(void)
+{
+    return sizeof(k_tiers) / sizeof(k_tiers[0]);
+}
+
+static bool kind_has_templates(const char *kind)
+{
+    for (size_t i = 0; i < template_row_count(); i++) {
+        if (strcmp(k_templates[i].kind, kind) == 0)
+            return true;
+    }
+    return false;
+}
+
+enum engine_prompt_tier engine_prompt_kind_tier(const char *kind)
+{
+    if (!kind || !kind[0] || !kind_has_templates(kind))
+        return ENGINE_PROMPT_TIER_UNKNOWN;
+    for (size_t i = 0; i < tier_row_count(); i++) {
+        if (strcmp(k_tiers[i].kind, kind) == 0)
+            return k_tiers[i].tier;
+    }
+    return ENGINE_PROMPT_TIER_UNKNOWN;
+}
+
+static bool tier_row_is_sound(size_t i)
+{
+    if (!kind_has_templates(k_tiers[i].kind))
+        return false;
+    for (size_t j = 0; j < i; j++) {
+        if (strcmp(k_tiers[i].kind, k_tiers[j].kind) == 0)
+            return false;
+    }
+    return true;
+}
+
+static bool kind_has_tier_row(const char *kind)
+{
+    for (size_t i = 0; i < tier_row_count(); i++) {
+        if (strcmp(k_tiers[i].kind, kind) == 0)
+            return true;
+    }
+    return false;
+}
+
+bool engine_prompt_tiers_closed(const char **why_kind)
+{
+    if (why_kind)
+        *why_kind = NULL;
+    for (size_t i = 0; i < tier_row_count(); i++) {
+        if (!tier_row_is_sound(i)) {
+            if (why_kind)
+                *why_kind = k_tiers[i].kind;
+            return false;
+        }
+    }
+    for (size_t i = 0; i < template_row_count(); i++) {
+        if (!kind_has_tier_row(k_templates[i].kind)) {
+            if (why_kind)
+                *why_kind = k_templates[i].kind;
+            return false;
+        }
+    }
+    return true;
+}
+
+const char *engine_prompt_tier_name(enum engine_prompt_tier tier)
+{
+    switch (tier) {
+    case ENGINE_PROMPT_TIER_LIGHT:
+        return "light";
+    case ENGINE_PROMPT_TIER_STANDARD:
+        return "standard";
+    case ENGINE_PROMPT_TIER_UNKNOWN:
+    default:
+        return "unknown";
+    }
+}
+
 static size_t template_row_count(void)
 {
     return sizeof(k_templates) / sizeof(k_templates[0]);

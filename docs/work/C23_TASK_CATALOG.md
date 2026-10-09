@@ -22,6 +22,10 @@ The source defines these C23 prompt kinds: `c23-byte-validator`,
 `c23-resource-owner`. Existing kinds `fix-gate`,
 `add-test`, `port-arm`, `doc-claim`, and `review` remain. Rows marked
 `PROPOSED:<family>` still need a procedure; they are not dispatchable kinds.
+Each kind declares a tier in the same file (`ENGINE_PROMPT_KIND_TIER`). Light
+kinds (`c23-context-pack`, `c23-gate-tail`, `c23-proof-triage`) are read-only
+or mechanical and a small model can run them; standard kinds write code. The
+tier is a floor the dispatcher may exceed, never a schedule.
 The compiled selection owner is `engine/composition/prompt_templates.def`,
 consumed by `tools/engine_unit.c`. A source entry is not evidence that an
 installed runner has been rebuilt or qualified.

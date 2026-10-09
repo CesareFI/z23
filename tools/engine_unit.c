@@ -276,7 +276,8 @@ static void list_engines(void)
     printf("prompt template kinds (--kind):\n");
     for (size_t i = 0; i < engine_prompt_kind_count(); i++) {
         const char *k = engine_prompt_kind_at(i);
-        printf("  %s\n", k ? k : "?");
+        printf("  %s  [%s]\n", k ? k : "?",
+               engine_prompt_tier_name(engine_prompt_kind_tier(k)));
     }
 }
 

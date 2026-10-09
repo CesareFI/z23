@@ -29,6 +29,13 @@
  *   body     the prose inserted under that section's marker. It is text a
  *            model reads, never a command the harness runs.
  *
+ *   ENGINE_PROMPT_KIND_TIER(kind, tier)
+ *
+ *   tier     `light` or `standard`: the declared capability floor for the
+ *            worker that runs this kind. Light kinds are read-only or
+ *            mechanical; standard kinds write code. It is a floor a
+ *            dispatcher may exceed, not a schedule. Exactly one row per kind.
+ *
  * ── CLOSED IN BOTH DIRECTIONS ────────────────────────────────────────────
  * A denylist over a growing vocabulary is a default-permit, so this is a
  * membership rule instead. The gate requires:
@@ -47,10 +54,17 @@
  * being told things does not mean much.
  */
 
+/* A consumer that wants only the templates leaves the tier macro undefined. */
+#ifndef ENGINE_PROMPT_KIND_TIER
+#define ENGINE_PROMPT_KIND_TIER(kind_, tier_)
+#define ENGINE_PROMPT_TIER_LOCAL_
+#endif
+
 /* clang-format off */
 
 /* ── fix-gate ────────────────────────────────────────────────────────────
  * A registered group is red and must go green without the assertion moving. */
+ENGINE_PROMPT_KIND_TIER(fix-gate, standard)
 ENGINE_PROMPT_TEMPLATE(fix-gate, rules,
     "This unit repairs a failing gate. The assertion is the specification: "
     "if it is right and the code is wrong, change the code. If you conclude "
@@ -70,6 +84,7 @@ ENGINE_PROMPT_TEMPLATE(fix-gate, judging,
 
 /* ── add-test ────────────────────────────────────────────────────────────
  * Coverage that would NOTICE. Born red, then green. */
+ENGINE_PROMPT_KIND_TIER(add-test, standard)
 ENGINE_PROMPT_TEMPLATE(add-test, rules,
     "This unit adds coverage. A test file that exists proves nothing: the "
     "test must live in a REGISTERED group and that group must actually run. "
@@ -88,6 +103,7 @@ ENGINE_PROMPT_TEMPLATE(add-test, judging,
 /* ── port-arm ────────────────────────────────────────────────────────────
  * Portability work, where the compiler in front of you is not the one that
  * will find the defect. */
+ENGINE_PROMPT_KIND_TIER(port-arm, standard)
 ENGINE_PROMPT_TEMPLATE(port-arm, rules,
     "This unit is portability work. gcc and clang on this host will not "
     "reproduce the failure you are fixing, so a clean local build is not "
@@ -104,6 +120,7 @@ ENGINE_PROMPT_TEMPLATE(port-arm, judging,
 
 /* ── doc-claim ───────────────────────────────────────────────────────────
  * A document says something about the tree. Make it true or delete it. */
+ENGINE_PROMPT_KIND_TIER(doc-claim, standard)
 ENGINE_PROMPT_TEMPLATE(doc-claim, rules,
     "This unit repairs a documented claim. A number in a document is a claim "
     "about this checkout, and a stale one reads as true for as long as "
@@ -121,6 +138,7 @@ ENGINE_PROMPT_TEMPLATE(doc-claim, judging,
 
 /* ── review ──────────────────────────────────────────────────────────────
  * Read a diff and report. This kind writes nothing. */
+ENGINE_PROMPT_KIND_TIER(review, standard)
 ENGINE_PROMPT_TEMPLATE(review, rules,
     "This unit reviews and does not edit. Report what you found; propose no "
     "patch. A reviewer who starts writing stops reading.")
@@ -135,6 +153,7 @@ ENGINE_PROMPT_TEMPLATE(review, judging,
 
 /* C23 procedures are selected individually through --kind or the task header.
  * Exemplar paths are navigation hints, not qualification of a new patch. */
+ENGINE_PROMPT_KIND_TIER(c23-byte-validator, standard)
 ENGINE_PROMPT_TEMPLATE(c23-byte-validator, rules,
     "Implement a bounded C23 byte validator. Inputs required in the task: "
     "owned path, entry caller, byte extent, refusal contract, registered group. "
@@ -154,6 +173,7 @@ ENGINE_PROMPT_TEMPLATE(c23-byte-validator, judging,
     "truncated and malformed bytes plus valid input. Record the exact group "
     "and source identity; helper-only success does not prove caller refusal.")
 
+ENGINE_PROMPT_KIND_TIER(c23-command-handler, standard)
 ENGINE_PROMPT_TEMPLATE(c23-command-handler, rules,
     "Implement a native C23 command handler. Inputs required in the task: "
     "owned leaf, typed schema, authority, output contract, registered group. "
@@ -174,6 +194,7 @@ ENGINE_PROMPT_TEMPLATE(c23-command-handler, judging,
     "inputs, structured refusal and unchanged state on rejection. Verify the "
     "generated schema and focused registered group; record NOTRUN honestly.")
 
+ENGINE_PROMPT_KIND_TIER(c23-model-save, standard)
 ENGINE_PROMPT_TEMPLATE(c23-model-save, rules,
     "Implement a C23 ActiveRecord write. Inputs required in the task: owned "
     "model, invariants, hooks, transaction boundary, registered group. If one "
@@ -193,6 +214,7 @@ ENGINE_PROMPT_TEMPLATE(c23-model-save, judging,
     "hook ordering, failure cleanup and transaction behavior through the "
     "public save caller. Record the exact focused group and source identity.")
 
+ENGINE_PROMPT_KIND_TIER(c23-regression-fixture, standard)
 ENGINE_PROMPT_TEMPLATE(c23-regression-fixture, rules,
     "Implement a C23 regression fixture. Inputs required in the task: "
     "production entry, invariant, fault or mutation, registered group, "
@@ -214,6 +236,7 @@ ENGINE_PROMPT_TEMPLATE(c23-regression-fixture, judging,
     "and actual groups run. Mark unavailable stages NOTRUN; never infer "
     "mutation sensitivity from a green final state.")
 
+ENGINE_PROMPT_KIND_TIER(c23-wire-codec, standard)
 ENGINE_PROMPT_TEMPLATE(c23-wire-codec, rules,
     "Implement a bounded C23 wire codec. Inputs required in the task: owned "
     "caller, versioned grammar, limits, compatibility and refusal contracts, "
@@ -239,6 +262,7 @@ ENGINE_PROMPT_TEMPLATE(c23-wire-codec, judging,
     "alone can hide matching encoder/decoder defects; record independent "
     "vectors, exact group and source identity, or NOTRUN.")
 
+ENGINE_PROMPT_KIND_TIER(c23-cas-operation, standard)
 ENGINE_PROMPT_TEMPLATE(c23-cas-operation, rules,
     "Implement a bounded C23 content-store operation. Inputs required in "
     "the task: owned caller, address derivation, byte cap, durability and "
@@ -264,6 +288,7 @@ ENGINE_PROMPT_TEMPLATE(c23-cas-operation, judging,
     "cleanup. Inject write or flush failure when durability is in scope. "
     "Record the registered group and exact source; unavailable proof is NOTRUN.")
 
+ENGINE_PROMPT_KIND_TIER(c23-service-operation, standard)
 ENGINE_PROMPT_TEMPLATE(c23-service-operation, rules,
     "Implement a C23 service operation. Inputs required in the task: owned "
     "service and production caller, invariants, transaction ownership and AR "
@@ -294,6 +319,7 @@ ENGINE_PROMPT_TEMPLATE(c23-service-operation, judging,
     "Check repeat calls only when idempotence is contracted. Record the exact "
     "registered group and source identity; mark unexecuted proof NOTRUN.")
 
+ENGINE_PROMPT_KIND_TIER(c23-resource-owner, standard)
 ENGINE_PROMPT_TEMPLATE(c23-resource-owner, rules,
     "Implement non-custody resource ownership. Require owned caller, borrowed "
     "extents/lifetimes, release and transfer contracts, refusal outputs and "
@@ -323,6 +349,7 @@ ENGINE_PROMPT_TEMPLATE(c23-resource-owner, judging,
 /* ── c23-telemetry-field ─────────────────────────────────────────────────
  * One field in its owning fill function; an absent source is unavailable,
  * never zero. Catalog C376 C377 C380 C386 C394 C400. */
+ENGINE_PROMPT_KIND_TIER(c23-telemetry-field, standard)
 ENGINE_PROMPT_TEMPLATE(c23-telemetry-field, rules,
     "Implement a C23 telemetry field. Inputs required in the task: owning "
     "domain, source of truth, field name and unit, absent-source reasons, "
@@ -349,6 +376,7 @@ ENGINE_PROMPT_TEMPLATE(c23-telemetry-field, judging,
 /* ── c23-controller-route ────────────────────────────────────────────────
  * Validate, delegate to one service, escape and bound. Catalog C176 C177
  * C178 C185 C194 C196. */
+ENGINE_PROMPT_KIND_TIER(c23-controller-route, standard)
 ENGINE_PROMPT_TEMPLATE(c23-controller-route, rules,
     "Implement a thin C23 controller route. Inputs required in the task: "
     "owned route, parameter grammar, delegate service, response contract, "
@@ -375,6 +403,7 @@ ENGINE_PROMPT_TEMPLATE(c23-controller-route, judging,
 /* ── c23-source-generator ────────────────────────────────────────────────
  * Preview and write from one slice builder; refuse collisions. Catalog
  * C401-C406. */
+ENGINE_PROMPT_KIND_TIER(c23-source-generator, standard)
 ENGINE_PROMPT_TEMPLATE(c23-source-generator, rules,
     "Implement a native C23 source generator. Inputs required in the task: "
     "owned source owner, declared slice, destination paths, registered "
@@ -402,6 +431,7 @@ ENGINE_PROMPT_TEMPLATE(c23-source-generator, judging,
 /* ── c23-registry-entry ──────────────────────────────────────────────────
  * One entry in its owning .def, with a rejection fixture. Catalog C451
  * C452 C474 C475. */
+ENGINE_PROMPT_KIND_TIER(c23-registry-entry, standard)
 ENGINE_PROMPT_TEMPLATE(c23-registry-entry, rules,
     "Implement one C23 registry entry. Inputs required in the task: owned "
     "registry .def, entry fields, validator or loader, rejection fixture, "
@@ -428,6 +458,7 @@ ENGINE_PROMPT_TEMPLATE(c23-registry-entry, judging,
 /* ── c23-context-pack ────────────────────────────────────────────────────
  * Read-only pack for a writer, run by a cheap model first. Excerpts are
  * verbatim with path:line; anything not found is a GAP, never a guess. */
+ENGINE_PROMPT_KIND_TIER(c23-context-pack, light)
 ENGINE_PROMPT_TEMPLATE(c23-context-pack, rules,
     "Build a context pack for a later writer. You are read-only except one "
     "pack file, the path the task names. No design, no judgement, no source "
@@ -454,6 +485,7 @@ ENGINE_PROMPT_TEMPLATE(c23-context-pack, judging,
 /* ── c23-gate-tail ───────────────────────────────────────────────────────
  * Mechanical gate tail after a writer's focused test passes. It runs
  * gates and applies only the repairs a gate's own failure text dictates. */
+ENGINE_PROMPT_KIND_TIER(c23-gate-tail, light)
 ENGINE_PROMPT_TEMPLATE(c23-gate-tail, rules,
     "Run the gate tail for a finished change. Never edit hand-written "
     "source or tests. Never commit, rebase or reset. Run every heavy "
@@ -482,6 +514,7 @@ ENGINE_PROMPT_TEMPLATE(c23-gate-tail, judging,
  * Read-only triage of one failed landing proof. It classifies the failure
  * from the proof's own evidence and names the next command; it repairs
  * nothing. */
+ENGINE_PROMPT_KIND_TIER(c23-proof-triage, light)
 ENGINE_PROMPT_TEMPLATE(c23-proof-triage, rules,
     "Triage one failed proof. Read only: never edit, build, retry, "
     "resubmit or post. Quote evidence verbatim with its file and line. If "
@@ -511,3 +544,8 @@ ENGINE_PROMPT_TEMPLATE(c23-proof-triage, judging,
     "deadline to obtain a pass.")
 
 /* clang-format on */
+
+#ifdef ENGINE_PROMPT_TIER_LOCAL_
+#undef ENGINE_PROMPT_KIND_TIER
+#undef ENGINE_PROMPT_TIER_LOCAL_
+#endif

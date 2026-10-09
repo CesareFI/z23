@@ -105,6 +105,28 @@ void engine_prompt_shape_sha3(uint8_t out[32]);
 size_t engine_prompt_kind_count(void);
 const char *engine_prompt_kind_at(size_t i);
 
+/* The capability floor a kind declares for the worker that runs it: light
+ * kinds are read-only or mechanical, standard kinds write code. A declared
+ * floor a dispatcher may exceed, not a scheduling decision. */
+enum engine_prompt_tier {
+    ENGINE_PROMPT_TIER_UNKNOWN = 0,
+    ENGINE_PROMPT_TIER_LIGHT,
+    ENGINE_PROMPT_TIER_STANDARD,
+};
+
+/* The tier `kind` declares; UNKNOWN for NULL, an unknown kind, or a kind
+ * with no tier row. The tier is a floor for the worker, never a schedule. */
+enum engine_prompt_tier engine_prompt_kind_tier(const char *kind);
+
+/* True when the tier rows and the template kinds agree both ways: every tier
+ * row names a kind that has template rows, no kind has two tier rows, and
+ * every template kind has one. On false, *why_kind (when non-NULL) names the
+ * first offending kind; it is NULL on true. */
+bool engine_prompt_tiers_closed(const char **why_kind);
+
+/* "unknown", "light" or "standard". */
+const char *engine_prompt_tier_name(enum engine_prompt_tier tier);
+
 /* The body this kind supplies for this section, or NULL when it supplies
  * none. Both arguments are matched exactly; an unknown kind or section is
  * NULL, never a fallback to another kind's words. */

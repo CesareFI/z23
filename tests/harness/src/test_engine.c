@@ -2108,6 +2108,49 @@ static int case_template_wire(void)
     return failures;
 }
 
+/* Every kind declares a capability floor; a new kind without a tier row
+ * must fail here. */
+static int case_prompt_tiers(void)
+{
+    int failures = 0;
+    bool every_kind_tiered = true;
+    for (size_t i = 0; i < engine_prompt_kind_count(); i++) {
+        if (engine_prompt_kind_tier(engine_prompt_kind_at(i))
+            == ENGINE_PROMPT_TIER_UNKNOWN)
+            every_kind_tiered = false;
+    }
+    EN_CHECK("every declared kind has a tier row", every_kind_tiered);
+    EN_CHECK("context-pack, gate-tail and proof-triage are light",
+             engine_prompt_kind_tier("c23-context-pack")
+                 == ENGINE_PROMPT_TIER_LIGHT
+             && engine_prompt_kind_tier("c23-gate-tail")
+                 == ENGINE_PROMPT_TIER_LIGHT
+             && engine_prompt_kind_tier("c23-proof-triage")
+                 == ENGINE_PROMPT_TIER_LIGHT);
+    EN_CHECK("a code-writing kind is standard",
+             engine_prompt_kind_tier("c23-regression-fixture")
+             == ENGINE_PROMPT_TIER_STANDARD);
+    EN_CHECK("NULL and an unknown kind have no tier",
+             engine_prompt_kind_tier(NULL) == ENGINE_PROMPT_TIER_UNKNOWN
+             && engine_prompt_kind_tier("half-done")
+                 == ENGINE_PROMPT_TIER_UNKNOWN);
+    EN_CHECK("tier names map each enum value",
+             strcmp(engine_prompt_tier_name(ENGINE_PROMPT_TIER_UNKNOWN),
+                    "unknown") == 0
+             && strcmp(engine_prompt_tier_name(ENGINE_PROMPT_TIER_LIGHT),
+                       "light") == 0
+             && strcmp(engine_prompt_tier_name(ENGINE_PROMPT_TIER_STANDARD),
+                       "standard") == 0
+             && strcmp(engine_prompt_tier_name((enum engine_prompt_tier)99),
+                       "unknown") == 0);
+    const char *why = "unset";
+    EN_CHECK("tier rows and template kinds agree both ways",
+             engine_prompt_tiers_closed(&why) && why == NULL);
+    EN_CHECK("closure check accepts a NULL out-pointer",
+             engine_prompt_tiers_closed(NULL));
+    return failures;
+}
+
 static int case_prompt_templates(void)
 {
     int failures = 0;
@@ -2149,6 +2192,8 @@ static int case_prompt_templates(void)
              && engine_prompt_template_body("add-test", "task") != NULL
              && strcmp(engine_prompt_template_body("fix-gate", "task"),
                        engine_prompt_template_body("add-test", "task")) != 0);
+
+    failures += case_prompt_tiers();
 
     const char *headed =
         "kind: add-test\n"
