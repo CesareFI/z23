@@ -304,6 +304,35 @@ void zcl_native_handle_wallet_recovery_status(
     reply->error.mutated = false;
 }
 
+/* Restore has no default: it installs spending keys and must preserve the
+ * caller's explicit target byte-for-byte before any filesystem operation. */
+static bool wrp_restore_datadir(const struct json_value *input,
+                                char *datadir, size_t datadir_cap,
+                                struct zcl_command_reply *reply)
+{
+    const char *dd = json_get_str(json_get(input, "datadir"));
+    if (!dd || !dd[0]) {
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                 "datadir is required and has no default here. This command "
+                 "writes a whole wallet — spending keys and the master seed "
+                 "they all descend from — and it will not guess where. Name "
+                 "an EMPTY directory to recover into, e.g. "
+                 "--input='{\"datadir\":\"/srv/zcl-recovered\"}'. It is "
+                 "deliberately NOT your running node's datadir: recover "
+                 "beside it, then move what you need",
+                 "core.wallet.recovery.restore");
+        return false;
+    }
+    if (strlen(dd) >= datadir_cap) {
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "DATADIR_TOO_LONG",
+                 "datadir is too long to use without changing its path",
+                 "core.wallet.recovery.restore");
+        return false;
+    }
+    (void)snprintf(datadir, datadir_cap, "%s", dd);
+    return true;
+}
+
 void zcl_native_handle_wallet_recovery_restore(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -322,29 +351,9 @@ void zcl_native_handle_wallet_recovery_restore(
         return;
     }
 
-    /* NO DEFAULT DATADIR ON THIS LEAF. `status` may fall back to the
-     * runtime's datadir because it only reads; this one installs spending
-     * keys and a master seed, and its fallback was the OPERATOR'S LIVE
-     * DATADIR. "Recovery" is precisely the word a person types when
-     * something is already wrong, and the cost of guessing the target
-     * wrong is a second wallet written into the live node. An explicit
-     * path is also the only thing a plan and its later commit can be
-     * checked to agree on. So: name it, or nothing happens. */
     char datadir[1024];
-    const char *dd = json_get_str(json_get(request->input, "datadir"));
-    if (!dd || !dd[0]) {
-        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
-                 "datadir is required and has no default here. This command "
-                 "writes a whole wallet — spending keys and the master seed "
-                 "they all descend from — and it will not guess where. Name "
-                 "an EMPTY directory to recover into, e.g. "
-                 "--input='{\"datadir\":\"/srv/zcl-recovered\"}'. It is "
-                 "deliberately NOT your running node's datadir: recover "
-                 "beside it, then move what you need",
-                 "core.wallet.recovery.restore");
+    if (!wrp_restore_datadir(request->input, datadir, sizeof(datadir), reply))
         return;
-    }
-    snprintf(datadir, sizeof(datadir), "%s", dd);
 
     bool confirm = json_get_bool_or(request->input, "confirm", false);
 
