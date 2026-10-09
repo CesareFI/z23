@@ -2285,14 +2285,24 @@ static int tc_rail_pin_bindable(struct testcache *tc)
     return failures;
 }
 
-/* The macro-generated fleet_gateway shards resolve no entry symbol in the
+/* The macro-generated make_lint_gates shards resolve no entry symbol in the
  * code index, so they can never mint a key at all — the sound outcome, but
  * through a different code than the rail's refusals. Pin that they never
- * serve a verdict. */
+ * serve a verdict. The fleet_gateway shards spell their entry functions out,
+ * so they resolve and must be cacheable. */
 static int tc_rail_pin_unresolved(struct testcache *tc)
 {
-    int failures = 0;
     static const char *const unresolved[] = {
+        "test_make_lint_gates_shard_01",
+        "test_make_lint_gates_shard_02",
+        "test_make_lint_gates_shard_03",
+        "test_make_lint_gates_shard_04",
+        "test_make_lint_gates_shard_05",
+        "test_make_lint_gates_shard_06",
+        "test_make_lint_gates_shard_07",
+        "test_make_lint_gates_shard_08",
+    };
+    static const char *const spelled[] = {
         "test_fleet_gateway_shard_01",
         "test_fleet_gateway_shard_02",
         "test_fleet_gateway_shard_03",
@@ -2300,6 +2310,7 @@ static int tc_rail_pin_unresolved(struct testcache *tc)
         "test_fleet_gateway_shard_05",
         "test_fleet_gateway_shard_06",
     };
+    int failures = 0;
     for (size_t i = 0; i < sizeof(unresolved) / sizeof(unresolved[0]); i++) {
         struct testcache_probe p;
         testcache_probe_group(tc, unresolved[i], &p);
@@ -2307,6 +2318,21 @@ static int tc_rail_pin_unresolved(struct testcache *tc)
         if (p.cacheable || p.hit)
             printf("  testcache: %s probed cacheable=%d code=%d (%s)\n",
                    unresolved[i], p.cacheable, (int)p.code, p.reason);
+    }
+    for (size_t i = 0; i < sizeof(spelled) / sizeof(spelled[0]); i++) {
+        struct testcache_probe p;
+        testcache_probe_group(tc, spelled[i], &p);
+        /* Resolves the entry symbol; whether it then mints a key or is
+         * refused for the z23-flee exec artifact depends on build/bin. */
+        bool resolved = p.code != TESTCACHE_R_ENTRY_UNRESOLVED;
+        bool bound = p.cacheable && p.key_valid;
+        bool refused_absent = !p.cacheable &&
+                              p.code == TESTCACHE_R_EXTERNAL_INPUT;
+        TC_CHECK("spelled-out shard entry resolves and is bound or refused",
+                 resolved && (bound || refused_absent));
+        if (!resolved || !(bound || refused_absent))
+            printf("  testcache: %s probed cacheable=%d code=%d (%s)\n",
+                   spelled[i], p.cacheable, (int)p.code, p.reason);
     }
     return failures;
 }
