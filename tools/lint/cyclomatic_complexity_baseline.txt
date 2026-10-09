@@ -1719,7 +1719,7 @@ engine/entry/main_cli_modes.c:bench_crypto_vs_rust:55
 engine/entry/main_cli_modes.c:bench_find_live_pid:22
 engine/entry/main_cli_modes.c:bench_read_proc_status:16
 engine/entry/main_cli_modes.c:bench_regress:24
-engine/entry/main_cli_modes.c:cli_main:113
+engine/entry/main_cli_modes.c:cli_main:110
 engine/entry/main_cli_modes.c:cli_rpc_call_internal_ex:29
 engine/entry/main_cli_modes.c:cli_service_exec_arg:22
 engine/entry/main_cli_modes.c:import_complete_shielded_mode:39
@@ -3924,7 +3924,7 @@ tools/zcc_epoch_batch.c:batch_read_job:19
 tools/zcc_epoch_batch.c:zcc_epoch_batch_manifest_decode:25
 tools/zcl-nodectl.c:cmd_launch:30
 tools/zcl-nodectl.c:main:17
-tools/zcl-rpc.c:main:29
+tools/zcl-rpc.c:main:27
 tools/zcl_portfwd.c:main:41
 tools/zcode_adapter_runner.c:main:73
 tools/zcode_app_server_benchmark.c:handle_notification:18

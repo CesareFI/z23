@@ -75,6 +75,7 @@ static long cas_file_mtime(const char *path)
 static const char *const cas_stale_witnesses[] = {
     "engine/entry/main.c",
     "engine/entry/main_cli_modes.c",
+    "engine/composition/include/config/cli_lane_defaults.h",
     "engine/composition/src/args.c",
     "engine/composition/include/config/args.h",
     "engine/composition/commands/apps.def",
@@ -144,7 +145,16 @@ static uint16_t cas_reserve_port(void)
  * never resolves to this project's real zclassic23.service. Static scratch
  * — not reentrant, fine for this single-threaded test group. */
 static char cas_env_home[PATH_MAX + 8];
-static char *cas_envp[4];
+static char *cas_envp[5];
+/* Per-fixture overrides: binary to exec (default CAS_BIN) and one extra
+ * NAME=value environment entry. Reset by each fixture that sets them. */
+static const char *cas_exec_path = NULL;
+static char cas_extra_env[PATH_MAX + 32];
+
+static const char *cas_exec_target(void)
+{
+    return cas_exec_path ? cas_exec_path : CAS_BIN;
+}
 
 static char *const *cas_build_envp(const char *home)
 {
@@ -152,7 +162,8 @@ static char *const *cas_build_envp(const char *home)
     cas_envp[0] = cas_env_home;
     cas_envp[1] = (char *)"PATH=/usr/bin:/bin:/usr/local/bin";
     cas_envp[2] = (char *)"ZCL_CLI_TEST_NO_SERVICE_LOOKUP=1";
-    cas_envp[3] = NULL;
+    cas_envp[3] = cas_extra_env[0] ? cas_extra_env : NULL;
+    cas_envp[4] = NULL;
     return cas_envp;
 }
 
@@ -185,7 +196,8 @@ static int cas_run(char *const argv[], const char *home, char *out,
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[0]);
         close(pipefd[1]);
-        execve(CAS_BIN, argv, cas_build_envp(home));
+        execve(cas_exec_target(), argv,
+               cas_build_envp(home));
         _exit(127);
     }
     close(pipefd[1]);
@@ -252,7 +264,8 @@ static bool cas_run_daemon_wait_for(char *const argv[], const char *home,
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[0]);
         close(pipefd[1]);
-        execve(CAS_BIN, argv, cas_build_envp(home));
+        execve(cas_exec_target(), argv,
+               cas_build_envp(home));
         _exit(127);
     }
     close(pipefd[1]);
@@ -694,6 +707,128 @@ static int cas_test_overlong_datadir_refuses(void)
     return failures;
 }
 
+
+#define CAS_RPC_BIN "build/bin/zcl-rpc"
+
+/* Build base + "/" + 200 x 'a' + "/" + 200 x 'b' + "/" + 'c' padding so
+ * the whole string is exactly `total` bytes, creating every directory
+ * level that fits below `make_upto` bytes (the decoy-bearing prefix). */
+static bool cas_build_long_dir(char *out, size_t cap, const char *base,
+                               size_t total, size_t make_upto)
+{
+    int n = snprintf(out, cap, "%s/", base);
+    if (n < 0 || (size_t)n + 402 >= total || total + 1 > cap) return false;
+    size_t len = (size_t)n;
+    memset(out + len, 'a', 200); len += 200; out[len++] = '/';
+    memset(out + len, 'b', 200); len += 200; out[len++] = '/';
+    memset(out + len, 'c', total - len); out[total] = '\0';
+    for (size_t i = (size_t)n; i <= total; i++) {
+        if ((out[i] == '/' || i == total) && i <= make_upto) {
+            char sv = out[i]; out[i] = '\0';
+            cas_mkdir_p(out); out[i] = sv;
+        }
+    }
+    if (make_upto < total) {
+        char sv = out[make_upto]; out[make_upto] = '\0';
+        cas_mkdir_p(out); out[make_upto] = sv;
+    }
+    return true;
+}
+
+static bool cas_write_decoy(const char *path)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
+    fputs("decoy:cookie\n", f);
+    return fclose(f) == 0;
+}
+
+/* An over-long HOME makes the default datadir overflow the buffer; the
+ * chopped 511-byte prefix is a real directory holding a decoy .cookie. The
+ * client must refuse (DATADIR_TOO_LONG, invalid-invocation exit) and a
+ * short explicit -datadir= must still be accepted despite that HOME. */
+static int cas_test_overlong_home_default_refuses(void)
+{
+    int failures = 0;
+    TEST("CLI-client: an over-long HOME makes the default datadir refuse "
+         "(DATADIR_TOO_LONG), never a chopped prefix directory") {
+        char base[PATH_MAX];
+        test_fmt_tmpdir(base, sizeof(base), "zcl_cas_homelong", "root");
+        (void)test_ensure_tmproot();
+        cas_mkdir_p(base);
+
+        char home[1024];
+        ASSERT(cas_build_long_dir(home, sizeof(home), base, 520, 511));
+        char decoy[1100];
+        snprintf(decoy, sizeof(decoy), "%.511s/.cookie", home);
+        ASSERT(cas_write_decoy(decoy));
+
+        char *argv[] = {(char *)CAS_BIN, (char *)"status", NULL};
+        char out[8192] = {0};
+        cas_exec_path = NULL;
+        cas_extra_env[0] = '\0';
+        int rc = cas_run(argv, home, out, sizeof(out));
+        ASSERT_EQ(rc, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT(cas_contains(out, "DATADIR_TOO_LONG"));
+        ASSERT(cas_contains(out, "no silent truncation"));
+
+        /* A short explicit target is unaffected by the long HOME. */
+        char shortdd[PATH_MAX];
+        test_fmt_tmpdir(shortdd, sizeof(shortdd), "zcl_cas_homelong", "dd");
+        cas_mkdir_p(shortdd);
+        char flag[PATH_MAX + 16];
+        snprintf(flag, sizeof(flag), "-datadir=%s", shortdd);
+        char *argv2[] = {(char *)CAS_BIN, flag, (char *)"status", NULL};
+        char out2[8192] = {0};
+        (void)cas_run(argv2, home, out2, sizeof(out2));
+        ASSERT(!cas_contains(out2, "DATADIR_TOO_LONG"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* zcl-rpc: an over-long ZCL_DATADIR is refused before any file opens. The
+ * datadir is 505 bytes so "<datadir>/.cookie" (513) truncates to
+ * "<datadir>/.cooki": a decoy of exactly that name is what the unchecked
+ * copy would have read as the node's cookie. */
+static int cas_test_zcl_rpc_overlong_datadir_refuses(void)
+{
+    int failures = 0;
+    TEST("zcl-rpc: an over-long ZCL_DATADIR is refused (DATADIR_TOO_LONG, "
+         "non-zero) and the chopped-path decoy cookie is not read") {
+        if (!cas_file_exists(CAS_RPC_BIN) ||
+            cas_file_mtime(CAS_RPC_BIN) < cas_file_mtime("tools/zcl-rpc.c")) {
+            printf("cli_argv_strict: %s missing or stale — SKIP zcl-rpc "
+                   "fixture\n", CAS_RPC_BIN);
+            goto _test_next;
+        }
+        char base[PATH_MAX];
+        test_fmt_tmpdir(base, sizeof(base), "zcl_cas_rpclong", "root");
+        (void)test_ensure_tmproot();
+        cas_mkdir_p(base);
+        char dd[1024];
+        ASSERT(cas_build_long_dir(dd, sizeof(dd), base, 505, 505));
+        char decoy[1100];
+        snprintf(decoy, sizeof(decoy), "%s/.cooki", dd);
+        ASSERT(cas_write_decoy(decoy));
+
+        char home[PATH_MAX];
+        test_fmt_tmpdir(home, sizeof(home), "zcl_cas_rpclong", "home");
+        cas_mkdir_p(home);
+        snprintf(cas_extra_env, sizeof(cas_extra_env), "ZCL_DATADIR=%s", dd);
+        cas_exec_path = CAS_RPC_BIN;
+        char *argv[] = {(char *)CAS_RPC_BIN, (char *)"getblockcount", NULL};
+        char out[8192] = {0};
+        int rc = cas_run(argv, home, out, sizeof(out));
+        cas_exec_path = NULL;
+        cas_extra_env[0] = '\0';
+        ASSERT(rc != 0);
+        ASSERT(cas_contains(out, "DATADIR_TOO_LONG"));
+        ASSERT(!cas_contains(out, "decoy"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
 int test_cli_argv_strict(void)
 {
     int failures = 0;
@@ -722,6 +857,8 @@ int test_cli_argv_strict(void)
     failures += cas_test_daemon_mode_tolerant_and_warns();
     failures += cas_test_noisetransport_is_recognized();
     failures += cas_test_overlong_datadir_refuses();
+    failures += cas_test_overlong_home_default_refuses();
+    failures += cas_test_zcl_rpc_overlong_datadir_refuses();
 
     return failures;
 }

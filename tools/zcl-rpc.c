@@ -345,6 +345,31 @@ static int rpc_call(const char *host, int port, const char *cookie,
 #endif
 }
 
+/* Compose <datadir>/<leaf>, <home>/.zclassic-c23/<leaf>, or the bare
+ * no-HOME fallback into out. False (after printing error=DATADIR_TOO_LONG)
+ * when the result does not fit: never a truncated path. zcl-rpc is a
+ * standalone tool with no config/args.h, so the cap is sizeof the buffer. */
+static bool compose_path(char *out, size_t cap, const char *datadir,
+                         const char *home, const char *leaf,
+                         const char *fallback)
+{
+    int n;
+    if (datadir)
+        n = snprintf(out, cap, "%s/%s", datadir, leaf);
+    else if (home)
+        n = snprintf(out, cap, "%s/.zclassic-c23/%s", home, leaf);
+    else
+        n = snprintf(out, cap, "%s", fallback);
+    if (n < 0 || (size_t)n >= cap) {
+        fprintf(stderr, "error=DATADIR_TOO_LONG detail=the %s path exceeds "
+                "the %zu-byte path buffer - refusing (no silent "
+                "truncation): a chopped cookie path can authenticate "
+                "against the wrong node\n", leaf, cap);
+        return false;
+    }
+    return true;
+}
+
 int main(int argc, char *argv[])
 {
     if (argc < 2) {
@@ -359,13 +384,15 @@ int main(int argc, char *argv[])
     /* Read cookie */
     const char *home = getenv("HOME");
     char cookie_path[512];
+    char conf_path[512];
     const char *datadir = getenv("ZCL_DATADIR");
-    if (datadir)
-        snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", datadir);
-    else if (home)
-        snprintf(cookie_path, sizeof(cookie_path), "%s/.zclassic-c23/.cookie", home);
-    else
-        snprintf(cookie_path, sizeof(cookie_path), ".zclassic-c23/.cookie");
+    /* Compose both paths before any file is opened: a truncated prefix
+     * can name another node's directory and so another node's cookie. */
+    if (!compose_path(cookie_path, sizeof(cookie_path), datadir, home,
+                      ".cookie", ".zclassic-c23/.cookie") ||
+        !compose_path(conf_path, sizeof(conf_path), datadir, home,
+                      "zclassic.conf", "zclassic.conf"))
+        return 1;
 
     char cookie[256] = "";
 
@@ -384,14 +411,6 @@ int main(int argc, char *argv[])
     /* Fall back to rpcuser:rpcpassword from conf (zclassicd) */
     if (cookie[0] == '\0')
     {
-        char conf_path[512];
-        if (datadir)
-            snprintf(conf_path, sizeof(conf_path), "%s/zclassic.conf", datadir);
-        else if (home)
-            snprintf(conf_path, sizeof(conf_path), "%s/.zclassic-c23/zclassic.conf", home);
-        else
-            snprintf(conf_path, sizeof(conf_path), "zclassic.conf");
-
         if (load_conf_auth(conf_path, cookie, sizeof(cookie)) < 0)
             return 1;
     }

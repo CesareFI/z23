@@ -2362,7 +2362,8 @@ int cli_main(int argc, char **argv)
         return argrc;
     const char *home = getenv("HOME");
     char datadir[CLI_TARGET_DATADIR_CAP];
-    zcl_cli_lane_default_datadir(datadir, sizeof(datadir), home);
+    const bool default_fit =
+        zcl_cli_lane_default_datadir(datadir, sizeof(datadir), home);
     bool datadir_set = false;
     bool rpcport_set = false;
     bool p2pport_set = false;
@@ -2385,6 +2386,10 @@ int cli_main(int argc, char **argv)
      * the default service while an agent is trying to inspect a lane. */
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "-datadir=", 9) == 0) {
+            /* cli_validate_client_argv already refused an over-long value;
+             * re-check so the copy never depends on that ordering. */
+            if (cli_flag_value_overflows_path_buffer(argv[i]))
+                return cli_refuse_overlong_datadir(argv[i]);
             snprintf(datadir, sizeof(datadir), "%s", argv[i] + 9);
             datadir_set = true;
         } else if (strncmp(argv[i], "-rpcport=", 9) == 0) {
@@ -2432,19 +2437,9 @@ int cli_main(int argc, char **argv)
      * Without this the native CLI (status / dumpstate / every registry
      * command) silently answered from the LIVE node even when the caller
      * had pinned env to an isolated instance. */
-    if (!datadir_set) {
-        const char *env_dd = getenv("ZCL_DATADIR");
-        if (env_dd && env_dd[0]) {
-            int n = snprintf(datadir, sizeof(datadir), "%s", env_dd);
-            if (n < 0 || (size_t)n >= sizeof(datadir)) {
-                fprintf(stderr,
-                        "ZCL_DATADIR exceeds the %zu-byte path buffer — "
-                        "refusing (no silent truncation)\n", sizeof(datadir));
-                return 2;
-            }
-            datadir_set = true;
-        }
-    }
+    if (!zcl_cli_lane_settle_datadir(datadir, sizeof(datadir), &datadir_set,
+                                     default_fit, getenv("ZCL_DATADIR")))
+        return ZCL_COMMAND_EXIT_INVALID;
     if (!rpcport_set) {
         const char *env_rp = getenv("ZCL_RPCPORT");
         if (env_rp && env_rp[0]) {
