@@ -59,7 +59,9 @@ static void *it_acquire_worker(void *a)
     /* Rendezvous with the main thread right before the blocking acquire()
      * loop, so it knows the worker is about to block before stop(). */
     zcl_barrier_wait(w->barrier);
-    (void)ibd_throttle_acquire();
+    ZCL_IGNORE_RESULT(
+        ibd_throttle_acquire(),
+        "worker only blocks until released; test observes done flag, not grant");
     atomic_store(w->done, true);
     return NULL;
 }
@@ -287,13 +289,17 @@ int test_ibd_throttle(void)
         ZCL_TEST_SETUP(ibd_throttle_start(&cfg));
         (void)ibd_throttle_try_acquire();
         /* Blocked acquire #1 — emits (last_event_us was 0). */
-        (void)ibd_throttle_acquire();
+        ZCL_IGNORE_RESULT(
+            ibd_throttle_acquire(),
+            "test checks the emitted event count, not the grant value");
         IT_CHECK("it: first blocked acquire emits EV_IBD_THROTTLED",
                  atomic_load(&g_it_events) == 1);
         /* A subsequent blocked acquire within 60s must NOT
          * emit again. */
         (void)ibd_throttle_try_acquire(); /* may or may not drain */
-        (void)ibd_throttle_acquire();
+        ZCL_IGNORE_RESULT(
+            ibd_throttle_acquire(),
+            "test checks the emitted event count, not the grant value");
         IT_CHECK("it: second blocked acquire is rate-limited",
                  atomic_load(&g_it_events) == 1);
         ibd_throttle_stop();
@@ -305,7 +311,11 @@ int test_ibd_throttle(void)
         struct ibd_throttle_config cfg = { .blocks_per_sec = 100000,
                                             .burst = 100 };
         ZCL_TEST_SETUP(ibd_throttle_start(&cfg));
-        for (int i = 0; i < 5; i++) (void)ibd_throttle_acquire();
+        for (int i = 0; i < 5; i++) {
+            ZCL_IGNORE_RESULT(
+                ibd_throttle_acquire(),
+                "test checks that no event fires, not the grant value");
+        }
         IT_CHECK("it: no event when never blocked",
                  atomic_load(&g_it_events) == 0);
         ibd_throttle_stop();

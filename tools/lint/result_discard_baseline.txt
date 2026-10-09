@@ -53,7 +53,6 @@ tests/harness/src/test_domain_consensus_upgrades.c::domain_consensus_current_epo
 tests/harness/src/test_domain_consensus_upgrades.c::domain_consensus_current_epoch_branch_id
 tests/harness/src/test_header_probe.c::header_probe_pull_range
 tests/harness/src/test_header_probe_p2p_fallback.c::header_probe_init
-tests/harness/src/test_ibd_throttle.c::ibd_throttle_acquire
 tests/harness/src/test_sticky_conditions.c::disk_monitor_start
 tests/harness/src/test_storage_reclaim.c::ibd_throttle_start
 tests/harness/src/test_wallet_backup.c::wallet_backup_run_once
