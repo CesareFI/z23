@@ -6,6 +6,7 @@
 
 #include "util/file_io.h"
 
+#include "platform/file_stream.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -21,10 +22,10 @@ bool zcl_read_whole_file(const char *path, size_t max_len,
     if (!path || !out_buf || !out_len)
         LOG_FAIL(log_ctx ? log_ctx : "file_io", "read_whole_file: NULL argument");
 
-    FILE *f = fopen(path, "rb");
+    FILE *f = platform_file_stream_open_read(path);
     if (!f)
         LOG_FAIL(log_ctx ? log_ctx : "file_io",
-                  "read_whole_file: fopen failed for %s", path);
+                  "read_whole_file: read open failed for %s", path);
 
     if (fseek(f, 0, SEEK_END) != 0) {
         fclose(f);
@@ -85,10 +86,10 @@ bool zcl_read_whole_file_text(const char *path, size_t max_len,
     if (!path || !out_buf || !out_len)
         LOG_FAIL(log_ctx ? log_ctx : "file_io", "read_whole_file_text: NULL argument");
 
-    FILE *f = fopen(path, "rb");
+    FILE *f = platform_file_stream_open_read(path);
     if (!f)
         LOG_FAIL(log_ctx ? log_ctx : "file_io",
-                  "read_whole_file_text: fopen failed for %s", path);
+                  "read_whole_file_text: read open failed for %s", path);
 
     if (fseek(f, 0, SEEK_END) != 0) {
         fclose(f);
