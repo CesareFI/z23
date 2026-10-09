@@ -22,7 +22,7 @@ static bool rpc_span_is_zero(const char *span, size_t size)
     return true;
 }
 
-static bool rpc_secret_response_copies_retire(void)
+static bool rpc_secret_response_copies_retire(const char *method)
 {
     static const char secret[] = "synthetic-private-result";
     struct json_value result, id, response;
@@ -32,7 +32,7 @@ static bool rpc_secret_response_copies_retire(void)
     json_set_str(&result, secret);
     json_set_int(&id, 11);
     bool ok = rpc_http_test_build_response_envelope(
-        true, "dumpprivkey", &result, &id, &response);
+        true, method, &result, &id, &response);
     char *buf = NULL;
     size_t len = 0;
     ok = ok && rpc_http_test_serialize_response(&response, &buf, &len);
@@ -41,7 +41,7 @@ static bool rpc_secret_response_copies_retire(void)
     char *result_span = result.val.s;
     char *copied_span = copied ? copied->val.s : NULL;
     rpc_http_retire_response_copies(
-        "dumpprivkey", &result, &response, buf, buf ? len + 1 : 0);
+        method, &result, &response, buf, buf ? len + 1 : 0);
     ok = ok && rpc_span_is_zero(result_span, sizeof(secret));
     ok = ok && rpc_span_is_zero(copied_span, sizeof(secret));
     ok = ok && rpc_span_is_zero(buf, buf ? len + 1 : 0);
@@ -72,7 +72,13 @@ static int rpc_secret_retirement_cases(void)
 {
     int failures = 0;
     printf("dumpprivkey response copies retire after send... ");
-    if (rpc_secret_response_copies_retire()) printf("OK\n");
+    if (rpc_secret_response_copies_retire("dumpprivkey")) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    printf("z_exportkey response copies retire after send... ");
+    if (rpc_secret_response_copies_retire("z_exportkey")) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    printf("z_exportviewingkey response copies retire after send... ");
+    if (rpc_secret_response_copies_retire("z_exportviewingkey")) printf("OK\n");
     else { printf("FAIL\n"); failures++; }
     printf("ordinary RPC response copies remain available... ");
     if (rpc_ordinary_response_copies_remain()) printf("OK\n");
@@ -437,6 +443,6 @@ int test_rpc_error_envelope(void)
     }
 
     printf("\n%d rpc error envelope tests, %d failed\n",
-           20, failures);
+           22, failures);
     return failures;
 }
