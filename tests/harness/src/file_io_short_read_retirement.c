@@ -66,8 +66,8 @@ static void file_io_short_read_reset(size_t allocation_len)
 #define zcl_malloc file_io_observe_malloc
 #define fread file_io_observe_fread
 #define free file_io_observe_free
-#define zcl_read_whole_file file_io_observed_read
-#define zcl_read_whole_file_text file_io_observed_read_text
+#define zcl_read_whole_file file_io_short_observed_read
+#define zcl_read_whole_file_text file_io_short_observed_read_text
 #include "../../../platform/modules/util/src/file_io.c"
 #undef zcl_read_whole_file_text
 #undef zcl_read_whole_file
@@ -80,7 +80,7 @@ static bool file_io_binary_short_read_retired(const char *path)
     file_io_short_read_reset(4);
     uint8_t *bytes = NULL;
     size_t length = 0;
-    bool okay = !file_io_observed_read(
+    bool okay = !file_io_short_observed_read(
         path, 4, &bytes, &length, "file_io_short_read_test") && !bytes &&
         length == 0 && file_io_short_read_bytes == 3 &&
         file_io_freed_allocation_zero;
@@ -93,7 +93,7 @@ static bool file_io_text_short_read_retired(const char *path)
     file_io_short_read_reset(5);
     char *text = NULL;
     size_t length = 0;
-    bool okay = !file_io_observed_read_text(
+    bool okay = !file_io_short_observed_read_text(
         path, 4, &text, &length, "file_io_short_read_test") && !text &&
         length == 0 && file_io_short_read_bytes == 3 &&
         file_io_freed_allocation_zero;
