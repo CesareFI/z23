@@ -8045,7 +8045,7 @@ static int test_ic_proof_test_needs_whole_catalog(void)
             "zclassic-cli", "tools/gen_utxo_root_ladder", "clang-manifest",
             "fleet-gateway", "export_snapshot", "sqlq", "p2_invariant_check",
             "jsonq", "process-group-exec", "tools/consensus_rule_sweep",
-            "skycombat-fp-contract",
+            "skycombat-fp-contract", "tools/inspect_html",
             "skycombat-qa-entrypoint", "crash_recovery_test",
 #if !defined(_WIN32)
             "soak_runner",
@@ -8253,7 +8253,7 @@ static int test_ic_local_selection_build_needs(void)
     int failures = 0;
     TEST("local build needs: a selection lists exactly its groups' BUILD "
          "targets once; an ordinary selection lists none") {
-        struct zcl_test_group_host_need needs[19];
+        struct zcl_test_group_host_need needs[20];
         size_t n = 99;
 #if defined(_WIN32)
         /* The ensure target is a no-op where no verifier is qualified. */
@@ -8374,10 +8374,10 @@ static int test_ic_local_selection_build_needs(void)
          * leaves every group out lists none. */
         n = 99;
         ASSERT(!zcl_test_selection_build_needs(NULL, false, NULL, needs,
-                                               16 + verifier_needs + soak_needs, &n));
-        ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 19,
+                                               17 + verifier_needs + soak_needs, &n));
+        ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 20,
                                               &n));
-        ASSERT(n == 17 + verifier_needs + soak_needs);
+        ASSERT(n == 18 + verifier_needs + soak_needs);
         ASSERT(ic_needs_have(needs, n, "soak_runner", "build/bin/soak_runner") ==
                (soak_needs != 0));
         ASSERT(ic_needs_have(needs, n, "dev-package-verifier-ensure",
