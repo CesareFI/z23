@@ -145,6 +145,53 @@ after="$(cat "$cfg" 2>/dev/null)"
 [[ "$before" == "$after" ]] ||
     fail "second install rewrote $cfg: '$before' -> '$after'"
 
+# ── D. a rebuilt hook binary reaches an armed checkout, and only that one ───
+# WT_A/WT_B were armed above; WT_C never was. A changed binary stands in for a
+# rebuild of z23-git-hook; the refresh step is what the Makefile rule runs.
+REFRESH="$SCRIPT_DIR/refresh_git_hooks_if_armed.sh"
+NEW_BIN="$WORK/z23-git-hook.rebuilt"
+cp -- "$NATIVE_BIN" "$NEW_BIN" && printf 'rebuilt\n' >>"$NEW_BIN"
+refresh_into() {
+    ZCL_GIT_HOOK_SOURCE_ROOT="$SOURCE_ROOT" ZCL_GIT_HOOK_ROOT="$1" \
+    ZCL_GIT_HOOK_NATIVE_BIN="$NEW_BIN" "$REFRESH" >/dev/null 2>&1
+}
+[[ -x "$REFRESH" ]] || fail "refresh_git_hooks_if_armed.sh is missing or not executable"
+if [[ -x "$REFRESH" ]]; then
+    cmp -s "$NEW_BIN" "$WT_A/build/githooks/z23-git-hook" &&
+        fail "fixture rebuild did not change the installed hook comparison"
+    refresh_into "$WT_A" || fail "refresh in armed $WT_A exited nonzero"
+    cmp -s "$NEW_BIN" "$WT_A/build/githooks/z23-git-hook" ||
+        fail "armed $WT_A kept a stale hook after a rebuild"
+    for hook in pre-push post-commit post-merge post-checkout; do
+        [[ "$(readlink "$WT_A/build/githooks/$hook")" == z23-git-hook ]] ||
+            fail "armed $WT_A lost its $hook link after refresh"
+    done
+    [[ "$(effective "$WT_A")" == "build/githooks" ]] ||
+        fail "refresh moved $WT_A's core.hooksPath"
+    cmp -s "$NEW_BIN" "$WT_B/build/githooks/z23-git-hook" &&
+        fail "refreshing $WT_A rewrote the hooks of $WT_B"
+    # An unarmed checkout stays unarmed and gains no hook files. WT_D has no
+    # worktree-scope value; WT_C inherited one but never installed hooks.
+    WT_D="$WORK/wt-d"
+    g -C "$REPO" worktree add -q -b wt-d "$WT_D" >/dev/null 2>&1 ||
+        fail "git worktree add failed for wt-d"
+    git -C "$WT_D" config --worktree --unset-all core.hooksPath >/dev/null 2>&1
+    for idle in "$WT_C" "$WT_D"; do
+        [[ -d "$idle" ]] || continue
+        before_i="$(git -C "$idle" config --worktree --get core.hooksPath 2>&1)"
+        refresh_into "$idle" || fail "refresh in idle $idle exited nonzero"
+        after_i="$(git -C "$idle" config --worktree --get core.hooksPath 2>&1)"
+        [[ "$before_i" == "$after_i" ]] ||
+            fail "refresh changed idle $idle: '$before_i' -> '$after_i'"
+        [[ ! -e "$idle/build/githooks/z23-git-hook" ]] ||
+            fail "refresh installed hooks into idle $idle"
+    done
+    [[ -z "$(git -C "$WT_D" config --worktree --get core.hooksPath 2>/dev/null)" ]] ||
+        fail "refresh armed unarmed $WT_D"
+    [[ "$(shared_value "$REPO")" == "$SENTINEL" ]] ||
+        fail "refresh changed the SHARED core.hooksPath"
+fi
+
 # ── B. Git really resolves a relative core.hooksPath per worktree ───────────
 # The whole fix rests on githooks(5): a hook runs with its working directory
 # at the top of the invoking worktree, so `build/githooks` names a different
@@ -254,4 +301,5 @@ fi
 printf '%s\n' \
     "install_git_hooks: self-test PASS (per-worktree scope: a shared value and" \
     "  every other worktree survive an install; relative core.hooksPath resolves" \
-    "  to the worktree that runs the hook; a second run rewrites nothing)"
+    "  to the worktree that runs the hook; a second run rewrites nothing; a rebuilt" \
+    "  hook binary reaches an armed checkout and never arms an unarmed one)"

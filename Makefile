@@ -11978,10 +11978,13 @@ git-hook: $(GIT_HOOK_BIN)
 # The ELF collector drops ed25519's unused batch-verification path. PE/COFF
 # retains its RNG references, so the Windows sources above provide the real
 # implementation instead of relying on section collection to close the link.
+# A rebuild refreshes the installed copies when this worktree is already armed
+# (see refresh_git_hooks_if_armed.sh); it never arms an unarmed checkout.
 $(GIT_HOOK_BIN): $(GIT_HOOK_SRCS) $(GIT_HOOK_HDRS) Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(GIT_HOOK_CFLAGS) -o $@ $(GIT_HOOK_SRCS) \
 		$(HARDEN_LDFLAGS) $(ZCL_GC_SECTIONS_LDFLAG) $(GIT_HOOK_LIBS)
+	@tools/scripts/refresh_git_hooks_if_armed.sh
 
 git-hook-selftest: $(GIT_HOOK_BIN)
 	@$(GIT_HOOK_BIN) --selftest
