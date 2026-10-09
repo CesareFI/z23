@@ -11865,6 +11865,78 @@ _test_next:;
     return failures;
 }
 
+/* A conflict on one artifact must not leave a stale count bump that merged
+ * cleanly in another: every generator runs before the gates. Both lanes
+ * write the same stale CODEBASE_MAP bump; only the inventory conflicts.
+ * The check-doc-counts stand-in refuses until fix-doc-counts has run. */
+static int dlx_case_conflict_regens_clean_merged_artifact(void)
+{
+    int failures = 0;
+    TEST("land: a conflict on one artifact still regenerates a cleanly "
+        "merged stale one before the gates") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char tip[64], base[64], landwt[1300], out[512];
+        char mk[2048], mk2[3072], mkpath[700];
+        size_t len = 0;
+        const char *branch[] = { "branch", "keep-tip", NULL };
+        const char *push[] = { "push", "--quiet", "origin", "HEAD:main",
+                               NULL };
+        const char *reset[] = { "reset", "--quiet", "--hard", base, NULL };
+        const char *map[] = { "show", "HEAD:docs/CODEBASE_MAP.md", NULL };
+        dlx_isolate("regenclean");
+        ASSERT(dlx_rig_make_docregen(
+            &rig, "regenclean_rig",
+            "@printf 'regen\\n' > docs/CAPABILITY_INVENTORY.jsonl", "@:",
+            "@printf 'fixed\\n' > docs/CODEBASE_MAP.md"));
+        (void)snprintf(mkpath, sizeof(mkpath), "%s/Makefile", rig.clone);
+        ASSERT(dlx_slurp(mkpath, mk, sizeof(mk) - 1, &len));
+        mk[len] = '\0';
+        ASSERT((size_t)snprintf(mk2, sizeof(mk2),
+            "%sdocs-api-reference:\n\t@:\n"
+            "check-generated-artifact-contradictions:\n\t@:\n"
+            "check-doc-counts:\n\t@grep -q fixed docs/CODEBASE_MAP.md || "
+            "{ echo 'FAIL: doc-count drift detected'; exit 1; }\n",
+            mk) < sizeof(mk2));
+        ASSERT(dlx_write_dep(rig.clone, "Makefile", mk2));
+        ASSERT(dlx_write_dep(rig.clone, "docs/CAPABILITY_INVENTORY.jsonl",
+                             "base\n"));
+        ASSERT(dlx_commit_tree(rig.clone, "gates", base));
+        ASSERT(dlx_git(rig.clone, push) == 0);
+        ASSERT(dlx_write_dep(rig.clone, "docs/CAPABILITY_INVENTORY.jsonl",
+                             "mine\n"));
+        ASSERT(dlx_write_dep(rig.clone, "docs/CODEBASE_MAP.md", "bump\n"));
+        ASSERT(dlx_commit_tree(rig.clone, "the submitted work", tip));
+        ASSERT(dlx_git(rig.clone, branch) == 0);
+        ASSERT(dlx_git(rig.clone, reset) == 0);
+        ASSERT(dlx_write_dep(rig.clone, "docs/CAPABILITY_INVENTORY.jsonl",
+                             "theirs\n"));
+        ASSERT(dlx_write_dep(rig.clone, "docs/CODEBASE_MAP.md", "bump\n"));
+        ASSERT(dlx_commit_tree(rig.clone, "someone else's train", out));
+        ASSERT(dlx_git(rig.clone, push) == 0);
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, tip);
+        ASSERT(dlx_run(&c));
+        ASSERT(dlx_ok(&c));
+        dlx_end(&c);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c));
+        ASSERT(dlx_ok(&c));
+        ASSERT(strstr(dlx_str(&c, "detail"), "refused after") == NULL);
+        ASSERT(strcmp(dlx_str(&c, "state"), "started") == 0);
+        dlx_end(&c);
+        dlx_land_wt(landwt, sizeof(landwt));
+        ASSERT(dlx_git_out(landwt, map, out, sizeof(out)) == 0);
+        ASSERT_STR_EQ(out, "fixed");
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
 static int dlx_case_rerere_conflict(void)
 {
     int failures = 0;
@@ -12165,6 +12237,8 @@ int test_dev_land(void)
     failures += dlx_case_rerere_conflict();
 
     failures += dlx_case_regen_gate();
+
+    failures += dlx_case_conflict_regens_clean_merged_artifact();
 
     failures += dlx_case_mixed_conflict();
 

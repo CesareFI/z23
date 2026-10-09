@@ -4543,23 +4543,14 @@ static int dl_regen_fold(const struct dl_dirs *d, struct dl_row *row,
     return 1;
 }
 
-/* Run each conflicted artifact's generator (deduped by make target), then
- * the two gates that say the regenerated tree is self-consistent, then
- * fold whatever the generators actually changed into the tip
- * (dl_regen_fold()). Returns 1 on success,
- * -1 with `why` on a hard failure — a generator that will not run, a gate
- * that still refuses, or a commit that will not be made is not a conflict
- * any more. */
-static int dl_regen_run(const struct dl_dirs *d, struct dl_row *row,
-                        const bool *seen, char *why, size_t why_cap)
+/* Run the generator of every `run[i]` artifact, deduped by make target. */
+static int dl_regen_generate(const struct dl_dirs *d, struct dl_row *row,
+                             const bool *run, char *why, size_t why_cap)
 {
-    const char *diff_args[DL_REGEN_N + 4];
     char line[256];
-    size_t dn = 0;
-
     for (size_t i = 0; i < DL_REGEN_N; i++) {
         bool duplicate = false;
-        if (!seen[i])
+        if (!run[i])
             continue;
         if (dl_regen_stub()) {
             if (dl_regen_stub_write(d->wt, DL_REGEN_ARTIFACTS[i].path))
@@ -4572,8 +4563,8 @@ static int dl_regen_run(const struct dl_dirs *d, struct dl_row *row,
             return -1;
         }
         for (size_t j = 0; j < i; j++) {
-            if (seen[j] && strcmp(DL_REGEN_ARTIFACTS[j].make_target,
-                                  DL_REGEN_ARTIFACTS[i].make_target) == 0)
+            if (run[j] && strcmp(DL_REGEN_ARTIFACTS[j].make_target,
+                                 DL_REGEN_ARTIFACTS[i].make_target) == 0)
                 duplicate = true;
         }
         if (duplicate)
@@ -4588,10 +4579,16 @@ static int dl_regen_run(const struct dl_dirs *d, struct dl_row *row,
             return -1;
         }
     }
+    return 1;
+}
 
-    /* The gates run whether or not the generators moved a byte: agreement
-     * between the generated artifacts is a property of the MERGED tree,
-     * and the merge is what just changed. */
+/* The gates run whether or not the generators moved a byte: agreement
+ * between the generated artifacts is a property of the MERGED tree,
+ * and the merge is what just changed. */
+static int dl_regen_gates(const struct dl_dirs *d, struct dl_row *row,
+                          char *why, size_t why_cap)
+{
+    char line[256];
     for (size_t i = 0; i < DL_REGEN_GATE_N; i++) {
         int rc;
         if (dl_regen_stub()) {
@@ -4613,12 +4610,48 @@ static int dl_regen_run(const struct dl_dirs *d, struct dl_row *row,
                        line[0] ? line : "no actionable line captured");
         return -1;
     }
+    return 1;
+}
+
+/* `touched` = conflicted artifacts plus any other one a generator moved. */
+static void dl_regen_touched(const struct dl_dirs *d, const bool *seen,
+                             const bool *run, bool *touched)
+{
+    for (size_t i = 0; i < DL_REGEN_N; i++) {
+        const char *args[] = { "diff", "--quiet", "--",
+                               DL_REGEN_ARTIFACTS[i].path, NULL };
+        touched[i] = seen[i] ||
+            (run[i] && dl_git(d->wt, args, NULL, 0, DL_GIT_TIMEOUT_MS) != 0);
+    }
+}
+
+/* Run every artifact's generator (all are deterministic, and a count bump
+ * can merge cleanly yet stale while another artifact conflicts), then the
+ * two gates that say the regenerated tree is self-consistent, then fold
+ * whatever the generators actually changed into the tip
+ * (dl_regen_fold()). Returns 1 on success,
+ * -1 with `why` on a hard failure — a generator that will not run, a gate
+ * that still refuses, or a commit that will not be made is not a conflict
+ * any more. The stub regenerates only the conflicted artifacts. */
+static int dl_regen_run(const struct dl_dirs *d, struct dl_row *row,
+                        const bool *seen, char *why, size_t why_cap)
+{
+    const char *diff_args[DL_REGEN_N + 4];
+    bool run[DL_REGEN_N], touched[DL_REGEN_N];
+    size_t dn = 0;
+
+    for (size_t i = 0; i < DL_REGEN_N; i++)
+        run[i] = dl_regen_stub() ? seen[i] : true;
+    if (dl_regen_generate(d, row, run, why, why_cap) < 0 ||
+        dl_regen_gates(d, row, why, why_cap) < 0)
+        return -1;
+    dl_regen_touched(d, seen, run, touched);
 
     diff_args[dn++] = "diff";
     diff_args[dn++] = "--quiet";
     diff_args[dn++] = "--";
     for (size_t i = 0; i < DL_REGEN_N; i++) {
-        if (seen[i])
+        if (touched[i])
             diff_args[dn++] = DL_REGEN_ARTIFACTS[i].path;
     }
     diff_args[dn] = NULL;
@@ -4627,7 +4660,7 @@ static int dl_regen_run(const struct dl_dirs *d, struct dl_row *row,
      * a failure. */
     if (dl_git(d->wt, diff_args, NULL, 0, DL_GIT_TIMEOUT_MS) == 0)
         return 1;
-    return dl_regen_fold(d, row, seen, why, why_cap);
+    return dl_regen_fold(d, row, touched, why, why_cap);
 }
 
 /* Why an auto-resolve that already settled one replayed commit handed a
